@@ -287,8 +287,8 @@ function testValidHeadlines() {
 - Kent Beck's "Test Driven Development: By Example"
 - Martin Fowler's articles on testing and refactoring
 - The repository's existing test files in `pwa/` directory:
-  - `test-headlines.js` - Node.js test runner with console output
-  - `test-headlines.html` - Browser-based test interface
+  - `test-headlines.js` - Node.js test runner with console output (tests headline text filtering and validation)
+  - `test-headlines.html` - Browser-based test interface (tests headline text filtering and validation)
 
 ## Compliance
 
