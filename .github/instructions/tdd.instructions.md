@@ -147,9 +147,15 @@ function testValidHeadlines() {
 
 ### Running Tests
 
+**Current repository tests:**
 - Run headline tests: `node pwa/test-headlines.js`
 - Run tests with AI filtering: `node pwa/test-headlines.js --ai`
 - View tests in browser: Open `pwa/test-headlines.html` in a browser
+
+**For new code:**
+- Follow the existing test patterns in the repository
+- Run tests before and after making changes
+- Add appropriate test commands to documentation as needed
 
 ## TDD for Different Scenarios
 
@@ -280,7 +286,9 @@ function testValidHeadlines() {
 
 - Kent Beck's "Test Driven Development: By Example"
 - Martin Fowler's articles on testing and refactoring
-- The repository's existing test files (test-headlines.js) as examples
+- The repository's existing test files in `pwa/` directory:
+  - `test-headlines.js` - Node.js test runner with console output
+  - `test-headlines.html` - Browser-based test interface
 
 ## Compliance
 
