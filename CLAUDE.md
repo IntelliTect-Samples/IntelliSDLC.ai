@@ -48,9 +48,13 @@ GmailNewsClient/
 | Testing | xUnit, Moq, FluentAssertions |
 | CLI | `GmailSynthesizer.Cli` project |
 
+## Shell Preference
+
+Use **PowerShell** as the default shell for all commands. If PowerShell is not available, fall back to bash.
+
 ## Essential Commands
 
-```bash
+```powershell
 # Build
 dotnet build --no-restore
 
