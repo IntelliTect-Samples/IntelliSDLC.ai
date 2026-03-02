@@ -269,6 +269,9 @@ Maintain a living product specification in `product-spec.md`.
 - **GitKraken MCP tools are acceptable** when they provide functionality not easily
   available via the Git CLI (e.g., GitKraken workspace listing, GitLens-specific
   features like launchpad, start-work, or commit composer).
+  - **Prefer PowerShell over Python.** When executing commands, writing scripts, or
+  performing ad-hoc tasks (file manipulation, HTTP requests, JSON processing, etc.),
+  favor using PowerShell over Python.
 
 ## Branching Strategy
 

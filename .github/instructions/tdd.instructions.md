@@ -286,9 +286,9 @@ function testValidHeadlines() {
 
 - Kent Beck's "Test Driven Development: By Example"
 - Martin Fowler's articles on testing and refactoring
-- The repository's existing test files in `pwa/` directory:
-  - `test-headlines.js` - Node.js test runner with console output (tests headline text filtering and validation)
-  - `test-headlines.html` - Browser-based test interface (tests headline text filtering and validation)
+- C#/.NET test files: `tests/unit/` — xUnit tests mirroring `src/GmailSynthesizer/`
+
+> **Note**: The `pwa/` directory exists in the repo but is not part of the active C# application. Ignore it when working on the main codebase.
 
 ## Compliance
 
