@@ -24,6 +24,31 @@ existing code and community standards.
 - **YAGNI** — You Aren't Gonna Need It
 - **DRY** — Don't Repeat Yourself
 
+## Autonomous Execution
+
+Phases are classified as **interactive** or **autonomous**:
+
+| Phases | Mode | Behavior |
+|---|---|---|
+| 0 – Create Branch | Autonomous | Proceed without asking |
+| 1 – Brainstorm | Interactive | Requires user approval of design |
+| 2 – Write Plan | Interactive | Requires user approval of plan |
+| 3–9 (TDD → Re-Review) | **Autonomous** | Execute continuously without pausing |
+
+**Once the user approves the plan (end of Phase 2), execute Phases 3 through 9 as a
+single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
+status, or wait for input. When a phase's exit criteria are met, immediately begin the
+next phase in the same response.
+
+**Only pause autonomous execution when:**
+- A test or build fails after 3 consecutive fix attempts (escalate to user).
+- A code review finding requires a design decision not covered by the approved plan.
+- The maximum review iteration limit (3) is reached with unresolved Critical issues.
+
+**Progress reporting during autonomous execution:** Instead of pausing to show the Loop
+Status Template between phases, present it **once** at the end of the full autonomous run
+(after Phase 9 completes or when you must pause for one of the reasons above).
+
 ## The Loop
 
 ```
@@ -159,6 +184,8 @@ Follow the `@tdd` agent workflow for each task in the plan:
 
 **Exit criteria:** New test passes, all existing tests still green, lint/compile passes without errors.
 
+**→ Immediately proceed to Phase 4.**
+
 ### Phase 4 — Refactor
 
 Follow the `@refactor` agent workflow:
@@ -169,6 +196,8 @@ Follow the `@refactor` agent workflow:
 
 **Exit criteria:** No obvious duplication, all tests green, functions ≤ 20 lines, lint/compile passes without errors.
 
+**→ Immediately proceed to Phase 5.**
+
 ### Phase 5 — Functional Testing
 
 Follow the `@functional-testing` agent workflow (skip if the change is purely internal / non-user-facing):
@@ -178,6 +207,8 @@ Follow the `@functional-testing` agent workflow (skip if the change is purely in
 3. Run the tests and fix any failures.
 
 **Exit criteria:** All functional tests pass, user-facing behavior verified, lint/compile passes without errors.
+
+**→ Immediately proceed to Phase 6.**
 
 ### Phase 6 — Verify Before Completion
 
@@ -201,6 +232,8 @@ BEFORE claiming any status:
 
 **Exit criteria:** All commands run, all pass, evidence presented.
 
+**→ Immediately proceed to Phase 7.**
+
 ### Phase 7 — Code Review
 
 Invoke the `@code-review` agent (runs on a different model — `o4-mini`):
@@ -210,6 +243,8 @@ Invoke the `@code-review` agent (runs on a different model — `o4-mini`):
 3. Findings are handed back to you for fixing.
 
 **Exit criteria:** Review report received.
+
+**→ Immediately proceed to Phase 8.**
 
 ### Phase 8 — Fix Review Issues
 
@@ -222,6 +257,8 @@ For each finding from the code review:
 5. If a fix requires new behavior, loop back to Phase 3 (write a test first).
 
 **Exit criteria:** All Critical and Important issues resolved, tests green, lint/compile passes without errors.
+
+**→ Immediately proceed to Phase 9.**
 
 ### Phase 9 — Re-Review
 
@@ -302,7 +339,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 1. **Always create a feature branch first** — verify you are NOT on `main` before making any changes. If on `main`, create a branch immediately.
 2. **Always brainstorm and plan first** — never jump straight into coding.
-3. **Track progress** — maintain a checklist of which phases are complete in the current iteration.
+3. **Execute phases 3–9 autonomously** — once the plan is approved, run through TDD, Refactor, Functional Testing, Verification, Code Review, Fix, and Re-Review as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
    - After PLAN: `docs(plan): add <feature> implementation plan`
