@@ -33,9 +33,9 @@ Phases are classified as **interactive** or **autonomous**:
 | 0 – Create Branch | Autonomous | Proceed without asking |
 | 1 – Brainstorm | Interactive | Requires user approval of design |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
-| 3–9 (TDD → Re-Review) | **Autonomous** | Execute continuously without pausing |
+| 3–10 (TDD → Dry Run) | **Autonomous** | Execute continuously without pausing |
 
-**Once the user approves the plan (end of Phase 2), execute Phases 3 through 9 as a
+**Once the user approves the plan (end of Phase 2), execute Phases 3 through 10 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
 status, or wait for input. When a phase's exit criteria are met, immediately begin the
 next phase in the same response.
@@ -44,10 +44,11 @@ next phase in the same response.
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
 - The maximum review iteration limit (3) is reached with unresolved Critical issues.
+- The dry run smoke test fails (Phase 10) — report failure and pause for user decision.
 
 **Progress reporting during autonomous execution:** Instead of pausing to show the Loop
 Status Template between phases, present it **once** at the end of the full autonomous run
-(after Phase 9 completes or when you must pause for one of the reasons above).
+(after Phase 10 completes or when you must pause for one of the reasons above).
 
 ## The Loop
 
@@ -72,7 +73,7 @@ Status Template between phases, present it **once** at the end of the full auton
 |        |                                                     |
 |   8. Fix issues from review                                  |
 |        |                                                     |
-|   Review clean? -- YES -> Done                               |
+|   Review clean? -- YES -> 10. Dry Run Smoke Test -> Done     |
 |        |                                                     |
 |        NO                                                    |
 |        |                                                     |
@@ -264,9 +265,47 @@ For each finding from the code review:
 
 After fixes are applied, invoke `@code-review` again to verify:
 
-- If the review comes back **PASS** → the loop is complete.
+- If the review comes back **PASS** → proceed to Phase 10 (Dry Run Smoke Test).
 - If **NEEDS CHANGES** → loop back to Phase 4 (Refactor) and continue.
 - Maximum **3 review iterations** to avoid infinite loops. After 3 rounds, present remaining items to the user for a decision.
+
+**→ When PASS, immediately proceed to Phase 10.**
+
+### Phase 10 — Dry Run Smoke Test
+
+After the code review passes, run the CLI in dry-run mode against local sample emails to verify the full pipeline produces a valid digest preview.
+
+1. **Run the dry run command:**
+
+   ```bash
+   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run
+   ```
+
+2. **Read the full console output** and check the exit code.
+   - Exit code 0 = success.
+   - Any non-zero exit code = failure — report the error output and **pause for user decision**.
+
+3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
+
+4. **Present results as a markdown table:**
+
+   ```markdown
+   ## Dry Run Results
+
+   **Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
+
+   | # | Headline | Source | Category | Blurb | Article URL |
+   |---|----------|--------|----------|-------|-------------|
+   | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+   ```
+
+5. **On failure:** Report the failure clearly — include the command, exit code, and relevant error output. **Pause for user decision** (do not attempt to auto-fix).
+
+**Prerequisites:**
+- `SampleEmails/` directory at the repo root with `.eml` files.
+- Azure OpenAI credentials configured (for AI categorization). If credentials are not available, note the skip reason and proceed — do not fail the loop for missing credentials.
+
+**Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
 
 ---
 
@@ -339,7 +378,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 1. **Always create a feature branch first** — verify you are NOT on `main` before making any changes. If on `main`, create a branch immediately.
 2. **Always brainstorm and plan first** — never jump straight into coding.
-3. **Execute phases 3–9 autonomously** — once the plan is approved, run through TDD, Refactor, Functional Testing, Verification, Code Review, Fix, and Re-Review as one continuous flow without pausing for user input.
+3. **Execute phases 3–10 autonomously** — once the plan is approved, run through TDD, Refactor, Functional Testing, Verification, Code Review, Fix, Re-Review, and Dry Run as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
    - After PLAN: `docs(plan): add <feature> implementation plan`
@@ -372,29 +411,33 @@ Use this template to report progress to the user at each phase:
 | Verification | Done/In Progress/Pending | <details> |
 | Code Review | Done/In Progress/Pending | <details> |
 | Fix Review Issues | Done/In Progress/Pending | <details> |
+| Dry Run Smoke Test | Done/In Progress/Pending/Skipped | <details> |
 
 **Review verdict:** PASS / NEEDS CHANGES / CRITICAL ISSUES
+**Dry run:** <count> headlines extracted / Failed / Skipped
 **Next action:** <what happens next>
 ```
 
 ## When the Loop Is Complete
 
-Once the review returns **PASS**:
+Once Phase 10 (Dry Run Smoke Test) finishes:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
-3. **Update the product specification** — add or revise entries in `product-spec.md` to reflect the new or changed behavior. Include:
+3. **Present the dry run headline table** (from Phase 10) so the user can visually verify the digest output.
+4. **Update the product specification** — add or revise entries in `product-spec.md` to reflect the new or changed behavior. Include:
    - Feature name and description.
    - Acceptance criteria (derived from the tests written).
    - Any UI flows, CLI usage, or API surface changes.
    - Known limitations discovered during development.
    - Commit with: `docs(spec): add <feature> specification`.
-4. Present a summary to the user listing:
+5. Present a summary to the user listing:
    - The feature branch name.
    - What was implemented.
    - What was refactored.
    - What functional tests were added.
    - How many review iterations it took.
+   - Dry run result (number of headlines extracted, or skip reason).
    - What was added to the product spec.
-5. Suggest creating a pull request to merge the feature branch into `main`.
-6. **Do NOT merge to `main` directly** — the user decides when to merge.
+6. Suggest creating a pull request to merge the feature branch into `main`.
+7. **Do NOT merge to `main` directly** — the user decides when to merge.
