@@ -371,7 +371,27 @@ Add or revise entries in `product-spec.md` to reflect the new or changed behavio
 - If no issue was created earlier, create one now and link it.
 - **Do NOT merge to `main` directly** — the user decides when to merge.
 
-#### Step 4: Request Copilot review
+#### Step 4: Verify CI workflows pass
+
+After creating/updating the PR, CI workflows should trigger automatically. Verify they pass:
+
+```bash
+# Check workflow run status for the PR's head branch:
+gh run list --branch <branch-name> --limit 5
+# View details of a specific run:
+gh run view <run-id>
+```
+
+- If workflows did **not** trigger automatically, kick them off manually:
+  ```bash
+  gh workflow run ci.yml --ref <branch-name>
+  ```
+- If a workflow **fails**, inspect the logs (`gh run view <run-id> --log-failed`),
+  fix the issue, commit, push, and wait for the workflow to re-run.
+- If fixes are non-trivial → route back to **Phase 3** (TDD).
+- All CI checks must be green before proceeding.
+
+#### Step 5: Request Copilot review
 
 Request a GitHub Copilot review. The `@` prefix is required — `copilot` without `@` will fail:
 
@@ -381,7 +401,7 @@ gh pr edit <pr-number> --add-reviewer "@copilot"
 
 Wait for the review to complete (poll with `gh pr view <pr-number>` or check review status).
 
-#### Step 5: Address review feedback (internal loop)
+#### Step 6: Address review feedback (internal loop)
 
 For each issue found by Copilot:
 
@@ -413,8 +433,8 @@ For each issue found by Copilot:
 If Copilot review issues require code changes beyond formatting → route back to **Phase 3**
 (TDD) to ensure the full quality cycle covers the fixes.
 
-**Exit criteria:** PR created with issue linked, Copilot review passes with zero issues,
-product spec updated.
+**Exit criteria:** PR created with issue linked, CI workflows green, Copilot review passes
+with zero issues, product spec updated.
 
 **→ Proceed to Phase 9 (cleanup happens after the PR merges).**
 
