@@ -30,8 +30,8 @@ Phases are classified as **interactive** or **autonomous**:
 
 | Phases | Mode | Behavior |
 |---|---|---|
-| 0 – Create Worktree | Autonomous | Proceed without asking |
-| 1 – Brainstorm | Interactive | Requires user approval of design |
+| 0 – Brainstorm | Interactive | Requires user approval of design |
+| 1 – Create Worktree | Autonomous | Proceed without asking |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
 | 3–9 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
 
@@ -58,11 +58,11 @@ Status Template between phases, present it **once** at the end of the full auton
 ```
 +--------------------------------------------------------------+
 |                                                              |
-|   0. Create worktree on feature branch                       |
+|   0. Brainstorm (design saved to GitHub issue)               |
 |        |                                                     |
-|   1. Brainstorm (refine design before coding)                |
+|   1. Create worktree on feature branch                       |
 |        |                                                     |
-|   2. Write Plan + Create GitHub Issue                        |
+|   2. Write Plan (read issue, break into tasks)               |
 |        |                                                     |
 |   ┌─── 3. TDD (Red -> Green for each task)                   |
 |   │        |                                                  |
@@ -88,9 +88,32 @@ Status Template between phases, present it **once** at the end of the full auton
 
 ## Phase Details
 
-### Phase 0 — Create Worktree on Feature Branch
+### Phase 0 — Brainstorm (Design Before Code)
 
-**Never commit directly to `main`.** Before any code changes, create a feature branch
+Follow the `@brainstorming` agent workflow:
+
+**Do NOT write any code or invoke any implementation until you have a design the user has approved.**
+
+1. **Explore project context** — check files, docs, recent commits to understand current state.
+2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
+3. **Propose 2–3 approaches** — with trade-offs and your recommendation.
+4. **Present design** — in sections scaled to complexity, get user approval after each section.
+5. **Save design to a GitHub issue** — create an issue with the feature name as the title.
+   Include the approved design (goal, approach, key decisions) in the issue body. This issue
+   will also serve as the tracking mechanism throughout the Dev Loop.
+6. Record the issue number — it will be used when creating the PR in Phase 9.
+
+**Key principles:**
+- One question at a time — don't overwhelm with multiple questions.
+- Multiple choice preferred — easier to answer than open-ended.
+- YAGNI ruthlessly — remove unnecessary features from all designs.
+- Explore alternatives — always propose 2–3 approaches before settling.
+
+**Exit criteria:** User has approved the design. GitHub issue created with the design and issue number recorded.
+
+### Phase 1 — Create Worktree on Feature Branch
+
+**Never commit directly to `main`.** Before any file changes, create a feature branch
 and work in a dedicated **git worktree** to keep the main working tree clean:
 
 1. Verify `main` is clean (`git status`).
@@ -120,29 +143,10 @@ stash/pop risks when switching between tasks and keeping `main` always clean.
 
 **Exit criteria:** You are working inside a `.worktrees/` directory on a feature branch, not `main`.
 
-### Phase 1 — Brainstorm (Design Before Code)
-
-Follow the `@brainstorming` agent workflow:
-
-**Do NOT write any code or invoke any implementation until you have a design the user has approved.**
-
-1. **Explore project context** — check files, docs, recent commits to understand current state.
-2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria.
-3. **Propose 2–3 approaches** — with trade-offs and your recommendation.
-4. **Present design** — in sections scaled to complexity, get user approval after each section.
-5. **Save design doc** — write to `docs/plans/YYYY-MM-DD-<topic>-design.md` and commit.
-
-**Key principles:**
-- One question at a time — don't overwhelm with multiple questions.
-- Multiple choice preferred — easier to answer than open-ended.
-- YAGNI ruthlessly — remove unnecessary features from all designs.
-- Explore alternatives — always propose 2–3 approaches before settling.
-
-**Exit criteria:** User has approved the design. Design doc saved and committed.
-
 ### Phase 2 — Write Implementation Plan
 
-Break the approved design into bite-sized tasks (2–5 minutes each). Each task must include:
+Using the design from the GitHub issue (created in Phase 0), break the approved design
+into bite-sized tasks (2–5 minutes each). Each task must include:
 - Exact file paths to create or modify
 - Complete code (not "add validation" — show the actual code)
 - Exact test commands with expected output
@@ -189,14 +193,10 @@ Expected: PASS
 
 Save plan to `docs/plans/YYYY-MM-DD-<feature-name>.md`.
 
-**After the user approves the plan, create a GitHub issue to track the implementation:**
+**After the user approves the plan, update the GitHub issue** (created in Phase 0) with
+a task checklist derived from the plan tasks, and a link to the plan document.
 
-1. Create an issue with the feature name as the title.
-2. Include the plan's goal in the issue body, a task checklist derived from the plan tasks,
-   and a link to the plan document.
-3. Record the issue number — it will be used when creating the PR (see "When the Loop Is Complete").
-
-**Exit criteria:** Implementation plan saved with all tasks documented. User has approved the plan. GitHub issue created and issue number recorded.
+**Exit criteria:** Implementation plan saved with all tasks documented. User has approved the plan. GitHub issue updated with task checklist.
 
 ### Phase 3 — TDD (Red → Green)
 
@@ -456,8 +456,8 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 ## Execution Guidelines
 
-1. **Always create a worktree first** — verify you are NOT on `main` and are inside a `.worktrees/` directory before making any changes. If on `main`, create a worktree immediately.
-2. **Always brainstorm and plan first** — never jump straight into coding.
+1. **Always brainstorm first** — never jump straight into coding. Save the design to a GitHub issue.
+2. **Create a worktree before writing files** — verify you are NOT on `main` and are inside a `.worktrees/` directory before making any file changes. If on `main`, create a worktree immediately.
 3. **Execute phases 3–9 autonomously** — once the plan is approved, run through the inner loop (TDD → Refactor → Functional Testing → Verification → Code Review+Fix) repeating until clean, then Dry Run and PR as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
@@ -484,8 +484,8 @@ Use this template to report progress to the user at each phase:
 
 | Phase | Status | Notes |
 |---|---|---|
+| Brainstorm + Issue | Done/In Progress/Pending | <details> |
 | Create Worktree | Done/In Progress/Pending | <details> |
-| Brainstorm | Done/In Progress/Pending | <details> |
 | Write Plan + Issue | Done/In Progress/Pending | <details> |
 | TDD (Red → Green) | Done/In Progress/Pending | <details> |
 | Refactor | Done/In Progress/Pending | <details> |

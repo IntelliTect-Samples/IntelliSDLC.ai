@@ -72,7 +72,7 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Worktree → Brainstorm → Plan+Issue → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
 ```
 
 Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 loop until the code review

@@ -330,7 +330,7 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
 | `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
-| `dev-loop.agent.md` | Orchestrator: Worktree → Brainstorm → Plan → [TDD → Refactor → Test → Verify → Review+Fix]* → Dry Run → PR |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Test → Verify → Review+Fix]* → Dry Run → PR |
 
 ### Development Workflow
 
@@ -339,7 +339,7 @@ all other agents in order. Phases 3–7 form an inner loop that repeats until th
 code review is clean.
 
 ```
-Worktree → Brainstorm → Plan+Issue → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
 ```
 
 Use `@brainstorming` when exploring a new idea before committing to implementation.
