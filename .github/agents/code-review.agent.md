@@ -1,6 +1,6 @@
 ---
 name: "Code Review"
-description: "Review production and test code using a different LLM for an independent perspective. Reports issues by severity — Critical blocks progress, Important must fix before proceeding. Language-aware."
+description: "Review and fix production and test code using a different LLM for an independent perspective. Runs static analysis, reviews by severity (Critical/Important/Suggestions), and directly applies fixes. Language-aware."
 model: "o4-mini"
 tools: ["codebase", "filesystem", "search", "problems", "findTestFiles", "runTests", "runCommands", "terminalLastCommand", "testFailure", "changes"]
 ---

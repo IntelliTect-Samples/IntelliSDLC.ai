@@ -41,6 +41,10 @@ single uninterrupted flow.** Do NOT pause between phases to ask for confirmation
 status, or wait for input. When a phase's exit criteria are met, immediately begin the
 next phase in the same response.
 
+**Exception:** Phase 8 involves external async operations (CI runs, Copilot review).
+Waiting/polling for these external results is expected and does not count as "pausing".
+Continue autonomously through the Phase 8 internal loop without asking the user.
+
 **Phases 3–8 use an expanding loop pattern.** Each phase acts as a quality gate. When a
 phase fails, execution routes back to **Phase 3 (TDD)** — the entry point for all fixes.
 As each successive gate passes, the loop expands to include the next phase. The loop
@@ -411,7 +415,9 @@ Wait for the review to complete (poll with `gh pr view <pr-number>` or check rev
 For each issue found by Copilot:
 
 1. **Fix the issue** in the code.
-2. **Resolve the review thread** using the GraphQL API:
+2. After fixing all issues, **commit and push** the fixes.
+3. **Resolve the review threads** using the GraphQL API (after the fix is pushed, so
+   the resolution corresponds to visible code in the PR):
    ```bash
    # Get thread IDs for unresolved threads:
    gh api graphql -f query='query {
@@ -431,7 +437,6 @@ For each issue found by Copilot:
      }
    }'
    ```
-3. After fixing all issues, **commit and push** the fixes.
 4. **Re-request Copilot review** (`gh pr edit <pr-number> --add-reviewer "@copilot"`).
 5. **Repeat** until the Copilot review returns zero issues.
 
