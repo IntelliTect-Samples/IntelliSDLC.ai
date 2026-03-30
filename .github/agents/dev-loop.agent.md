@@ -328,7 +328,12 @@ After the code review passes, run the CLI in dry-run mode against local sample e
    | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
    ```
 
-5. **On failure:** Report the failure clearly — include the command, exit code, and relevant error output. **Pause for user decision** (do not attempt to auto-fix). This includes missing required configuration such as Azure OpenAI credentials.
+5. **On failure:** Report the failure clearly — include the command, exit code, and relevant
+   error output. Distinguish between:
+   - **Code-related failures** (e.g., pipeline logic errors, incorrect output) → route back
+     to **Phase 3** (TDD) to fix via the normal quality cycle.
+   - **Environmental failures** (e.g., missing Azure OpenAI credentials, missing config files,
+     infrastructure issues) → **pause for user decision** (do not attempt to auto-fix).
 
 **Prerequisites:**
 - `SampleEmails/` directory at the repo root with `.eml` files.
@@ -336,7 +341,7 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 
 **Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
 
-**→ If dry run fails → back to Phase 3 (unless failure is environmental, e.g., missing credentials — pause for user). If passes → proceed to Phase 8.**
+**→ If dry run fails due to code issues → back to Phase 3. If environmental failure → pause for user. If passes → proceed to Phase 8.**
 
 ### Phase 8 — PR + Copilot Review
 
