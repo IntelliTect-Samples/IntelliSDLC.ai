@@ -34,7 +34,7 @@ Phases are classified as **interactive** or **autonomous**:
 | 1 – Create Worktree | Autonomous | Proceed without asking |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
 | 3–8 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
-| 9 – Cleanup | **Autonomous** | Runs after PR is merged or closed |
+| 9 – Cleanup | **Autonomous** | Runs after PR is merged or closed. Pauses for user confirmation only if force-delete (`-D`) is needed for an unmerged branch. |
 
 **Once the user approves the plan (end of Phase 2), execute Phases 3 through 8 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
@@ -50,7 +50,7 @@ exits only when Phase 8 (PR + Copilot Review) passes with zero issues.
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
 - The maximum loop iteration limit (3) is reached with unresolved Critical issues.
-- The dry run smoke test fails (Phase 7) — report failure and pause for user decision.
+- The dry run smoke test (Phase 7) fails due to environmental or configuration issues — report failure and pause for user decision. Code-related dry-run failures route back to Phase 3 per Phase 7 guidelines.
 
 **Progress reporting during autonomous execution:** Instead of pausing to show the Loop
 Status Template between phases, present it **once** at the end of the full autonomous run

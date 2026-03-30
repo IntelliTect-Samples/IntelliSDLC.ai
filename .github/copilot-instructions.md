@@ -234,13 +234,16 @@ README, and build files.
 
 | Layer | Tool | Location |
 |---|---|---|
-| Unit tests | Vitest | `tests/unit/**/*.test.ts` |
-| Functional / E2E | Playwright | `tests/e2e/**/*.spec.ts` |
+| Unit tests | Vitest (when configured) | `tests/unit/**/*.test.ts` |
+| Functional / E2E | Playwright (when configured) | `tests/e2e/**/*.spec.ts` |
 
 - Run tests with:
   ```bash
-  npm run type-check && npx vitest run
-  npx playwright test
+  npm run type-check
+  npm test
+  # When Vitest/Playwright are configured, also run:
+  # npx vitest run
+  # npx playwright test
   ```
 
 ## Product Specification
