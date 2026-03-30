@@ -126,12 +126,12 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
    ```bash
    git checkout main
    git pull
-   git worktree add .worktrees/<short-description> -b <agent-name>/<type>/<short-description>
+   git worktree add .worktrees/<short-description> -b <agent-name>/<type>/<short-description> main
    cd .worktrees/<short-description>
    ```
    Example:
    ```bash
-   git worktree add .worktrees/content-extraction -b Opus.4.6/feat/content-extraction
+   git worktree add .worktrees/content-extraction -b Opus.4.6/feat/content-extraction main
    cd .worktrees/content-extraction
    ```
 5. All subsequent work in this loop happens **inside the worktree directory**.
@@ -262,7 +262,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 **TypeScript:**
 ```bash
 npm run type-check                  # Type check (configured in package.json)
-npm run lint                        # Linter (if configured)
+npm run lint                        # Additional type-check (currently aliases type-check in package.json)
 # Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
 ```
 

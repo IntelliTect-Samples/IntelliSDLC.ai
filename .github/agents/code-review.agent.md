@@ -61,7 +61,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 **TypeScript:**
 ```bash
 npm run type-check                   # Type errors (configured for this repo)
-npm run lint                         # Linter
+npm run lint                         # Additional type-check (currently aliases type-check)
 # Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
 ```
 
@@ -121,7 +121,7 @@ git diff --name-only origin/main...HEAD
 | **Dependency injection** | No `new` of services in production code; use constructor injection. |
 | **Build** | `dotnet build --no-restore` completes without errors or warnings. |
 | **Tests** | `dotnet test --no-build --verbosity normal` passes. |
-| **Format** | `dotnet format` fixes formatting; verify with `dotnet build`. |
+| **Format** | `dotnet format` fixes formatting; verify cleanliness with `dotnet format --verify-no-changes` (or `git diff --exit-code`). |
 
 ---
 

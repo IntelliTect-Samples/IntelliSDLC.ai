@@ -239,7 +239,7 @@ README, and build files.
 
 - Run tests with:
   ```bash
-  npx tsc && npx vitest run
+  npm run type-check && npx vitest run
   npx playwright test
   ```
 
