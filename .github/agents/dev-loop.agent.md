@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Orchestrate the full development cycle: Brainstorm -> Plan -> TDD -> Refactor -> Functional Test -> Code Review -> Fix -> Repeat until all issues resolve. Language-aware."
+description: "Orchestrate the full development cycle: Brainstorm -> Plan -> TDD -> Refactor -> Functional Test -> Verify -> Code Review+Fix (loop) -> Dry Run -> PR. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -30,77 +30,95 @@ Phases are classified as **interactive** or **autonomous**:
 
 | Phases | Mode | Behavior |
 |---|---|---|
-| 0 – Create Branch | Autonomous | Proceed without asking |
+| 0 – Create Worktree | Autonomous | Proceed without asking |
 | 1 – Brainstorm | Interactive | Requires user approval of design |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
-| 3–10 (TDD → Dry Run) | **Autonomous** | Execute continuously without pausing |
+| 3–9 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
 
-**Once the user approves the plan (end of Phase 2), execute Phases 3 through 10 as a
+**Once the user approves the plan (end of Phase 2), execute Phases 3 through 9 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
 status, or wait for input. When a phase's exit criteria are met, immediately begin the
 next phase in the same response.
 
+**Phases 3–7 form an inner loop** that repeats until the code review (Phase 7) finds
+no Critical or Important issues. Only then does execution proceed to Phase 8 (Dry Run).
+
 **Only pause autonomous execution when:**
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
-- The maximum review iteration limit (3) is reached with unresolved Critical issues.
-- The dry run smoke test fails (Phase 10) — report failure and pause for user decision.
+- The maximum inner-loop iteration limit (3) is reached with unresolved Critical issues.
+- The dry run smoke test fails (Phase 8) — report failure and pause for user decision.
 
 **Progress reporting during autonomous execution:** Instead of pausing to show the Loop
 Status Template between phases, present it **once** at the end of the full autonomous run
-(after Phase 10 completes or when you must pause for one of the reasons above).
+(after Phase 9 completes or when you must pause for one of the reasons above).
 
 ## The Loop
 
 ```
 +--------------------------------------------------------------+
 |                                                              |
-|   0. Create feature branch (never write to main)            |
+|   0. Create worktree on feature branch                       |
 |        |                                                     |
 |   1. Brainstorm (refine design before coding)                |
 |        |                                                     |
-|   2. Write Plan (bite-sized tasks, 2-5 min each)             |
+|   2. Write Plan + Create GitHub Issue                        |
 |        |                                                     |
-|   3. TDD (Red -> Green for each task)                        |
+|   ┌─── 3. TDD (Red -> Green for each task)                   |
+|   │        |                                                  |
+|   │    4. Refactor                                            |
+|   │        |                                                  |
+|   │    5. Functional Testing (if user-facing)                 |
+|   │        |                                                  |
+|   │    6. Verify Before Completion (evidence, not claims)     |
+|   │        |                                                  |
+|   │    7. Code Review + Fix (static analysis + AI review)     |
+|   │        |                                                  |
+|   │    Review clean? -- NO --> Loop back to step 3            |
+|   └────────────────────────────────────────┘                  |
 |        |                                                     |
-|   4. Refactor                                                |
+|        YES                                                   |
 |        |                                                     |
-|   5. Functional Testing (if user-facing)                     |
+|   8. Dry Run Smoke Test                                      |
 |        |                                                     |
-|   6. Verify Before Completion (evidence, not claims)         |
-|        |                                                     |
-|   7. Code Review (different LLM via @code-review)            |
-|        |                                                     |
-|   8. Fix issues from review                                  |
-|        |                                                     |
-|   Review clean? -- YES -> 10. Dry Run Smoke Test -> Done     |
-|        |                                                     |
-|        NO                                                    |
-|        |                                                     |
-|   Loop back to step 4                                        |
+|   9. PR Creation + Branch Cleanup                            |
 |                                                              |
 +--------------------------------------------------------------+
 ```
 
 ## Phase Details
 
-### Phase 0 — Create Feature Branch
+### Phase 0 — Create Worktree on Feature Branch
 
-**Never commit directly to `main`.** Before any code changes, create a feature branch:
+**Never commit directly to `main`.** Before any code changes, create a feature branch
+and work in a dedicated **git worktree** to keep the main working tree clean:
 
-1. Verify you are on `main` and it is clean (`git status`).
-2. Determine your agent/model name (e.g., `Opus.4.6`).
-3. Create and switch to a new branch: `git checkout -b <agent-name>/<type>/<short-description>` (e.g., `Opus.4.6/feat/content-extraction`, `Opus.4.6/fix/digest-template`).
-4. All subsequent work in this loop happens on this branch.
-5. If a branch for this feature already exists, switch to it instead of creating a new one.
+1. Verify `main` is clean (`git status`).
+2. Pull latest: `git pull`.
+3. Determine your agent/model name (e.g., `Opus.4.6`).
+4. Create the feature branch and worktree:
+   ```bash
+   git checkout main
+   git pull
+   git worktree add .worktrees/<short-description> -b <agent-name>/<type>/<short-description>
+   cd .worktrees/<short-description>
+   ```
+   Example:
+   ```bash
+   git worktree add .worktrees/content-extraction -b Opus.4.6/feat/content-extraction
+   cd .worktrees/content-extraction
+   ```
+5. All subsequent work in this loop happens **inside the worktree directory**.
+6. If a branch for this feature already exists, add a worktree for it instead:
+   ```bash
+   git worktree add .worktrees/<short-description> <existing-branch-name>
+   cd .worktrees/<short-description>
+   ```
 
-```bash
-git checkout main
-git pull
-git checkout -b Opus.4.6/feat/<feature-name>
-```
+**Why worktrees?** They isolate feature work from the main working tree, avoiding
+stash/pop risks when switching between tasks and keeping `main` always clean.
 
-**Exit criteria:** You are on a feature branch, not `main`.
+**Exit criteria:** You are working inside a `.worktrees/` directory on a feature branch, not `main`.
 
 ### Phase 1 — Brainstorm (Design Before Code)
 
@@ -242,43 +260,65 @@ BEFORE claiming any status:
 
 **→ Immediately proceed to Phase 7.**
 
-### Phase 7 — Code Review
+### Phase 7 — Code Review + Fix
+
+Phase 7 combines review and fix into a single step. The goal is to be thorough enough
+that a subsequent GitHub Copilot PR review finds no additional issues.
+
+#### Step 1: Run Static Analysis
+
+Run **all** static analysis tools before the AI review. Fix any findings immediately.
+
+**C# / .NET:**
+```bash
+dotnet format --verify-no-changes   # Fix formatting issues
+dotnet build --no-restore           # Check for warnings (treat as findings)
+```
+
+**PowerShell:**
+```powershell
+Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
+```
+
+**TypeScript:**
+```bash
+npx tsc                             # Type check
+npm run lint                        # Linter (if configured)
+```
+
+If static analysis produces findings, fix them now and re-run until clean.
+
+#### Step 2: AI Code Review
 
 Invoke the `@code-review` agent (runs on a different model — `o4-mini`):
 
-1. The review agent examines all changed files.
-2. It produces a structured report with categorized findings.
-3. Findings are handed back to you for fixing.
+1. The review agent examines all changed files (`git diff --name-only origin/main...HEAD`).
+2. It reviews: correctness, code quality, test quality, security, YAGNI compliance.
+3. It produces a structured report with categorized findings (Critical / Important / Suggestions).
+4. **The review agent fixes all Critical and Important findings directly** — it does not
+   just report them. It makes the code changes, runs tests, and verifies the fixes.
+5. Suggestions are applied when low-effort and high-value.
 
-**Exit criteria:** Review report received.
+#### Step 3: Verify After Fixes
 
-**→ Immediately proceed to Phase 8.**
+After all review fixes are applied:
 
-### Phase 8 — Fix Review Issues
+1. Run the full test suite — all tests must pass.
+2. Run static analysis again — must be clean.
+3. Run `dotnet format --verify-no-changes` (or equivalent) — must pass.
 
-For each finding from the code review:
+#### Inner Loop Decision
 
-1. Address **Critical** issues immediately — these are blockers.
-2. Address **Important** issues — these improve quality significantly.
-3. Apply **Suggestions** when they are low-effort and high-value.
-4. Run the full test suite after each fix.
-5. If a fix requires new behavior, loop back to Phase 3 (write a test first).
+- **Review found no Critical or Important issues** → exit the inner loop, proceed to Phase 8.
+- **Review found and fixed issues** → loop back to **Phase 3** (TDD) to ensure the fixes
+  haven't introduced regressions and the full quality cycle is re-applied.
+- **Maximum 3 inner-loop iterations.** After 3 rounds, present remaining items to the user
+  for a decision.
 
-**Exit criteria:** All Critical and Important issues resolved, tests green, lint/compile passes without errors.
+**Exit criteria:** Code review is clean (no Critical or Important findings), all tests green,
+static analysis clean, lint/format clean.
 
-**→ Immediately proceed to Phase 9.**
-
-### Phase 9 — Re-Review
-
-After fixes are applied, invoke `@code-review` again to verify:
-
-- If the review comes back **PASS** → proceed to Phase 10 (Dry Run Smoke Test).
-- If **NEEDS CHANGES** → loop back to Phase 4 (Refactor) and continue.
-- Maximum **3 review iterations** to avoid infinite loops. After 3 rounds, present remaining items to the user for a decision.
-
-**→ When PASS, immediately proceed to Phase 10.**
-
-### Phase 10 — Dry Run Smoke Test
+### Phase 8 — Dry Run Smoke Test
 
 After the code review passes, run the CLI in dry-run mode against local sample emails to verify the full pipeline produces a valid digest preview.
 
@@ -313,6 +353,39 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 - All required configuration (including Azure OpenAI credentials) must be present. Missing configuration is a failure — the CLI will exit with a non-zero exit code and display details about what is missing.
 
 **Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
+
+**→ Immediately proceed to Phase 9.**
+
+### Phase 9 — PR Creation + Branch Cleanup
+
+Create the pull request and prepare for branch cleanup after merge.
+
+1. **Update the product specification** — add or revise entries in `product-spec.md` to reflect
+   the new or changed behavior. Include:
+   - Feature name and description.
+   - Acceptance criteria (derived from the tests written).
+   - Any UI flows, CLI usage, or API surface changes.
+   - Known limitations discovered during development.
+   - Commit with: `docs(spec): add <feature> specification`.
+
+2. **Create a pull request** to merge the feature branch into `main`.
+   - Include `Closes #<issue-number>` in the PR description (using the issue created
+     in Phase 2) so that merging the PR automatically closes the tracking issue.
+   - If no issue was created earlier, create one now and link it.
+
+3. **Do NOT merge to `main` directly** — the user decides when to merge.
+
+4. **After the PR is merged or closed**, clean up:
+   ```bash
+   # Remove the worktree
+   cd <repo-root>
+   git worktree remove .worktrees/<short-description>
+   # Delete the local branch
+   git branch -d <branch-name>
+   ```
+
+**Exit criteria:** PR created with issue linked, product spec updated. Worktree and branch
+cleaned up after PR closes.
 
 ---
 
@@ -383,9 +456,9 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 ## Execution Guidelines
 
-1. **Always create a feature branch first** — verify you are NOT on `main` before making any changes. If on `main`, create a branch immediately.
+1. **Always create a worktree first** — verify you are NOT on `main` and are inside a `.worktrees/` directory before making any changes. If on `main`, create a worktree immediately.
 2. **Always brainstorm and plan first** — never jump straight into coding.
-3. **Execute phases 3–10 autonomously** — once the plan is approved, run through TDD, Refactor, Functional Testing, Verification, Code Review, Fix, Re-Review, and Dry Run as one continuous flow without pausing for user input.
+3. **Execute phases 3–9 autonomously** — once the plan is approved, run through the inner loop (TDD → Refactor → Functional Testing → Verification → Code Review+Fix) repeating until clean, then Dry Run and PR as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
    - After PLAN: `docs(plan): add <feature> implementation plan`
@@ -394,7 +467,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
    - After FUNCTIONAL TEST: `test(integration): add <feature> functional test` or `test(e2e): add <feature> functional test`
    - After REVIEW FIX: `fix(scope): address review feedback — <summary>`
 6. **Never skip the review** — every change must be independently reviewed.
-7. **Never write to `main`** — all commits go to the feature branch. Suggest a PR to merge when the loop completes.
+7. **Never write to `main`** — all commits go to the feature branch. Create a PR when the loop completes.
 8. **Verify before claiming** — run commands, read output, present evidence. No "should work" claims.
 9. **Surface blockers early** — if a review finding is ambiguous or requires a design decision, ask the user before proceeding.
 
@@ -406,19 +479,21 @@ Use this template to report progress to the user at each phase:
 ## Dev Loop — Iteration <N>
 
 **Branch:** `<branch-name>`
+**Worktree:** `.worktrees/<name>`
+**Inner loop iteration:** <N> of 3 max
 
 | Phase | Status | Notes |
 |---|---|---|
-| Feature Branch | Done/In Progress/Pending | <details> |
+| Create Worktree | Done/In Progress/Pending | <details> |
 | Brainstorm | Done/In Progress/Pending | <details> |
-| Write Plan | Done/In Progress/Pending | <details> |
+| Write Plan + Issue | Done/In Progress/Pending | <details> |
 | TDD (Red → Green) | Done/In Progress/Pending | <details> |
 | Refactor | Done/In Progress/Pending | <details> |
 | Functional Testing | Done/In Progress/Pending/Skipped | <details> |
 | Verification | Done/In Progress/Pending | <details> |
-| Code Review | Done/In Progress/Pending | <details> |
-| Fix Review Issues | Done/In Progress/Pending | <details> |
+| Code Review + Fix | Done/In Progress/Pending | <details> |
 | Dry Run Smoke Test | Done/In Progress/Pending/Skipped | <details> |
+| PR + Cleanup | Done/In Progress/Pending | <details> |
 
 **Review verdict:** PASS / NEEDS CHANGES / CRITICAL ISSUES
 **Dry run:** <count> headlines extracted / Failed / Skipped
@@ -427,33 +502,18 @@ Use this template to report progress to the user at each phase:
 
 ## When the Loop Is Complete
 
-Once Phase 10 (Dry Run Smoke Test) finishes:
+Once Phase 9 (PR Creation + Branch Cleanup) finishes:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
-3. **Present the dry run headline table** (from Phase 10) so the user can visually verify the digest output.
-4. **Update the product specification** — add or revise entries in `product-spec.md` to reflect the new or changed behavior. Include:
-   - Feature name and description.
-   - Acceptance criteria (derived from the tests written).
-   - Any UI flows, CLI usage, or API surface changes.
-   - Known limitations discovered during development.
-   - Commit with: `docs(spec): add <feature> specification`.
-5. Present a summary to the user listing:
-   - The feature branch name.
+3. **Present the dry run headline table** (from Phase 8) so the user can visually verify the digest output.
+4. Present a summary to the user listing:
+   - The feature branch name and worktree location.
    - What was implemented.
    - What was refactored.
    - What functional tests were added.
-   - How many review iterations it took.
+   - How many inner-loop iterations it took.
    - Dry run result (number of headlines extracted, or skip reason).
    - What was added to the product spec.
-6. **Create a pull request** to merge the feature branch into `main`.
-   - Include `Closes #<issue-number>` in the PR description (using the issue created
-     in Phase 2) so that merging the PR automatically closes the tracking issue.
-   - If no issue was created earlier, create one now and link it.
-7. **Do NOT merge to `main` directly** — the user decides when to merge.
-8. **After the PR is merged or closed**, clean up the local feature branch:
-   ```bash
-   git checkout main
-   git pull
-   git branch -d <branch-name>
-   ```
+   - The PR number and linked issue number.
+5. **Do NOT merge to `main` directly** — the user decides when to merge.

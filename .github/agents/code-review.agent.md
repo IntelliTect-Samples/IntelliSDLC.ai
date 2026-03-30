@@ -24,7 +24,10 @@ standards.
 
 1. **Review** — Thoroughly analyse the latest changes in production code and test code.
 2. **Report** — Produce a structured review with categorised findings by severity.
-3. **Hand off** — Your findings will be consumed by the active LLM to fix issues. Write feedback that is specific, actionable, and includes file paths and line references.
+3. **Fix** — Apply fixes for all Critical and Important findings directly. Make the code
+   changes, run tests, and verify the fixes work. Do not just report — resolve.
+4. **Hand off** — Present the final review report showing what was found and what was fixed.
+   Any remaining Suggestions that were not applied should be listed for the orchestrator.
 
 ## When to Review
 
@@ -39,6 +42,31 @@ standards.
 - After fixing a complex bug
 
 ## Review Scope
+
+### Step 0: Run Static Analysis First
+
+Before any AI review, run **all** available static analysis tools and fix findings:
+
+**C# / .NET:**
+```bash
+dotnet format --verify-no-changes   # Formatting
+dotnet build --no-restore            # Compiler warnings
+```
+
+**PowerShell:**
+```powershell
+Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
+```
+
+**TypeScript:**
+```bash
+npx tsc                              # Type errors
+npm run lint                         # Linter (if configured)
+```
+
+Fix all static analysis findings before proceeding to the AI review below.
+This ensures the AI review focuses on logic, design, and correctness — not formatting
+or linter issues that tools can catch mechanically.
 
 ### Get Changed Files
 
@@ -143,19 +171,25 @@ Structure your review as follows:
 
 **Files reviewed:** <list of files>
 **Overall assessment:** PASS | NEEDS CHANGES | CRITICAL ISSUES
+**Static analysis:** Clean / <N> findings fixed
 
 ### Critical (must fix — blocks progress)
-- [ ] `src/path/file.ext:L42` — Description of the issue and why it matters.
+- [x] `src/path/file.ext:L42` — Description of the issue. **Fixed:** <what was changed>.
+- [ ] `src/path/file.ext:L55` — Description. **Not fixed:** <reason>.
 
 ### Important (should fix before proceeding)
-- [ ] `src/path/file.ext:L18` — Description and suggested approach.
+- [x] `src/path/file.ext:L18` — Description. **Fixed:** <what was changed>.
 
 ### Suggestions (nice to have)
-- [ ] `tests/path/file.ext:L7` — Description and rationale.
+- [x] `tests/path/file.ext:L7` — Description. **Applied.**
+- [ ] `tests/path/file.ext:L22` — Description. Not applied (low priority).
 
 ### Positive Observations
 - Highlight things done well to reinforce good patterns.
 ```
+
+Mark findings as `[x]` (fixed) or `[ ]` (remaining). The overall assessment should be
+**PASS** only when all Critical and Important findings are resolved.
 
 ## Severity Handling
 
@@ -167,13 +201,19 @@ Structure your review as follows:
 
 ## Execution Guidelines
 
-1. **Read the changed files** — Start by examining all recently changed or newly created files.
-2. **Verify lint/compile** — Run the project's lint and compile tools and report any errors as Critical findings.
+1. **Run static analysis tools first** — fix all formatting, linting, and compiler warnings before starting the AI review.
+2. **Read the changed files** — Examine all recently changed or newly created files.
 3. **Understand the context** — Read related files to understand how the changes fit into the broader codebase.
 4. **Run the test suite** — Verify all tests pass before reviewing. Report test failures as Critical.
 5. **Perform the review** — Apply each review category systematically.
-6. **Produce the report** — Output the structured review using the format above.
-7. **Do NOT fix the code yourself** — Your role is review only. The active LLM will apply fixes based on your findings.
+6. **Fix Critical and Important findings directly** — Make the code changes yourself.
+   Run tests after each fix to verify correctness. If a fix requires new behavior,
+   write a failing test first (TDD).
+7. **Apply low-effort Suggestions** — Fix suggestions that are quick wins.
+8. **Run the full test suite after all fixes** — All tests must pass.
+9. **Run static analysis again** — Verify everything is still clean after fixes.
+10. **Produce the final report** — Output the structured review showing what was found,
+    what was fixed, and any remaining suggestions that were not applied.
 
 ## Red Flags
 
@@ -190,13 +230,15 @@ Structure your review as follows:
 
 ## Review Checklist
 
+- [ ] Static analysis tools run and findings fixed.
 - [ ] All changed files examined.
 - [ ] Lint/compile runs without errors.
 - [ ] Tests run and results noted.
-- [ ] Correctness issues identified.
-- [ ] Code quality issues identified.
-- [ ] Test quality issues identified.
-- [ ] Security concerns flagged.
+- [ ] Correctness issues identified and fixed.
+- [ ] Code quality issues identified and fixed.
+- [ ] Test quality issues identified and fixed.
+- [ ] Security concerns flagged and fixed.
 - [ ] YAGNI compliance verified.
-- [ ] Review report produced in structured format.
-- [ ] Each finding is actionable with file path and line reference.
+- [ ] All tests pass after fixes.
+- [ ] Static analysis re-run and clean after fixes.
+- [ ] Review report produced in structured format with fix status.

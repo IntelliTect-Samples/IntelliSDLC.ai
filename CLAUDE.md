@@ -72,10 +72,11 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Brainstorm → Plan → TDD (Red→Green→Refactor) → Functional Test → Verify → Code Review → Fix → Re-Review
+Worktree → Brainstorm → Plan+Issue → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
 ```
 
-Use `@dev-loop` to orchestrate the full cycle. See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
+Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 loop until the code review
+is clean. See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
 
 - **Plan tracking:** After a plan is approved, create a GitHub issue to track its
   implementation. Link the PR with `Closes #<issue-number>` so merging auto-closes
@@ -85,10 +86,10 @@ Use `@dev-loop` to orchestrate the full cycle. See `.github/copilot-instructions
 
 ## Branching & Commits
 
-- Never commit to `main` directly — always use a feature branch.
+- Never commit to `main` directly — always use a feature branch in a **worktree**.
+- Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch>`.
 - Branch naming: `<agent-name>/<type>/<short-description>` (e.g., `Sonnet.4.6/feat/digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
-- Git worktrees go in `.worktrees/` (already in `.gitignore`).
-- **After a PR closes** (merged or otherwise), delete the local feature branch:
-  `git checkout main && git pull && git branch -d <branch-name>`.
+- **After a PR closes**, remove the worktree and delete the local branch:
+  `git worktree remove .worktrees/<name> && git branch -d <branch-name>`.
