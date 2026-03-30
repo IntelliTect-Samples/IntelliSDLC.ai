@@ -77,6 +77,12 @@ Brainstorm → Plan → TDD (Red→Green→Refactor) → Functional Test → Ver
 
 Use `@dev-loop` to orchestrate the full cycle. See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
 
+- **Plan tracking:** After a plan is approved, create a GitHub issue to track its
+  implementation. Link the PR with `Closes #<issue-number>` so merging auto-closes
+  the issue.
+- **Autopilot mode:** When autopilot is used to implement a plan, always use the
+  Dev Loop agent (`@dev-loop`). Never skip the full quality cycle for plan work.
+
 ## Branching & Commits
 
 - Never commit to `main` directly — always use a feature branch.
@@ -84,3 +90,5 @@ Use `@dev-loop` to orchestrate the full cycle. See `.github/copilot-instructions
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
 - Git worktrees go in `.worktrees/` (already in `.gitignore`).
+- **After a PR closes** (merged or otherwise), delete the local feature branch:
+  `git checkout main && git pull && git branch -d <branch-name>`.

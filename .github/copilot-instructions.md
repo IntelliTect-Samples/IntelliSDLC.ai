@@ -281,6 +281,36 @@ Maintain a living product specification in `product-spec.md`.
 - **Git worktrees must be placed in the `.worktrees/` subdirectory** of the repo
   root (e.g., `git worktree add .worktrees/<name> <branch>`). This directory is
   already in `.gitignore`.
+- **Delete the local feature branch after its PR closes** (merged or otherwise).
+  Switch to `main`, pull, and safe-delete the branch:
+  ```bash
+  git checkout main
+  git pull
+  git branch -d <branch-name>
+  ```
+
+## Plan Tracking
+
+Every approved implementation plan must be tracked as a **GitHub issue**:
+
+- **Create the issue when the plan is approved** — before implementation begins.
+  - Title: the plan's feature name (e.g., "Content extraction pipeline").
+  - Body: the plan's goal, a task checklist derived from the plan, and a link
+    to the plan document (if saved to `docs/plans/`).
+- **Update the issue** as implementation phases complete (optional but encouraged).
+- **Link the PR to the issue** — include `Closes #<issue-number>` in the pull
+  request description so that merging the PR automatically closes the issue.
+- If a plan was created outside the Dev Loop (e.g., via `@brainstorming` or
+  manually), create the issue before or at the time the PR is opened.
+
+## Autopilot Usage
+
+- **When autopilot mode is used to implement a plan, always use the Dev Loop
+  agent (`@dev-loop`).** This ensures the full quality cycle (TDD, refactor,
+  functional test, code review) is followed — never skip it.
+- Plain autopilot without Dev Loop is acceptable only for non-plan work
+  (e.g., quick fixes, documentation-only changes, or single-file edits that
+  do not stem from an approved plan).
 
 ## Commit Messages
 

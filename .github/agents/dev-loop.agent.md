@@ -171,7 +171,14 @@ Expected: PASS
 
 Save plan to `docs/plans/YYYY-MM-DD-<feature-name>.md`.
 
-**Exit criteria:** Implementation plan saved with all tasks documented. User has approved the plan.
+**After the user approves the plan, create a GitHub issue to track the implementation:**
+
+1. Create an issue with the feature name as the title.
+2. Include the plan's goal in the issue body, a task checklist derived from the plan tasks,
+   and a link to the plan document.
+3. Record the issue number — it will be used when creating the PR (see "When the Loop Is Complete").
+
+**Exit criteria:** Implementation plan saved with all tasks documented. User has approved the plan. GitHub issue created and issue number recorded.
 
 ### Phase 3 — TDD (Red → Green)
 
@@ -439,5 +446,14 @@ Once Phase 10 (Dry Run Smoke Test) finishes:
    - How many review iterations it took.
    - Dry run result (number of headlines extracted, or skip reason).
    - What was added to the product spec.
-6. Suggest creating a pull request to merge the feature branch into `main`.
+6. **Create a pull request** to merge the feature branch into `main`.
+   - Include `Closes #<issue-number>` in the PR description (using the issue created
+     in Phase 2) so that merging the PR automatically closes the tracking issue.
+   - If no issue was created earlier, create one now and link it.
 7. **Do NOT merge to `main` directly** — the user decides when to merge.
+8. **After the PR is merged or closed**, clean up the local feature branch:
+   ```bash
+   git checkout main
+   git pull
+   git branch -d <branch-name>
+   ```
