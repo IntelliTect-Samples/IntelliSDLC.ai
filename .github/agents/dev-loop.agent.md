@@ -278,12 +278,12 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 1. **Run the dry run command:**
 
    ```bash
-   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run
+   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive
    ```
 
 2. **Read the full console output** and check the exit code.
    - Exit code 0 = success.
-   - Any non-zero exit code = failure — report the error output and **pause for user decision**.
+   - Any non-zero exit code = failure — report the error output (including any missing configuration details) and **pause for user decision**.
 
 3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
 
@@ -299,11 +299,11 @@ After the code review passes, run the CLI in dry-run mode against local sample e
    | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
    ```
 
-5. **On failure:** Report the failure clearly — include the command, exit code, and relevant error output. **Pause for user decision** (do not attempt to auto-fix).
+5. **On failure:** Report the failure clearly — include the command, exit code, and relevant error output. **Pause for user decision** (do not attempt to auto-fix). This includes missing required configuration such as Azure OpenAI credentials.
 
 **Prerequisites:**
 - `SampleEmails/` directory at the repo root with `.eml` files.
-- Azure OpenAI credentials configured (for AI categorization). If credentials are not available, note the skip reason and proceed — do not fail the loop for missing credentials.
+- All required configuration (including Azure OpenAI credentials) must be present. Missing configuration is a failure — the CLI will exit with a non-zero exit code and display details about what is missing.
 
 **Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
 
