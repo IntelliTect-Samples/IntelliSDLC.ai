@@ -49,7 +49,7 @@ Before any AI review, run **all** available static analysis tools and fix findin
 
 **C# / .NET:**
 ```bash
-dotnet format --verify-no-changes   # Formatting
+dotnet format                        # Fix formatting issues
 dotnet build --no-restore            # Compiler warnings
 ```
 
@@ -60,8 +60,9 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 
 **TypeScript:**
 ```bash
-npx tsc                              # Type errors
-npm run lint                         # Linter (if configured)
+npm run type-check                   # Type errors (configured for this repo)
+npm run lint                         # Linter
+# Or, if needed: npx tsc --project pwa/tsconfig.json
 ```
 
 Fix all static analysis findings before proceeding to the AI review below.

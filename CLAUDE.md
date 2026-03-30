@@ -78,9 +78,9 @@ Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test
 Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 loop until the code review
 is clean. See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
 
-- **Plan tracking:** After a plan is approved, create a GitHub issue to track its
-  implementation. Link the PR with `Closes #<issue-number>` so merging auto-closes
-  the issue.
+- **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
+  the design. Update it with the implementation checklist in Phase 2. Link the PR
+  with `Closes #<issue-number>` so merging auto-closes the issue.
 - **Autopilot mode:** When autopilot is used to implement a plan, always use the
   Dev Loop agent (`@dev-loop`). Never skip the full quality cycle for plan work.
 
@@ -91,5 +91,9 @@ is clean. See `.github/copilot-instructions.md` → **Agent Files** for the comp
 - Branch naming: `<agent-name>/<type>/<short-description>` (e.g., `Sonnet.4.6/feat/digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
-- **After a PR closes**, remove the worktree and delete the local branch:
-  `git worktree remove .worktrees/<name> && git branch -d <branch-name>`.
+- **After a PR closes**, clean up the worktree and local branch in this order:
+  1. Ensure your shell is **not** inside the worktree (e.g., `cd` back to the repo root).
+  2. Remove the worktree: `git worktree remove .worktrees/<name>`.
+  3. If the branch was merged, delete it safely: `git branch -d <branch-name>`.
+     - If the PR was closed **without** merging and you still want to delete the branch,
+       you must force‑delete it: `git branch -D <branch-name>` (this discards any unmerged work).

@@ -281,22 +281,36 @@ Maintain a living product specification in `product-spec.md`.
 - **Git worktrees must be placed in the `.worktrees/` subdirectory** of the repo
   root (e.g., `git worktree add .worktrees/<name> <branch>`). This directory is
   already in `.gitignore`.
-- **Delete the local feature branch after its PR closes** (merged or otherwise).
-  Switch to `main`, pull, and safe-delete the branch:
-  ```bash
-  git checkout main
-  git pull
-  git branch -d <branch-name>
-  ```
+- **Clean up feature branches and their worktrees after the PR closes.**
+  - First, remove any worktrees that are using the branch (the branch cannot be deleted while it is checked out):
+    ```bash
+    git worktree list
+    git worktree remove .worktrees/<worktree-name>
+    # Optionally prune any stale worktrees
+    git worktree prune
+    ```
+  - Then switch to `main`, pull, and delete the branch:
+    - If the PR was **merged** and you want a safe delete (only if fully merged):
+      ```bash
+      git checkout main
+      git pull
+      git branch -d <branch-name>
+      ```
+    - If the PR was **closed without merge** and you are sure you want to discard the branch:
+      ```bash
+      git checkout main
+      git pull
+      git branch -D <branch-name>
+      ```
 
 ## Plan Tracking
 
-Every approved implementation plan must be tracked as a **GitHub issue**:
+Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 
-- **Create the issue when the plan is approved** — before implementation begins.
-  - Title: the plan's feature name (e.g., "Content extraction pipeline").
-  - Body: the plan's goal, a task checklist derived from the plan, and a link
-    to the plan document (if saved to `docs/plans/`).
+- **Create the issue during Brainstorm (Phase 0)** — capture the design, intent, and
+  any key decisions. Title: the feature name (e.g., "Content extraction pipeline").
+- **Update the issue with the implementation plan (Phase 2)** — add a task checklist
+  derived from the plan, and a link to the plan document (if saved to `docs/plans/`).
 - **Update the issue** as implementation phases complete (optional but encouraged).
 - **Link the PR to the issue** — include `Closes #<issue-number>` in the pull
   request description so that merging the PR automatically closes the issue.
@@ -330,7 +344,7 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
 | `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
-| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Test → Verify → Review+Fix]* → Dry Run → PR |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup |
 
 ### Development Workflow
 

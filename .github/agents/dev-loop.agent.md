@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Orchestrate the full development cycle: Brainstorm -> Plan -> TDD -> Refactor -> Functional Test -> Verify -> Code Review+Fix (loop) -> Dry Run -> PR. Language-aware."
+description: "Phase 0–9 dev loop: Brainstorm (open GitHub issue) -> Create worktree -> Plan -> TDD -> Refactor -> Functional Test -> Verify -> Code Review+Fix (loop) -> Dry Run -> PR+Cleanup. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -271,7 +271,7 @@ Run **all** static analysis tools before the AI review. Fix any findings immedia
 
 **C# / .NET:**
 ```bash
-dotnet format --verify-no-changes   # Fix formatting issues
+dotnet format                       # Fix formatting issues
 dotnet build --no-restore           # Check for warnings (treat as findings)
 ```
 
@@ -282,7 +282,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 
 **TypeScript:**
 ```bash
-npx tsc                             # Type check
+npm run type-check                  # Type check (configured in package.json)
 npm run lint                        # Linter (if configured)
 ```
 
@@ -370,18 +370,22 @@ Create the pull request and prepare for branch cleanup after merge.
 
 2. **Create a pull request** to merge the feature branch into `main`.
    - Include `Closes #<issue-number>` in the PR description (using the issue created
-     in Phase 2) so that merging the PR automatically closes the tracking issue.
+     in Phase 0 and updated in Phase 2) so that merging the PR automatically closes the tracking issue.
    - If no issue was created earlier, create one now and link it.
 
 3. **Do NOT merge to `main` directly** — the user decides when to merge.
 
 4. **After the PR is merged or closed**, clean up:
    ```bash
-   # Remove the worktree
+   # Remove the worktree (after the PR is merged or closed)
    cd <repo-root>
    git worktree remove .worktrees/<short-description>
-   # Delete the local branch
+   # Delete the local branch:
+   # - If the PR was merged, use the safe delete (only works for fully merged branches):
    git branch -d <branch-name>
+   # - If the PR was closed without merge and you are sure you no longer need the branch,
+   #   you may force-delete it instead:
+   # git branch -D <branch-name>
    ```
 
 **Exit criteria:** PR created with issue linked, product spec updated. Worktree and branch
