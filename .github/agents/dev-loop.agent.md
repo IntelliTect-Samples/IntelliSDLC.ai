@@ -312,7 +312,7 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 
 2. **Read the full console output** and check the exit code.
    - Exit code 0 = success.
-   - Any non-zero exit code = failure — report the error output (including any missing configuration details) and **pause for user decision**.
+   - Any non-zero exit code = failure. See step 5 below for how to handle code-related vs environmental failures.
 
 3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
 
