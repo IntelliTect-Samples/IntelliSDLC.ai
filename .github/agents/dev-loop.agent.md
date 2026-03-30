@@ -34,7 +34,7 @@ Phases are classified as **interactive** or **autonomous**:
 | 1 – Create Worktree | Autonomous | Proceed without asking |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
 | 3–8 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
-| 9 – Cleanup | **Autonomous** | Runs after PR merges |
+| 9 – Cleanup | **Autonomous** | Runs after PR is merged or closed |
 
 **Once the user approves the plan (end of Phase 2), execute Phases 3 through 8 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
@@ -104,7 +104,7 @@ Follow the `@brainstorming` agent workflow:
 5. **Save design to a GitHub issue** — create an issue with the feature name as the title.
    Include the approved design (goal, approach, key decisions) in the issue body. This issue
    will also serve as the tracking mechanism throughout the Dev Loop.
-6. Record the issue number — it will be used when creating the PR in Phase 9.
+6. Record the issue number — it will be used when creating the PR in Phase 8.
 
 **Key principles:**
 - One question at a time — don't overwhelm with multiple questions.
@@ -263,7 +263,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 ```bash
 npm run type-check                  # Type check (configured in package.json)
 npm run lint                        # Linter (if configured)
-# Or, if needed: npx tsc --project pwa/tsconfig.json
+# Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
 ```
 
 If static analysis produces findings, fix them now and re-run until clean.
@@ -372,6 +372,8 @@ Add or revise entries in `product-spec.md` to reflect the new or changed behavio
 - **Do NOT merge to `main` directly** — the user decides when to merge.
 
 #### Step 4: Request Copilot review
+
+Request a GitHub Copilot review. The `@` prefix is required — `copilot` without `@` will fail:
 
 ```bash
 gh pr edit <pr-number> --add-reviewer "@copilot"
@@ -483,7 +485,7 @@ Invoke-Pester -Path tests/ -Output Detailed
 ```bash
 # Compile
 npm run type-check                  # Uses project's configured type check
-# Or, if needed: npx tsc --project pwa/tsconfig.json
+# Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
 
 # Unit tests
 npx vitest run

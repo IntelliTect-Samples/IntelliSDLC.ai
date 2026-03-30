@@ -62,7 +62,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 ```bash
 npm run type-check                   # Type errors (configured for this repo)
 npm run lint                         # Linter
-# Or, if needed: npx tsc --project pwa/tsconfig.json
+# Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
 ```
 
 Fix all static analysis findings before proceeding to the AI review below.
@@ -145,7 +145,7 @@ git diff --name-only origin/main...HEAD
 | Check | Detail |
 |---|---|
 | **Type safety** | No unnecessary `any`; proper interfaces and generics used. |
-| **Compilation** | `npm run type-check` (or `npx tsc --project pwa/tsconfig.json`) completes without errors. |
+| **Compilation** | `npm run type-check` (preferred) or `npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json` completes without errors. |
 | **JSDoc** | Every public function has a JSDoc comment. |
 | **ES modules** | Uses `import`/`export`, not `require`/`module.exports`. |
 | **Vitest** | `npx vitest run` passes. |

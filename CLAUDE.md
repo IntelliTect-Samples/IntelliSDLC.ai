@@ -89,7 +89,7 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 ## Branching & Commits
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
-- Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch>`.
+- Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch> main`.
 - Branch naming: `<agent-name>/<type>/<short-description>` (e.g., `Sonnet.4.6/feat/digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.

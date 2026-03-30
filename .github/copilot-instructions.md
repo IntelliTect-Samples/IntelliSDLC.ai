@@ -181,7 +181,7 @@ README, and build files.
 ## Code Style — TypeScript / JavaScript
 
 - Favor TypeScript (`.ts`) over JavaScript (`.js`).
-- After every step, run `npm run type-check` (or `npx tsc --project pwa/tsconfig.json`) to verify there are no type errors.
+- After every step, run `npm run type-check` to verify there are no type errors.
 - Prefer `const` / `let`; never `var`.
 - Use ES modules (`import` / `export`).
 - Name files in kebab-case; classes in PascalCase; functions/variables in camelCase.
