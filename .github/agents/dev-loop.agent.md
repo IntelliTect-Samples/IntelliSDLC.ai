@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Phase 0–9 dev loop: Brainstorm (open GitHub issue) -> Create worktree -> Plan -> TDD -> Refactor -> Functional Test -> Verify -> Code Review+Fix (loop) -> Dry Run -> PR+Cleanup. Language-aware."
+description: "Expanding-loop dev cycle: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup. Each phase failure routes back to TDD. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -33,25 +33,28 @@ Phases are classified as **interactive** or **autonomous**:
 | 0 – Brainstorm | Interactive | Requires user approval of design |
 | 1 – Create Worktree | Autonomous | Proceed without asking |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
-| 3–9 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
+| 3–8 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
+| 9 – Cleanup | **Autonomous** | Runs after PR merges |
 
-**Once the user approves the plan (end of Phase 2), execute Phases 3 through 9 as a
+**Once the user approves the plan (end of Phase 2), execute Phases 3 through 8 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
 status, or wait for input. When a phase's exit criteria are met, immediately begin the
 next phase in the same response.
 
-**Phases 3–7 form an inner loop** that repeats until the code review (Phase 7) finds
-no Critical or Important issues. Only then does execution proceed to Phase 8 (Dry Run).
+**Phases 3–8 use an expanding loop pattern.** Each phase acts as a quality gate. When a
+phase fails, execution routes back to **Phase 3 (TDD)** — the entry point for all fixes.
+As each successive gate passes, the loop expands to include the next phase. The loop
+exits only when Phase 8 (PR + Copilot Review) passes with zero issues.
 
 **Only pause autonomous execution when:**
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
-- The maximum inner-loop iteration limit (3) is reached with unresolved Critical issues.
-- The dry run smoke test fails (Phase 8) — report failure and pause for user decision.
+- The maximum loop iteration limit (3) is reached with unresolved Critical issues.
+- The dry run smoke test fails (Phase 7) — report failure and pause for user decision.
 
 **Progress reporting during autonomous execution:** Instead of pausing to show the Loop
 Status Template between phases, present it **once** at the end of the full autonomous run
-(after Phase 9 completes or when you must pause for one of the reasons above).
+(after Phase 8 completes or when you must pause for one of the reasons above).
 
 ## The Loop
 
@@ -64,24 +67,24 @@ Status Template between phases, present it **once** at the end of the full auton
 |        |                                                     |
 |   2. Write Plan (read issue, break into tasks)               |
 |        |                                                     |
-|   ┌─── 3. TDD (Red -> Green for each task)                   |
+|   ┌─── 3. TDD (Red -> Green) ◄── all failures route here    |
 |   │        |                                                  |
-|   │    4. Refactor                                            |
-|   │        |                                                  |
-|   │    5. Functional Testing (if user-facing)                 |
-|   │        |                                                  |
-|   │    6. Verify Before Completion (evidence, not claims)     |
-|   │        |                                                  |
-|   │    7. Code Review + Fix (static analysis + AI review)     |
+|   │    4. Refactor ──── breaks tests? ───┐                   |
+|   │        |                              │                   |
+|   │    5. Functional Testing ── fails? ──┤                   |
+|   │        |                              │                   |
+|   │    6. Code Review + Fix ── issues? ──┤                   |
+|   │        |                              │                   |
+|   │    7. Dry Run ──────── fails? ───────┤                   |
+|   │        |                              │                   |
+|   │    8. PR + Copilot Review ─ issues? ─┘                   |
 |   │        |                                                  |
 |   │    Review clean? -- NO --> Loop back to step 3            |
 |   └────────────────────────────────────────┘                  |
 |        |                                                     |
-|        YES                                                   |
+|        YES (zero issues from Copilot review)                 |
 |        |                                                     |
-|   8. Dry Run Smoke Test                                      |
-|        |                                                     |
-|   9. PR Creation + Branch Cleanup                            |
+|   9. Branch + Worktree Cleanup (after PR merges)             |
 |                                                              |
 +--------------------------------------------------------------+
 ```
@@ -210,7 +213,7 @@ Follow the `@tdd` agent workflow for each task in the plan:
 
 **Exit criteria:** New test passes, all existing tests still green, lint/compile passes without errors.
 
-**→ Immediately proceed to Phase 4.**
+**→ If tests pass, proceed to Phase 4. If any test fails, remain in Phase 3 until all pass.**
 
 ### Phase 4 — Refactor
 
@@ -222,7 +225,7 @@ Follow the `@refactor` agent workflow:
 
 **Exit criteria:** No obvious duplication, all tests green, functions ≤ 20 lines, lint/compile passes without errors.
 
-**→ Immediately proceed to Phase 5.**
+**→ If refactoring breaks tests → back to Phase 3. Otherwise proceed to Phase 5.**
 
 ### Phase 5 — Functional Testing
 
@@ -234,35 +237,11 @@ Follow the `@functional-testing` agent workflow (skip if the change is purely in
 
 **Exit criteria:** All functional tests pass, user-facing behavior verified, lint/compile passes without errors.
 
-**→ Immediately proceed to Phase 6.**
+**→ If functional tests fail → back to Phase 3 (write unit tests for the failing scenario, then fix). Otherwise proceed to Phase 6.**
 
-### Phase 6 — Verify Before Completion
+### Phase 6 — Code Review + Fix
 
-**Evidence before claims, always.** Before proceeding to code review:
-
-1. **Run full test suite** — use the language-appropriate command (see below).
-2. **Read the output** — check exit codes, count failures, verify no warnings.
-3. **Line-by-line plan checklist** — verify each task from the plan is implemented.
-4. **Only then** claim the work is ready for review.
-
-**NEVER use "should pass", "probably works", or "seems correct".** Run the verification, read the output, state facts with evidence.
-
-```
-BEFORE claiming any status:
-1. IDENTIFY: What command proves this claim?
-2. RUN: Execute the FULL command (fresh, complete)
-3. READ: Full output, check exit code, count failures
-4. VERIFY: Does output confirm the claim?
-5. ONLY THEN: Make the claim
-```
-
-**Exit criteria:** All commands run, all pass, evidence presented.
-
-**→ Immediately proceed to Phase 7.**
-
-### Phase 7 — Code Review + Fix
-
-Phase 7 combines review and fix into a single step. The goal is to be thorough enough
+Phase 6 combines review and fix into a single step. The goal is to be thorough enough
 that a subsequent GitHub Copilot PR review finds no additional issues.
 
 #### Step 1: Run Static Analysis
@@ -284,6 +263,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 ```bash
 npm run type-check                  # Type check (configured in package.json)
 npm run lint                        # Linter (if configured)
+# Or, if needed: npx tsc --project pwa/tsconfig.json
 ```
 
 If static analysis produces findings, fix them now and re-run until clean.
@@ -305,20 +285,22 @@ After all review fixes are applied:
 
 1. Run the full test suite — all tests must pass.
 2. Run static analysis again — must be clean.
-3. Run `dotnet format --verify-no-changes` (or equivalent) — must pass.
+3. Run `dotnet format` (or language equivalent) — fix any remaining formatting issues.
 
-#### Inner Loop Decision
+#### Expanding Loop Decision
 
-- **Review found no Critical or Important issues** → exit the inner loop, proceed to Phase 8.
+- **Review found no Critical or Important issues** → proceed to Phase 7 (Dry Run).
 - **Review found and fixed issues** → loop back to **Phase 3** (TDD) to ensure the fixes
   haven't introduced regressions and the full quality cycle is re-applied.
-- **Maximum 3 inner-loop iterations.** After 3 rounds, present remaining items to the user
+- **Maximum 3 loop iterations.** After 3 rounds, present remaining items to the user
   for a decision.
 
 **Exit criteria:** Code review is clean (no Critical or Important findings), all tests green,
-static analysis clean, lint/format clean.
+static analysis clean.
 
-### Phase 8 — Dry Run Smoke Test
+**→ If issues were found and fixed → back to Phase 3. If clean → proceed to Phase 7.**
+
+### Phase 7 — Dry Run Smoke Test
 
 After the code review passes, run the CLI in dry-run mode against local sample emails to verify the full pipeline produces a valid digest preview.
 
@@ -354,42 +336,117 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 
 **Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
 
-**→ Immediately proceed to Phase 9.**
+**→ If dry run fails → back to Phase 3 (unless failure is environmental, e.g., missing credentials — pause for user). If passes → proceed to Phase 8.**
 
-### Phase 9 — PR Creation + Branch Cleanup
+### Phase 8 — PR + Copilot Review
 
-Create the pull request and prepare for branch cleanup after merge.
+Create (or update) the pull request, request a GitHub Copilot review, and iterate until
+the review is clean. This phase has an internal loop.
 
-1. **Update the product specification** — add or revise entries in `product-spec.md` to reflect
-   the new or changed behavior. Include:
-   - Feature name and description.
-   - Acceptance criteria (derived from the tests written).
-   - Any UI flows, CLI usage, or API surface changes.
-   - Known limitations discovered during development.
-   - Commit with: `docs(spec): add <feature> specification`.
+#### Step 1: Rebase onto latest main
 
-2. **Create a pull request** to merge the feature branch into `main`.
-   - Include `Closes #<issue-number>` in the PR description (using the issue created
-     in Phase 0 and updated in Phase 2) so that merging the PR automatically closes the tracking issue.
-   - If no issue was created earlier, create one now and link it.
+```bash
+git fetch origin main
+git rebase origin/main
+```
 
-3. **Do NOT merge to `main` directly** — the user decides when to merge.
+If conflicts arise, resolve them and run the full test suite. If tests break after
+conflict resolution → back to Phase 3.
 
-4. **After the PR is merged or closed**, clean up:
+#### Step 2: Update product specification
+
+Add or revise entries in `product-spec.md` to reflect the new or changed behavior:
+- Feature name and description.
+- Acceptance criteria (derived from the tests written).
+- Any UI flows, CLI usage, or API surface changes.
+- Known limitations discovered during development.
+- Commit with: `docs(spec): add <feature> specification`.
+
+#### Step 3: Create or update the PR
+
+- Create a pull request to merge the feature branch into `main`.
+- Include `Closes #<issue-number>` in the PR description (using the issue created
+  in Phase 0 and updated in Phase 2) so that merging the PR automatically closes
+  the tracking issue.
+- If no issue was created earlier, create one now and link it.
+- **Do NOT merge to `main` directly** — the user decides when to merge.
+
+#### Step 4: Request Copilot review
+
+```bash
+gh pr edit <pr-number> --add-reviewer "@copilot"
+```
+
+Wait for the review to complete (poll with `gh pr view <pr-number>` or check review status).
+
+#### Step 5: Address review feedback (internal loop)
+
+For each issue found by Copilot:
+
+1. **Fix the issue** in the code.
+2. **Resolve the review thread** using the GraphQL API:
    ```bash
-   # Remove the worktree (after the PR is merged or closed)
+   # Get thread IDs for unresolved threads:
+   gh api graphql -f query='query {
+     repository(owner: "<owner>", name: "<repo>") {
+       pullRequest(number: <N>) {
+         reviewThreads(first: 100) {
+           nodes { id isResolved comments(first: 1) { nodes { body path } } }
+         }
+       }
+     }
+   }'
+
+   # Resolve a thread after fixing:
+   gh api graphql -f query='mutation {
+     resolveReviewThread(input: {threadId: "<THREAD_ID>"}) {
+       thread { isResolved }
+     }
+   }'
+   ```
+3. After fixing all issues, **commit and push** the fixes.
+4. **Re-request Copilot review** (`gh pr edit <pr-number> --add-reviewer "@copilot"`).
+5. **Repeat** until the Copilot review returns zero issues.
+
+If Copilot review issues require code changes beyond formatting → route back to **Phase 3**
+(TDD) to ensure the full quality cycle covers the fixes.
+
+**Exit criteria:** PR created with issue linked, Copilot review passes with zero issues,
+product spec updated.
+
+**→ Proceed to Phase 9 (cleanup happens after the PR merges).**
+
+### Phase 9 — Branch + Worktree Cleanup
+
+This phase runs **after the PR is merged or closed** — not immediately after Phase 8.
+
+1. Switch to the repository root (ensure you are NOT inside the worktree):
+   ```bash
    cd <repo-root>
-   git worktree remove .worktrees/<short-description>
-   # Delete the local branch:
-   # - If the PR was merged, use the safe delete (only works for fully merged branches):
-   git branch -d <branch-name>
-   # - If the PR was closed without merge and you are sure you no longer need the branch,
-   #   you may force-delete it instead:
-   # git branch -D <branch-name>
    ```
 
-**Exit criteria:** PR created with issue linked, product spec updated. Worktree and branch
-cleaned up after PR closes.
+2. Remove the worktree:
+   ```bash
+   git worktree remove .worktrees/<short-description>
+   git worktree prune
+   ```
+
+3. Delete the local branch:
+   - If the PR was **merged** (safe delete — only works for fully merged branches):
+     ```bash
+     git checkout main
+     git pull
+     git branch -d <branch-name>
+     ```
+   - If the PR was **closed without merge** and you are sure you want to discard the branch:
+     ```bash
+     git checkout main
+     git pull
+     git branch -D <branch-name>
+     ```
+     Only force-delete (`-D`) with explicit user confirmation.
+
+**Exit criteria:** Worktree removed, local branch deleted, `main` is up to date.
 
 ---
 
@@ -404,8 +461,8 @@ dotnet build --no-restore
 # Run all tests
 dotnet test --no-build --verbosity normal
 
-# Format check
-dotnet format --verify-no-changes
+# Fix formatting
+dotnet format
 ```
 
 ### PowerShell
@@ -425,7 +482,8 @@ Invoke-Pester -Path tests/ -Output Detailed
 
 ```bash
 # Compile
-npx tsc
+npm run type-check                  # Uses project's configured type check
+# Or, if needed: npx tsc --project pwa/tsconfig.json
 
 # Unit tests
 npx vitest run
@@ -462,7 +520,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 1. **Always brainstorm first** — never jump straight into coding. Save the design to a GitHub issue.
 2. **Create a worktree before writing files** — verify you are NOT on `main` and are inside a `.worktrees/` directory before making any file changes. If on `main`, create a worktree immediately.
-3. **Execute phases 3–9 autonomously** — once the plan is approved, run through the inner loop (TDD → Refactor → Functional Testing → Verification → Code Review+Fix) repeating until clean, then Dry Run and PR as one continuous flow without pausing for user input.
+3. **Execute phases 3–8 autonomously** — once the plan is approved, run through the expanding loop (TDD → Refactor → Functional Testing → Code Review+Fix → Dry Run → PR+Copilot Review) repeating from Phase 3 whenever issues are found, as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
    - After PLAN: `docs(plan): add <feature> implementation plan`
@@ -484,20 +542,20 @@ Use this template to report progress to the user at each phase:
 
 **Branch:** `<branch-name>`
 **Worktree:** `.worktrees/<name>`
-**Inner loop iteration:** <N> of 3 max
+**Loop iteration:** <N> of 3 max
 
 | Phase | Status | Notes |
 |---|---|---|
-| Brainstorm + Issue | Done/In Progress/Pending | <details> |
-| Create Worktree | Done/In Progress/Pending | <details> |
-| Write Plan + Issue | Done/In Progress/Pending | <details> |
-| TDD (Red → Green) | Done/In Progress/Pending | <details> |
-| Refactor | Done/In Progress/Pending | <details> |
-| Functional Testing | Done/In Progress/Pending/Skipped | <details> |
-| Verification | Done/In Progress/Pending | <details> |
-| Code Review + Fix | Done/In Progress/Pending | <details> |
-| Dry Run Smoke Test | Done/In Progress/Pending/Skipped | <details> |
-| PR + Cleanup | Done/In Progress/Pending | <details> |
+| 0 – Brainstorm + Issue | Done/In Progress/Pending | <details> |
+| 1 – Create Worktree | Done/In Progress/Pending | <details> |
+| 2 – Write Plan + Issue | Done/In Progress/Pending | <details> |
+| 3 – TDD (Red → Green) | Done/In Progress/Pending | <details> |
+| 4 – Refactor | Done/In Progress/Pending | <details> |
+| 5 – Functional Testing | Done/In Progress/Pending/Skipped | <details> |
+| 6 – Code Review + Fix | Done/In Progress/Pending | <details> |
+| 7 – Dry Run Smoke Test | Done/In Progress/Pending/Skipped | <details> |
+| 8 – PR + Copilot Review | Done/In Progress/Pending | <details> |
+| 9 – Branch + Worktree Cleanup | Done/Pending (after merge) | <details> |
 
 **Review verdict:** PASS / NEEDS CHANGES / CRITICAL ISSUES
 **Dry run:** <count> headlines extracted / Failed / Skipped
@@ -506,18 +564,20 @@ Use this template to report progress to the user at each phase:
 
 ## When the Loop Is Complete
 
-Once Phase 9 (PR Creation + Branch Cleanup) finishes:
+Once Phase 8 (PR + Copilot Review) passes with zero issues:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
-3. **Present the dry run headline table** (from Phase 8) so the user can visually verify the digest output.
+3. **Present the dry run headline table** (from Phase 7) so the user can visually verify the digest output.
 4. Present a summary to the user listing:
    - The feature branch name and worktree location.
    - What was implemented.
    - What was refactored.
    - What functional tests were added.
-   - How many inner-loop iterations it took.
+   - How many loop iterations it took.
    - Dry run result (number of headlines extracted, or skip reason).
    - What was added to the product spec.
    - The PR number and linked issue number.
+   - Copilot review status (zero issues).
 5. **Do NOT merge to `main` directly** — the user decides when to merge.
+6. **Phase 9 (cleanup)** happens after the user merges or closes the PR.

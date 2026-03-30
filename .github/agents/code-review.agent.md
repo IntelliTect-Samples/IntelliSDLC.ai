@@ -121,7 +121,7 @@ git diff --name-only origin/main...HEAD
 | **Dependency injection** | No `new` of services in production code; use constructor injection. |
 | **Build** | `dotnet build --no-restore` completes without errors or warnings. |
 | **Tests** | `dotnet test --no-build --verbosity normal` passes. |
-| **Format** | `dotnet format --verify-no-changes` passes. |
+| **Format** | `dotnet format` fixes formatting; verify with `dotnet build`. |
 
 ---
 
@@ -145,7 +145,7 @@ git diff --name-only origin/main...HEAD
 | Check | Detail |
 |---|---|
 | **Type safety** | No unnecessary `any`; proper interfaces and generics used. |
-| **Compilation** | `npx tsc` completes without errors. |
+| **Compilation** | `npm run type-check` (or `npx tsc --project pwa/tsconfig.json`) completes without errors. |
 | **JSDoc** | Every public function has a JSDoc comment. |
 | **ES modules** | Uses `import`/`export`, not `require`/`module.exports`. |
 | **Vitest** | `npx vitest run` passes. |

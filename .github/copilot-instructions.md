@@ -181,7 +181,7 @@ README, and build files.
 ## Code Style — TypeScript / JavaScript
 
 - Favor TypeScript (`.ts`) over JavaScript (`.js`).
-- After every step, run `npx tsc` to verify there are no type errors.
+- After every step, run `npm run type-check` (or `npx tsc --project pwa/tsconfig.json`) to verify there are no type errors.
 - Prefer `const` / `let`; never `var`.
 - Use ES modules (`import` / `export`).
 - Name files in kebab-case; classes in PascalCase; functions/variables in camelCase.
@@ -344,16 +344,16 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
 | `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
-| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup |
 
 ### Development Workflow
 
 Use `@dev-loop` to drive the full quality cycle for any feature. It coordinates
-all other agents in order. Phases 3–7 form an inner loop that repeats until the
-code review is clean.
+all other agents in order. Phases 3–8 use an expanding loop — each phase acts as a
+quality gate, and any failure routes back to Phase 3 (TDD).
 
 ```
-Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup
 ```
 
 Use `@brainstorming` when exploring a new idea before committing to implementation.

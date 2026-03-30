@@ -72,11 +72,13 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Verify → Code Review+Fix]* → Dry Run → PR+Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup
 ```
 
-Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 loop until the code review
-is clean. See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
+Use `@dev-loop` to orchestrate the full cycle. Phases 3–8 use an expanding loop — each
+phase is a quality gate, and any failure routes back to Phase 3 (TDD). The loop exits
+only when Copilot review passes with zero issues.
+See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
 
 - **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
   the design. Update it with the implementation checklist in Phase 2. Link the PR
