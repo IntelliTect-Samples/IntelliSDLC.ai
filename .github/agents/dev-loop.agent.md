@@ -646,4 +646,18 @@ Once Phase 8 (PR + Copilot Review) passes with zero unresolved threads:
    - The PR number and linked issue number.
    - Copilot review status (zero unresolved threads after final review round).
 5. **Do NOT merge to `main` directly** — the user decides when to merge.
-6. **Phase 9 (cleanup)** happens after the user merges or closes the PR.
+6. **Present a Phase 9 cleanup reminder** — display the exact commands the user should run
+   after merging or closing the PR. Fill in the actual worktree name and branch name from
+   this session (do NOT leave placeholders). Format it prominently:
+
+   > **⚠️ After you merge or close the PR, run these commands to clean up:**
+   > ```
+   > cd <repo-root>
+   > git worktree remove .worktrees/<short-description>
+   > git worktree prune
+   > git checkout main
+   > git pull
+   > git branch -d <branch-name>
+   > ```
+   >
+   > *(Replace nothing — the agent must fill in the actual values above.)*
