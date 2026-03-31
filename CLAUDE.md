@@ -2,6 +2,21 @@
 
 This file provides orientation for AI assistants working in this repository.
 
+## ⛔ Before ANY Commit
+
+**STOP and verify these before every `git commit`:**
+
+1. **You are NOT on `main`.** Run `git branch --show-current` — if it says `main`, stop
+   and create a worktree/feature branch first.
+2. **A GitHub issue exists** for the work you are committing. If not, create one first.
+3. **You plan to open a PR** linking to that issue. Never merge to `main` directly.
+
+A pre-commit hook (`.githooks/pre-commit`) enforces rule 1 automatically. Activate it:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
 ## Key References
 
 - **Product requirements**: [`product-spec.md`](./product-spec.md) — the single source of truth for what the application does. Update it with every feature change.
