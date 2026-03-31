@@ -48,7 +48,7 @@ Continue autonomously through the Phase 8 internal loop without asking the user.
 **Phases 3–8 use an expanding loop pattern.** Each phase acts as a quality gate. When a
 phase fails, execution routes back to **Phase 3 (TDD)** — the entry point for all fixes.
 As each successive gate passes, the loop expands to include the next phase. The loop
-exits only when Phase 8 (PR + Copilot Review) passes with zero issues.
+exits only when Phase 8 (PR + Copilot Review) passes with zero unresolved threads and the latest Copilot review introduced no new issues.
 
 **Only pause autonomous execution when:**
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
@@ -86,7 +86,7 @@ Status Template between phases, present it **once** at the end of the full auton
 |   │    Review clean? -- NO --> Loop back to step 3            |
 |   └────────────────────────────────────────┘                  |
 |        |                                                     |
-|        YES (zero issues from Copilot review)                 |
+|        YES (zero unresolved threads after fresh Copilot review) |
 |        |                                                     |
 |   9. Branch + Worktree Cleanup (after PR merges)             |
 |                                                              |
@@ -412,10 +412,10 @@ Wait for the review to complete (poll with `gh pr view <pr-number>` or check rev
 
 #### Step 6: Address review feedback (internal loop)
 
-For each issue found by Copilot:
+For each **unresolved review thread** on the PR — from Copilot, human reviewers, or bots:
 
 1. **Fix the issue** in the code.
-2. After fixing all issues, **commit and push** the fixes.
+2. After fixing all issues in the current round, **commit and push** the fixes.
 3. **Resolve the review threads** using the GraphQL API (after the fix is pushed, so
    the resolution corresponds to visible code in the PR):
    ```bash
@@ -438,13 +438,45 @@ For each issue found by Copilot:
    }'
    ```
 4. **Re-request Copilot review** (`gh pr edit <pr-number> --add-reviewer "@copilot"`).
-5. **Repeat** until the Copilot review returns zero issues.
+5. **Wait for the new review to arrive.** Record the `submittedAt` timestamp of the
+   previous review. Poll until a review appears with a **newer** `submittedAt`:
+   ```bash
+   # Poll until submittedAt changes (new review arrived):
+   gh pr view <pr-number> --json reviews \
+     --jq '.reviews | sort_by(.submittedAt) | reverse | .[0] | {state, submittedAt}'
+   ```
+6. **Re-check for new unresolved threads** after the fresh review completes:
+   ```bash
+   gh api graphql -f query='query {
+     repository(owner: "<owner>", name: "<repo>") {
+       pullRequest(number: <N>) {
+         reviewThreads(first: 100) {
+           nodes { id isResolved comments(first: 1) { nodes { body path } } }
+         }
+       }
+     }
+   }' --jq '[.. | select(.isResolved? == false)] | length'
+   ```
+7. **If unresolved threads > 0**, go back to step 1 with the new threads.
+8. **If unresolved threads = 0**, the review loop is complete.
+
+> **⚠️ Do NOT exit the loop after resolving threads without waiting for the
+> re-requested review to arrive.** Resolving old threads and re-requesting a review
+> does not mean the new review will have zero comments. Each Copilot review may
+> introduce new findings. You must wait for the new review, then verify zero
+> unresolved threads remain.
+
+Also check for **regular PR comments** (not attached to code lines) and address those:
+```bash
+gh pr view <pr-number> --comments
+```
 
 If Copilot review issues require code changes beyond formatting → route back to **Phase 3**
 (TDD) to ensure the full quality cycle covers the fixes.
 
-**Exit criteria:** PR created with issue linked, CI workflows green, Copilot review passes
-with zero issues, product spec updated.
+**Exit criteria:** PR created with issue linked, CI workflows green, **all review threads
+resolved** (from all reviewers), latest Copilot review introduced zero new threads,
+product spec updated.
 
 **→ Proceed to Phase 9 (cleanup happens after the PR merges).**
 
@@ -596,7 +628,7 @@ Use this template to report progress to the user at each phase:
 
 ## When the Loop Is Complete
 
-Once Phase 8 (PR + Copilot Review) passes with zero issues:
+Once Phase 8 (PR + Copilot Review) passes with zero unresolved threads:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
@@ -610,6 +642,6 @@ Once Phase 8 (PR + Copilot Review) passes with zero issues:
    - Dry run result (number of headlines extracted, or skip reason).
    - What was added to the product spec.
    - The PR number and linked issue number.
-   - Copilot review status (zero issues).
+   - Copilot review status (zero unresolved threads after final review round).
 5. **Do NOT merge to `main` directly** — the user decides when to merge.
 6. **Phase 9 (cleanup)** happens after the user merges or closes the PR.
