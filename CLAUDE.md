@@ -83,6 +83,9 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 - **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
   the design. Update it with the implementation checklist in Phase 2. Link the PR
   with `Closes #<issue-number>` so merging auto-closes the issue.
+- **Issue-before-implementation:** When using plan mode before a dev loop, create
+  the GitHub issue at the end of planning (before implementation starts). The dev
+  loop then references the existing issue instead of creating a new one.
 - **Autopilot mode:** When autopilot is used to implement a plan, always use the
   Dev Loop agent (`@dev-loop`). Never skip the full quality cycle for plan work.
 

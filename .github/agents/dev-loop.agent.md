@@ -108,6 +108,8 @@ Follow the `@brainstorming` agent workflow:
 5. **Save design to a GitHub issue** — create an issue with the feature name as the title.
    Include the approved design (goal, approach, key decisions) in the issue body. This issue
    will also serve as the tracking mechanism throughout the Dev Loop.
+   - **If an issue already exists** (e.g., created during plan mode or by the user), skip
+     issue creation. Reference the existing issue number instead.
 6. Record the issue number — it will be used when creating the PR in Phase 8.
 
 **Key principles:**
@@ -116,7 +118,7 @@ Follow the `@brainstorming` agent workflow:
 - YAGNI ruthlessly — remove unnecessary features from all designs.
 - Explore alternatives — always propose 2–3 approaches before settling.
 
-**Exit criteria:** User has approved the design. GitHub issue created with the design and issue number recorded.
+**Exit criteria:** User has approved the design. GitHub issue exists (created here or pre-existing) with the design and issue number recorded.
 
 ### Phase 1 — Create Worktree on Feature Branch
 

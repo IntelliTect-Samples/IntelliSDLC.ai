@@ -361,3 +361,8 @@ Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test
 
 Use `@brainstorming` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
+
+- **Issue-before-implementation:** When using plan mode before launching a dev loop,
+  create the GitHub issue at the end of planning (after user approval, before
+  implementation starts). This ensures the issue number is available when the feature
+  branch and PR are created, enabling `Closes #<issue-number>` from the first commit.
