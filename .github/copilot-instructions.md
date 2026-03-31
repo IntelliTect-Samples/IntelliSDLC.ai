@@ -276,9 +276,8 @@ Maintain a living product specification in `product-spec.md`.
 ## Branching Strategy
 
 - **Never commit directly to `main`.** Always create a feature branch first.
-- Branch naming: `<agent-name>/<type>/<short-description>` — prefix with the
-  agent/model name.
-  Examples: `Opus.4.6/feat/content-extraction`, `Opus.4.6/fix/digest-template`.
+- Branch naming: `<type>/<issue#>-<short-description>`
+  Examples: `feat/42-content-extraction`, `fix/57-digest-template`.
 - All work happens on the feature branch. Merge to `main` only via pull request
   after the dev loop passes.
 - **Git worktrees must be placed in the `.worktrees/` subdirectory** of the repo
@@ -347,16 +346,16 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
 | `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
-| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup |
 
 ### Development Workflow
 
 Use `@dev-loop` to drive the full quality cycle for any feature. It coordinates
-all other agents in order. Phases 3–8 use an expanding loop — each phase acts as a
+all other agents in order. Phases 3–7 use an expanding loop — each phase acts as a
 quality gate, and any failure routes back to Phase 3 (TDD).
 
 ```
-Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
 ```
 
 Use `@brainstorming` when exploring a new idea before committing to implementation.

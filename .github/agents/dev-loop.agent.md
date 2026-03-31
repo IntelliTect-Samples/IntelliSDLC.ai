@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Expanding-loop dev cycle: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup. Each phase failure routes back to TDD. Language-aware."
+description: "Expanding-loop dev cycle: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup. Each phase failure routes back to TDD. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -33,32 +33,33 @@ Phases are classified as **interactive** or **autonomous**:
 | 0 – Brainstorm | Interactive | Requires user approval of design |
 | 1 – Create Worktree | Autonomous | Proceed without asking |
 | 2 – Write Plan | Interactive | Requires user approval of plan |
-| 3–8 (TDD → PR) | **Autonomous** | Execute continuously without pausing |
-| 9 – Cleanup | **Autonomous** | Runs after PR is merged or closed. Pauses for user confirmation only if force-delete (`-D`) is needed for an unmerged branch. |
+| 3–7 (TDD → PR+Dry Run) | **Autonomous** | Execute continuously without pausing |
+| 8 – Cleanup | **Autonomous** | Runs after PR is merged or closed. Pauses for user confirmation only if force-delete (`-D`) is needed for an unmerged branch. |
 
-**Once the user approves the plan (end of Phase 2), execute Phases 3 through 8 as a
+**Once the user approves the plan (end of Phase 2), execute Phases 3 through 7 as a
 single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
 status, or wait for input. When a phase's exit criteria are met, immediately begin the
 next phase in the same response.
 
-**Exception:** Phase 8 involves external async operations (CI runs, Copilot review).
+**Exception:** Phase 7 involves external async operations (CI runs, Copilot review).
 Waiting/polling for these external results is expected and does not count as "pausing".
-Continue autonomously through the Phase 8 internal loop without asking the user.
+Continue autonomously through the Phase 7 internal loop without asking the user.
 
-**Phases 3–8 use an expanding loop pattern.** Each phase acts as a quality gate. When a
+**Phases 3–7 use an expanding loop pattern.** Each phase acts as a quality gate. When a
 phase fails, execution routes back to **Phase 3 (TDD)** — the entry point for all fixes.
 As each successive gate passes, the loop expands to include the next phase. The loop
-exits only when Phase 8 (PR + Copilot Review) passes with zero unresolved threads and the latest Copilot review introduced no new issues.
+exits only when Phase 7 (PR + Copilot Review + Dry Run) passes with zero unresolved
+threads, the latest Copilot review introduced no new issues, and the dry run succeeds.
 
 **Only pause autonomous execution when:**
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
 - The maximum loop iteration limit (3) is reached with unresolved Critical issues.
-- The dry run smoke test (Phase 7) fails due to environmental or configuration issues — report failure and pause for user decision. Code-related dry-run failures route back to Phase 3 per Phase 7 guidelines.
+- The dry run smoke test (Phase 7, Step 7) fails due to environmental or configuration issues — report failure and pause for user decision. Code-related dry-run failures route back to Phase 3.
 
 **Progress reporting during autonomous execution:** Instead of pausing to show the Loop
 Status Template between phases, present it **once** at the end of the full autonomous run
-(after Phase 8 completes or when you must pause for one of the reasons above).
+(after Phase 7 completes or when you must pause for one of the reasons above).
 
 ## The Loop
 
@@ -79,16 +80,17 @@ Status Template between phases, present it **once** at the end of the full auton
 |   │        |                              │                   |
 |   │    6. Code Review + Fix ── issues? ──┤                   |
 |   │        |                              │                   |
-|   │    7. Dry Run ──────── fails? ───────┤                   |
+|   │    7. PR + Copilot Review ─ issues? ─┤                   |
 |   │        |                              │                   |
-|   │    8. PR + Copilot Review ─ issues? ─┘                   |
+|   │        7b. Dry Run ──── fails? ──────┘                   |
 |   │        |                                                  |
-|   │    Review clean? -- NO --> Loop back to step 3            |
+|   │    Review clean + Dry run passes?                         |
+|   │        -- NO --> Loop back to step 3                      |
 |   └────────────────────────────────────────┘                  |
 |        |                                                     |
-|        YES (zero unresolved threads after fresh Copilot review) |
+|        YES (zero unresolved threads + dry run passes)         |
 |        |                                                     |
-|   9. Branch + Worktree Cleanup (after PR merges)             |
+|   8. Branch + Worktree Cleanup (after PR merges)             |
 |                                                              |
 +--------------------------------------------------------------+
 ```
@@ -110,7 +112,7 @@ Follow the `@brainstorming` agent workflow:
    will also serve as the tracking mechanism throughout the Dev Loop.
    - **If an issue already exists** (e.g., created during plan mode or by the user), skip
      issue creation. Reference the existing issue number instead.
-6. Record the issue number — it will be used when creating the PR in Phase 8.
+6. Record the issue number — it will be used when creating the PR in Phase 7.
 
 **Key principles:**
 - One question at a time — don't overwhelm with multiple questions.
@@ -127,17 +129,17 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
 
 1. Verify `main` is clean (`git status`).
 2. Pull latest: `git pull`.
-3. Determine your agent/model name (e.g., `Opus.4.6`).
+3. Determine the GitHub issue number for this work.
 4. Create the feature branch and worktree:
    ```bash
    git checkout main
    git pull
-   git worktree add .worktrees/<short-description> -b <agent-name>/<type>/<short-description> main
+   git worktree add .worktrees/<short-description> -b <type>/<issue#>-<short-description> main
    cd .worktrees/<short-description>
    ```
    Example:
    ```bash
-   git worktree add .worktrees/content-extraction -b Opus.4.6/feat/content-extraction main
+   git worktree add .worktrees/content-extraction -b feat/42-content-extraction main
    cd .worktrees/content-extraction
    ```
 5. All subsequent work in this loop happens **inside the worktree directory**.
@@ -295,7 +297,7 @@ After all review fixes are applied:
 
 #### Expanding Loop Decision
 
-- **Review found no Critical or Important issues** → proceed to Phase 7 (Dry Run).
+- **Review found no Critical or Important issues** → proceed to Phase 7 (PR + Copilot Review).
 - **Review found and fixed issues** → loop back to **Phase 3** (TDD) to ensure the fixes
   haven't introduced regressions and the full quality cycle is re-applied.
 - **Maximum 3 loop iterations.** After 3 rounds, present remaining items to the user
@@ -306,56 +308,11 @@ static analysis clean.
 
 **→ If issues were found and fixed → back to Phase 3. If clean → proceed to Phase 7.**
 
-### Phase 7 — Dry Run Smoke Test
+### Phase 7 — PR + Copilot Review + Dry Run
 
-After the code review passes, run the CLI in dry-run mode against local sample emails to verify the full pipeline produces a valid digest preview.
-
-1. **Run the dry run command:**
-
-   ```bash
-   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview
-   ```
-
-2. **Read the full console output** and check the exit code.
-   - Exit code 0 = success.
-   - Any non-zero exit code = failure. See step 5 below for how to handle code-related vs environmental failures.
-   - The console output uses **markdown format** with collapsible `<details>` sections per category. Headlines are clickable links with source attribution and optional thumbnail images.
-   - A **combined HTML file** is saved to the output directory (single file, not per-category). The console prints a `file://` URI you can click to open it.
-   - A **`digest-preview.md`** file is also saved to the output directory.
-
-3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
-
-4. **Present results as a markdown table:**
-
-   ```markdown
-   ## Dry Run Results
-
-   **Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
-
-   | # | Headline | Source | Category | Blurb | Article URL |
-   |---|----------|--------|----------|-------|-------------|
-   | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
-   ```
-
-5. **On failure:** Report the failure clearly — include the command, exit code, and relevant
-   error output. Distinguish between:
-   - **Code-related failures** (e.g., pipeline logic errors, incorrect output) → route back
-     to **Phase 3** (TDD) to fix via the normal quality cycle.
-   - **Environmental failures** (e.g., missing Azure OpenAI credentials, missing config files,
-     infrastructure issues) → **pause for user decision** (do not attempt to auto-fix).
-
-**Prerequisites:**
-- `SampleEmails/` directory at the repo root with `.eml` files.
-- All required configuration (including Azure OpenAI credentials) must be present. Missing configuration is a failure — the CLI will exit with a non-zero exit code and display details about what is missing.
-
-**Exit criteria:** Dry run command completes successfully, headline table is presented to the user.
-
-**→ If dry run fails due to code issues → back to Phase 3. If environmental failure → pause for user. If passes → proceed to Phase 8.**
-
-### Phase 8 — PR + Copilot Review
-
-Create (or update) the pull request, request a GitHub Copilot review, and iterate until
-the review is clean. This phase has an internal loop.
+Create (or update) the pull request, request a GitHub Copilot review, iterate until
+the review is clean, then run a dry run smoke test. This phase has an internal loop
+followed by a final validation.
 
 #### Step 1: Rebase onto latest main
 
@@ -479,15 +436,82 @@ gh pr view <pr-number> --comments
 If Copilot review issues require code changes beyond formatting → route back to **Phase 3**
 (TDD) to ensure the full quality cycle covers the fixes.
 
+#### Step 7: Dry Run Smoke Test
+
+After the Copilot review loop completes with zero unresolved threads, run the CLI in
+dry-run mode against local sample emails to verify the full pipeline produces a valid
+digest preview. This is the final validation after all code changes are complete.
+
+1. **Run the dry run command:**
+
+   ```bash
+   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview
+   ```
+
+2. **Read the full console output** and check the exit code.
+   - Exit code 0 = success.
+   - Any non-zero exit code = failure. See step 5 below for how to handle code-related vs environmental failures.
+   - The console output uses **markdown format** with collapsible `<details>` sections per category. Headlines are clickable links with source attribution and optional thumbnail images.
+   - A **combined HTML file** is saved to the output directory (single file, not per-category). The console prints a `file://` URI you can click to open it.
+   - A **`digest-preview.md`** file is also saved to the output directory.
+
+3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
+
+4. **Present results as a markdown table:**
+
+   ```markdown
+   ## Dry Run Results
+
+   **Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
+
+   | # | Headline | Source | Category | Blurb | Article URL |
+   |---|----------|--------|----------|-------|-------------|
+   | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+   ```
+
+5. **On failure:** Report the failure clearly — include the command, exit code, and relevant
+   error output. Distinguish between:
+   - **Code-related failures** (e.g., pipeline logic errors, incorrect output) → route back
+     to **Phase 3** (TDD) to fix via the normal quality cycle.
+   - **Environmental failures** (e.g., missing Azure OpenAI credentials, missing config files,
+     infrastructure issues) → **pause for user decision** (do not attempt to auto-fix).
+
+**Prerequisites:**
+- `SampleEmails/` directory at the repo root with `.eml` files.
+- All required configuration (including Azure OpenAI credentials) must be present. Missing configuration is a failure — the CLI will exit with a non-zero exit code and display details about what is missing.
+
+#### Step 8: Add Dry Run Results to PR
+
+After the dry run passes, append the dry run headline table as markdown to the PR body:
+
+```bash
+# Read the current PR body, then append the dry run results:
+gh pr edit <pr-number> --body "$(gh pr view <pr-number> --json body --jq .body)
+
+---
+
+## Dry Run Results
+
+**Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
+
+| # | Headline | Source | Category | Blurb | Article URL |
+|---|----------|--------|----------|-------|-------------|
+| 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+"
+```
+
+Use the actual dry run results from Step 7. The table should match the same format
+presented to the user.
+
 **Exit criteria:** PR created with issue linked, CI workflows green, **all review threads
 resolved** (from all reviewers), latest Copilot review introduced zero new threads,
-product spec updated.
+product spec updated, dry run passes and results appended to PR.
 
-**→ Proceed to Phase 9 (cleanup happens after the PR merges).**
+**→ Proceed to Phase 8 (cleanup happens after the PR merges).**
 
-### Phase 9 — Branch + Worktree Cleanup
+### Phase 8 — Branch + Worktree Cleanup
 
-This phase runs **after the PR is merged or closed** — not immediately after Phase 8.
+This phase runs **after the PR is merged or closed** — not immediately after Phase 7.
 
 1. Switch to the repository root (ensure you are NOT inside the worktree):
    ```bash
@@ -589,7 +613,7 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 
 1. **Always brainstorm first** — never jump straight into coding. Save the design to a GitHub issue.
 2. **Create a worktree before writing files** — verify you are NOT on `main` and are inside a `.worktrees/` directory before making any file changes. If on `main`, create a worktree immediately.
-3. **Execute phases 3–8 autonomously** — once the plan is approved, run through the expanding loop (TDD → Refactor → Functional Testing → Code Review+Fix → Dry Run → PR+Copilot Review) repeating from Phase 3 whenever issues are found, as one continuous flow without pausing for user input.
+3. **Execute phases 3–7 autonomously** — once the plan is approved, run through the expanding loop (TDD → Refactor → Functional Testing → Code Review+Fix → PR+Copilot Review+Dry Run) repeating from Phase 3 whenever issues are found, as one continuous flow without pausing for user input.
 4. **One behavior at a time** — complete the full loop for one feature/behavior before starting the next.
 5. **Commit at each phase boundary:**
    - After PLAN: `docs(plan): add <feature> implementation plan`
@@ -622,9 +646,8 @@ Use this template to report progress to the user at each phase:
 | 4 – Refactor | Done/In Progress/Pending | <details> |
 | 5 – Functional Testing | Done/In Progress/Pending/Skipped | <details> |
 | 6 – Code Review + Fix | Done/In Progress/Pending | <details> |
-| 7 – Dry Run Smoke Test | Done/In Progress/Pending/Skipped | <details> |
-| 8 – PR + Copilot Review | Done/In Progress/Pending | <details> |
-| 9 – Branch + Worktree Cleanup | Done/Pending (after merge) | <details> |
+| 7 – PR + Copilot Review + Dry Run | Done/In Progress/Pending | <details> |
+| 8 – Branch + Worktree Cleanup | Done/Pending (after merge) | <details> |
 
 **Review verdict:** PASS / NEEDS CHANGES / CRITICAL ISSUES
 **Dry run:** <count> headlines extracted / Failed / Skipped
@@ -633,11 +656,12 @@ Use this template to report progress to the user at each phase:
 
 ## When the Loop Is Complete
 
-Once Phase 8 (PR + Copilot Review) passes with zero unresolved threads:
+Once Phase 7 (PR + Copilot Review + Dry Run) passes with zero unresolved threads and a
+successful dry run:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
-3. **Present the dry run headline table** (from Phase 7) so the user can visually verify the digest output.
+3. **Present the dry run headline table** (from Phase 7, Step 7) so the user can visually verify the digest output.
 4. Present a summary to the user listing:
    - The feature branch name and worktree location.
    - What was implemented.
@@ -645,11 +669,12 @@ Once Phase 8 (PR + Copilot Review) passes with zero unresolved threads:
    - What functional tests were added.
    - How many loop iterations it took.
    - Dry run result (number of headlines extracted, or skip reason).
+   - **Dry run preview link** — the `file://` URI to the HTML preview file generated by the dry run.
    - What was added to the product spec.
    - The PR number and linked issue number.
    - Copilot review status (zero unresolved threads after final review round).
 5. **Do NOT merge to `main` directly** — the user decides when to merge.
-6. **Present a Phase 9 cleanup reminder** — display the exact commands the user should run
+6. **Present a Phase 8 cleanup reminder** — display the exact commands the user should run
    after merging or closing the PR. Fill in the actual worktree name and branch name from
    this session (do NOT leave placeholders). Format it prominently:
 

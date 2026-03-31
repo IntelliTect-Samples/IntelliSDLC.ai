@@ -87,12 +87,12 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → Dry Run → PR+Copilot Review]* → Cleanup
+Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
 ```
 
-Use `@dev-loop` to orchestrate the full cycle. Phases 3–8 use an expanding loop — each
+Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 use an expanding loop — each
 phase is a quality gate, and any failure routes back to Phase 3 (TDD). The loop exits
-only when Copilot review passes with zero issues.
+only when Copilot review passes with zero issues and the dry run succeeds.
 See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
 
 - **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
@@ -108,7 +108,7 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
 - Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch> main`.
-- Branch naming: `<agent-name>/<type>/<short-description>` (e.g., `Sonnet.4.6/feat/digest-template`)
+- Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
 - **After a PR closes**, clean up the worktree and local branch in this order:
