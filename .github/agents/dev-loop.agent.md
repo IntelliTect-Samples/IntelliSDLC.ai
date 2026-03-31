@@ -313,12 +313,15 @@ After the code review passes, run the CLI in dry-run mode against local sample e
 1. **Run the dry run command:**
 
    ```bash
-   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive
+   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview
    ```
 
 2. **Read the full console output** and check the exit code.
    - Exit code 0 = success.
    - Any non-zero exit code = failure. See step 5 below for how to handle code-related vs environmental failures.
+   - The console output now uses **markdown format** with collapsible `<details>` sections per category, bold headlines, source attribution, image/no-image emojis, and article links.
+   - A **combined HTML file** is saved to the output directory (single file, not per-category). The console prints a `file://` URI you can click to open it.
+   - A **`digest-preview.md`** file is also saved to the output directory.
 
 3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
 
