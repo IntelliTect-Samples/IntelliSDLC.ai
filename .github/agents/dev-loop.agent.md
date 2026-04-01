@@ -136,17 +136,20 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
    git pull
    git worktree add .worktrees/<short-description> -b <type>/<issue#>-<short-description> main
    cd .worktrees/<short-description>
+   $Host.UI.RawUI.WindowTitle = '#<issue#> - <short-description>'
    ```
    Example:
    ```bash
    git worktree add .worktrees/content-extraction -b feat/42-content-extraction main
    cd .worktrees/content-extraction
+   $Host.UI.RawUI.WindowTitle = '#42 - content-extraction'
    ```
 5. All subsequent work in this loop happens **inside the worktree directory**.
 6. If a branch for this feature already exists, add a worktree for it instead:
    ```bash
    git worktree add .worktrees/<short-description> <existing-branch-name>
    cd .worktrees/<short-description>
+   $Host.UI.RawUI.WindowTitle = '#<issue#> - <short-description>'
    ```
 
 **Why worktrees?** They isolate feature work from the main working tree, avoiding
