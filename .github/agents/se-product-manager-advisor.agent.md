@@ -105,7 +105,7 @@ So that [measurable outcome from step 3]
 [X days] - Based on complexity analysis
 
 ## Related Documentation
-- Product spec: [link to docs/product/]
+- Product spec: [link to docs/prd/]
 - ADR: [link to docs/decisions/ if architectural decision]
 - Design: [link to Figma/design docs]
 - Backend API: [link to API endpoint documentation]

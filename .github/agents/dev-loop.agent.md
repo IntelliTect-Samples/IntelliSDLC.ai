@@ -207,7 +207,7 @@ Expected: PASS
 `git commit -m "feat: add specific feature"`
 ```
 
-Save plan to `docs/plans/YYYY-MM-DD-<feature-name>.md`.
+Save plan to `docs/designs/YYYY-MM-DD-<feature-name>-plan.md`.
 
 **After the user approves the plan, update the GitHub issue** (created in Phase 0) with
 a task checklist derived from the plan tasks, and a link to the plan document.
@@ -283,7 +283,7 @@ If static analysis produces findings, fix them now and re-run until clean.
 
 #### Step 2: AI Code Review
 
-Invoke the `@code-review` agent (runs on a different model — `o4-mini`):
+Invoke the `@code-review` agent (runs on a different model — `gpt-4.1`):
 
 1. The review agent examines all changed files (`git diff --name-only origin/main...HEAD`).
 2. It reviews: correctness, code quality, test quality, security, YAGNI compliance.

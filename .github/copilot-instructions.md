@@ -312,7 +312,7 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 - **Create the issue during Brainstorm (Phase 0)** — capture the design, intent, and
   any key decisions. Title: the feature name (e.g., "Content extraction pipeline").
 - **Update the issue with the implementation plan (Phase 2)** — add a task checklist
-  derived from the plan, and a link to the plan document (if saved to `docs/plans/`).
+  derived from the plan, and a link to the plan document (if saved to `docs/designs/`).
 - **Update the issue** as implementation phases complete (optional but encouraged).
 - **Link the PR to the issue** — include `Closes #<issue-number>` in the pull
   request description so that merging the PR automatically closes the issue.
@@ -344,10 +344,13 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `tdd.agent.md` | Red → Green → Refactor cycle with Iron Law enforcement (no code without failing test) |
 | `functional-testing.agent.md` | Generate & maintain functional / E2E tests with verification-before-completion |
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
-| `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
+| `code-review.agent.md` | Independent code review using a different LLM (`gpt-4.1`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
 | `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup |
 | `instructions.agent.md` | Maintain all instruction files and tooling config across platforms — lightweight workflow with consistency review |
+| `prd.agent.md` | Generate comprehensive Product Requirements Documents with user stories, acceptance criteria, and optional GitHub issue creation |
+| `se-product-manager-advisor.agent.md` | Product management guidance for GitHub issues, business value alignment, and data-driven product decisions |
+| `simple-app-idea-generator.agent.md` | Fun, interactive brainstorming for new application ideas — gathers requirements before handing off to `@brainstorming` or `@prd` |
 
 ### Development Workflow
 
