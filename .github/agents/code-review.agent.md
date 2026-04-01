@@ -1,7 +1,7 @@
 ---
 name: "Code Review"
 description: "Review and fix production and test code using a different LLM for an independent perspective. Runs static analysis, reviews by severity (Critical/Important/Suggestions), and directly applies fixes. Language-aware."
-model: "o4-mini"
+model: "gpt-4.1"
 tools: ["codebase", "filesystem", "search", "problems", "findTestFiles", "runTests", "runCommands", "terminalLastCommand", "testFailure", "changes"]
 ---
 
@@ -99,7 +99,7 @@ git diff --name-only origin/main...HEAD
 - Brittle tests coupled to implementation details.
 - **Tests that use mocks when real code is feasible** — mocks should be last resort.
 - Test descriptions that don't match what is actually being tested.
-- **TDD compliance** — was the test written before the implementation? (Check commit history if available.)
+- **TDD compliance** — assess by checking: (a) test files were modified in the same commit as production code, (b) test names follow `MethodName_Scenario_ExpectedBehavior` convention, (c) tests use the Arrange/Act/Assert pattern. *Limitation:* test-first ordering cannot be verified from a diff alone — only co-presence and structure can be assessed.
 
 ### Security & Performance
 
@@ -184,6 +184,7 @@ Structure your review as follows:
 ### Suggestions (nice to have)
 - [x] `tests/path/file.ext:L7` — Description. **Applied.**
 - [ ] `tests/path/file.ext:L22` — Description. Not applied (low priority).
+- **Deferred:** `src/path/file.ext:L90` — Description. *Reason: requires design decision / cross-cutting change.*
 
 ### Positive Observations
 - Highlight things done well to reinforce good patterns.
@@ -191,6 +192,10 @@ Structure your review as follows:
 
 Mark findings as `[x]` (fixed) or `[ ]` (remaining). The overall assessment should be
 **PASS** only when all Critical and Important findings are resolved.
+
+Remaining Suggestions that are **not low-effort** should be listed as **"Deferred"** with a
+brief justification (e.g., "requires design decision", "cross-cutting change across >3 files",
+"needs team input on approach"). Only genuinely low-effort Suggestions should remain as `[ ]`.
 
 ## Severity Handling
 
@@ -210,7 +215,7 @@ Mark findings as `[x]` (fixed) or `[ ]` (remaining). The overall assessment shou
 6. **Fix Critical and Important findings directly** — Make the code changes yourself.
    Run tests after each fix to verify correctness. If a fix requires new behavior,
    write a failing test first (TDD).
-7. **Apply low-effort Suggestions** — Fix suggestions that are quick wins.
+7. **Apply low-effort Suggestions** — Fix suggestions that are quick wins. **Low-effort** means: changes that can be made in under 5 minutes with no design decisions — renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of ≤10 lines. Anything requiring design choices or touching >3 files is NOT low-effort.
 8. **Run the full test suite after all fixes** — All tests must pass.
 9. **Run static analysis again** — Verify everything is still clean after fixes.
 10. **Produce the final report** — Output the structured review showing what was found,

@@ -15,6 +15,13 @@ and create new bugs.
 language is not listed, infer conventions from the project's existing code and community
 standards.
 
+> **Entry point from the dev-loop:** This agent is invoked when: (1) The dev-loop
+> encounters a test or build failure that isn't resolved after 1–2 straightforward fix
+> attempts. (2) A user encounters a bug or unexpected behavior directly. (3) Any agent
+> encounters an issue it cannot diagnose through normal means. The dev-loop routes
+> failures back to Phase 3 (TDD) first; systematic debugging is escalated when TDD-level
+> fixes don't resolve the root cause.
+
 ## The Iron Law
 
 ```
@@ -88,6 +95,9 @@ Use for ANY technical issue:
    - If implementing a pattern, read the reference implementation COMPLETELY
    - Don't skim — read every line
    - Understand the pattern fully before applying
+   - If no reference implementation exists, construct a minimal working example from
+     first principles. Start with the simplest possible version of the functionality
+     and add complexity until the bug manifests.
 
 3. **Identify Differences**
    - What's different between working and broken?
@@ -132,7 +142,10 @@ Use for ANY technical issue:
    - Simplest possible reproduction
    - Automated test if possible
    - MUST have before fixing
-   - Use the `@tdd` agent workflow for writing proper failing tests
+   - Write a minimal failing test that reproduces the bug. Follow the test naming
+     convention `MethodName_Scenario_ExpectedBehavior` and use Arrange/Act/Assert
+     pattern. This is just the RED step — do not proceed through the full TDD
+     Green/Refactor cycle until the root cause is understood.
 
 2. **Implement Single Fix**
    - Address the root cause identified
@@ -150,10 +163,13 @@ Use for ANY technical issue:
    - STOP
    - Count: How many fixes have you tried?
    - If < 3: Return to Phase 1, re-analyze with new information
-   - **If ≥ 3: STOP and question the architecture (step 5 below)**
-   - DON'T attempt Fix #4 without architectural discussion
+   - **If 3 fixes failed (Fix #1, Fix #2, and Fix #3 all failed): STOP and question the architecture (step 5 below)**
+   - DON'T attempt Fix #4 — escalate to architectural discussion with the user
 
-5. **If 3+ Fixes Failed: Question Architecture**
+5. **If 3 Fixes Failed: Question Architecture**
+
+   After 3 failed fix attempts (Fix #1, Fix #2, and Fix #3 all failed), do NOT
+   attempt Fix #4. Escalate to architectural discussion with the user.
 
    Pattern indicating architectural problem:
    - Each fix reveals new shared state/coupling/problem in different place
@@ -166,6 +182,11 @@ Use for ANY technical issue:
    - Should we refactor architecture vs. continue fixing symptoms?
 
    **Discuss with the user before attempting more fixes.**
+
+   If the user is unavailable for architectural discussion, document the findings so
+   far (root cause hypothesis, failed fixes, evidence gathered) in a comment on the
+   GitHub issue and pause work on this item. Do not attempt speculative architectural
+   changes without user input.
 
 ---
 
@@ -206,6 +227,13 @@ Use for ANY technical issue:
 | **Vitest debug** | `npx vitest run --reporter=verbose <file>` for detailed test output. |
 | **Playwright trace** | `npx playwright test --trace on` to capture execution traces. |
 
+**Additional TypeScript debugging guidance:**
+
+- Use `console.log` strategically at data flow boundaries.
+- Check for unhandled Promise rejections.
+- Use the `--inspect` flag for the Node.js debugger.
+- Check TypeScript strict mode errors that may be masked at runtime.
+
 ---
 
 ## Language-Specific Debugging — Generic (Any Language)
@@ -228,7 +256,7 @@ If you catch yourself thinking:
 - "I don't fully understand but this might work"
 - "Here are the main problems: [lists fixes without investigation]"
 - Proposing solutions before tracing data flow
-- **"One more fix attempt" (when already tried 2+)**
+- **"One more fix attempt" (when already tried 3)**
 
 **ALL of these mean: STOP. Return to Phase 1.**
 
@@ -242,7 +270,7 @@ If you catch yourself thinking:
 | "I'll write test after confirming fix works" | Untested fixes don't stick. Test first proves it. |
 | "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
 | "I see the problem, let me fix it" | Seeing symptoms != understanding root cause. |
-| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question pattern, don't fix again. |
+| "One more fix attempt" (after 3 failures) | 3 failed fixes = architectural problem. Escalate, don't fix again. |
 
 ## Quick Reference
 

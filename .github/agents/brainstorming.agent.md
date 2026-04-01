@@ -37,8 +37,8 @@ You MUST complete these steps in order:
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2–3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
-5. **Write design doc** — save to `docs/plans/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Transition to implementation** — hand off to the `@dev-loop` agent or `@tdd` agent
+5. **Write design doc** — save to `docs/designs/YYYY-MM-DD-<topic>-design.md` and commit. Design docs capture architecture decisions and are distinct from PRDs (which capture user stories and acceptance criteria via `@prd`).
+6. **Transition to implementation** — hand off to `@dev-loop` for features requiring the full quality cycle (most work); use `@tdd` only for isolated, well-scoped additions that already have an approved design and don't need brainstorming/review/PR phases. For complex features requiring detailed user stories and acceptance criteria, recommend invoking `@prd` after the design is approved.
 
 ## The Process
 
@@ -64,8 +64,8 @@ You MUST complete these steps in order:
 ## After the Design
 
 **Documentation:**
-- Write the validated design to `docs/plans/YYYY-MM-DD-<topic>-design.md`
-- Commit the design document to git with: `docs(plan): add <topic> design`
+- Write the validated design to `docs/designs/YYYY-MM-DD-<topic>-design.md`
+- Commit the design document to git with: `docs(design): add <topic> design`
 
 **Implementation:**
 - Hand off to the `@dev-loop` agent to create an implementation plan and execute it

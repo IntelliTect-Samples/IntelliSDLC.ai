@@ -54,6 +54,8 @@ standards.
 
 ---
 
+Utility extraction paths follow each language's conventions. The paths below are defaults — use the project's existing structure if it differs.
+
 ## Language-Specific Guidance — C# / .NET
 
 ### Refactoring Scope
@@ -85,7 +87,10 @@ dotnet build --no-restore
 # Run all tests
 dotnet test --no-build --verbosity normal
 
-# Format check
+# Apply formatting fixes
+dotnet format
+
+# Verify no remaining formatting violations
 dotnet format --verify-no-changes
 ```
 
@@ -154,6 +159,10 @@ npx playwright test
 2. **Run the full test suite** after every change.
 3. **Follow the project's existing conventions** for file organization, naming, and code structure.
 4. **Extract shared code** into the project's conventional utility/helper locations.
+5. **Check for existing config** — look for `.editorconfig`, linter config, or formatter config in the repo root.
+6. **Infer from existing code** — observe indentation, naming, and module structure patterns already in use.
+7. **Run existing lint/format scripts** — check `package.json`, `Makefile`, or CI config for lint and format commands.
+8. **Fall back to community standards** — if no project conventions exist, apply the language community's standard style guide (e.g., PEP 8 for Python, gofmt for Go, rustfmt for Rust).
 
 ---
 
@@ -178,8 +187,12 @@ npx playwright test
 - [ ] Types tightened where applicable.
 - [ ] Code smells addressed (long parameter lists, feature envy, shotgun surgery).
 - [ ] All tests still green after refactoring (verified by running them, not assumed).
-- [ ] Code coverage maintained or improved.
+- [ ] Code coverage maintained or improved (if the project has coverage tracking configured; skip this check if no coverage tooling exists).
 - [ ] Changes committed with `refactor(scope): <description>`.
+
+### Cross-Level Test Refactoring
+
+When refactoring touches both unit tests and integration/functional tests, ensure changes are consistent across test levels. Extract shared test utilities to `tests/helpers/` (or the project's equivalent) rather than duplicating across test directories.
 
 ## Anti-Patterns to Avoid
 

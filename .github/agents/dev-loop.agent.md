@@ -37,9 +37,11 @@ Phases are classified as **interactive** or **autonomous**:
 | 8 – Cleanup | **Autonomous** | Runs after PR is merged or closed. Pauses for user confirmation only if force-delete (`-D`) is needed for an unmerged branch. |
 
 **Once the user approves the plan (end of Phase 2), execute Phases 3 through 7 as a
-single uninterrupted flow.** Do NOT pause between phases to ask for confirmation, report
-status, or wait for input. When a phase's exit criteria are met, immediately begin the
-next phase in the same response.
+continuous flow.** Autonomous decisions (such as skipping Phase 5 for non-user-facing
+changes) do not count as interruptions — make the decision and proceed without pausing
+for user input. Do NOT pause between phases to ask for confirmation, report status, or
+wait for input. When a phase's exit criteria are met, immediately begin the next phase
+in the same response.
 
 **Exception:** Phase 7 involves external async operations (CI runs, Copilot review).
 Waiting/polling for these external results is expected and does not count as "pausing".
@@ -303,8 +305,7 @@ After all review fixes are applied:
 - **Review found no Critical or Important issues** → proceed to Phase 7 (PR + Copilot Review).
 - **Review found and fixed issues** → loop back to **Phase 3** (TDD) to ensure the fixes
   haven't introduced regressions and the full quality cycle is re-applied.
-- **Maximum 3 loop iterations.** After 3 rounds, present remaining items to the user
-  for a decision.
+- **Maximum 3 loop iterations.** After 3 rounds, if Critical issues remain, escalate to the user with a summary of unresolved Critical findings. If only Medium/Low issues remain, proceed to PR with those items noted in the PR description.
 
 **Exit criteria:** Code review is clean (no Critical or Important findings), all tests green,
 static analysis clean.
@@ -374,6 +375,8 @@ gh pr edit <pr-number> --add-reviewer "@copilot"
 ```
 
 Wait for the review to complete (poll with `gh pr view <pr-number>` or check review status).
+
+**Timeout guidance:** Wait up to 10 minutes for CI workflows to complete. Wait up to 5 minutes for Copilot review after requesting. If either times out, check the GitHub Actions dashboard / PR review tab and report status to the user.
 
 #### Step 6: Address review feedback (internal loop)
 
@@ -445,11 +448,14 @@ After the Copilot review loop completes with zero unresolved threads, run the CL
 dry-run mode against local sample emails to verify the full pipeline produces a valid
 digest preview. This is the final validation after all code changes are complete.
 
-1. **Run the dry run command:**
+1. **Run the dry run command** (use the language-appropriate command):
 
-   ```bash
-   dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview
-   ```
+   | Language | Command |
+   |---|---|
+   | C# / .NET | `dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview` |
+   | TypeScript | `npm run build && npm run start -- --dry-run --output-dir ./preview` |
+   | PowerShell | `pwsh -File ./run.ps1 -DryRun -OutputDir ./preview` |
+   | Generic | Check for a `run` script or `Makefile` target that supports a dry-run flag |
 
 2. **Read the full console output** and check the exit code.
    - Exit code 0 = success.
@@ -514,7 +520,7 @@ product spec updated, dry run passes and results appended to PR.
 
 ### Phase 8 — Branch + Worktree Cleanup
 
-This phase runs **after the PR is merged or closed** — not immediately after Phase 7.
+Phase 8 runs after the PR is merged or closed. The agent does not decide when to merge — that is the user's decision. Once the PR state changes to merged or closed, proceed with cleanup.
 
 1. Switch to the repository root (ensure you are NOT inside the worktree):
    ```bash
@@ -568,7 +574,7 @@ dotnet format
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 
 # Reload module
-Import-Module ./src/GoogleRecorderClient/GoogleRecorderClient.psd1 -Force -ErrorAction Stop
+Import-Module ./src/GmailSynthesizer/GmailSynthesizer.psd1 -Force -ErrorAction Stop
 
 # Run all tests
 Invoke-Pester -Path tests/ -Output Detailed

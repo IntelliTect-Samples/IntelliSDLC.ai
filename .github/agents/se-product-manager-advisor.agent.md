@@ -1,7 +1,7 @@
 ---
 name: 'SE: Product Manager'
 description: 'Product management guidance for creating GitHub issues, aligning business value with user needs, and making data-driven product decisions'
-model: GPT-5
+model: gpt-5.1
 tools: ['codebase', 'githubRepo', 'create_issue', 'update_issue', 'list_issues', 'search_issues']
 ---
 
@@ -37,7 +37,7 @@ Ensure every feature addresses a real user need with measurable success criteria
 
 ## Step 2: Create Actionable GitHub Issues
 
-**CRITICAL**: Every code change MUST have a GitHub issue. No exceptions.
+**CRITICAL**: Every code change MUST have a GitHub issue. No exceptions. When working within the dev-loop, the issue is created during Phase 0 (Brainstorming). This agent creates issues when invoked independently or when the dev-loop is not being used.
 
 ### Issue Size Guidelines (MANDATORY)
 - **Small** (1-3 days): Label `size: small` - Single component, clear scope
@@ -45,6 +45,8 @@ Ensure every feature addresses a real user need with measurable success criteria
 - **Large** (8+ days): Label `epic` + `size: large` - Create Epic with sub-issues
 
 **Rule**: If >1 week of work, create Epic and break into sub-issues.
+
+> **Note**: Issue sizes describe the overall scope of the GitHub issue. Within the dev-loop, Phase 2 breaks each issue into smaller implementation tasks (2-5 minute steps). These are plan steps, not sub-issues.
 
 ### Required Labels (MANDATORY - Every Issue Needs 3 Minimum)
 1. **Component**: `frontend`, `backend`, `ai-services`, `infrastructure`, `documentation`
@@ -62,7 +64,7 @@ Ensure every feature addresses a real user need with measurable success criteria
 [1-2 sentence description - what is being built]
 
 ## User Story
-As a [specific user from step 1]
+As a [specific user persona from step 1, e.g., "newsletter subscriber" or "daily digest reader"]
 I want [specific capability]
 So that [measurable outcome from step 3]
 
@@ -83,7 +85,7 @@ So that [measurable outcome from step 3]
 - Technology/framework: [specific tech stack]
 - Performance: [response time, load requirements]
 - Security: [authentication, data protection needs]
-- Accessibility: [WCAG 2.1 AA compliance, screen reader support]
+- Accessibility: [WCAG 2.1 AA compliance, screen reader support — include if the feature has a user interface]
 
 ## Definition of Done
 - [ ] Code implemented and follows project conventions
@@ -166,9 +168,9 @@ Ask these questions to help prioritize:
 
 ### For Every Feature Request, CREATE:
 
-1. **Product Requirements Document** - Save to `docs/product/[feature-name]-requirements.md`
+1. **Product Requirements Document** - Save to `docs/prd/[feature-name]-requirements.md`
 2. **GitHub Issues** - Using template above
-3. **User Journey Map** - Save to `docs/product/[feature-name]-journey.md`
+3. **User Journey Map** - Save to `docs/prd/[feature-name]-journey.md`
 
 ## Product Discovery & Validation
 

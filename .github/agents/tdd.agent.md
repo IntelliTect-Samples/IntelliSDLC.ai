@@ -54,8 +54,9 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
 - Each test must:
   - Have a clear, descriptive name describing the expected behavior.
   - Assert **one logical behavior** per test case.
+    > One logical behavior may require multiple assertions when they collectively verify a single outcome. For example, testing that a method returns a correctly populated object may assert multiple properties — this is one behavior (correct object creation). However, testing that a method returns the right object AND logs the right message is two behaviors and should be two tests.
   - Group related behaviors together (e.g., nested classes in xUnit, `Describe`/`Context` blocks in Pester, `describe` in Vitest).
-  - Use **real code, not mocks** — mock only when absolutely unavoidable (network calls, external APIs).
+  - **Prefer real implementations over mocks.** Use mocks only when the real dependency is impractical in tests: network calls (Gmail API, Azure OpenAI), file system operations with side effects, or time-dependent behavior. When mocking, verify the interaction contract, not implementation details.
 
 | Quality | Good | Bad |
 |---------|------|-----|
@@ -187,15 +188,22 @@ public class ContentExtractorTests
 }
 ```
 
+> **Namespace convention:** Test namespace mirrors source namespace with `.Tests.Unit` inserted:
+> `GmailSynthesizer.Services.ContentExtractor` → `GmailSynthesizer.Tests.Unit.Services.ContentExtractorTests`.
+
 ### Rules — C#
 
 | Rule | Detail |
 |---|---|
-| **Mock sparingly** | Use Moq only for network calls and external APIs (Gmail API, Azure OpenAI). Test real code paths. |
+| **Mock sparingly** | Prefer real implementations over mocks. Use Moq only when the real dependency is impractical: network calls (Gmail API, Azure OpenAI), file system operations with side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
 | **Isolation** | Each `[Fact]` or `[Theory]` must be independent. Use constructor or `IClassFixture<T>` for shared setup. |
 | **Compile after every step** | Run `dotnet build --no-restore` after RED, GREEN, and REFACTOR. Fix errors before proceeding. |
 | **Format check** | Run `dotnet format --verify-no-changes` to ensure consistent style. |
 | **Test fixtures** | Use saved EML files in `tests/fixtures/` for deterministic content extraction tests. |
+
+### Async Testing — C#
+
+For async methods, use `async Task` test methods (not `async void`). Use `await` directly — do not use `.Result` or `.Wait()` which can deadlock. Test cancellation by passing `CancellationToken` with a short timeout.
 
 ---
 
@@ -231,10 +239,10 @@ Invoke-Pester -Path tests/ -Output Detailed
 
 | Rule | Detail |
 |---|---|
-| **Mock sparingly** | Use Pester `Mock` only for network calls and external APIs. Test real code paths. |
+| **Mock sparingly** | Prefer real implementations. Use Pester `Mock` only when the real dependency is impractical: network calls, external APIs, file system side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
 | **Isolation** | Each `It` block must be independent. Use `BeforeEach` for per-test setup. |
 | **Lint after every step** | Run `Invoke-ScriptAnalyzer` after RED, GREEN, and REFACTOR. Fix warnings before proceeding. |
-| **Module reload** | Always `Import-Module ... -Force` before running tests to pick up changes. |
+| **Module reload** | Always `Import-Module ... -Force` before running tests to pick up changes. If the module import fails (e.g., module not found), check that the module path is correct and the module has been built. Run `dotnet build` or the appropriate build command before importing. |
 
 ---
 
@@ -271,9 +279,13 @@ npx vitest run
 
 | Rule | Detail |
 |---|---|
-| **Real code over mocks** | Only use `vi.mock()` or `vi.fn()` for network calls, browser APIs, or third-party SDKs. |
+| **Real code over mocks** | Prefer real implementations. Use `vi.mock()` or `vi.fn()` only when the real dependency is impractical: network calls, browser APIs, third-party SDKs, or time-dependent behavior. Verify interaction contracts, not implementation details. |
 | **TypeScript first** | All new source and test files must be `.ts`. Never hand-write `.js` files. |
 | **Compile after every step** | Run `npx tsc` after every RED, GREEN, and REFACTOR step. |
+
+### Async Testing — TypeScript
+
+For async functions, use `async/await` in test bodies. Mock async dependencies with `vi.fn().mockResolvedValue()` or `vi.fn().mockRejectedValue()`. Test error paths with `await expect(fn()).rejects.toThrow()`.
 
 ---
 
@@ -297,7 +309,7 @@ If the project uses a language not listed above:
 | **One behavior per cycle** | Do not batch multiple behaviors into a single RED→GREEN pass. |
 | **Smallest step possible** | Prefer many small cycles over a few large ones. |
 | **Tests are first-class code** | Apply the same quality standards (naming, no duplication, documentation) to test files. |
-| **Real code over mocks** | Use real code paths. Mock only network calls, external APIs, or things that cannot run in tests. |
+| **Real code over mocks** | Prefer real implementations over mocks. Use mocks only when the real dependency is impractical: network calls, external APIs, file system side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
 | **Preserve isolation** | Each test must be independent — no shared mutable state between tests. |
 | **Lint/compile after every step** | Run the project's lint and/or compile command after every RED, GREEN, and REFACTOR step. Fix errors before proceeding. |
 
@@ -355,7 +367,7 @@ Can't check all boxes? You skipped TDD. Start over.
 
 | Problem | Solution |
 |---------|----------|
-| Don't know how to test | Write the wished-for API. Write the assertion first. Ask the user. |
+| Don't know how to test | Write the wished-for API. Write the assertion first. Consider whether the code under test is designed for testability. If a class has too many dependencies or hidden side effects, the difficulty may indicate a design problem. Try: (1) Extract an interface for the dependency. (2) Use constructor injection. (3) Break the method into smaller, independently testable pieces. Ask the user. |
 | Test too complicated | Design too complicated. Simplify the interface. |
 | Must mock everything | Code too coupled. Use dependency injection. |
 | Test setup is huge | Extract helpers. Still complex? Simplify the design. |

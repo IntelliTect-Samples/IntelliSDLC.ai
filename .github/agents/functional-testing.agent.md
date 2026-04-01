@@ -63,6 +63,14 @@ standards.
 
 ---
 
+## Integration Tests vs E2E Tests
+
+> **Integration tests** verify component interactions within the application
+> (C#: `tests/integration/`, TypeScript: `tests/integration/`). **E2E tests** verify
+> complete user flows through the UI (TypeScript/Playwright only: `tests/e2e/`).
+> Use integration tests for service-to-service validation; use E2E tests only when
+> testing browser-based UI flows.
+
 ## Language-Specific Guidance — C# / .NET (xUnit Integration Tests)
 
 ### Test Organization
@@ -141,6 +149,19 @@ dotnet test --no-build --verbosity normal --filter "Category=Integration"
 dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~ContentExtractionFlowTests"
 ```
 
+> **Important:** The `--filter "Category=Integration"` flag matches tests whose class (or
+> method) is decorated with `[Trait("Category", "Integration")]`. Without this trait,
+> tests will be silently excluded from integration runs. Always add the trait to your
+> test class:
+>
+> ```csharp
+> [Trait("Category", "Integration")]
+> public class ContentExtractionFlowTests : IClassFixture<TestFixtureSetup>
+> {
+>     // ...
+> }
+> ```
+
 ---
 
 ## Language-Specific Guidance — PowerShell (Pester Integration Tests)
@@ -160,6 +181,26 @@ Invoke-Pester -Path tests/integration/ -Output Detailed
 
 # Run a specific test file
 Invoke-Pester -Path tests/integration/<Feature>.Tests.ps1 -Output Detailed
+```
+
+### Test File Template — PowerShell
+
+```powershell
+Describe 'Feature: <FeatureName>' {
+    BeforeAll {
+        # Setup: import module, create test fixtures
+    }
+    
+    It 'should <expected behavior> when <condition>' {
+        # Arrange
+        # Act  
+        # Assert
+    }
+    
+    AfterAll {
+        # Cleanup
+    }
+}
 ```
 
 ---
@@ -228,6 +269,18 @@ When a test fails, follow this process **before proposing any fix**:
 4. **Trace the cause** — is it a setup issue, a timing issue, a wrong assertion, or a real application bug?
 5. **Fix one thing at a time** — don't change multiple things and hope something works.
 
+## When to Skip Functional Testing
+
+Skip functional testing when **ALL** changed files are:
+
+- Unit test helpers (e.g., `tests/unit/**/TestHelpers.cs`, mock builders)
+- Internal/private utilities not exposed via any public API
+- Configuration changes that don't affect runtime behavior (e.g., `.editorconfig`, CI YAML formatting)
+- Documentation-only changes (e.g., `README.md`, `docs/`, comment-only edits)
+
+**When in doubt, write the test.** If even one changed file touches a public API, service
+boundary, or user-facing behavior, functional tests are required.
+
 ## Checklist (per test)
 
 - [ ] Feature / user flow clearly defined.
@@ -240,5 +293,6 @@ When a test fails, follow this process **before proposing any fix**:
 
 ## When You Are Done
 
-After completing functional tests, invoke the **refactor** agent to check for duplication
-across test files (shared fixtures, helpers, page objects).
+After completing functional tests, the **dev-loop orchestrator** (not this agent) invokes
+the refactor agent to check for duplication across test files (shared fixtures, helpers,
+page objects). This agent should **NOT** invoke `@refactor` directly.
