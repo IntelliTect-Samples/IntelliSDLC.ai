@@ -28,11 +28,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.x"
+
+      - name: Restore .NET dependencies
+        run: dotnet restore GmailSynthesizer.slnx
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
-      # Note: This project uses vanilla JavaScript without a package.json.
-      # The test files use Node.js built-in modules (fs, path) and don't require npm install.
-      # If dependencies are added in the future, add an npm install step here.
+      - name: Install Node.js dependencies
+        run: npm ci
