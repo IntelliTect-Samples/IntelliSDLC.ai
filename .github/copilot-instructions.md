@@ -347,6 +347,7 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `code-review.agent.md` | Independent code review using a different LLM (`o4-mini`) — reviews AND fixes issues directly |
 | `systematic-debugging.agent.md` | 4-phase root cause investigation — no fixes without understanding the problem first |
 | `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup |
+| `instructions.agent.md` | Maintain all instruction files and tooling config across platforms — lightweight workflow with consistency review |
 
 ### Development Workflow
 
@@ -360,6 +361,7 @@ Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test
 
 Use `@brainstorming` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
+Use `@instructions` for any changes to agent files, instruction files, or platform config.
 
 - **Issue-before-implementation:** When using plan mode before launching a dev loop,
   create the GitHub issue at the end of planning (after user approval, before

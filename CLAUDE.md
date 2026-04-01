@@ -23,7 +23,7 @@ git config core.hooksPath .githooks
 - **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) — code style, testing conventions, branching strategy, commit format, and agent workflow.
 - **TDD guidelines**: [`.github/instructions/tdd.instructions.md`](./.github/instructions/tdd.instructions.md) — mandatory Red→Green→Refactor process.
 - **TypeScript/JS conventions**: [`.github/instructions/typescript.instructions.md`](./.github/instructions/typescript.instructions.md)
-- **Agent prompts**: [`.github/agents/`](./.github/agents/) — specialized agents for brainstorming, TDD, refactoring, code review, debugging, and orchestration.
+- **Agent prompts**: [`.github/agents/`](./.github/agents/) — specialized agents for brainstorming, TDD, refactoring, code review, debugging, orchestration, and instruction maintenance.
 
 ## Repository Structure
 
