@@ -456,6 +456,10 @@ For each **unresolved review thread** on the PR — from Copilot, human reviewer
 > introduce new findings. You must wait for the new review, then verify zero
 > unresolved threads remain.
 
+> **⚠️ Resolve ALL threads — including outdated ones.** When code changes cause a
+> review thread to become "outdated" (the commented code was modified), the thread
+> is still unresolved. Explicitly resolve it via the GraphQL API after pushing the fix.
+
 Also check for **regular PR comments** (not attached to code lines) and address those:
 ```bash
 gh pr view <pr-number> --comments
@@ -465,6 +469,10 @@ If Copilot review issues require code changes beyond formatting → route back t
 (TDD) to ensure the full quality cycle covers the fixes.
 
 #### Step 7: Dry Run Smoke Test
+
+> **Sequencing requirement:** Step 7 MUST NOT execute until Step 6 is fully complete —
+> all review threads resolved AND the latest Copilot review introduced zero new threads.
+> The dry run validates the final code; running it before reviews are clean defeats its purpose.
 
 After the Copilot review loop completes with zero unresolved threads, run the CLI in
 dry-run mode against local sample emails to verify the full pipeline produces a valid
@@ -513,11 +521,18 @@ digest preview. This is the final validation after all code changes are complete
 
 #### Step 8: Add Dry Run Results to PR
 
-After the dry run passes, append the dry run headline table as markdown to the PR body:
+After the dry run passes, append the dry run headline table as markdown to the PR body.
+**Dry run results must always be the last section in the PR body.**
+
+If a dry run was previously appended (e.g., from an earlier iteration before review fixes),
+**replace** the old dry run results with the fresh run. Do not stack multiple dry run sections.
 
 ```bash
-# Read the current PR body, then append the dry run results:
-gh pr edit <pr-number> --body "$(gh pr view <pr-number> --json body --jq .body)
+# Read the current PR body, strip any existing dry run section, then append fresh results:
+CURRENT_BODY=$(gh pr view <pr-number> --json body --jq .body)
+# Remove everything from "---\n\n## Dry Run Results" to end of body (if present):
+CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/^---$/,/^$/{ /^## Dry Run Results$/,$ d }')
+gh pr edit <pr-number> --body "$CLEAN_BODY
 
 ---
 
