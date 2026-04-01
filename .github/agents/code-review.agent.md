@@ -220,6 +220,20 @@ brief justification (e.g., "requires design decision", "cross-cutting change acr
 9. **Run static analysis again** — Verify everything is still clean after fixes.
 10. **Produce the final report** — Output the structured review showing what was found,
     what was fixed, and any remaining suggestions that were not applied.
+11. **Include re-review indicator** — End the report with `**Re-review recommended:** YES`
+    if any Critical or Important findings were fixed (fixes may have introduced new issues),
+    or `**Re-review recommended:** NO` if only Suggestions remain or the review is clean.
+
+## Re-Review Behavior
+
+When invoked as a subsequent review pass (pass 2 or 3 of the Phase 6 inner loop):
+
+1. **Focus on verifying** that previous fixes were correctly applied and didn't introduce
+   new issues.
+2. **Do not re-report** previously acknowledged Suggestions that were intentionally not
+   applied (marked as Deferred in the prior report).
+3. **Do report** any new issues introduced by the fixes — these are fresh findings.
+4. The assessment and re-review indicator follow the same rules as the initial pass.
 
 ## Red Flags
 
