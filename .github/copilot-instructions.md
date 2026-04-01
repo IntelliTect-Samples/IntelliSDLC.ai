@@ -276,10 +276,6 @@ Maintain a living product specification in `product-spec.md`.
 ## Branching Strategy
 
 - **Never commit directly to `main`.** Always create a feature branch first.
-- **All file changes must happen inside a worktree** (`.worktrees/` directory), never
-  in the main repository checkout. The only exception is session-state files (e.g.,
-  `plan.md` in `~/.copilot/session-state/`). If you are about to edit a file and your
-  current directory does not contain `.worktrees/`, stop and create a worktree first.
 - Branch naming: `<type>/<issue#>-<short-description>`
   Examples: `feat/42-content-extraction`, `fix/57-digest-template`.
 - All work happens on the feature branch. Merge to `main` only via pull request

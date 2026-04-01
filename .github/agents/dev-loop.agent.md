@@ -157,15 +157,6 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
 **Why worktrees?** They isolate feature work from the main working tree, avoiding
 stash/pop risks when switching between tasks and keeping `main` always clean.
 
-**⚠️ Worktree Enforcement Gate:**
-Before proceeding to Phase 2 (or making **any** file changes), verify:
-- Your current working directory path contains `.worktrees/`
-- `git branch --show-current` returns a branch name that is NOT `main`
-- If either check fails, **STOP** — create the worktree first. Do NOT proceed.
-
-This gate is **mandatory**. No exceptions. If you find yourself editing files outside
-a `.worktrees/` directory, you have skipped this phase — stop immediately and fix it.
-
 **Exit criteria:** You are working inside a `.worktrees/` directory on a feature branch, not `main`.
 
 ### Phase 2 — Write Implementation Plan
@@ -261,11 +252,10 @@ Follow the `@functional-testing` agent workflow (skip if the change is purely in
 
 **→ If functional tests fail → back to Phase 3 (write unit tests for the failing scenario, then fix). Otherwise proceed to Phase 6.**
 
-### Phase 6 — Code Review + Fix (Recursive)
+### Phase 6 — Code Review + Fix
 
-Phase 6 uses a **recursive inner loop** to catch cascading issues locally before pushing
-to GitHub. The goal is to be thorough enough that a subsequent GitHub Copilot PR review
-finds no additional issues.
+Phase 6 combines review and fix into a single step. The goal is to be thorough enough
+that a subsequent GitHub Copilot PR review finds no additional issues.
 
 #### Step 1: Run Static Analysis
 
@@ -291,21 +281,9 @@ npm run lint                        # Additional type-check (currently aliases t
 
 If static analysis produces findings, fix them now and re-run until clean.
 
-#### Step 2: AI Code Review (Inner Loop — up to 3 passes)
+#### Step 2: AI Code Review
 
-```
-Pass N (N = 1, 2, 3):
-  1. Invoke @code-review agent
-  2. Agent reviews + fixes Critical/Important findings directly
-  3. Run tests + static analysis after fixes
-  4. Read assessment from review output:
-     ├─ PASS (no Critical/Important) → exit inner loop → Step 3
-     ├─ Issues fixed, re-review recommended → next pass (N+1)
-     └─ Findings require new tests/behavior → route to Phase 3
-  5. After pass 3 without clean → escalate to user
-```
-
-**Pass 1:** Invoke the `@code-review` agent (runs on a different model — `gpt-4.1`):
+Invoke the `@code-review` agent (runs on a different model — `gpt-4.1`):
 
 1. The review agent examines all changed files (`git diff --name-only origin/main...HEAD`).
 2. It reviews: correctness, code quality, test quality, security, YAGNI compliance.
@@ -313,19 +291,10 @@ Pass N (N = 1, 2, 3):
 4. **The review agent fixes all Critical and Important findings directly** — it does not
    just report them. It makes the code changes, runs tests, and verifies the fixes.
 5. Suggestions are applied when low-effort and high-value.
-6. The report includes a `Re-review recommended: YES / NO` indicator.
 
-**Pass 2–3 (if re-review recommended):** Re-invoke `@code-review`:
-- Focus on verifying previous fixes were correct and finding new issues introduced by fixes.
-- Do not re-report previously acknowledged Suggestions that weren't applied.
-- Minor fixes (naming, formatting, small quality issues) are resolved within these passes.
+#### Step 3: Verify After Fixes
 
-**Route to Phase 3 only when** a finding requires new tests, new behavior, or architectural
-changes that can't be resolved within the review fix cycle.
-
-#### Step 3: Verify After Inner Loop
-
-After the inner loop exits (assessment = PASS):
+After all review fixes are applied:
 
 1. Run the full test suite — all tests must pass.
 2. Run static analysis again — must be clean.
@@ -333,15 +302,15 @@ After the inner loop exits (assessment = PASS):
 
 #### Expanding Loop Decision
 
-- **Inner loop exited with PASS** → proceed to Phase 7 (PR + Copilot Review).
-- **Inner loop found issues requiring new tests/behavior** → route to **Phase 3** (TDD).
-- **Inner loop hit max iterations (3) with unresolved issues** → escalate to user with
-  summary of remaining findings. If only Suggestions remain, proceed to Phase 7.
+- **Review found no Critical or Important issues** → proceed to Phase 7 (PR + Copilot Review).
+- **Review found and fixed issues** → loop back to **Phase 3** (TDD) to ensure the fixes
+  haven't introduced regressions and the full quality cycle is re-applied.
+- **Maximum 3 loop iterations.** After 3 rounds, if Critical issues remain, escalate to the user with a summary of unresolved Critical findings. If only Medium/Low issues remain, proceed to PR with those items noted in the PR description.
 
-**Exit criteria:** Code review is clean (no Critical or Important findings across the final
-pass), all tests green, static analysis clean.
+**Exit criteria:** Code review is clean (no Critical or Important findings), all tests green,
+static analysis clean.
 
-**→ If issues require new tests/behavior → back to Phase 3. If clean → proceed to Phase 7.**
+**→ If issues were found and fixed → back to Phase 3. If clean → proceed to Phase 7.**
 
 ### Phase 7 — PR + Copilot Review + Dry Run
 
@@ -465,10 +434,6 @@ For each **unresolved review thread** on the PR — from Copilot, human reviewer
 > introduce new findings. You must wait for the new review, then verify zero
 > unresolved threads remain.
 
-> **⚠️ Resolve ALL threads — including outdated ones.** When code changes cause a
-> review thread to become "outdated" (the commented code was modified), the thread
-> is still unresolved. Explicitly resolve it via the GraphQL API after pushing the fix.
-
 Also check for **regular PR comments** (not attached to code lines) and address those:
 ```bash
 gh pr view <pr-number> --comments
@@ -478,10 +443,6 @@ If Copilot review issues require code changes beyond formatting → route back t
 (TDD) to ensure the full quality cycle covers the fixes.
 
 #### Step 7: Dry Run Smoke Test
-
-> **Sequencing requirement:** Step 7 MUST NOT execute until Step 6 is fully complete —
-> all review threads resolved AND the latest Copilot review introduced zero new threads.
-> The dry run validates the final code; running it before reviews are clean defeats its purpose.
 
 After the Copilot review loop completes with zero unresolved threads, run the CLI in
 dry-run mode against local sample emails to verify the full pipeline produces a valid
@@ -530,18 +491,11 @@ digest preview. This is the final validation after all code changes are complete
 
 #### Step 8: Add Dry Run Results to PR
 
-After the dry run passes, append the dry run headline table as markdown to the PR body.
-**Dry run results must always be the last section in the PR body.**
-
-If a dry run was previously appended (e.g., from an earlier iteration before review fixes),
-**replace** the old dry run results with the fresh run. Do not stack multiple dry run sections.
+After the dry run passes, append the dry run headline table as markdown to the PR body:
 
 ```bash
-# Read the current PR body, strip any existing dry run section, then append fresh results:
-CURRENT_BODY=$(gh pr view <pr-number> --json body --jq .body)
-# Remove everything from "---\n\n## Dry Run Results" to end of body (if present):
-CLEAN_BODY=$(echo "$CURRENT_BODY" | sed '/^---$/,/^$/{ /^## Dry Run Results$/,$ d }')
-gh pr edit <pr-number> --body "$CLEAN_BODY
+# Read the current PR body, then append the dry run results:
+gh pr edit <pr-number> --body "$(gh pr view <pr-number> --json body --jq .body)
 
 ---
 
@@ -680,7 +634,6 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 7. **Never write to `main`** — all commits go to the feature branch. Create a PR when the loop completes.
 8. **Verify before claiming** — run commands, read output, present evidence. No "should work" claims.
 9. **Surface blockers early** — if a review finding is ambiguous or requires a design decision, ask the user before proceeding.
-10. **Complete the Pre-Completion Checklist** — before calling `task_complete`, verify every item in the checklist below. Never call `task_complete` early or skip phases.
 
 ## Loop Status Template
 
@@ -691,8 +644,6 @@ Use this template to report progress to the user at each phase:
 
 **Branch:** `<branch-name>`
 **Worktree:** `.worktrees/<name>`
-**Issue:** #<issue-number>
-**PR:** #<pr-number> (<pr-url>)
 **Loop iteration:** <N> of 3 max
 
 | Phase | Status | Notes |
@@ -720,30 +671,17 @@ successful dry run:
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
 3. **Present the dry run headline table** (from Phase 7, Step 7) so the user can visually verify the digest output.
-4. Present a summary to the user using this format:
-
-   ```markdown
-   ## ✅ Dev Loop Complete
-
-   **PR:** #<pr-number> — <pr-url>
-   **Issue:** Closes #<issue-number>
-   **Branch:** `<branch-name>` | **Worktree:** `.worktrees/<name>`
-
-   ### What was done
-   - **Implemented:** <feature summary>
-   - **Refactored:** <refactoring summary, or "N/A">
-   - **Functional tests:** <tests added, or "Skipped — <reason>">
-   - **Product spec:** <what was added/updated, or "No changes">
-
-   ### Quality evidence
-   - **Loop iterations:** <N>
-   - **Tests:** <X> passed, 0 failed
-   - **Dry run:** <count> headlines extracted | [Preview](<file-uri>)
-   - **Copilot review:** 0 unresolved threads (final round)
-   ```
-
-   **The PR number and issue number MUST appear as the first two lines of the summary.**
-   Never omit the PR number — retrieve it from the `gh pr create` output or `gh pr list --head <branch>`.
+4. Present a summary to the user listing:
+   - The feature branch name and worktree location.
+   - What was implemented.
+   - What was refactored.
+   - What functional tests were added.
+   - How many loop iterations it took.
+   - Dry run result (number of headlines extracted, or skip reason).
+   - **Dry run preview link** — the `file://` URI to the HTML preview file generated by the dry run.
+   - What was added to the product spec.
+   - The PR number and linked issue number.
+   - Copilot review status (zero unresolved threads after final review round).
 5. **Do NOT merge to `main` directly** — the user decides when to merge.
 6. **Present a Phase 8 cleanup reminder** — display the exact commands the user should run
    after merging or closing the PR. Fill in the actual worktree name and branch name from
@@ -760,26 +698,3 @@ successful dry run:
    > ```
    >
    > *(Replace nothing — the agent must fill in the actual values above.)*
-
-## Pre-Completion Checklist (Mandatory)
-
-**Before calling `task_complete`, you MUST verify every item below.** If any item fails,
-do NOT call `task_complete` — go back and fix it first.
-
-```
-[ ] WORKTREE: All file changes were made inside a `.worktrees/` directory (not the main checkout)
-[ ] BRANCH: Current branch is NOT `main` (`git branch --show-current`)
-[ ] BUILD: `dotnet build --no-restore` (or language equivalent) passes with zero errors
-[ ] TESTS: `dotnet test --no-build` (or language equivalent) passes — all tests green
-[ ] ISSUE: A GitHub issue exists and is linked to the PR with `Closes #N`
-[ ] PR: A pull request has been created and pushed (`gh pr list --head <branch>` returns a result)
-[ ] PR NUMBER: The PR number is included in the completion summary (first line)
-[ ] CODE REVIEW: Code review (Phase 6) was completed — findings addressed or deferred
-[ ] COPILOT REVIEW: Copilot review was requested, all threads resolved, and re-review confirmed clean
-[ ] DRY RUN: Dry run executed (or explicitly skipped with documented reason)
-[ ] PRODUCT SPEC: `product-spec.md` updated if new behavior was added (or confirmed no update needed)
-```
-
-**Failure to complete this checklist is a bug.** The dev loop is not done until every
-applicable item is checked. Items may be marked N/A only with explicit justification
-(e.g., "Dry run: N/A — this change is docs-only with no runtime behavior").

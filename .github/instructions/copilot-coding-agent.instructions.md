@@ -3,164 +3,108 @@ description: 'Guidelines for the GitHub Copilot coding agent running autonomousl
 applyTo: '**/*'
 ---
 
-# GitHub Copilot Coding Agent
+# GitHub Copilot Coding Agent — Repository Guide
 
-> These instructions are specific to the GitHub Copilot coding agent running autonomously
-> on cloud runners. For general project conventions (code style, branching, commit format,
-> agent workflow), see [`.github/copilot-instructions.md`](../copilot-instructions.md).
+> These instructions are for the GitHub Copilot coding agent running autonomously in the cloud.
+> Read this file alongside `CLAUDE.md` and `.github/copilot-instructions.md` for full project context.
 
-## Environment
+## 1. Environment
 
-- Runs on **`ubuntu-latest`** GitHub Actions runners (Ubuntu Linux, bash shell)
-- **`.github/workflows/copilot-setup-steps.yml`** pre-installs the environment before
-  the agent starts:
-  - .NET **10.x** SDK
-  - `dotnet restore GmailSynthesizer.slnx` (dependencies pre-restored)
-  - Node.js **20**
-  - `npm ci` (Node dependencies pre-installed)
-- No Azure API keys are available — use `--stub-ai` for all dry-run validation
-  (see [Dry-Run Validation](#dry-run-validation))
-- The solution file is **`GmailSynthesizer.slnx`**
+- **Runner**: Ubuntu Linux (GitHub Actions `ubuntu-latest`)
+- **Shell**: bash
+- **.NET**: 10.x (pre-installed via `copilot-setup-steps.yml`)
+- **Node.js**: 20.x (pre-installed via `copilot-setup-steps.yml`)
+- **Dependencies**: `dotnet restore` and `npm ci` are run during setup — do not re-run them unless necessary
 
-## Key References
+## 2. Key References
 
-Read these before starting any task:
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | Repository orientation: structure, branching, workflow, essential commands |
+| `product-spec.md` | Living product specification — the source of truth for what the app does |
+| `.github/copilot-instructions.md` | Full coding conventions, style rules, testing practices |
+| `sample-appsettings.json` | Configuration template showing all required keys |
+| `GMAIL_SETUP.md` | Gmail OAuth setup (not needed for stub-ai dry runs) |
 
-- **[`CLAUDE.md`](../../CLAUDE.md)** — repo orientation, structure, and pre-commit checklist
-- **[`product-spec.md`](../../product-spec.md)** — living product specification; update it
-  with every feature change
-- **[`.github/copilot-instructions.md`](../copilot-instructions.md)** — code style, testing
-  conventions, branching strategy, commit format, and agent workflow
-- **[`.github/instructions/tdd.instructions.md`](tdd.instructions.md)** — mandatory TDD
-  process (Red → Green → Refactor)
-- **[`.github/agents/dev-loop.agent.md`](../agents/dev-loop.agent.md)** — the full 8-phase
-  expanding loop workflow that orchestrates all code-related work
+## 3. Build & Verify Commands
 
-## Build & Verify Commands
-
-Run these commands **after every change** to keep the working tree clean:
+Run these commands after **every** code change, in order:
 
 ```bash
-# Format (must produce no violations)
+# Format (must produce no changes)
 dotnet format GmailSynthesizer.slnx
 
-# Build (no restore needed — dependencies pre-installed)
+# Build
 dotnet build GmailSynthesizer.slnx --no-restore
 
-# Test (no build needed — always run after build)
+# Test
 dotnet test GmailSynthesizer.slnx --no-build --verbosity normal
 ```
 
-- **Never skip** format or tests before committing
-- Fix all format violations and test failures before proceeding to the next step
-- If `dotnet build` reports errors, resolve them before running tests
+Fix all format violations and test failures before committing. Never commit with failing tests or format errors.
 
-## Development Workflow (MANDATORY)
+## 4. Workflow
 
-**ALL code-related work (features, bug fixes, refactoring) MUST follow the Dev Loop
-defined in [`.github/agents/dev-loop.agent.md`](../agents/dev-loop.agent.md).**
+1. **Read the issue** — understand the acceptance criteria and implementation checklist fully before writing any code.
+2. **TDD** — write a failing test first (Red), then implement the minimal code to pass it (Green), then refactor (Refactor). See `.github/instructions/tdd.instructions.md`.
+3. **Implement** — make changes in `src/` and `tests/` only (see Scope Boundaries below).
+4. **Format** — run `dotnet format GmailSynthesizer.slnx` and fix any violations.
+5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description` (e.g., `feat(renderer): add Gmail source links`).
+6. **PR** — open a pull request with `Closes #<issue-number>` in the description so the issue is auto-closed on merge.
 
-The Dev Loop is an 8-phase expanding loop. Each phase is summarized below — see the
-full agent file for complete phase details, exit criteria, and the expanding loop pattern.
+## 5. Testing Expectations
 
-| Phase | Name | Summary |
-|---|---|---|
-| 0 | **Brainstorm** | Explore the design space and get user approval. Create or reference a GitHub issue to track the work. |
-| 1 | **Worktree** | Create a feature branch and git worktree in `.worktrees/`. All file changes happen inside the worktree — never on `main`. |
-| 2 | **Plan** | Break the approved design into bite-sized tasks with exact file paths, test code, and test commands. Save to `docs/designs/`. |
-| 3 | **TDD** | Red → Green cycle: write a failing test first, then write the minimal code to make it pass. Never skip watching the test fail. |
-| 4 | **Refactor** | Eliminate duplication and simplify. All tests must stay green after every refactoring step. |
-| 5 | **Functional Testing** | Validate user-facing behavior with integration or end-to-end tests. Skip only if the change is purely internal with no user-facing surface. |
-| 6 | **Code Review + Fix** | Run static analysis, then invoke the code review agent. Fix all Critical/Important findings. Up to 3 review passes. |
-| 7 | **PR + Copilot Review + Dry Run** | Rebase onto main, update `product-spec.md`, create PR with `Closes #N`, request Copilot review, iterate until clean, then run the dry-run smoke test. |
-| 8 | **Cleanup** | Remove the worktree and delete the feature branch after the PR merges. |
+- **Framework**: xUnit + Moq + FluentAssertions
+- **Location**: `tests/unit/Services/` (mirror `src/GmailSynthesizer/Services/`)
+- **Pattern**: Arrange / Act / Assert in every test method
+- **Naming**: `MethodName_Scenario_ExpectedBehavior` (e.g., `GetMessageUrl_NullInput_ThrowsArgumentNullException`)
+- **Isolation**: mock external dependencies (Gmail API, Azure OpenAI) with Moq; use real code paths for unit logic
+- **Fixtures**: deterministic test data lives in `tests/unit/Services/Fixtures/` (saved `.eml` files)
 
-**Phases 3–7 form an expanding loop** — each phase acts as a quality gate, and any
-failure routes back to **Phase 3 (TDD)**. The loop exits only when Copilot review
-passes with zero unresolved threads and the dry run succeeds.
+## 6. Quality Bar
 
-**Exception:** The ONLY exception is documentation-only changes that touch no code
-files (`.cs`, `.ts`, `.ps1`). For those, use the lightweight
-[`@instructions`](../agents/instructions.agent.md) agent workflow instead.
+All of the following must be true before opening a PR:
 
-See [`.github/agents/dev-loop.agent.md`](../agents/dev-loop.agent.md) for complete
-phase details, exit criteria, and the expanding loop pattern.
+- All tests pass (`dotnet test --no-build --verbosity normal`)
+- No format violations (`dotnet format --verify-no-changes`)
+- XML documentation comments (`/// <summary>`) on every public type and member
+- Methods ≤ 20 lines; single-purpose functions
+- Nullable reference types enabled (`#nullable enable`) in all new files
+- No new warnings introduced
 
-## Agent Reference
+## 7. Scope Boundaries
 
-| Agent | When to Use |
-|---|---|
-| [`dev-loop.agent.md`](../agents/dev-loop.agent.md) | ALL code-related work — the orchestrator |
-| [`brainstorming.agent.md`](../agents/brainstorming.agent.md) | Design exploration before committing to implementation |
-| [`tdd.agent.md`](../agents/tdd.agent.md) | Invoked by dev-loop for Red → Green → Refactor |
-| [`refactor.agent.md`](../agents/refactor.agent.md) | Invoked by dev-loop after each green step |
-| [`functional-testing.agent.md`](../agents/functional-testing.agent.md) | Invoked by dev-loop for user-facing validation |
-| [`code-review.agent.md`](../agents/code-review.agent.md) | Invoked by dev-loop for independent review |
-| [`systematic-debugging.agent.md`](../agents/systematic-debugging.agent.md) | Any bug or unexpected behavior |
-| [`instructions.agent.md`](../agents/instructions.agent.md) | Documentation/instruction-only changes |
+| Directory | Action |
+|-----------|--------|
+| `src/GmailSynthesizer/` | ✅ Core library — primary work area |
+| `src/GmailSynthesizer.Cli/` | ✅ CLI entry point — modify when adding CLI flags |
+| `tests/unit/` | ✅ Unit tests — always update alongside production code |
+| `product-spec.md` | ✅ Update when adding or changing features |
+| `pwa/` | ❌ Ignore — not part of the active C# application |
+| `.github/workflows/` | ❌ Do not modify CI/CD workflows |
+| `node_modules/` | ❌ Do not modify; managed by `npm ci` |
 
-## Testing Expectations
+## 8. Dry-Run Validation
 
-Follow the full TDD conventions in [`.github/copilot-instructions.md`](../copilot-instructions.md)
-and [`tdd.instructions.md`](tdd.instructions.md). Key requirements:
-
-- Framework: **xUnit** with **Moq** for mocking
-- Pattern: **Arrange / Act / Assert** in every test method
-- Naming: **`MethodName_Scenario_ExpectedBehavior`**
-  (e.g., `ParseEmail_WhenSubjectMissing_ReturnsEmpty`)
-- Location: `tests/unit/` mirroring `src/GmailSynthesizer/`
-  (e.g., `src/GmailSynthesizer/Services/Foo.cs` → `tests/unit/Services/FooTests.cs`)
-- File naming: `*Tests.cs`
-- Mock all external dependencies (Gmail API, Azure OpenAI) — never make real network
-  calls in unit tests
-- Use **`FluentAssertions`** for readable assertions where available
-
-## Quality Bar
-
-Every PR must satisfy all of the following before merging:
-
-- **All tests pass** — `dotnet test` exits with code 0
-- **No format violations** — `dotnet format --verify-no-changes` exits with code 0
-- **XML documentation comments** (`/// <summary>`) on every public type and member
-- **Methods ≤ 20 lines** — extract helpers when logic grows
-- **Nullable reference types enabled** — `#nullable enable` in all new files
-- No new compiler warnings introduced
-
-## Scope Boundaries
-
-- **Focus on:** `src/` (production code) and `tests/` (unit tests)
-- **Ignore `pwa/`** — this directory exists in the repo but is not part of the active
-  C# application
-- Do not modify files outside the issue scope without a clear reason
-
-## Dry-Run Validation
-
-Validate end-to-end behavior without Azure credentials using the `--stub-ai` flag:
+Validate CLI output without any Azure or Gmail credentials:
 
 ```bash
 dotnet run --no-build --project src/GmailSynthesizer.Cli -- \
-  --stub-ai \
-  --input-dir SampleEmails \
-  --recursive \
-  --output-dir ./dry-run-output \
-  --non-interactive
+  --stub-ai --input-dir SampleEmails --recursive \
+  --output-dir ./dry-run-output --non-interactive
 ```
 
-- **`--stub-ai`** replaces all Azure OpenAI calls with deterministic stubs — no API
-  keys required
-- Sample emails are in `SampleEmails/`; output is written to `./dry-run-output/`
-- Run this after tests pass to confirm the CLI integrates correctly end-to-end
+- `--stub-ai` uses a local stub instead of Azure OpenAI — no API keys needed
+- `--input-dir SampleEmails` processes the checked-in sample `.eml` files
+- `--output-dir ./dry-run-output` writes digest output to a local directory instead of sending email
+- Check `./dry-run-output/` for generated HTML digests and `digest-preview.md`
 
-## What NOT to Do
+## 9. What NOT to Do
 
-- **Do not commit directly to `main`** — always use a feature branch and open a PR
-- **Do not bypass the Dev Loop for code changes** — all code-related work must follow
-  the full Dev Loop (Phases 0–8). Skipping phases produces incomplete quality coverage.
-- **Do not modify workflow files** (`.github/workflows/`) — these are managed separately
-- **Do not add NuGet or npm packages** without clear justification tied to the issue
-  requirements
-- **Do not skip tests** — never comment out, delete, or `[Skip]` tests to make the
-  build green
-- **Do not commit secrets** — no API keys, tokens, connection strings, or credentials
-  in any file
-- **Do not modify `pwa/`** unless the issue explicitly targets that directory
+- **Don't modify `.github/workflows/`** — CI/CD workflows are managed separately and changes can break the pipeline
+- **Don't add NuGet or npm packages** without explicit justification in the issue; prefer existing dependencies
+- **Don't skip tests** — every new behavior must have a corresponding test; never commit with failing tests
+- **Don't commit secrets** — no API keys, credentials, or tokens in source code; use `sample-appsettings.json` as a template only
+- **Don't run `dotnet restore` or `npm ci`** during development — dependencies are pre-installed in the runner environment
+- **Don't touch `pwa/`** — the Progressive Web App directory is out of scope for C# application work
+- **Don't use `throw ex;`** inside catch blocks — use `throw;` to preserve the call stack

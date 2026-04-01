@@ -116,9 +116,6 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 ## Branching & Commits
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
-- **All file changes must happen inside `.worktrees/`** — never edit files in the main
-  checkout. Before making any code change, verify your working directory contains
-  `.worktrees/`. If it doesn't, create a worktree first.
 - Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch> main`.
 - Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
