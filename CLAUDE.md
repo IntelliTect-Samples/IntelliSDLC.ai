@@ -2,6 +2,15 @@
 
 This file provides orientation for AI assistants working in this repository.
 
+## GitHub Repository
+
+- **Owner:** `IntelliTect-Samples`
+- **Repo:** `GmailNewsClient`
+- **URL:** https://github.com/IntelliTect-Samples/GmailNewsClient
+
+When calling GitHub MCP tools, always use `owner: "IntelliTect-Samples"` and `repo: "GmailNewsClient"`.
+Do **not** infer these values from the local directory name.
+
 ## ⛔ Before ANY Commit
 
 **STOP and verify these before every `git commit`:**
