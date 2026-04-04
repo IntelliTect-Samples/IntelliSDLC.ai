@@ -127,7 +127,7 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
   See the "Concurrent Session Safety" section in `.github/copilot-instructions.md` for details.
 - **After a PR closes**, clean up the worktree and local branch in this order:
   1. Ensure your shell is **not** inside the worktree (e.g., `cd` back to the repo root).
-  2. Unlock and remove the worktree: `git worktree unlock .worktrees/<issue#>-<name> && git worktree remove .worktrees/<issue#>-<name>`.
+  2. Unlock if needed, then remove the worktree: `git worktree unlock .worktrees/<issue#>-<name> || true; git worktree remove .worktrees/<issue#>-<name>`.
   3. Switch to `main` and pull latest: `git checkout main && git pull`.
   4. If the branch was merged, delete it safely: `git branch -d <branch-name>`.
      - If the PR was closed **without** merging and you still want to delete the branch,
