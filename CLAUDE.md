@@ -15,12 +15,15 @@ Do **not** infer these values from the local directory name.
 
 **STOP and verify these before every `git commit`:**
 
-1. **You are NOT on `main`.** Run `git branch --show-current` — if it says `main`, stop
+1. **You are inside a worktree** (NOT the repo root). Run `git rev-parse --git-dir` — the
+   path must differ from `git rev-parse --git-common-dir`. If they are the same, you are in
+   the repo root: create a worktree immediately.
+2. **You are NOT on `main`.** Run `git branch --show-current` — if it says `main`, stop
    and create a worktree/feature branch first.
-2. **A GitHub issue exists** for the work you are committing. If not, create one first.
-3. **You plan to open a PR** linking to that issue. Never merge to `main` directly.
+3. **A GitHub issue exists** for the work you are committing. If not, create one first.
+4. **You plan to open a PR** linking to that issue. Never merge to `main` directly.
 
-A pre-commit hook (`.githooks/pre-commit`) enforces rule 1 automatically. Activate it:
+A pre-commit hook (`.githooks/pre-commit`) enforces rules 1 and 2 automatically. Activate it:
 
 ```powershell
 git config core.hooksPath .githooks
@@ -116,13 +119,15 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 ## Branching & Commits
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
-- Create worktrees in `.worktrees/`: `git worktree add .worktrees/<name> -b <branch> main`.
+- Create worktrees in `.worktrees/`: `git worktree add .worktrees/<issue#>-<name> -b <branch> main`.
 - Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-digest-template`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
+- **All commits must come from a worktree** — the pre-commit hook blocks commits from the repo root.
+  See the "Concurrent Session Safety" section in `.github/copilot-instructions.md` for details.
 - **After a PR closes**, clean up the worktree and local branch in this order:
   1. Ensure your shell is **not** inside the worktree (e.g., `cd` back to the repo root).
-  2. Remove the worktree: `git worktree remove .worktrees/<name>`.
+  2. Unlock and remove the worktree: `git worktree unlock .worktrees/<issue#>-<name> && git worktree remove .worktrees/<issue#>-<name>`.
   3. Switch to `main` and pull latest: `git checkout main && git pull`.
   4. If the branch was merged, delete it safely: `git branch -d <branch-name>`.
      - If the PR was closed **without** merging and you still want to delete the branch,

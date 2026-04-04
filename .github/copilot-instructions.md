@@ -281,13 +281,14 @@ Maintain a living product specification in `product-spec.md`.
 - All work happens on the feature branch. Merge to `main` only via pull request
   after the dev loop passes.
 - **Git worktrees must be placed in the `.worktrees/` subdirectory** of the repo
-  root (e.g., `git worktree add .worktrees/<name> <branch>`). This directory is
+  root (e.g., `git worktree add .worktrees/<issue#>-<name> -b <branch> main`). This directory is
   already in `.gitignore`.
 - **Clean up feature branches and their worktrees after the PR closes.**
   - First, remove any worktrees that are using the branch (the branch cannot be deleted while it is checked out):
     ```bash
     git worktree list
-    git worktree remove .worktrees/<worktree-name>
+    git worktree unlock .worktrees/<issue#>-<worktree-name>
+    git worktree remove .worktrees/<issue#>-<worktree-name>
     # Optionally prune any stale worktrees
     git worktree prune
     ```
@@ -304,6 +305,29 @@ Maintain a living product specification in `product-spec.md`.
       git pull
       git branch -D <branch-name>
       ```
+
+## Concurrent Session Safety
+
+Multiple Copilot sessions working in the repo root simultaneously will corrupt the shared
+git index and overwrite each other's files. The pre-commit hook enforces worktree usage as
+the primary protection, but all agents and developers must follow these rules:
+
+- **All commits must come from a worktree** — the pre-commit hook blocks every commit made
+  from the repo root. This is hard enforcement; it cannot be bypassed accidentally.
+- **One worktree per issue** — name worktrees `<issue#>-<short-description>` so two sessions
+  working on different issues never collide (`git` prevents the same branch from being
+  checked out in two worktrees simultaneously).
+- **Lock worktrees after creation** — run `git worktree lock .worktrees/<issue#>-<name>`
+  immediately after `git worktree add`. This prevents accidental `git worktree prune` from
+  removing an active worktree.
+- **Unlock before removal** — run `git worktree unlock .worktrees/<issue#>-<name>` before
+  `git worktree remove` during cleanup (Phase 8).
+- **`--no-verify` escape hatch** — the hook can be bypassed with `git commit --no-verify`.
+  Use this only in exceptional circumstances (e.g., a one-off hot fix directly on a branch
+  that truly cannot use a worktree). Never use it to work in the repo root.
+- **Concurrent work on the same issue is unsupported** — two sessions working on the same
+  issue number will attempt to check out the same branch, which git will reject. Coordinate
+  with other sessions before starting work.
 
 ## Plan Tracking
 
