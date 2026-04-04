@@ -287,7 +287,7 @@ Maintain a living product specification in `product-spec.md`.
   - First, remove any worktrees that are using the branch (the branch cannot be deleted while it is checked out):
     ```bash
     git worktree list
-    git worktree unlock .worktrees/<issue#>-<worktree-name>
+    git worktree unlock .worktrees/<issue#>-<worktree-name> || true
     git worktree remove .worktrees/<issue#>-<worktree-name>
     # Optionally prune any stale worktrees
     git worktree prune
