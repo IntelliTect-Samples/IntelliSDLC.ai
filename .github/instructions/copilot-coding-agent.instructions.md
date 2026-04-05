@@ -68,9 +68,10 @@ All of the following must be true before opening a PR:
 - All tests pass (`dotnet test --no-build --verbosity normal`)
 - No format violations (`dotnet format --verify-no-changes`)
 - XML documentation comments (`/// <summary>`) on every public type and member
-- Methods ≤ 20 lines; single-purpose functions
+- Methods <= 20 lines; single-purpose functions
 - Nullable reference types enabled (`#nullable enable`) in all new files
 - No new warnings introduced
+- PR body uses ASCII-only text (no em dashes, smart quotes, arrows -- see `copilot-instructions.md`)
 
 ## 7. Scope Boundaries
 

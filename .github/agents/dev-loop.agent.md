@@ -491,11 +491,24 @@ digest preview. This is the final validation after all code changes are complete
 
 #### Step 8: Add Dry Run Results to PR
 
-After the dry run passes, append the dry run headline table as markdown to the PR body:
+After the dry run passes, append the dry run headline table as markdown to the PR body.
 
-```bash
-# Read the current PR body, then append the dry run results:
-gh pr edit <pr-number> --body "$(gh pr view <pr-number> --json body --jq .body)
+> **⚠️ Encoding safety:** The `gh` CLI on Windows garbles Unicode characters (em dashes,
+> smart quotes, arrows) through CP437 codepage conversion, producing mojibake like `ΓÇö`
+> instead of `—`. Always use the **file-based approach** below and follow the
+> [ASCII-Only PR Body Text](#ascii-only-pr-body-text) rules from `copilot-instructions.md`.
+
+**Procedure:**
+
+1. **Build the updated body** in a variable (combining the existing body with dry run results).
+2. **Write to a temp file** with explicit UTF-8 encoding (no BOM).
+3. **Update the PR** using `--body-file`.
+4. **Validate** that the PR body contains no mojibake.
+
+```powershell
+# 1. Get current body and build the new content
+$currentBody = gh pr view <pr-number> --json body --jq '.body'
+$dryRunSection = @"
 
 ---
 
@@ -506,7 +519,41 @@ gh pr edit <pr-number> --body "$(gh pr view <pr-number> --json body --jq .body)
 | # | Headline | Source | Category | Blurb | Article URL |
 |---|----------|--------|----------|-------|-------------|
 | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
-"
+"@
+
+$newBody = "$currentBody$dryRunSection"
+
+# 2. Write with explicit UTF-8 (no BOM)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $newBody, $utf8NoBom)
+
+# 3. Update the PR
+gh pr edit <pr-number> --body-file pr-body.tmp
+
+# 4. Clean up
+Remove-Item pr-body.tmp -ErrorAction SilentlyContinue
+```
+
+On **Linux/macOS** (e.g., GitHub Copilot coding agent), the simpler bash approach is safe:
+
+```bash
+# Read current body, append dry run results, write to file:
+gh pr view <pr-number> --json body --jq .body > pr-body.tmp
+cat >> pr-body.tmp << 'EOF'
+
+---
+
+## Dry Run Results
+
+**Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
+
+| # | Headline | Source | Category | Blurb | Article URL |
+|---|----------|--------|----------|-------|-------------|
+| 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+EOF
+
+gh pr edit <pr-number> --body-file pr-body.tmp
+rm -f pr-body.tmp
 ```
 
 Use the actual dry run results from Step 7. The table should match the same format
@@ -514,7 +561,7 @@ presented to the user.
 
 **Exit criteria:** PR created with issue linked, CI workflows green, **all review threads
 resolved** (from all reviewers), latest Copilot review introduced zero new threads,
-product spec updated, dry run passes and results appended to PR.
+product spec updated, dry run passes and results appended to PR, **no mojibake in PR body**.
 
 **→ Proceed to Phase 8 (cleanup happens after the PR merges).**
 

@@ -352,6 +352,39 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
   (e.g., quick fixes, documentation-only changes, or single-file edits that
   do not stem from an approved plan).
 
+## ASCII-Only PR Body Text
+
+When writing PR descriptions, commit messages, issue bodies, or review comments through
+the CLI (`gh pr create`, `gh pr edit`, `gh issue create`), **use only ASCII characters**
+for text you compose. The `gh` CLI on Windows converts Unicode through the console's
+OEM codepage (CP437), producing mojibake (e.g., `ΓÇö` instead of `—`).
+
+**Replacements for common Unicode characters:**
+
+| Instead of | Use |
+|---|---|
+| `—` (em dash) | ` -- ` |
+| `–` (en dash) | `-` |
+| `→` (arrow) | `->` |
+| `'` `'` (smart quotes) | `'` |
+| `"` `"` (smart quotes) | `"` |
+| `≤` `≥` | `<=` `>=` |
+| `✅` `✨` (emoji) | Spell out or omit |
+
+**When including content from external sources** (e.g., dry run output with email
+headlines that may contain Unicode), write the full body to a temp file with explicit
+UTF-8 encoding and use `--body-file`:
+
+```powershell
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
+gh pr edit <number> --body-file pr-body.tmp
+Remove-Item pr-body.tmp
+```
+
+> **Never** pass Unicode text directly via `--body "..."` on Windows. The shell
+> will garble it through CP437 encoding.
+
 ## Commit Messages
 
 Follow Conventional Commits: `type(scope): description`
