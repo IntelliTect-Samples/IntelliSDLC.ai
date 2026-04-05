@@ -435,6 +435,22 @@ quality gate, and any failure routes back to Phase 3 (TDD).
 Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
 ```
 
+#### CI Failure Restart Loop
+
+After pushing to a PR branch, GitHub Actions runs the CI pipeline (build, test, format
+checks). **If CI fails, the dev cycle restarts:**
+
+1. **Push** — push commits to the PR branch.
+2. **CI runs** — GitHub Actions executes build, test, and format checks.
+3. **If CI fails** — investigate the failure logs, identify the root cause, fix the
+   issues locally, and push again. Route back to step 1.
+4. **If CI passes** — the PR is eligible for review and merge.
+
+This loop applies to every push — the initial PR push, pushes after rebasing onto
+`main`, and pushes after addressing code review feedback. A PR must **never** be
+merged while CI is red. Treat a CI failure exactly like a failing local test: the
+dev cycle is not complete until the pipeline is green.
+
 Use `@brainstorming` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
 Use `@instructions` for any changes to agent files, instruction files, or platform config.
