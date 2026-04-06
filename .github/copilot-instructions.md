@@ -455,6 +455,21 @@ Use `@brainstorming` when exploring a new idea before committing to implementati
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
 Use `@instructions` for any changes to agent files, instruction files, or platform config.
 
+#### Agent Output Linking
+
+In all agent summaries and Task Complete statements, **always use full GitHub links**
+for PR numbers, issue numbers, and branch names — never plain-text references like
+`#131` or `feat/126`. This makes output clickable and navigable.
+
+| Reference type | Format |
+|---|---|
+| Pull request | `[#131](https://github.com/IntelliTect-Samples/GmailNewsClient/pull/131)` |
+| Issue | `[#60](https://github.com/IntelliTect-Samples/GmailNewsClient/issues/60)` |
+| Branch | `` [`feat/126-newsletter-verification`](https://github.com/IntelliTect-Samples/GmailNewsClient/tree/feat/126-newsletter-verification) `` |
+
+Use the repository's `owner` (`IntelliTect-Samples`) and `repo` (`GmailNewsClient`)
+as defined in `CLAUDE.md` when constructing URLs.
+
 - **Issue-before-implementation:** When using plan mode before launching a dev loop,
   create the GitHub issue at the end of planning (after user approval, before
   implementation starts). This ensures the issue number is available when the feature
