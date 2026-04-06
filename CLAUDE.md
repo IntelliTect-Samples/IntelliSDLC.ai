@@ -79,9 +79,9 @@ GmailNewsClient/
 
 Use **PowerShell** as the default shell for all commands. If PowerShell is not available, fall back to bash.
 
-> **Encoding warning:** On Windows, the `gh` CLI garbles Unicode through CP437 codepage
-> conversion. See the **ASCII-Only PR Body Text** section in `copilot-instructions.md`
-> for required workarounds when writing PR/issue bodies.
+> **Encoding warning:** On Windows, the `gh` CLI garbles Unicode and collapses
+> newlines when body text is passed inline. See the **PR & Issue Body Formatting**
+> section in `copilot-instructions.md` -- always use `--body-file`.
 
 ## Essential Commands
 

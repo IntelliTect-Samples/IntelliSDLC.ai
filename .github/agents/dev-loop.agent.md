@@ -344,6 +344,9 @@ Add or revise entries in `product-spec.md` to reflect the new or changed behavio
   in Phase 0 and updated in Phase 2) so that merging the PR automatically closes
   the tracking issue.
 - If no issue was created earlier, create one now and link it.
+- **Always use `--body-file`** -- never pass the body inline via `--body "..."`.
+  Write the body to a temp file first (see `copilot-instructions.md` > PR & Issue
+  Body Formatting). Inline bodies lose newlines and garble Unicode.
 - **Do NOT merge to `main` directly** — the user decides when to merge.
 
 #### Step 4: Verify CI workflows pass

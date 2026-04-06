@@ -352,14 +352,44 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
   (e.g., quick fixes, documentation-only changes, or single-file edits that
   do not stem from an approved plan).
 
-## ASCII-Only PR Body Text
+## PR & Issue Body Formatting
 
-When writing PR descriptions, commit messages, issue bodies, or review comments through
-the CLI (`gh pr create`, `gh pr edit`, `gh issue create`), **use only ASCII characters**
-for text you compose. The `gh` CLI on Windows converts Unicode through the console's
-OEM codepage (CP437), producing mojibake (e.g., `ΓÇö` instead of `—`).
+When writing PR descriptions, issue bodies, or review comments through the CLI
+(`gh pr create`, `gh pr edit`, `gh issue create`), **always use `--body-file`**
+instead of inline `--body "..."`. Two problems occur with inline bodies:
 
-**Replacements for common Unicode characters:**
+1. **Collapsed newlines** -- the shell strips line breaks from multiline strings,
+   producing a single-line wall of text that renders as broken markdown.
+2. **CP437 mojibake** -- on Windows, the `gh` CLI converts Unicode through the
+   console's OEM codepage, producing garbled characters (e.g., `ΓÇö` instead of `—`).
+
+**Required workflow** for any `gh` command that accepts a body:
+
+```powershell
+# Write body to a temp file with explicit UTF-8 (no BOM)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
+
+# Pass via --body-file
+gh pr create --title "feat: ..." --body-file pr-body.tmp
+# or: gh pr edit <number> --body-file pr-body.tmp
+# or: gh issue create --title "..." --body-file pr-body.tmp
+
+# Clean up
+Remove-Item pr-body.tmp
+```
+
+On **Linux/macOS** (e.g., GitHub Copilot coding agent):
+
+```bash
+echo "$body" > pr-body.tmp
+gh pr create --title "feat: ..." --body-file pr-body.tmp
+rm -f pr-body.tmp
+```
+
+> **Never** pass body text inline via `--body "..."`. Always use `--body-file`.
+
+**ASCII replacements** for common Unicode characters (prevents CP437 mojibake):
 
 | Instead of | Use |
 |---|---|
@@ -370,20 +400,6 @@ OEM codepage (CP437), producing mojibake (e.g., `ΓÇö` instead of `—`).
 | `"` `"` (smart quotes) | `"` |
 | `≤` `≥` | `<=` `>=` |
 | `✅` `✨` (emoji) | Spell out or omit |
-
-**When including content from external sources** (e.g., dry run output with email
-headlines that may contain Unicode), write the full body to a temp file with explicit
-UTF-8 encoding and use `--body-file`:
-
-```powershell
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
-gh pr edit <number> --body-file pr-body.tmp
-Remove-Item pr-body.tmp
-```
-
-> **Never** pass Unicode text directly via `--body "..."` on Windows. The shell
-> will garble it through CP437 encoding.
 
 ## Commit Messages
 
