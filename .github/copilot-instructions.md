@@ -340,7 +340,7 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 - **Update the issue** as implementation phases complete (optional but encouraged).
 - **Link the PR to the issue** — include `Closes #<issue-number>` in the pull
   request description so that merging the PR automatically closes the issue.
-- If a plan was created outside the Dev Loop (e.g., via `@brainstorming` or
+- If a plan was created outside the Dev Loop (e.g., via `@plan` or
   manually), create the issue before or at the time the PR is opened.
 
 ## Autopilot Usage
@@ -413,7 +413,7 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 
 | Agent | Purpose |
 |---|---|
-| `brainstorming.agent.md` | Socratic design refinement — explore intent, propose approaches, get approval before coding |
+| `plan.agent.md` | Design and planning — Socratic questioning, approach trade-offs, GitHub issue creation. Replaces brainstorming + SE PM agents |
 | `tdd.agent.md` | Red → Green → Refactor cycle with Iron Law enforcement (no code without failing test) |
 | `functional-testing.agent.md` | Generate & maintain functional / E2E tests with verification-before-completion |
 | `refactor.agent.md` | Identify and remove duplication after each green step — YAGNI, simplicity first |
@@ -422,8 +422,7 @@ Dedicated agent prompts live in `.github/agents/` using the `.agent.md` format:
 | `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup |
 | `instructions.agent.md` | Maintain all instruction files and tooling config across platforms — lightweight workflow with consistency review |
 | `prd.agent.md` | Generate comprehensive Product Requirements Documents with user stories, acceptance criteria, and optional GitHub issue creation |
-| `se-product-manager-advisor.agent.md` | Product management guidance for GitHub issues, business value alignment, and data-driven product decisions |
-| `simple-app-idea-generator.agent.md` | Fun, interactive brainstorming for new application ideas — gathers requirements before handing off to `@brainstorming` or `@prd` |
+
 
 ### Development Workflow
 
@@ -451,7 +450,7 @@ This loop applies to every push — the initial PR push, pushes after rebasing o
 merged while CI is red. Treat a CI failure exactly like a failing local test: the
 dev cycle is not complete until the pipeline is green.
 
-Use `@brainstorming` when exploring a new idea before committing to implementation.
+Use `@plan` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
 Use `@instructions` for any changes to agent files, instruction files, or platform config.
 

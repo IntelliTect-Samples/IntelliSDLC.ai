@@ -101,7 +101,7 @@ Status Template between phases, present it **once** at the end of the full auton
 
 ### Phase 0 — Brainstorm (Design Before Code)
 
-Follow the `@brainstorming` agent workflow:
+Follow the `@plan` agent workflow:
 
 **Do NOT write any code or invoke any implementation until you have a design the user has approved.**
 
