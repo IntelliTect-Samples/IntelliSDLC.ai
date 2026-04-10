@@ -469,6 +469,38 @@ for PR numbers, issue numbers, and branch names — never plain-text references 
 Use the repository's `owner` (`IntelliTect-Samples`) and `repo` (`GmailNewsClient`)
 as defined in `CLAUDE.md` when constructing URLs.
 
+##### PR Summary Formatting
+
+When listing multiple PRs in Task Complete summaries (e.g., merge results, status
+reports), use a **numbered list format** — not a markdown table. Tables render poorly
+in terminal environments because the renderer sizes columns based on raw markdown
+length (including hidden URLs), making link columns disproportionately wide.
+
+Use this template for each row:
+
+```
+N. [`#NNN`](pr-url) · `branch-name-padded` · `CI-result-padded` · Result text
+```
+
+Rules:
+- **Numbered list**, not a table — avoids terminal column sizing issues.
+- **`·` separators** between fields for visual structure.
+- **Backtick-wrap PR numbers inside links**: `` [`#150`](url) `` — ensures consistent
+  code styling across all rows and preserves trailing-space padding for short numbers
+  (e.g., `` [`#2  `](url) ``).
+- **Pad all fields to fixed width** using trailing spaces inside backtick spans:
+  - PR numbers: pad to match the widest (e.g., 4 chars for `#150`).
+  - Branch names: pad to match the longest branch name.
+  - CI results: pad to match the widest CI field.
+- **Result text** is the final field, no padding needed.
+
+Example:
+
+```markdown
+1. [`#150`](https://github.com/.../pull/150) · `fix/149-flat-labels              ` · `✅ 762 tests ` · Merged (clean)
+2. [`#2  `](https://github.com/.../pull/2)   · `copilot/convert-to-typescript    ` · `✅ (isolated)` · Merged (draft → ready)
+```
+
 - **Issue-before-implementation:** When using plan mode before launching a dev loop,
   create the GitHub issue at the end of planning (after user approval, before
   implementation starts). This ensures the issue number is available when the feature
