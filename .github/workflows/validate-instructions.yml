@@ -138,7 +138,7 @@ jobs:
           errors=0
 
           for agent in .github/agents/*.agent.md; do
-            if ! head -1 "$agent" | grep -q '^---$'; then
+            if ! head -1 "$agent" | tr -d '\r' | grep -q '^---$'; then
               echo "::error::$agent is missing YAML frontmatter"
               errors=$((errors + 1))
               continue
