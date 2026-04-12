@@ -6,7 +6,7 @@ tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase"
 
 # Dev Loop Orchestrator
 
-You are the development loop orchestrator for the **IntelliAIInstructions** project.
+You are the development loop orchestrator for this project.
 You drive the full quality cycle, coordinating all agents in order, and repeating
 until the codebase is clean.
 
@@ -245,7 +245,7 @@ Follow the `@refactor` agent workflow:
 
 Follow the `@functional-testing` agent workflow (skip if the change is purely internal / non-user-facing):
 
-1. Explore the affected public surface (services, API endpoints, Azure Function triggers, etc.).
+1. Explore the affected public surface (services, API endpoints, etc.).
 2. Write or update functional / integration tests for the changed flows.
 3. Run the tests and fix any failures.
 
@@ -277,7 +277,7 @@ Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 ```bash
 npm run type-check                  # Type check (configured in package.json)
 npm run lint                        # Additional type-check (currently aliases type-check in package.json)
-# Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
+# Or, if needed: npx tsc --project tsconfig.json
 ```
 
 If static analysis produces findings, fix them now and re-run until clean.
@@ -329,12 +329,13 @@ git rebase origin/main
 If conflicts arise, resolve them and run the full test suite. If tests break after
 conflict resolution → back to Phase 3.
 
-#### Step 2: Update product specification
+#### Step 2: Update documentation
 
-Add or revise entries in `product-spec.md` to reflect the new or changed behavior:
+If the project has a product specification (e.g., `product-spec.md` or `README.md`),
+add or revise entries to reflect the new or changed behavior:
 - Feature name and description.
 - Acceptance criteria (derived from the tests written).
-- Any UI flows, CLI usage, or API surface changes.
+- Any API surface changes or usage changes.
 - Known limitations discovered during development.
 - Commit with: `docs(spec): add <feature> specification`.
 
@@ -446,56 +447,41 @@ gh pr view <pr-number> --comments
 If Copilot review issues require code changes beyond formatting → route back to **Phase 3**
 (TDD) to ensure the full quality cycle covers the fixes.
 
-#### Step 7: Dry Run Smoke Test
+#### Step 7: Dry Run Smoke Test (if applicable)
 
-After the Copilot review loop completes with zero unresolved threads, run the CLI in
-dry-run mode against local sample emails to verify the full pipeline produces a valid
-digest preview. This is the final validation after all code changes are complete.
+After the Copilot review loop completes with zero unresolved threads, run the application
+in a dry-run or smoke-test mode if the project supports one, to verify that the pipeline
+works end-to-end. This is the final validation after all code changes are complete.
 
-1. **Run the dry run command** (use the language-appropriate command):
+1. **Check for a dry-run capability** — look for CLI `--dry-run` flags, `Makefile` targets,
+   or scripts that support local verification without external dependencies.
+   - If no dry-run mechanism exists, **skip to Step 8**.
 
-   | Language | Command |
+2. **Run the dry-run command** (use the language-appropriate command):
+
+   | Language | Example Command |
    |---|---|
-   | C# / .NET | `dotnet run --project src/IntelliAIInstructions.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview` |
-   | TypeScript | `npm run build && npm run start -- --dry-run --output-dir ./preview` |
-   | PowerShell | `pwsh -File ./run.ps1 -DryRun -OutputDir ./preview` |
+   | C# / .NET | `dotnet run --project src/<ProjectName> -- --dry-run` |
+   | TypeScript | `npm run build && npm run start -- --dry-run` |
+   | PowerShell | `pwsh -File ./run.ps1 -DryRun` |
    | Generic | Check for a `run` script or `Makefile` target that supports a dry-run flag |
 
-2. **Read the full console output** and check the exit code.
+3. **Read the full console output** and check the exit code.
    - Exit code 0 = success.
-   - Any non-zero exit code = failure. See step 5 below for how to handle code-related vs environmental failures.
-   - The console output uses **markdown format** with collapsible `<details>` sections per category. Headlines are clickable links with source attribution and optional thumbnail images.
-   - A **combined HTML file** is saved to the output directory (single file, not per-category). The console prints a `file://` URI you can click to open it.
-   - A **`digest-preview.md`** file is also saved to the output directory.
+   - Any non-zero exit code = failure.
 
-3. **Extract every article item** from the digest preview output (headlines, sources, categories, blurbs, and article URLs).
-
-4. **Present results as a markdown table:**
-
-   ```markdown
-   ## Dry Run Results
-
-   **Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
-
-   | # | Headline | Source | Category | Blurb | Article URL |
-   |---|----------|--------|----------|-------|-------------|
-   | 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
-   ```
+4. **Present results** — summarize the dry run output.
 
 5. **On failure:** Report the failure clearly — include the command, exit code, and relevant
    error output. Distinguish between:
    - **Code-related failures** (e.g., pipeline logic errors, incorrect output) → route back
      to **Phase 3** (TDD) to fix via the normal quality cycle.
-   - **Environmental failures** (e.g., missing Azure OpenAI credentials, missing config files,
+   - **Environmental failures** (e.g., missing credentials, missing config files,
      infrastructure issues) → **pause for user decision** (do not attempt to auto-fix).
 
-**Prerequisites:**
-- `SampleEmails/` directory at the repo root with `.eml` files.
-- All required configuration (including Azure OpenAI credentials) must be present. Missing configuration is a failure — the CLI will exit with a non-zero exit code and display details about what is missing.
+#### Step 8: Add Results to PR (if dry run was performed)
 
-#### Step 8: Add Dry Run Results to PR
-
-After the dry run passes, append the dry run headline table as markdown to the PR body.
+After the dry run passes, append the dry run results as markdown to the PR body.
 
 > **⚠️ Encoding safety:** The `gh` CLI on Windows garbles Unicode characters (em dashes,
 > smart quotes, arrows) through CP437 codepage conversion, producing mojibake like `ΓÇö`
@@ -518,11 +504,7 @@ $dryRunSection = @"
 
 ## Dry Run Results
 
-**Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
-
-| # | Headline | Source | Category | Blurb | Article URL |
-|---|----------|--------|----------|-------|-------------|
-| 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+<paste dry run output here>
 "@
 
 $newBody = "$currentBody$dryRunSection"
@@ -549,11 +531,7 @@ cat >> pr-body.tmp << 'EOF'
 
 ## Dry Run Results
 
-**Emails processed:** <count> | **Items extracted:** <count> | **Digests generated:** <count>
-
-| # | Headline | Source | Category | Blurb | Article URL |
-|---|----------|--------|----------|-------|-------------|
-| 1 | <headline text> | <source name> | <category name> | <blurb text> | <article url> |
+<paste dry run output here>
 EOF
 
 gh pr edit <pr-number> --body-file pr-body.tmp
@@ -565,7 +543,7 @@ presented to the user.
 
 **Exit criteria:** PR created with issue linked, CI workflows green, **all review threads
 resolved** (from all reviewers), latest Copilot review introduced zero new threads,
-product spec updated, dry run passes and results appended to PR, **no mojibake in PR body**.
+dry run passes (if applicable) and results appended to PR, **no mojibake in PR body**.
 
 **→ Proceed to Phase 8 (cleanup happens after the PR merges).**
 
@@ -625,7 +603,8 @@ dotnet format
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 
 # Reload module
-Import-Module ./src/IntelliAIInstructions/IntelliAIInstructions.psd1 -Force -ErrorAction Stop
+# Reload module (if project is a PowerShell module)
+# Import-Module ./src/<ModuleName>/<ModuleName>.psd1 -Force -ErrorAction Stop
 
 # Run all tests
 Invoke-Pester -Path tests/ -Output Detailed
@@ -636,7 +615,7 @@ Invoke-Pester -Path tests/ -Output Detailed
 ```bash
 # Compile
 npm run type-check                  # Uses project's configured type check
-# Or, if needed: npx tsc --project pwa/tsconfig.json && npx tsc --project pwa/tsconfig.sw.json
+# Or, if needed: npx tsc --project tsconfig.json
 
 # Unit tests
 npx vitest run
@@ -721,7 +700,7 @@ successful dry run:
 
 1. Run the full test suite one final time using the language-appropriate commands.
 2. **Read the output** and confirm all tests pass and lint/compile is clean. Present the evidence.
-3. **Present the dry run headline table** (from Phase 7, Step 7) so the user can visually verify the digest output.
+3. **Present the dry run results** (from Phase 7, Step 7) so the user can visually verify the output.
 4. Present a summary to the user listing:
    - The feature branch name and worktree location.
    - What was implemented.

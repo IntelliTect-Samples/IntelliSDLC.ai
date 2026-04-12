@@ -21,9 +21,10 @@ fi
 
 # Restore NuGet packages
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
-if [ -f IntelliAIInstructions.slnx ]; then
-  echo "Restoring NuGet packages..." >&2
-  dotnet restore IntelliAIInstructions.slnx --verbosity quiet
+SLN=$(find . -maxdepth 1 -name '*.sln' -o -name '*.slnx' | head -1)
+if [ -n "$SLN" ]; then
+  echo "Restoring NuGet packages for $SLN..." >&2
+  dotnet restore "$SLN" --verbosity quiet
 fi
 
 # Export dotnet settings

@@ -1,14 +1,11 @@
-# IntelliAIInstructions — Copilot Workspace Instructions
+# Copilot Workspace Instructions
 
 ## Project Overview
 
-IntelliAIInstructions is a **C#/.NET** application that consolidates informational/newsletter-style
-emails into categorized digest emails. It runs as a timer-triggered Azure Function, connects
-to Gmail via the Gmail API, uses Azure OpenAI for AI-powered categorization and content
-extraction, and delivers consolidated digests back into the user's Gmail inbox.
+This is a **C#/.NET** project. Discover the project's purpose, architecture, and full
+technology stack from the solution/project files, `README.md`, and NuGet package references.
 
-Key technologies: C# / .NET 9+, Azure Functions, Gmail API (Google.Apis.Gmail.v1),
-Azure OpenAI (Azure.AI.OpenAI), MimeKit, AngleSharp, xUnit, Moq.
+Key baseline technologies: C# / .NET 9+, xUnit, Moq.
 
 ## Language Detection
 
@@ -203,8 +200,8 @@ README, and build files.
 | Integration tests | xUnit | `tests/integration/**/*Tests.cs` |
 | Functional tests | xUnit | `tests/functional/**/*Tests.cs` |
 
-- Unit test files mirror the source tree (e.g., `src/IntelliAIInstructions/Services/ContentExtractor.cs`
-  → `tests/unit/Services/ContentExtractorTests.cs`).
+- Unit test files mirror the source tree (e.g., `src/<ProjectName>/Services/FooService.cs`
+  → `tests/unit/Services/FooServiceTests.cs`).
 - Run tests with:
   ```bash
   dotnet build --no-restore
@@ -212,9 +209,8 @@ README, and build files.
   ```
 - Use **Arrange / Act / Assert** pattern in every test method.
 - Use **descriptive test method names**: `MethodName_Scenario_ExpectedBehavior`.
-- Mock external dependencies (Gmail API, Azure OpenAI) with Moq. Use real code paths
-  wherever possible.
-- Use **test fixtures** (saved EML files in `tests/fixtures/`) for deterministic testing.
+- Mock external dependencies with Moq. Use real code paths wherever possible.
+- Use **test fixtures** (saved data files in `tests/fixtures/`) for deterministic testing.
 - Use `IClassFixture<T>` or `ICollectionFixture<T>` for expensive shared setup.
 - Prefer `FluentAssertions` for readable assertions where available.
 
@@ -248,7 +244,7 @@ README, and build files.
 
 ## Product Specification
 
-Maintain a living product specification in `product-spec.md`.
+If the project maintains a living product specification (e.g., `product-spec.md`):
 
 - **Update the spec with every feature** — when a new behavior is implemented,
   document it in the spec.
@@ -259,8 +255,8 @@ Maintain a living product specification in `product-spec.md`.
   rewrite the acceptance criteria to match the new behavior. Remove or revise any
   criteria that no longer apply.
 - The spec is the single source of truth for what the application **currently** does.
-- Sections: Overview, Features (with acceptance criteria), API Surface, UI Flows,
-  Data Model, Known Limitations.
+- Sections: Overview, Features (with acceptance criteria), API Surface, Data Model,
+  Known Limitations.
 - Use Conventional Commits for spec changes: `docs(spec): add <feature> specification`
   or `docs(spec): update <feature> specification`.
 
@@ -277,7 +273,7 @@ Maintain a living product specification in `product-spec.md`.
 
 - **Never commit directly to `main`.** Always create a feature branch first.
 - Branch naming: `<type>/<issue#>-<short-description>`
-  Examples: `feat/42-content-extraction`, `fix/57-digest-template`.
+  Examples: `feat/42-user-auth`, `fix/57-validation-error`.
 - All work happens on the feature branch. Merge to `main` only via pull request
   after the dev loop passes.
 - **Git worktrees must be placed in the `.worktrees/` subdirectory** of the repo
@@ -462,12 +458,12 @@ for PR numbers, issue numbers, and branch names — never plain-text references 
 
 | Reference type | Format |
 |---|---|
-| Pull request | `[#131](https://github.com/IntelliTect-Dev/IntelliAIInstructions/pull/131)` |
-| Issue | `[#60](https://github.com/IntelliTect-Dev/IntelliAIInstructions/issues/60)` |
-| Branch | `` [`feat/126-newsletter-verification`](https://github.com/IntelliTect-Dev/IntelliAIInstructions/tree/feat/126-newsletter-verification) `` |
+| Pull request | `[#131](https://github.com/<owner>/<repo>/pull/131)` |
+| Issue | `[#60](https://github.com/<owner>/<repo>/issues/60)` |
+| Branch | `` [`feat/126-feature-name`](https://github.com/<owner>/<repo>/tree/feat/126-feature-name) `` |
 
-Use the repository's `owner` (`IntelliTect-Dev`) and `repo` (`IntelliAIInstructions`)
-as defined in `CLAUDE.md` when constructing URLs.
+Determine the repository's `owner` and `repo` from the git remote URL
+(see `CLAUDE.md`) when constructing URLs.
 
 ##### PR Summary Formatting
 

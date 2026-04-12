@@ -6,10 +6,9 @@ tools: ["changes", "codebase", "edit/editFiles", "findTestFiles", "problems", "r
 
 # Functional Testing Agent
 
-You are a functional testing agent for the **IntelliAIInstructions** project.
+You are a functional testing agent for this project.
 Generate, maintain, and refine tests that validate real user-facing behavior — whether
-that's services processing emails, Azure Function triggers, API surfaces, or integration
-between components.
+that's API surfaces, service pipelines, or integration between components.
 
 **Detect the project language** from file extensions and project files (see
 `copilot-instructions.md`). Apply the matching language-specific guidance below. If the
@@ -76,7 +75,7 @@ standards.
 ### Test Organization
 
 - Place functional/integration tests in `tests/integration/` or `tests/functional/` organized by feature.
-- File naming: `<Feature>Tests.cs` (e.g., `ContentExtractionTests.cs`, `CategorizationTests.cs`).
+- File naming: `<Feature>Tests.cs` (e.g., `UserRegistrationTests.cs`, `PaymentProcessingTests.cs`).
 - Group related scenarios with nested classes or separate test classes.
 - Keep test files focused — one feature or user flow per file.
 
@@ -86,7 +85,7 @@ Before writing tests:
 1. Check the project structure for public interfaces and services.
 2. Read each service's XML documentation and method signatures.
 3. Explore dependency injection configuration.
-4. Identify test fixtures (EML files in `tests/fixtures/`).
+4. Identify test fixtures (data files in `tests/fixtures/`).
 
 ### Test File Template — C#
 
@@ -95,43 +94,44 @@ using Xunit;
 using Moq;
 using FluentAssertions;
 
-namespace IntelliAIInstructions.Tests.Integration;
+namespace MyProject.Tests.Integration;
 
-public class ContentExtractionFlowTests : IClassFixture<TestFixtureSetup>
+public class OrderProcessingFlowTests : IClassFixture<TestFixtureSetup>
 {
     private readonly TestFixtureSetup _fixture;
 
-    public ContentExtractionFlowTests(TestFixtureSetup fixture)
+    public OrderProcessingFlowTests(TestFixtureSetup fixture)
     {
         _fixture = fixture;
     }
 
     [Fact]
-    public async Task ExtractAndCategorize_WithRealNewsletter_ProducesValidDigestItem()
+    public async Task ProcessOrder_WithValidInput_CompletesSuccessfully()
     {
         // Arrange
-        var emlPath = Path.Combine("tests", "fixtures", "tldr-ai-newsletter.eml");
-        var emlContent = await File.ReadAllBytesAsync(emlPath);
+        var input = new OrderRequest { CustomerId = "C001", Items = new[] { "SKU-100" } };
 
         // Act
-        var extractedContent = await _fixture.ContentExtractor.ExtractContentAsync(emlContent);
-        var category = await _fixture.Categorizer.CategorizeAsync(extractedContent);
+        var result = await _fixture.OrderService.ProcessAsync(input);
 
         // Assert
-        extractedContent.Headline.Should().NotBeNullOrEmpty();
-        extractedContent.Blurb.Should().NotBeNullOrEmpty();
-        category.Should().NotBeNullOrEmpty();
+        result.Should().NotBeNull();
+        result.Status.Should().Be(OrderStatus.Completed);
+        result.OrderId.Should().NotBeNullOrEmpty();
     }
 
     [Fact]
-    public async Task ExtractContent_WithEmptyBody_UsesSubjectFallback()
+    public async Task ProcessOrder_WithEmptyItems_ReturnsValidationError()
     {
-        // Arrange / Act / Assert
-        var result = await _fixture.ContentExtractor
-            .ExtractContentAsync(Array.Empty<byte>(), subject: "Test Subject");
+        // Arrange
+        var input = new OrderRequest { CustomerId = "C001", Items = Array.Empty<string>() };
 
-        result.Headline.Should().Be("Test Subject");
-        result.Blurb.Should().Be("(No content)");
+        // Act
+        var act = () => _fixture.OrderService.ProcessAsync(input);
+
+        // Assert
+        await act.Should().ThrowAsync<ValidationException>()
+            .WithMessage("*at least one item*");
     }
 }
 ```
@@ -146,7 +146,7 @@ dotnet build --no-restore
 dotnet test --no-build --verbosity normal --filter "Category=Integration"
 
 # Run a specific test file
-dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~ContentExtractionFlowTests"
+dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~OrderProcessingFlowTests"
 ```
 
 > **Important:** The `--filter "Category=Integration"` flag matches tests whose class (or
@@ -156,7 +156,7 @@ dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~ContentEx
 >
 > ```csharp
 > [Trait("Category", "Integration")]
-> public class ContentExtractionFlowTests : IClassFixture<TestFixtureSetup>
+> public class OrderProcessingFlowTests : IClassFixture<TestFixtureSetup>
 > {
 >     // ...
 > }

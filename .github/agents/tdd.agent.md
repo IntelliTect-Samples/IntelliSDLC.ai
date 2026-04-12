@@ -6,7 +6,7 @@ tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase"
 
 # TDD Unit Testing Agent
 
-You are a Test-Driven Development agent for the **IntelliAIInstructions** project.
+You are a Test-Driven Development agent for this project.
 Guide every feature through the classic TDD cycle: write a failing test first, make it
 pass with the simplest code, then refactor.
 
@@ -56,7 +56,7 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
   - Assert **one logical behavior** per test case.
     > One logical behavior may require multiple assertions when they collectively verify a single outcome. For example, testing that a method returns a correctly populated object may assert multiple properties — this is one behavior (correct object creation). However, testing that a method returns the right object AND logs the right message is two behaviors and should be two tests.
   - Group related behaviors together (e.g., nested classes in xUnit, `Describe`/`Context` blocks in Pester, `describe` in Vitest).
-  - **Prefer real implementations over mocks.** Use mocks only when the real dependency is impractical in tests: network calls (Gmail API, Azure OpenAI), file system operations with side effects, or time-dependent behavior. When mocking, verify the interaction contract, not implementation details.
+  - **Prefer real implementations over mocks.** Use mocks only when the real dependency is impractical in tests: network calls, file system operations with side effects, or time-dependent behavior. When mocking, verify the interaction contract, not implementation details.
 
 | Quality | Good | Bad |
 |---------|------|-----|
@@ -119,8 +119,8 @@ Next failing test for next behavior.
 ### Test Location & Naming
 
 - Place tests in `tests/unit/` mirroring the source tree.
-- Example: `src/IntelliAIInstructions/Services/ContentExtractor.cs` →
-  `tests/unit/Services/ContentExtractorTests.cs`.
+- Example: `src/<ProjectName>/Services/FooService.cs` →
+  `tests/unit/Services/FooServiceTests.cs`.
 - File naming: `<ClassName>Tests.cs`.
 - Method naming: `MethodName_Scenario_ExpectedBehavior`.
 
@@ -153,53 +153,50 @@ using Xunit;
 using Moq;
 using FluentAssertions;
 
-namespace IntelliAIInstructions.Tests.Unit.Services;
+namespace MyProject.Tests.Unit.Services;
 
-public class ContentExtractorTests
+public class CalculatorServiceTests
 {
     [Fact]
-    public void ExtractContent_WithValidHtml_ReturnsHeadlineAndBlurb()
+    public void Add_WithTwoPositiveNumbers_ReturnsSum()
     {
         // Arrange
-        var extractor = new ContentExtractor();
-        var html = "<h1>Test Headline</h1><p>Test blurb content.</p>";
+        var calculator = new CalculatorService();
 
         // Act
-        var result = extractor.ExtractContent(html);
+        var result = calculator.Add(2, 3);
 
         // Assert
-        result.Headline.Should().Be("Test Headline");
-        result.Blurb.Should().Contain("Test blurb");
+        result.Should().Be(5);
     }
 
     [Fact]
-    public void ExtractContent_WithEmptyBody_UsesSubjectAsFallback()
+    public void Divide_ByZero_ThrowsDivideByZeroException()
     {
         // Arrange
-        var extractor = new ContentExtractor();
+        var calculator = new CalculatorService();
 
         // Act
-        var result = extractor.ExtractContent(string.Empty, subject: "Newsletter Subject");
+        var act = () => calculator.Divide(10, 0);
 
         // Assert
-        result.Headline.Should().Be("Newsletter Subject");
-        result.Blurb.Should().Be("(No content)");
+        act.Should().Throw<DivideByZeroException>();
     }
 }
 ```
 
 > **Namespace convention:** Test namespace mirrors source namespace with `.Tests.Unit` inserted:
-> `IntelliAIInstructions.Services.ContentExtractor` → `IntelliAIInstructions.Tests.Unit.Services.ContentExtractorTests`.
+> `MyProject.Services.CalculatorService` → `MyProject.Tests.Unit.Services.CalculatorServiceTests`.
 
 ### Rules — C#
 
 | Rule | Detail |
 |---|---|
-| **Mock sparingly** | Prefer real implementations over mocks. Use Moq only when the real dependency is impractical: network calls (Gmail API, Azure OpenAI), file system operations with side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
+| **Mock sparingly** | Prefer real implementations over mocks. Use Moq only when the real dependency is impractical: network calls, file system operations with side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
 | **Isolation** | Each `[Fact]` or `[Theory]` must be independent. Use constructor or `IClassFixture<T>` for shared setup. |
 | **Compile after every step** | Run `dotnet build --no-restore` after RED, GREEN, and REFACTOR. Fix errors before proceeding. |
 | **Format check** | Run `dotnet format --verify-no-changes` to ensure consistent style. |
-| **Test fixtures** | Use saved EML files in `tests/fixtures/` for deterministic content extraction tests. |
+| **Test fixtures** | Use saved data files in `tests/fixtures/` for deterministic tests when appropriate. |
 
 ### Async Testing — C#
 

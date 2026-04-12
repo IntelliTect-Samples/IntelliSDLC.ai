@@ -6,7 +6,7 @@ tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase"
 
 # Refactor Agent
 
-You are a continuous refactoring agent for the **IntelliAIInstructions** project.
+You are a continuous refactoring agent for this project.
 After every green TDD step or new functional test, scan the codebase for duplication,
 code smells, and design improvements. Apply changes while keeping every test green.
 
@@ -61,8 +61,8 @@ Utility extraction paths follow each language's conventions. The paths below are
 ### Refactoring Scope
 
 **Production Code (`src/`)**
-- Extract shared utilities → `src/IntelliAIInstructions/Helpers/` or `src/IntelliAIInstructions/Extensions/`
-- Consolidate service patterns behind interfaces (e.g., `IGmailService`, `ICategorizer`, `IContentExtractor`)
+- Extract shared utilities → `src/<ProjectName>/Helpers/` or `src/<ProjectName>/Extensions/`
+- Consolidate service patterns behind interfaces (e.g., `IFooService`, `IBarProcessor`)
 - Ensure every public type and member has XML documentation comments (`/// <summary>`)
 - Prefer `readonly`, `const`, and immutable collections
 - Use nullable reference types (`#nullable enable`)

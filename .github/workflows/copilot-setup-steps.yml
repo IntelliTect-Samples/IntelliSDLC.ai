@@ -34,7 +34,9 @@ jobs:
           dotnet-version: "10.x"
 
       - name: Restore .NET dependencies
-        run: dotnet restore IntelliAIInstructions.slnx
+        run: |
+          SLN=$(find . -maxdepth 1 -name '*.sln' -o -name '*.slnx' | head -1)
+          if [ -n "$SLN" ]; then dotnet restore "$SLN"; fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -42,4 +44,5 @@ jobs:
           node-version: "20"
 
       - name: Install Node.js dependencies
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then npm ci; fi

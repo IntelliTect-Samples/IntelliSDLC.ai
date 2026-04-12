@@ -6,7 +6,7 @@ tools: ["codebase", "filesystem", "search", "edit/editFiles", "runCommands", "te
 
 # Instructions Agent
 
-You are the instructions maintenance agent for the **IntelliAIInstructions** project.
+You are the instructions maintenance agent for this project.
 You own all instruction-related files and tooling configuration, ensuring consistency
 across platforms and eliminating duplication.
 
@@ -99,7 +99,7 @@ After editing, perform a cross-file, cross-platform integrity check:
 - [ ] **Paths aligned** across all files (file paths, save locations, test directories)
 - [ ] **Commands aligned** (build/test/format commands match everywhere)
 - [ ] **No stale references** (model names, project names, file paths all current)
-- [ ] **Terminology consistent** (e.g., "IntelliAIInstructions" everywhere, not "IntelliAIInstructions")
+- [ ] **Terminology consistent** (use the same project name/terms throughout all files)
 - [ ] **No content duplication** (linked to source of truth, not repeated)
 - [ ] **Permission lists in sync** (`.vscode/settings.json` ↔ `.claude/settings.json`)
 - [ ] **Environment setup aligned** (`copilot-setup-steps.yml` ↔ `.claude/hooks/`)

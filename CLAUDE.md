@@ -1,15 +1,17 @@
-# CLAUDE.md — IntelliAIInstructions
+# CLAUDE.md
 
 This file provides orientation for AI assistants working in this repository.
 
 ## GitHub Repository
 
-- **Owner:** `IntelliTect-Dev`
-- **Repo:** `IntelliAIInstructions`
-- **URL:** https://github.com/IntelliTect-Dev/IntelliAIInstructions
+Determine the repository owner and name from the git remote:
 
-When calling GitHub MCP tools, always use `owner: "IntelliTect-Dev"` and `repo: "IntelliAIInstructions"`.
-Do **not** infer these values from the local directory name.
+```bash
+git remote get-url origin
+```
+
+When calling GitHub MCP tools, use the `owner` and `repo` values parsed from the
+remote URL. Do **not** infer these values from the local directory name.
 
 ## ⛔ Before ANY Commit
 
@@ -31,7 +33,6 @@ git config core.hooksPath .githooks
 
 ## Key References
 
-- **Product requirements**: [`product-spec.md`](./product-spec.md) — the single source of truth for what the application does. Update it with every feature change.
 - **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) — code style, testing conventions, branching strategy, commit format, and agent workflow.
 - **TDD guidelines**: [`.github/instructions/tdd.instructions.md`](./.github/instructions/tdd.instructions.md) — mandatory Red→Green→Refactor process.
 - **TypeScript/JS conventions**: [`.github/instructions/typescript.instructions.md`](./.github/instructions/typescript.instructions.md)
@@ -39,21 +40,17 @@ git config core.hooksPath .githooks
 
 ## Repository Structure
 
+Discover the project layout by examining the root directory. A typical C#/.NET project follows:
+
 ```
-IntelliAIInstructions/
-├── src/
-│   ├── IntelliAIInstructions/          # Core library (services, models, config)
-│   │   ├── Services/              # Business logic & external API wrappers
-│   │   ├── Models/                # Domain models & DTOs
-│   │   └── Configuration/         # App configuration types
-│   └── IntelliAIInstructions.Cli/      # CLI entry point and setup utilities
+<RepoRoot>/
+├── src/                           # Production source code
+│   ├── <ProjectName>/             # Core library or application project(s)
+│   └── <ProjectName>.*/           # Additional projects (API, CLI, Web, etc.)
 ├── tests/
 │   └── unit/                      # xUnit unit tests mirroring src structure
 ├── docs/                          # Additional documentation
-├── SampleEmails/                  # Sample EML files for testing
-├── product-spec.md                # Living product specification (PRD)
-├── GMAIL_SETUP.md                 # Gmail OAuth setup instructions
-├── sample-appsettings.json        # Config template
+├── *.sln or *.slnx                # Solution file
 └── .github/
     ├── copilot-instructions.md    # Primary dev conventions (read this first)
     ├── agents/                    # Agent prompt files (.agent.md)
@@ -61,19 +58,15 @@ IntelliAIInstructions/
     └── workflows/                 # GitHub Actions (CI setup steps)
 ```
 
-> **Note**: The `pwa/` folder exists in the repository but is not part of the current development focus. Ignore it when working on the C# application.
-
 ## Technology Stack
 
 | Layer | Technology |
 |---|---|
 | Language | C# / .NET 9+ |
-| Runtime | Azure Functions (timer-triggered) |
-| Email API | Gmail API (`Google.Apis.Gmail.v1`) |
-| AI | Azure OpenAI (`Azure.AI.OpenAI`, GPT-4o) |
-| Email parsing | MimeKit, AngleSharp |
 | Testing | xUnit, Moq, FluentAssertions |
-| CLI | `IntelliAIInstructions.Cli` project |
+
+> Discover the full technology stack from solution/project files, `README.md`, and
+> NuGet package references. Do not assume specific runtime hosts or external APIs.
 
 ## Shell Preference
 
@@ -124,7 +117,7 @@ See `.github/copilot-instructions.md` → **Agent Files** for the complete agent
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
 - Create worktrees in `.worktrees/`: `git worktree add .worktrees/<issue#>-<name> -b <branch> main`.
-- Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-digest-template`)
+- Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-user-auth`)
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes.
 - **All commits must come from a worktree** — the pre-commit hook blocks commits from the repo root.

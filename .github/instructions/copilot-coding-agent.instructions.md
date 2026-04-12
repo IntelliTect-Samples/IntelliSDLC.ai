@@ -21,24 +21,24 @@ applyTo: '**/*'
 | File | Purpose |
 |------|---------|
 | `CLAUDE.md` | Repository orientation: structure, branching, workflow, essential commands |
-| `product-spec.md` | Living product specification — the source of truth for what the app does |
 | `.github/copilot-instructions.md` | Full coding conventions, style rules, testing practices |
-| `sample-appsettings.json` | Configuration template showing all required keys |
-| `GMAIL_SETUP.md` | Gmail OAuth setup (not needed for stub-ai dry runs) |
 
 ## 3. Build & Verify Commands
 
 Run these commands after **every** code change, in order:
 
 ```bash
+# Discover solution file
+SLN=$(find . -maxdepth 1 -name '*.sln' -o -name '*.slnx' | head -1)
+
 # Format (must produce no changes)
-dotnet format IntelliAIInstructions.slnx
+dotnet format "$SLN"
 
 # Build
-dotnet build IntelliAIInstructions.slnx --no-restore
+dotnet build "$SLN" --no-restore
 
 # Test
-dotnet test IntelliAIInstructions.slnx --no-build --verbosity normal
+dotnet test "$SLN" --no-build --verbosity normal
 ```
 
 Fix all format violations and test failures before committing. Never commit with failing tests or format errors.
@@ -48,18 +48,18 @@ Fix all format violations and test failures before committing. Never commit with
 1. **Read the issue** — understand the acceptance criteria and implementation checklist fully before writing any code.
 2. **TDD** — write a failing test first (Red), then implement the minimal code to pass it (Green), then refactor (Refactor). See `.github/instructions/tdd.instructions.md`.
 3. **Implement** — make changes in `src/` and `tests/` only (see Scope Boundaries below).
-4. **Format** — run `dotnet format IntelliAIInstructions.slnx` and fix any violations.
-5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description` (e.g., `feat(renderer): add Gmail source links`).
+4. **Format** — run `dotnet format` and fix any violations.
+5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`.
 6. **PR** — open a pull request with `Closes #<issue-number>` in the description so the issue is auto-closed on merge.
 
 ## 5. Testing Expectations
 
 - **Framework**: xUnit + Moq + FluentAssertions
-- **Location**: `tests/unit/Services/` (mirror `src/IntelliAIInstructions/Services/`)
+- **Location**: `tests/unit/` (mirror `src/` structure)
 - **Pattern**: Arrange / Act / Assert in every test method
-- **Naming**: `MethodName_Scenario_ExpectedBehavior` (e.g., `GetMessageUrl_NullInput_ThrowsArgumentNullException`)
-- **Isolation**: mock external dependencies (Gmail API, Azure OpenAI) with Moq; use real code paths for unit logic
-- **Fixtures**: deterministic test data lives in `tests/unit/Services/Fixtures/` (saved `.eml` files)
+- **Naming**: `MethodName_Scenario_ExpectedBehavior`
+- **Isolation**: mock external dependencies with Moq; use real code paths for unit logic
+- **Fixtures**: deterministic test data lives in `tests/fixtures/` or a `Fixtures/` subdirectory
 
 ## 6. Quality Bar
 
@@ -77,35 +77,16 @@ All of the following must be true before opening a PR:
 
 | Directory | Action |
 |-----------|--------|
-| `src/IntelliAIInstructions/` | ✅ Core library — primary work area |
-| `src/IntelliAIInstructions.Cli/` | ✅ CLI entry point — modify when adding CLI flags |
-| `tests/unit/` | ✅ Unit tests — always update alongside production code |
-| `product-spec.md` | ✅ Update when adding or changing features |
-| `pwa/` | ❌ Ignore — not part of the active C# application |
+| `src/` | ✅ Production source code — primary work area |
+| `tests/` | ✅ Tests — always update alongside production code |
 | `.github/workflows/` | ❌ Do not modify CI/CD workflows |
-| `node_modules/` | ❌ Do not modify; managed by `npm ci` |
+| `node_modules/` | ❌ Do not modify; managed by package manager |
 
-## 8. Dry-Run Validation
-
-Validate CLI output without any Azure or Gmail credentials:
-
-```bash
-dotnet run --no-build --project src/IntelliAIInstructions.Cli -- \
-  --stub-ai --input-dir SampleEmails --recursive \
-  --output-dir ./dry-run-output --non-interactive
-```
-
-- `--stub-ai` uses a local stub instead of Azure OpenAI — no API keys needed
-- `--input-dir SampleEmails` processes the checked-in sample `.eml` files
-- `--output-dir ./dry-run-output` writes digest output to a local directory instead of sending email
-- Check `./dry-run-output/` for generated HTML digests and `digest-preview.md`
-
-## 9. What NOT to Do
+## 8. What NOT to Do
 
 - **Don't modify `.github/workflows/`** — CI/CD workflows are managed separately and changes can break the pipeline
-- **Don't add NuGet or npm packages** without explicit justification in the issue; prefer existing dependencies
+- **Don't add NuGet packages** without explicit justification in the issue; prefer existing dependencies
 - **Don't skip tests** — every new behavior must have a corresponding test; never commit with failing tests
-- **Don't commit secrets** — no API keys, credentials, or tokens in source code; use `sample-appsettings.json` as a template only
-- **Don't run `dotnet restore` or `npm ci`** during development — dependencies are pre-installed in the runner environment
-- **Don't touch `pwa/`** — the Progressive Web App directory is out of scope for C# application work
+- **Don't commit secrets** — no API keys, credentials, or tokens in source code
+- **Don't run `dotnet restore`** during development unless package references change — dependencies are pre-installed in the runner environment
 - **Don't use `throw ex;`** inside catch blocks — use `throw;` to preserve the call stack

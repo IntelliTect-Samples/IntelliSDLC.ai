@@ -148,9 +148,9 @@ function testValidHeadlines() {
 ### Running Tests
 
 **Current repository tests:**
-- Run headline tests: `node pwa/test-headlines.js`
-- Run tests with AI filtering: `node pwa/test-headlines.js --ai`
-- View tests in browser: Open `pwa/test-headlines.html` in a browser
+- Follow the existing test patterns in the repository
+- Run tests before and after making changes
+- Add appropriate test commands to documentation as needed
 
 **For new code:**
 - Follow the existing test patterns in the repository
@@ -286,9 +286,7 @@ function testValidHeadlines() {
 
 - Kent Beck's "Test Driven Development: By Example"
 - Martin Fowler's articles on testing and refactoring
-- C#/.NET test files: `tests/unit/` — xUnit tests mirroring `src/IntelliAIInstructions/`
-
-> **Note**: The `pwa/` directory exists in the repo but is not part of the active C# application. Ignore it when working on the main codebase.
+- C#/.NET test files: `tests/unit/` — xUnit tests mirroring `src/`
 
 ## Compliance
 

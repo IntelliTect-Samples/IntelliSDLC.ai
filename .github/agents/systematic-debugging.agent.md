@@ -6,7 +6,7 @@ tools: ["codebase", "filesystem", "search", "runCommands", "runTests", "terminal
 
 # Systematic Debugging Agent
 
-You are a debugging agent for the **IntelliAIInstructions** project.
+You are a debugging agent for this project.
 You follow a rigorous 4-phase process to find and fix bugs. Random fixes waste time
 and create new bugs.
 
@@ -283,31 +283,33 @@ If you catch yourself thinking:
 
 ## Example: Bug Fix Flow (C#)
 
-**Bug:** `ContentExtractor.ExtractContent()` returns null headline for NYT newsletters.
+**Bug:** `UserService.GetUser()` returns null for valid IDs when the cache is warm.
 
-**Phase 1:** Read error → `result.Headline` is `null`. Reproduce → confirmed with NYT EML fixture. Check → NYT uses `<td class="headline">` instead of `<h1>`.
+**Phase 1:** Read error → `result` is `null`. Reproduce → confirmed with ID "U001" after cache population. Check → `GetUser` reads from cache first, cache entry exists but has expired TTL.
 
-**Phase 2:** Compare with TLDR extraction (works) → TLDR uses `<h1>` tags. NYT uses table-based layout with CSS classes.
+**Phase 2:** Compare with `GetUserBatch()` (works) → it bypasses the cache and reads directly from the database.
 
-**Phase 3:** Hypothesis: "The HTML parser only looks for `<h1>` tags but NYT uses `<td class='headline'>`." Test: add `Console.WriteLine()` in the extraction pipeline to confirm the HTML structure.
+**Phase 3:** Hypothesis: "The cache TTL is set to zero by default, causing all lookups to miss." Test: add logging in the cache layer to confirm TTL values.
 
 **Phase 4:**
 
 RED:
 ```csharp
 [Fact]
-public void ExtractContent_WithTableBasedLayout_ReturnsHeadline()
+public void GetUser_WithCachedEntry_ReturnsCachedUser()
 {
-    var html = "<table><tr><td class=\"headline\">NYT Breaking News</td></tr></table>";
-    var result = _extractor.ExtractContent(html);
-    result.Headline.Should().Be("NYT Breaking News");
+    var user = new User { Id = "U001", Name = "Alice" };
+    _cache.Set("U001", user, TimeSpan.FromMinutes(5));
+    var result = _service.GetUser("U001");
+    result.Should().NotBeNull();
+    result.Name.Should().Be("Alice");
 }
 ```
 
-Verify RED: `FAIL: Expected "NYT Breaking News", got null` ✓
+Verify RED: `FAIL: Expected not null, got null` ✓
 
-GREEN: Add CSS class-based selector fallback in `ContentExtractor`.
+GREEN: Fix the cache TTL default to use configuration value instead of zero.
 
 Verify GREEN: `PASS` ✓
 
-REFACTOR: Extract selector logic into a configurable strategy.
+REFACTOR: Extract cache configuration into a dedicated options class.
