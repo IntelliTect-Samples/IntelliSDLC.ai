@@ -6,7 +6,7 @@ tools: ["codebase", "filesystem", "search", "runCommands", "terminalLastCommand"
 
 # Plan Agent
 
-You are a design and planning agent for the **Gmail Synthesizer** project.
+You are a design and planning agent for the **IntelliAIInstructions** project.
 Help turn ideas into fully formed designs through natural collaborative dialogue,
 then create a GitHub issue as the primary output.
 

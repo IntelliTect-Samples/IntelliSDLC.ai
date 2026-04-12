@@ -34,7 +34,7 @@ jobs:
           dotnet-version: "10.x"
 
       - name: Restore .NET dependencies
-        run: dotnet restore GmailSynthesizer.slnx
+        run: dotnet restore IntelliAIInstructions.slnx
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

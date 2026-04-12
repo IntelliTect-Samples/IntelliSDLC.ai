@@ -1,14 +1,14 @@
-# CLAUDE.md — Gmail Synthesizer
+# CLAUDE.md — IntelliAIInstructions
 
 This file provides orientation for AI assistants working in this repository.
 
 ## GitHub Repository
 
-- **Owner:** `IntelliTect-Samples`
-- **Repo:** `GmailNewsClient`
-- **URL:** https://github.com/IntelliTect-Samples/GmailNewsClient
+- **Owner:** `IntelliTect-Dev`
+- **Repo:** `IntelliAIInstructions`
+- **URL:** https://github.com/IntelliTect-Dev/IntelliAIInstructions
 
-When calling GitHub MCP tools, always use `owner: "IntelliTect-Samples"` and `repo: "GmailNewsClient"`.
+When calling GitHub MCP tools, always use `owner: "IntelliTect-Dev"` and `repo: "IntelliAIInstructions"`.
 Do **not** infer these values from the local directory name.
 
 ## ⛔ Before ANY Commit
@@ -40,13 +40,13 @@ git config core.hooksPath .githooks
 ## Repository Structure
 
 ```
-GmailNewsClient/
+IntelliAIInstructions/
 ├── src/
-│   ├── GmailSynthesizer/          # Core library (services, models, config)
+│   ├── IntelliAIInstructions/          # Core library (services, models, config)
 │   │   ├── Services/              # Business logic & external API wrappers
 │   │   ├── Models/                # Domain models & DTOs
 │   │   └── Configuration/         # App configuration types
-│   └── GmailSynthesizer.Cli/      # CLI entry point and setup utilities
+│   └── IntelliAIInstructions.Cli/      # CLI entry point and setup utilities
 ├── tests/
 │   └── unit/                      # xUnit unit tests mirroring src structure
 ├── docs/                          # Additional documentation
@@ -73,7 +73,7 @@ GmailNewsClient/
 | AI | Azure OpenAI (`Azure.AI.OpenAI`, GPT-4o) |
 | Email parsing | MimeKit, AngleSharp |
 | Testing | xUnit, Moq, FluentAssertions |
-| CLI | `GmailSynthesizer.Cli` project |
+| CLI | `IntelliAIInstructions.Cli` project |
 
 ## Shell Preference
 

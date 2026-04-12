@@ -286,7 +286,7 @@ function testValidHeadlines() {
 
 - Kent Beck's "Test Driven Development: By Example"
 - Martin Fowler's articles on testing and refactoring
-- C#/.NET test files: `tests/unit/` — xUnit tests mirroring `src/GmailSynthesizer/`
+- C#/.NET test files: `tests/unit/` — xUnit tests mirroring `src/IntelliAIInstructions/`
 
 > **Note**: The `pwa/` directory exists in the repo but is not part of the active C# application. Ignore it when working on the main codebase.
 

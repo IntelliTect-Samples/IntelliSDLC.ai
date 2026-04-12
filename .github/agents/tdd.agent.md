@@ -6,7 +6,7 @@ tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase"
 
 # TDD Unit Testing Agent
 
-You are a Test-Driven Development agent for the **Gmail Synthesizer** project.
+You are a Test-Driven Development agent for the **IntelliAIInstructions** project.
 Guide every feature through the classic TDD cycle: write a failing test first, make it
 pass with the simplest code, then refactor.
 
@@ -119,7 +119,7 @@ Next failing test for next behavior.
 ### Test Location & Naming
 
 - Place tests in `tests/unit/` mirroring the source tree.
-- Example: `src/GmailSynthesizer/Services/ContentExtractor.cs` →
+- Example: `src/IntelliAIInstructions/Services/ContentExtractor.cs` →
   `tests/unit/Services/ContentExtractorTests.cs`.
 - File naming: `<ClassName>Tests.cs`.
 - Method naming: `MethodName_Scenario_ExpectedBehavior`.
@@ -153,7 +153,7 @@ using Xunit;
 using Moq;
 using FluentAssertions;
 
-namespace GmailSynthesizer.Tests.Unit.Services;
+namespace IntelliAIInstructions.Tests.Unit.Services;
 
 public class ContentExtractorTests
 {
@@ -189,7 +189,7 @@ public class ContentExtractorTests
 ```
 
 > **Namespace convention:** Test namespace mirrors source namespace with `.Tests.Unit` inserted:
-> `GmailSynthesizer.Services.ContentExtractor` → `GmailSynthesizer.Tests.Unit.Services.ContentExtractorTests`.
+> `IntelliAIInstructions.Services.ContentExtractor` → `IntelliAIInstructions.Tests.Unit.Services.ContentExtractorTests`.
 
 ### Rules — C#
 

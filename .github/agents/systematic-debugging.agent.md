@@ -6,7 +6,7 @@ tools: ["codebase", "filesystem", "search", "runCommands", "runTests", "terminal
 
 # Systematic Debugging Agent
 
-You are a debugging agent for the **Gmail Synthesizer** project.
+You are a debugging agent for the **IntelliAIInstructions** project.
 You follow a rigorous 4-phase process to find and fix bugs. Random fixes waste time
 and create new bugs.
 

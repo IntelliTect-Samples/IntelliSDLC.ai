@@ -32,13 +32,13 @@ Run these commands after **every** code change, in order:
 
 ```bash
 # Format (must produce no changes)
-dotnet format GmailSynthesizer.slnx
+dotnet format IntelliAIInstructions.slnx
 
 # Build
-dotnet build GmailSynthesizer.slnx --no-restore
+dotnet build IntelliAIInstructions.slnx --no-restore
 
 # Test
-dotnet test GmailSynthesizer.slnx --no-build --verbosity normal
+dotnet test IntelliAIInstructions.slnx --no-build --verbosity normal
 ```
 
 Fix all format violations and test failures before committing. Never commit with failing tests or format errors.
@@ -48,14 +48,14 @@ Fix all format violations and test failures before committing. Never commit with
 1. **Read the issue** — understand the acceptance criteria and implementation checklist fully before writing any code.
 2. **TDD** — write a failing test first (Red), then implement the minimal code to pass it (Green), then refactor (Refactor). See `.github/instructions/tdd.instructions.md`.
 3. **Implement** — make changes in `src/` and `tests/` only (see Scope Boundaries below).
-4. **Format** — run `dotnet format GmailSynthesizer.slnx` and fix any violations.
+4. **Format** — run `dotnet format IntelliAIInstructions.slnx` and fix any violations.
 5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description` (e.g., `feat(renderer): add Gmail source links`).
 6. **PR** — open a pull request with `Closes #<issue-number>` in the description so the issue is auto-closed on merge.
 
 ## 5. Testing Expectations
 
 - **Framework**: xUnit + Moq + FluentAssertions
-- **Location**: `tests/unit/Services/` (mirror `src/GmailSynthesizer/Services/`)
+- **Location**: `tests/unit/Services/` (mirror `src/IntelliAIInstructions/Services/`)
 - **Pattern**: Arrange / Act / Assert in every test method
 - **Naming**: `MethodName_Scenario_ExpectedBehavior` (e.g., `GetMessageUrl_NullInput_ThrowsArgumentNullException`)
 - **Isolation**: mock external dependencies (Gmail API, Azure OpenAI) with Moq; use real code paths for unit logic
@@ -77,8 +77,8 @@ All of the following must be true before opening a PR:
 
 | Directory | Action |
 |-----------|--------|
-| `src/GmailSynthesizer/` | ✅ Core library — primary work area |
-| `src/GmailSynthesizer.Cli/` | ✅ CLI entry point — modify when adding CLI flags |
+| `src/IntelliAIInstructions/` | ✅ Core library — primary work area |
+| `src/IntelliAIInstructions.Cli/` | ✅ CLI entry point — modify when adding CLI flags |
 | `tests/unit/` | ✅ Unit tests — always update alongside production code |
 | `product-spec.md` | ✅ Update when adding or changing features |
 | `pwa/` | ❌ Ignore — not part of the active C# application |
@@ -90,7 +90,7 @@ All of the following must be true before opening a PR:
 Validate CLI output without any Azure or Gmail credentials:
 
 ```bash
-dotnet run --no-build --project src/GmailSynthesizer.Cli -- \
+dotnet run --no-build --project src/IntelliAIInstructions.Cli -- \
   --stub-ai --input-dir SampleEmails --recursive \
   --output-dir ./dry-run-output --non-interactive
 ```

@@ -6,7 +6,7 @@ tools: ["changes", "codebase", "edit/editFiles", "findTestFiles", "problems", "r
 
 # Functional Testing Agent
 
-You are a functional testing agent for the **Gmail Synthesizer** project.
+You are a functional testing agent for the **IntelliAIInstructions** project.
 Generate, maintain, and refine tests that validate real user-facing behavior — whether
 that's services processing emails, Azure Function triggers, API surfaces, or integration
 between components.
@@ -95,7 +95,7 @@ using Xunit;
 using Moq;
 using FluentAssertions;
 
-namespace GmailSynthesizer.Tests.Integration;
+namespace IntelliAIInstructions.Tests.Integration;
 
 public class ContentExtractionFlowTests : IClassFixture<TestFixtureSetup>
 {

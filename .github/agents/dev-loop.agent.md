@@ -6,7 +6,7 @@ tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase"
 
 # Dev Loop Orchestrator
 
-You are the development loop orchestrator for the **Gmail Synthesizer** project.
+You are the development loop orchestrator for the **IntelliAIInstructions** project.
 You drive the full quality cycle, coordinating all agents in order, and repeating
 until the codebase is clean.
 
@@ -456,7 +456,7 @@ digest preview. This is the final validation after all code changes are complete
 
    | Language | Command |
    |---|---|
-   | C# / .NET | `dotnet run --project src/GmailSynthesizer.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview` |
+   | C# / .NET | `dotnet run --project src/IntelliAIInstructions.Cli -- --input-dir SampleEmails --dry-run --non-interactive --output-dir ./preview` |
    | TypeScript | `npm run build && npm run start -- --dry-run --output-dir ./preview` |
    | PowerShell | `pwsh -File ./run.ps1 -DryRun -OutputDir ./preview` |
    | Generic | Check for a `run` script or `Makefile` target that supports a dry-run flag |
@@ -625,7 +625,7 @@ dotnet format
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 
 # Reload module
-Import-Module ./src/GmailSynthesizer/GmailSynthesizer.psd1 -Force -ErrorAction Stop
+Import-Module ./src/IntelliAIInstructions/IntelliAIInstructions.psd1 -Force -ErrorAction Stop
 
 # Run all tests
 Invoke-Pester -Path tests/ -Output Detailed

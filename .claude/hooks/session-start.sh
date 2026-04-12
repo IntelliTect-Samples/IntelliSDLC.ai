@@ -21,9 +21,9 @@ fi
 
 # Restore NuGet packages
 cd "${CLAUDE_PROJECT_DIR:-$(pwd)}"
-if [ -f GmailSynthesizer.slnx ]; then
+if [ -f IntelliAIInstructions.slnx ]; then
   echo "Restoring NuGet packages..." >&2
-  dotnet restore GmailSynthesizer.slnx --verbosity quiet
+  dotnet restore IntelliAIInstructions.slnx --verbosity quiet
 fi
 
 # Export dotnet settings

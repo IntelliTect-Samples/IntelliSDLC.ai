@@ -1,8 +1,8 @@
-# Gmail Synthesizer — Copilot Workspace Instructions
+# IntelliAIInstructions — Copilot Workspace Instructions
 
 ## Project Overview
 
-Gmail Synthesizer is a **C#/.NET** application that consolidates informational/newsletter-style
+IntelliAIInstructions is a **C#/.NET** application that consolidates informational/newsletter-style
 emails into categorized digest emails. It runs as a timer-triggered Azure Function, connects
 to Gmail via the Gmail API, uses Azure OpenAI for AI-powered categorization and content
 extraction, and delivers consolidated digests back into the user's Gmail inbox.
@@ -203,7 +203,7 @@ README, and build files.
 | Integration tests | xUnit | `tests/integration/**/*Tests.cs` |
 | Functional tests | xUnit | `tests/functional/**/*Tests.cs` |
 
-- Unit test files mirror the source tree (e.g., `src/GmailSynthesizer/Services/ContentExtractor.cs`
+- Unit test files mirror the source tree (e.g., `src/IntelliAIInstructions/Services/ContentExtractor.cs`
   → `tests/unit/Services/ContentExtractorTests.cs`).
 - Run tests with:
   ```bash
@@ -462,11 +462,11 @@ for PR numbers, issue numbers, and branch names — never plain-text references 
 
 | Reference type | Format |
 |---|---|
-| Pull request | `[#131](https://github.com/IntelliTect-Samples/GmailNewsClient/pull/131)` |
-| Issue | `[#60](https://github.com/IntelliTect-Samples/GmailNewsClient/issues/60)` |
-| Branch | `` [`feat/126-newsletter-verification`](https://github.com/IntelliTect-Samples/GmailNewsClient/tree/feat/126-newsletter-verification) `` |
+| Pull request | `[#131](https://github.com/IntelliTect-Dev/IntelliAIInstructions/pull/131)` |
+| Issue | `[#60](https://github.com/IntelliTect-Dev/IntelliAIInstructions/issues/60)` |
+| Branch | `` [`feat/126-newsletter-verification`](https://github.com/IntelliTect-Dev/IntelliAIInstructions/tree/feat/126-newsletter-verification) `` |
 
-Use the repository's `owner` (`IntelliTect-Samples`) and `repo` (`GmailNewsClient`)
+Use the repository's `owner` (`IntelliTect-Dev`) and `repo` (`IntelliAIInstructions`)
 as defined in `CLAUDE.md` when constructing URLs.
 
 ##### PR Summary Formatting
