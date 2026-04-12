@@ -83,8 +83,10 @@ Discover the project layout by examining the root directory. A typical C#/.NET p
 Use **PowerShell** as the default shell for all commands. If PowerShell is not available, fall back to bash.
 
 > **Encoding warning:** On Windows, the `gh` CLI garbles Unicode and collapses
-> newlines when body text is passed inline. See the **PR & Issue Body Formatting**
-> section in `copilot-instructions.md` -- always use `--body-file`.
+> newlines when body text is passed inline. Never read an existing PR body with
+> `--jq` and re-interpolate — PowerShell destroys newlines. Always construct the
+> full body from scratch and use `--body-file`. See the **PR & Issue Body
+> Formatting** section in `copilot-instructions.md`.
 
 ## Essential Commands
 

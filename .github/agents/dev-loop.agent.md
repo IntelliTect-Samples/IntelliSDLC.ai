@@ -483,22 +483,29 @@ works end-to-end. This is the final validation after all code changes are comple
 
 After the dry run passes, append the dry run results as markdown to the PR body.
 
-> **⚠️ Encoding safety:** The `gh` CLI on Windows garbles Unicode characters (em dashes,
-> smart quotes, arrows) through CP437 codepage conversion, producing mojibake like `ΓÇö`
-> instead of `—`. Always use the **file-based approach** below and follow the
-> [ASCII-Only PR Body Text](#ascii-only-pr-body-text) rules from `copilot-instructions.md`.
+> **⚠️ Never read-modify-write PR bodies on Windows.** Capturing `gh pr view --jq '.body'`
+> into a PowerShell variable destroys newlines (PowerShell converts multiline output to a
+> `string[]` array; interpolation joins with spaces). Always construct the **complete body
+> from scratch** using variables you already have, and write with `--body-file`.
+> See `copilot-instructions.md` > PR & Issue Body Formatting.
 
 **Procedure:**
 
-1. **Build the updated body** in a variable (combining the existing body with dry run results).
+1. **Build the complete PR body from scratch** — combine the original PR description
+   (which you wrote earlier in Step 3) with the dry run results. Do **not** read the
+   existing body back from GitHub.
 2. **Write to a temp file** with explicit UTF-8 encoding (no BOM).
 3. **Update the PR** using `--body-file`.
 4. **Validate** that the PR body contains no mojibake.
 
 ```powershell
-# 1. Get current body and build the new content
-$currentBody = gh pr view <pr-number> --json body --jq '.body'
-$dryRunSection = @"
+# 1. Build the COMPLETE body from scratch (never read existing body)
+$body = @"
+## Summary
+
+<original PR description — reconstruct from your variables>
+
+Closes #<issue-number>
 
 ---
 
@@ -507,11 +514,9 @@ $dryRunSection = @"
 <paste dry run output here>
 "@
 
-$newBody = "$currentBody$dryRunSection"
-
 # 2. Write with explicit UTF-8 (no BOM)
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $newBody, $utf8NoBom)
+[System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
 
 # 3. Update the PR
 gh pr edit <pr-number> --body-file pr-body.tmp
@@ -523,9 +528,13 @@ Remove-Item pr-body.tmp -ErrorAction SilentlyContinue
 On **Linux/macOS** (e.g., GitHub Copilot coding agent), the simpler bash approach is safe:
 
 ```bash
-# Read current body, append dry run results, write to file:
-gh pr view <pr-number> --json body --jq .body > pr-body.tmp
-cat >> pr-body.tmp << 'EOF'
+# Build the complete body from scratch and write to file:
+cat > pr-body.tmp << 'EOF'
+## Summary
+
+<original PR description>
+
+Closes #<issue-number>
 
 ---
 

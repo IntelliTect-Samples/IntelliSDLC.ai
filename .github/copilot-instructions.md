@@ -368,9 +368,42 @@ instead of inline `--body "..."`. Two problems occur with inline bodies:
 2. **CP437 mojibake** -- on Windows, the `gh` CLI converts Unicode through the
    console's OEM codepage, producing garbled characters (e.g., `ΓÇö` instead of `—`).
 
+### ⛔ Never Read-Modify-Write PR Bodies on Windows
+
+**Never** capture `gh pr view --json body --jq '.body'` into a PowerShell variable
+and re-interpolate it. PowerShell converts the multiline output into a `string[]`
+array, and interpolation with `"$var..."` joins elements with spaces, destroying
+all newlines. The result is a single-line wall of text.
+
+```powershell
+# ❌ WRONG — destroys newlines on Windows PowerShell
+$currentBody = gh pr view <number> --json body --jq '.body'
+$newBody = "$currentBody`n`n## New Section`n..."
+```
+
+**Always construct the complete body from scratch** and write it to a file.
+If you need to preserve existing content, reconstruct it from your known inputs
+(the original PR template variables you already have) rather than reading it back.
+
+### Required Workflow
+
 **Required workflow** for any `gh` command that accepts a body:
 
 ```powershell
+# Build the COMPLETE body from scratch (never read-modify-write)
+$body = @"
+## Summary
+
+<description of changes>
+
+Closes #<issue-number>
+
+## Changes
+
+- Change 1
+- Change 2
+"@
+
 # Write body to a temp file with explicit UTF-8 (no BOM)
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText("$PWD/pr-body.tmp", $body, $utf8NoBom)
@@ -387,12 +420,21 @@ Remove-Item pr-body.tmp
 On **Linux/macOS** (e.g., GitHub Copilot coding agent):
 
 ```bash
-echo "$body" > pr-body.tmp
+cat > pr-body.tmp << 'EOF'
+## Summary
+
+<description of changes>
+
+Closes #<issue-number>
+EOF
+
 gh pr create --title "feat: ..." --body-file pr-body.tmp
 rm -f pr-body.tmp
 ```
 
 > **Never** pass body text inline via `--body "..."`. Always use `--body-file`.
+> **Never** read an existing PR body with `--jq` and re-interpolate on Windows.
+> Always construct the full body fresh.
 
 **ASCII replacements** for common Unicode characters (prevents CP437 mojibake):
 
