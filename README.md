@@ -33,14 +33,18 @@ other projects.
 and then pulled into consuming projects.**
 
 Consuming projects must **not** edit these shared instruction files locally and
-push changes back. The flow is always:
+push changes back directly. The flow is always:
 
 ```
 IntelliAIInstructions (this repo)  ──pull──▶  Your Project
 ```
 
-If you discover an improvement while working in another project, come back to
-this repo, make the change here, and then pull the update into your project.
+If you discover an improvement while working in another project, either:
+
+1. **Come back to this repo**, make the change here, then pull the update into
+   your project, or
+2. **Cherry-pick** the instruction-only commit from your project into this repo
+   (ensuring no project-specific content comes along).
 
 ### Where Does Project-Specific Content Go?
 
