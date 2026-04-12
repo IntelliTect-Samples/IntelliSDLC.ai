@@ -1,10 +1,13 @@
 # Copilot Workspace Instructions
 
-> **⚠️ Generic instructions — no project-specific content.**
+> **⚠️ Generic instructions — no project-specific content. Upstream-only edits.**
 > These instruction files are shared across multiple projects. Never add
 > project names, architecture details, domain concepts, specific dependencies,
-> or hardcoded paths. Project-specific context belongs in the consuming project's
-> own `.github/instructions/project.instructions.md`. See `README.md` for details.
+> or hardcoded paths. All changes must be made in the
+> [IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
+> repo and pulled into consuming projects — never edited locally and pushed back.
+> Project-specific context belongs in the consuming project's own
+> `.github/instructions/project.instructions.md`. See `README.md` for details.
 
 ## Project Overview
 

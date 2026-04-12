@@ -26,6 +26,22 @@ This rule exists because multiple projects reference these instructions and may
 pull updates. Project-specific content would be overwritten or would contaminate
 other projects.
 
+## ⚠️ Upstream-Only Edits
+
+**All instruction changes must be made in this repo
+([IntelliTect-Dev/IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions))
+and then pulled into consuming projects.**
+
+Consuming projects must **not** edit these shared instruction files locally and
+push changes back. The flow is always:
+
+```
+IntelliAIInstructions (this repo)  ──pull──▶  Your Project
+```
+
+If you discover an improvement while working in another project, come back to
+this repo, make the change here, and then pull the update into your project.
+
 ### Where Does Project-Specific Content Go?
 
 Project-specific instructions belong in the **consuming project's own files**,
