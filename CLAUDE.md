@@ -108,13 +108,17 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
+Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
 ```
 
-Use `@dev-loop` to orchestrate the full cycle. Phases 3–7 use an expanding loop — each
+Use `@dev-loop` to orchestrate the full cycle. Phases 3-7 use an expanding loop -- each
 phase is a quality gate, and any failure routes back to Phase 3 (TDD). The loop exits
 only when Copilot review passes with zero issues and the dry run succeeds.
-See `.github/copilot-instructions.md` → **Agent Files** for the complete agent reference.
+See `.github/copilot-instructions.md` -> **Agent Files** for the complete agent reference.
+
+- **Sync instructions first:** Before starting any dev loop, check whether the shared
+  IntelliAIInstructions have been updated upstream. Pull and merge the latest, then
+  reload instructions so the current session uses the most recent rules.
 
 - **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
   the design. Update it with the implementation checklist in Phase 2. Link the PR
