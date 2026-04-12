@@ -1,5 +1,11 @@
 # Copilot Workspace Instructions
 
+> **⚠️ Generic instructions — no project-specific content.**
+> These instruction files are shared across multiple projects. Never add
+> project names, architecture details, domain concepts, specific dependencies,
+> or hardcoded paths. Project-specific context belongs in the consuming project's
+> own `.github/instructions/project.instructions.md`. See `README.md` for details.
+
 ## Project Overview
 
 This is a **C#/.NET** project. Discover the project's purpose, architecture, and full

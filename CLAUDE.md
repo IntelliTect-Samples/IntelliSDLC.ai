@@ -2,6 +2,13 @@
 
 This file provides orientation for AI assistants working in this repository.
 
+> **⚠️ Generic instructions — no project-specific content.**
+> These instruction files are shared across multiple projects. Never add
+> project names, architecture details, domain concepts, specific dependencies,
+> or hardcoded paths. Project-specific context belongs in the consuming project's
+> own `CLAUDE.md` extensions or `.github/instructions/project.instructions.md`.
+> See `README.md` for details.
+
 ## GitHub Repository
 
 Determine the repository owner and name from the git remote:

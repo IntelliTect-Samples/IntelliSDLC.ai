@@ -96,6 +96,8 @@ scope but fix any directly related consistency problems you discover.
 After editing, perform a cross-file, cross-platform integrity check:
 
 - [ ] **No contradictions** between agents (e.g., conflicting workflow steps)
+- [ ] **No project-specific content** (no project names, architecture details, domain
+  concepts, specific dependencies, or hardcoded paths — see README.md)
 - [ ] **Paths aligned** across all files (file paths, save locations, test directories)
 - [ ] **Commands aligned** (build/test/format commands match everywhere)
 - [ ] **No stale references** (model names, project names, file paths all current)
