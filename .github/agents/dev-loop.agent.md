@@ -68,6 +68,8 @@ Status Template between phases, present it **once** at the end of the full auton
 ```
 +--------------------------------------------------------------+
 |                                                              |
+|   Pre-flight: Sync shared instructions (if updated)          |
+|        |                                                     |
 |   0. Brainstorm (design saved to GitHub issue)               |
 |        |                                                     |
 |   1. Create worktree on feature branch                       |
@@ -98,6 +100,35 @@ Status Template between phases, present it **once** at the end of the full auton
 ```
 
 ## Phase Details
+
+### Pre-flight — Sync Shared Instructions
+
+Before starting any Dev Loop iteration, check whether the shared
+[IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
+have been updated upstream. Stale instructions can cause process violations or
+formatting failures that have already been fixed.
+
+1. **Check for upstream instruction updates:**
+
+   ```bash
+   # If the project tracks IntelliAIInstructions as a remote:
+   git fetch instructions
+   git log HEAD..instructions/main --oneline -- CLAUDE.md .github/copilot-instructions.md .github/agents/ .github/instructions/ .claude/
+   ```
+
+   If commits appear, the shared instructions have changed since your last sync.
+
+2. **Pull and merge the latest instructions** into your current branch before
+   proceeding. Resolve any merge conflicts in instruction files.
+
+3. **Reload instructions.** After merging updated instruction files, restart or
+   re-read the instruction context so the current session uses the most recent
+   rules. On Claude Code, run `/read CLAUDE.md` or start a new session. On
+   Copilot, the updated `.github/copilot-instructions.md` is read automatically
+   on the next interaction.
+
+> **Skip this step** if you are working directly in the IntelliAIInstructions
+> repo itself (there is no upstream to sync from).
 
 ### Phase 0 — Brainstorm (Design Before Code)
 
