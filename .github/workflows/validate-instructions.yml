@@ -1,0 +1,159 @@
+name: "Validate Instructions"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Verify expected files exist
+        run: |
+          echo "=== Checking required instruction files ==="
+          missing=0
+          for f in \
+            CLAUDE.md \
+            README.md \
+            .github/copilot-instructions.md \
+            .github/workflows/copilot-setup-steps.yml \
+            .github/agents/dev-loop.agent.md \
+            .github/agents/tdd.agent.md \
+            .github/agents/refactor.agent.md \
+            .github/agents/code-review.agent.md \
+            .github/agents/functional-testing.agent.md \
+            .github/agents/systematic-debugging.agent.md \
+            .github/agents/plan.agent.md \
+            .github/agents/instructions.agent.md \
+            .github/agents/prd.agent.md \
+            .github/instructions/copilot-coding-agent.instructions.md \
+            .github/instructions/tdd.instructions.md \
+            .github/instructions/typescript.instructions.md \
+            .claude/settings.json \
+            .claude/hooks/session-start.sh; do
+            if [ ! -f "$f" ]; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing required file(s) missing"
+            exit 1
+          fi
+          echo "All required files present."
+
+      - name: Check for project-specific content leaks
+        run: |
+          echo "=== Scanning for project-specific content ==="
+          # These patterns should NOT appear in instruction files.
+          # README.md is excluded because it legitimately mentions the repo name/org.
+          patterns=(
+            'GmailNewsClient'
+            'GmailSynthesizer'
+            'Gmail API'
+            'Azure Function'
+            'Azure OpenAI'
+            'MimeKit'
+            'AngleSharp'
+            'SampleEmails'
+            'GMAIL_SETUP'
+            'sample-appsettings'
+            'IntelliTect-Samples'
+          )
+
+          found=0
+          for pattern in "${patterns[@]}"; do
+            # Exclude README.md (may reference repo name), .git, and this workflow file
+            matches=$(grep -r -l --include='*.md' --include='*.yml' --include='*.json' --include='*.sh' \
+              "$pattern" . \
+              --exclude-dir=.git \
+              --exclude='validate-instructions.yml' \
+              --exclude='README.md' 2>/dev/null || true)
+            if [ -n "$matches" ]; then
+              echo "::error::Found '$pattern' in: $matches"
+              found=$((found + 1))
+            fi
+          done
+
+          if [ "$found" -gt 0 ]; then
+            echo "::error::$found project-specific pattern(s) found. These instructions must be generic."
+            exit 1
+          fi
+          echo "No project-specific content detected."
+
+      - name: Verify warning banners present
+        run: |
+          echo "=== Checking warning banners ==="
+          errors=0
+
+          if ! grep -q "no project-specific content" CLAUDE.md; then
+            echo "::error::CLAUDE.md is missing the 'no project-specific content' warning banner"
+            errors=$((errors + 1))
+          fi
+
+          if ! grep -q "no project-specific content" .github/copilot-instructions.md; then
+            echo "::error::copilot-instructions.md is missing the 'no project-specific content' warning banner"
+            errors=$((errors + 1))
+          fi
+
+          if [ "$errors" -gt 0 ]; then
+            exit 1
+          fi
+          echo "Warning banners present."
+
+      - name: Validate internal cross-references
+        run: |
+          echo "=== Checking internal file references ==="
+          errors=0
+
+          # Extract referenced file paths from markdown links and check they exist
+          # Pattern: [text](./path) or [text](path) for local files
+          for md_file in $(find . -name '*.md' -not -path './.git/*'); do
+            # Match markdown links to local files (not URLs, not anchors)
+            refs=$(grep -oP '\]\(\./[^)#]+\)' "$md_file" | sed 's/\](\.\///' | sed 's/)//' || true)
+            dir=$(dirname "$md_file")
+            for ref in $refs; do
+              target="$dir/$ref"
+              if [ ! -e "$target" ] && [ ! -d "$target" ]; then
+                echo "::warning::Broken reference in $md_file: ./$ref"
+                errors=$((errors + 1))
+              fi
+            done
+          done
+
+          if [ "$errors" -gt 0 ]; then
+            echo "::error::$errors broken internal reference(s) found"
+            exit 1
+          fi
+          echo "All internal references valid."
+
+      - name: Verify agent files have required frontmatter
+        run: |
+          echo "=== Checking agent frontmatter ==="
+          errors=0
+
+          for agent in .github/agents/*.agent.md; do
+            if ! head -1 "$agent" | grep -q '^---$'; then
+              echo "::error::$agent is missing YAML frontmatter"
+              errors=$((errors + 1))
+              continue
+            fi
+            if ! grep -q '^name:' "$agent"; then
+              echo "::error::$agent frontmatter is missing 'name' field"
+              errors=$((errors + 1))
+            fi
+            if ! grep -q '^description:' "$agent"; then
+              echo "::error::$agent frontmatter is missing 'description' field"
+              errors=$((errors + 1))
+            fi
+          done
+
+          if [ "$errors" -gt 0 ]; then
+            exit 1
+          fi
+          echo "All agent files have valid frontmatter."
