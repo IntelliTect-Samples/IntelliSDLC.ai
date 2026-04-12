@@ -339,7 +339,7 @@ the primary protection, but all agents and developers must follow these rules:
 Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 
 - **Create the issue during Brainstorm (Phase 0)** — capture the design, intent, and
-  any key decisions. Title: the feature name (e.g., "Content extraction pipeline").
+  any key decisions. Title: the feature name (e.g., "User authentication").
 - **Update the issue with the implementation plan (Phase 2)** — add a task checklist
   derived from the plan, and a link to the plan document (if saved to `docs/designs/`).
 - **Update the issue** as implementation phases complete (optional but encouraged).
