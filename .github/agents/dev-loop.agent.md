@@ -492,7 +492,7 @@ works end-to-end. This is the final validation after all code changes are comple
 
    | Language | Example Command |
    |---|---|
-   | C# / .NET | `dotnet run --project src/<ProjectName> -- --dry-run` |
+   | C# / .NET | `pwsh -File ./run.ps1 -- --dry-run` |
    | TypeScript | `npm run build && npm run start -- --dry-run` |
    | PowerShell | `pwsh -File ./run.ps1 -DryRun` |
    | Generic | Check for a `run` script or `Makefile` target that supports a dry-run flag |
