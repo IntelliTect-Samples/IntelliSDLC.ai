@@ -9,34 +9,35 @@
     `dotnet run`. If multiple runnable projects exist, prompts the user
     to choose. Supports launchSettings.json profiles and pass-through args.
 
-    Use -Test to run `dotnet test` across the entire solution instead.
+    Use `./run.ps1 test` to run `dotnet test` across the entire solution.
 
-.PARAMETER Test
-    Run `dotnet test` on the solution. Any additional arguments are passed
-    through to `dotnet test`.
+.PARAMETER Command
+    Optional subcommand. Use `test` to run dotnet test on the solution.
+    Omit (or use `run`) to run the application.
 
 .PARAMETER LaunchProfile
-    Name of the launch profile from launchSettings.json to use.
+    Name of the launch profile from launchSettings.json to use (run mode only).
 
 .PARAMETER Project
-    Explicit project path to run (bypasses auto-discovery).
+    Explicit project path to run (bypasses auto-discovery, run mode only).
 
 .PARAMETER Args
     Additional arguments passed through to the application (after `--`)
-    or to `dotnet test` (when -Test is used).
+    or to `dotnet test` (when using `test` command).
 
 .EXAMPLE
     ./run.ps1
     ./run.ps1 -- --dry-run
     ./run.ps1 -LaunchProfile https
     ./run.ps1 -Project src/MyApp/MyApp.csproj
-    ./run.ps1 -Test
-    ./run.ps1 -Test --verbosity detailed
-    ./run.ps1 -Test --filter "FullyQualifiedName~MyTests"
+    ./run.ps1 test
+    ./run.ps1 test --verbosity detailed
+    ./run.ps1 test --filter "FullyQualifiedName~MyTests"
 #>
 [CmdletBinding()]
 param(
-    [switch]$Test,
+    [Parameter(Position = 0)]
+    [string]$Command,
     [string]$LaunchProfile,
     [string]$Project,
     [Parameter(ValueFromRemainingArguments)]
@@ -129,7 +130,7 @@ function Select-Project {
 # --- Main ---
 
 # --- Test mode ---
-if ($Test) {
+if ($Command -eq 'test') {
     $sln = Find-Solution
     $dotnetArgs = @('test')
 
