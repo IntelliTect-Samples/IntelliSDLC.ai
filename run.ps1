@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Project-agnostic script to run a .NET project. Auto-discovers runnable
+    Project-agnostic script to run or test a .NET project. Auto-discovers
     projects from the solution without hardcoding directory or project names.
 
 .DESCRIPTION
@@ -9,6 +9,12 @@
     `dotnet run`. If multiple runnable projects exist, prompts the user
     to choose. Supports launchSettings.json profiles and pass-through args.
 
+    Use -Test to run `dotnet test` across the entire solution instead.
+
+.PARAMETER Test
+    Run `dotnet test` on the solution. Any additional arguments are passed
+    through to `dotnet test`.
+
 .PARAMETER LaunchProfile
     Name of the launch profile from launchSettings.json to use.
 
@@ -16,16 +22,21 @@
     Explicit project path to run (bypasses auto-discovery).
 
 .PARAMETER Args
-    Additional arguments passed through to the application after `--`.
+    Additional arguments passed through to the application (after `--`)
+    or to `dotnet test` (when -Test is used).
 
 .EXAMPLE
     ./run.ps1
     ./run.ps1 -- --dry-run
     ./run.ps1 -LaunchProfile https
     ./run.ps1 -Project src/MyApp/MyApp.csproj
+    ./run.ps1 -Test
+    ./run.ps1 -Test --verbosity detailed
+    ./run.ps1 -Test --filter "FullyQualifiedName~MyTests"
 #>
 [CmdletBinding()]
 param(
+    [switch]$Test,
     [string]$LaunchProfile,
     [string]$Project,
     [Parameter(ValueFromRemainingArguments)]
@@ -116,6 +127,33 @@ function Select-Project {
 }
 
 # --- Main ---
+
+# --- Test mode ---
+if ($Test) {
+    $sln = Find-Solution
+    $dotnetArgs = @('test')
+
+    if ($sln) {
+        $slnPath = Resolve-Path -Relative $sln.FullName
+        $dotnetArgs += $sln.FullName
+        Write-Host ''
+        Write-Host "Testing: $slnPath" -ForegroundColor Green
+    }
+    else {
+        Write-Host ''
+        Write-Host 'Testing: all projects (no solution file found)' -ForegroundColor Green
+    }
+    Write-Host ''
+
+    if ($Args -and $Args.Count -gt 0) {
+        $dotnetArgs += $Args
+    }
+
+    & dotnet @dotnetArgs
+    exit $LASTEXITCODE
+}
+
+# --- Run mode ---
 
 # If explicit project provided, use it directly
 if ($Project) {
