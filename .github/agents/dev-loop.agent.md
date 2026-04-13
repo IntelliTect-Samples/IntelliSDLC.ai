@@ -169,13 +169,13 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
    git pull
    git worktree add .worktrees/<short-description> -b <type>/<issue#>-<short-description> main
    cd .worktrees/<short-description>
-   $Host.UI.RawUI.WindowTitle = '#<issue#> - <short-description>'
+   $Host.UI.RawUI.WindowTitle = '<repo-name>: #<issue#> - <short-description>'
    ```
    Example:
    ```bash
    git worktree add .worktrees/user-auth -b feat/42-user-auth main
    cd .worktrees/user-auth
-   $Host.UI.RawUI.WindowTitle = '#42 - user-auth'
+   $Host.UI.RawUI.WindowTitle = 'MyWebApp: #42 - user-auth'
    ```
 5. Lock the worktree to prevent accidental pruning: `git worktree lock .worktrees/<short-description>`
 6. All subsequent work in this loop happens **inside the worktree directory**.
@@ -183,7 +183,7 @@ and work in a dedicated **git worktree** to keep the main working tree clean:
    ```bash
    git worktree add .worktrees/<short-description> <existing-branch-name>
    cd .worktrees/<short-description>
-   $Host.UI.RawUI.WindowTitle = '#<issue#> - <short-description>'
+   $Host.UI.RawUI.WindowTitle = '<repo-name>: #<issue#> - <short-description>'
    ```
 
 **Why worktrees?** They isolate feature work from the main working tree, avoiding
