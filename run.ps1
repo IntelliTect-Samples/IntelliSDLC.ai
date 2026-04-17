@@ -30,6 +30,7 @@
     ./run.ps1 -- --dry-run
     ./run.ps1 -LaunchProfile https
     ./run.ps1 -Project src/MyApp/MyApp.csproj
+    ./run.ps1 help
     ./run.ps1 test
     ./run.ps1 test --verbosity detailed
     ./run.ps1 test --filter "FullyQualifiedName~MyTests"
@@ -57,7 +58,8 @@ function Find-Solution {
 }
 
 function Find-RunnableProjects {
-    $csprojFiles = Get-ChildItem -Path . -Filter '*.csproj' -Recurse -File
+    $csprojFiles = Get-ChildItem -Path . -Filter '*.csproj' -Recurse -File |
+        Where-Object { $_.FullName -notlike "$(Resolve-Path .)\.worktrees\*" }
     $runnable = @()
     foreach ($csproj in $csprojFiles) {
         $content = Get-Content $csproj.FullName -Raw
@@ -128,6 +130,27 @@ function Select-Project {
 }
 
 # --- Main ---
+
+# --- Help mode ---
+# Handle help requests: `./run.ps1 help`, `./run.ps1 -- --help`, or help
+# flags in $Args. When invoked interactively, `-- --help` puts `--help` into
+# $Command (positional). With `pwsh -File`, `--help` goes into $Args.
+# Use `./run.ps1 help` for the most reliable cross-invocation behavior.
+$helpFlags = @('--help', '-h', '-?')
+$isHelpCommand = $Command -eq 'help' -or $Command -in $helpFlags
+$hasHelpFlag = $Args | Where-Object { $_ -in $helpFlags } | Select-Object -First 1
+
+if ($isHelpCommand -or $hasHelpFlag) {
+    $runnableProjects = @(Find-RunnableProjects)
+    if ($runnableProjects.Count -eq 0) {
+        Write-Error 'No runnable projects found. Ensure at least one .csproj has <OutputType>Exe</OutputType>.'
+        exit 1
+    }
+    # Pick the first runnable project (skip interactive selection for help)
+    $selectedProject = $runnableProjects[0]
+    & dotnet run --project $selectedProject.FullName -- --help
+    exit $LASTEXITCODE
+}
 
 # --- Test mode ---
 if ($Command -eq 'test') {
