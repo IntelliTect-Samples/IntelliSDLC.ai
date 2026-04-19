@@ -289,6 +289,20 @@ If the project maintains a living product specification (e.g., `product-spec.md`
   root (e.g., `git worktree add .worktrees/<issue#>-<name> -b <branch> main`). This directory is
   already in `.gitignore`.
 - **Clean up feature branches and their worktrees after the PR closes.**
+  - **Recommended:** run the repo-root script, which performs all steps below
+    (leave worktree → unlock → remove → prune → checkout main → pull → delete branch):
+    ```powershell
+    # From inside the worktree (auto-detects branch):
+    ../../Cleanup-Worktree.ps1
+    # Or from the repo root, targeting a branch explicitly:
+    ./Cleanup-Worktree.ps1 -Branch <branch-name>
+    # PR closed without merge (force delete unmerged branch):
+    ./Cleanup-Worktree.ps1 -Branch <branch-name> -Force
+    # Also prune stale remote-tracking refs + branches whose upstream is gone
+    # (typical after GitHub squash-merges):
+    ./Cleanup-Worktree.ps1 -Sweep
+    ```
+  - Manual steps (fallback if the script is unavailable):
   - First, remove any worktrees that are using the branch (the branch cannot be deleted while it is checked out):
     ```bash
     git worktree list

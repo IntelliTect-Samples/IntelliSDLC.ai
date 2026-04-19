@@ -138,7 +138,18 @@ See `.github/copilot-instructions.md` -> **Agent Files** for the complete agent 
 - Merge to `main` only via pull request after the dev loop passes.
 - **All commits must come from a worktree** — the pre-commit hook blocks commits from the repo root.
   See the "Concurrent Session Safety" section in `.github/copilot-instructions.md` for details.
-- **After a PR closes**, clean up the worktree and local branch in this order:
+- **After a PR closes**, clean up the worktree and local branch. The recommended
+  workflow is to run the `Cleanup-Worktree.ps1` script at the repo root, which
+  performs all steps below automatically (auto-detects the branch when invoked
+  from inside the worktree):
+
+  ```powershell
+  ./Cleanup-Worktree.ps1                           # targeted (auto-detect)
+  ./Cleanup-Worktree.ps1 -Branch <name> -Force     # PR closed unmerged
+  ./Cleanup-Worktree.ps1 -Sweep                    # + prune stale branches/refs
+  ```
+
+  Manual fallback (in order):
   1. Ensure your shell is **not** inside the worktree (e.g., `cd` back to the repo root).
   2. Unlock if needed, then remove the worktree: `git worktree unlock .worktrees/<issue#>-<name> || true; git worktree remove .worktrees/<issue#>-<name>`.
   3. Switch to `main` and pull latest: `git checkout main && git pull`.
