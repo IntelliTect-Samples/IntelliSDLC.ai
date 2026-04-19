@@ -591,6 +591,25 @@ dry run passes (if applicable) and results appended to PR, **no mojibake in PR b
 
 Phase 8 runs after the PR is merged or closed. The agent does not decide when to merge — that is the user's decision. Once the PR state changes to merged or closed, proceed with cleanup.
 
+**Recommended:** use the repo-root `Cleanup-Worktree.ps1` script, which performs every step below in one invocation:
+
+```powershell
+# From inside the worktree (auto-detects branch):
+../../Cleanup-Worktree.ps1
+
+# From the repo root, targeting a branch explicitly:
+./Cleanup-Worktree.ps1 -Branch <branch-name>
+
+# PR closed without merge (requires explicit user confirmation to force-delete):
+./Cleanup-Worktree.ps1 -Branch <branch-name> -Force
+
+# Also prune stale remote-tracking refs and local branches whose upstream is
+# gone (typical after GitHub squash-merges delete the PR branch):
+./Cleanup-Worktree.ps1 -Sweep
+```
+
+**Manual fallback** (if the script is unavailable):
+
 1. Switch to the repository root (ensure you are NOT inside the worktree):
    ```bash
    cd <repo-root>
