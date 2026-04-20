@@ -515,6 +515,32 @@ Use `@plan` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` when encountering any bug or unexpected behavior.
 Use `@instructions` for any changes to agent files, instruction files, or platform config.
 
+#### `bg:` Background Task Shorthand
+
+When a user message is prefixed with `bg:` (case-insensitive), treat the remainder
+of the message as a Dev Loop request to be executed **in the background** without
+further confirmation. The agent should:
+
+1. Launch a background Dev Loop agent (`task` tool with `agent_type: "Dev Loop"`
+   and `mode: "background"`) against the described work.
+2. Return control to the user immediately after the agent is launched — do not
+   wait for it to complete.
+3. Report the background agent ID so the user can track it via `/tasks`.
+
+Examples:
+
+- `bg: implement fb-to-ig command` → launch a background Dev Loop for the
+  `fb-to-ig` feature and return.
+- `bg: fix #123` → launch a background Dev Loop for issue #123 and return.
+- `bg: refactor PolarstepsClient to split read and write paths` → launch a
+  background Dev Loop for that refactor and return.
+
+The shorthand exists to let users fire-and-forget independent work items while
+continuing to drive the main conversation. It is equivalent to saying
+"start a background task to …" but shorter. Only the `bg:` prefix triggers this
+behavior — messages without the prefix are handled normally (interactive
+questions, inline edits, synchronous work, etc.).
+
 #### Agent Output Linking
 
 In all agent summaries and Task Complete statements, **always use full GitHub links**
