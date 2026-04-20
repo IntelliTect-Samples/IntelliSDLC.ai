@@ -41,6 +41,9 @@
 .EXAMPLE
     ./run.ps1
     ./run.ps1 -- --dry-run
+    ./run.ps1 mysubcommand
+    ./run.ps1 -- mysubcommand --flag
+    ./run.ps1 run -- --some-flag
     ./run.ps1 -LaunchProfile https
     ./run.ps1 -Project src/MyApp/MyApp.csproj
     ./run.ps1 -SearchPath C:\Projects\MyApp
@@ -63,11 +66,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# When invoked as `.\run.ps1 -- --flag ...`, PowerShell's `--` end-of-parameters
-# marker causes the first `-`-prefixed token to bind to the positional
-# $Command parameter, silently dropping it. Push it back into $Args so every
-# token after `--` is forwarded to the child process.
-if ($Command -and $Command.StartsWith('-')) {
+# Reserved subcommands handled by this script itself (not forwarded to the app).
+$ReservedCommands = @('run', 'test', 'help')
+
+# PowerShell binds positional args (even after `--`) to $Command before $Args,
+# so `.\run.ps1 -- --flag ...` or `.\run.ps1 mycmd` both land with $Command
+# holding the first token. Forward it into $Args if it's either a flag
+# (starts with '-') or a non-reserved subcommand so the child process sees it.
+# 'run' is treated as an explicit no-op keyword so callers can write
+# `.\run.ps1 run -- args` when they need to force run mode.
+if ($Command -and ($Command.StartsWith('-') -or $Command -notin $ReservedCommands)) {
     if ($null -eq $Args) { $Args = @() }
     $Args = @($Command) + $Args
     $Command = ''
@@ -88,7 +96,12 @@ function Find-Solution {
 
 function Find-RunnableProjects {
     $csprojFiles = Get-ChildItem -Path $SearchRoot -Filter '*.csproj' -Recurse -File |
-        Where-Object { $_.FullName -notlike "$SearchRoot\.worktrees\*" }
+        Where-Object {
+            $full = $_.FullName
+            ($full -notlike "$SearchRoot\.worktrees\*") -and
+            ($full -notmatch '[\\/]bin[\\/]') -and
+            ($full -notmatch '[\\/]obj[\\/]')
+        }
     $runnable = @()
     foreach ($csproj in $csprojFiles) {
         $content = Get-Content $csproj.FullName -Raw
