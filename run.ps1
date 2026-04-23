@@ -94,6 +94,28 @@ function Find-Solution {
     return $slnFiles[0]
 }
 
+function Get-PropertyValue {
+    <#
+    .SYNOPSIS
+        Strict-mode-safe property accessor for PSCustomObject / hashtable values
+        produced by ConvertFrom-Json. Returns $null if the property is absent.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowNull()]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $InputObject) { return $null }
+
+    $psObj = $InputObject.PSObject
+    if (-not $psObj) { return $null }
+
+    $prop = $psObj.Properties[$Name]
+    if (-not $prop) { return $null }
+
+    return $prop.Value
+}
+
 function Find-RunnableProjects {
     $csprojFiles = Get-ChildItem -Path $SearchRoot -Filter '*.csproj' -Recurse -File |
         Where-Object {
@@ -119,13 +141,13 @@ function Get-LaunchProfileArgs {
     if (-not (Test-Path $launchSettingsPath)) { return @() }
 
     $settings = Get-Content $launchSettingsPath -Raw | ConvertFrom-Json
-    if (-not $settings.profiles) { return @() }
+    $profiles = Get-PropertyValue $settings 'profiles'
+    if (-not $profiles) { return @() }
 
-    $profiles = $settings.profiles
     $profile = $null
 
     if ($ProfileName) {
-        $profile = $profiles.$ProfileName
+        $profile = Get-PropertyValue $profiles $ProfileName
         if (-not $profile) {
             Write-Warning "Launch profile '$ProfileName' not found in $launchSettingsPath"
             return @()
@@ -135,7 +157,7 @@ function Get-LaunchProfileArgs {
         # Find first profile with commandName=Project
         foreach ($name in $profiles.PSObject.Properties.Name) {
             $p = $profiles.$name
-            if ($p.commandName -eq 'Project') {
+            if ((Get-PropertyValue $p 'commandName') -eq 'Project') {
                 $profile = $p
                 $ProfileName = $name
                 break
@@ -182,10 +204,11 @@ function Test-HasLaunchSettings {
     if (-not (Test-Path $launchSettingsPath)) { return $false }
 
     $settings = Get-Content $launchSettingsPath -Raw | ConvertFrom-Json
-    if (-not $settings.profiles) { return $false }
+    $profiles = Get-PropertyValue $settings 'profiles'
+    if (-not $profiles) { return $false }
 
-    foreach ($name in $settings.profiles.PSObject.Properties.Name) {
-        if ($settings.profiles.$name.commandName -eq 'Project') {
+    foreach ($name in $profiles.PSObject.Properties.Name) {
+        if ((Get-PropertyValue $profiles.$name 'commandName') -eq 'Project') {
             return $true
         }
     }
@@ -240,10 +263,11 @@ function Find-VsCodeLaunchProject {
         return $null
     }
 
-    if (-not $launch.configurations) { return $null }
+    $configurations = Get-PropertyValue $launch 'configurations'
+    if (-not $configurations) { return $null }
 
-    foreach ($config in $launch.configurations) {
-        $projPath = $config.projectPath
+    foreach ($config in $configurations) {
+        $projPath = Get-PropertyValue $config 'projectPath'
         if (-not $projPath) { continue }
 
         # Resolve ${workspaceFolder} to the search root

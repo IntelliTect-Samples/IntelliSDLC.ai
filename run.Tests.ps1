@@ -227,6 +227,38 @@ Describe 'Find-VsCodeLaunchProject' {
         $projects = @(Get-Item "$TestDrive/src/App/App.csproj")
         Find-VsCodeLaunchProject -Projects $projects | Should -BeNullOrEmpty
     }
+
+    It 'returns null (no throw) when configurations use program instead of projectPath' {
+        New-CsprojStub "$TestDrive/src/App/App.csproj"
+        $vsCodeDir = Join-Path $TestDrive '.vscode'
+        New-Item -ItemType Directory -Path $vsCodeDir -Force | Out-Null
+        $json = @'
+{
+  "version": "0.2.0",
+  "configurations": [
+    { "name": "Launch DLL", "type": "coreclr", "request": "launch", "program": "${workspaceFolder}/src/App/bin/Debug/net9.0/App.dll" }
+  ]
+}
+'@
+        Set-Content -Path (Join-Path $vsCodeDir 'launch.json') -Value $json
+
+        $SearchRoot = $TestDrive
+        $projects = @(Get-Item "$TestDrive/src/App/App.csproj")
+        { Find-VsCodeLaunchProject -Projects $projects } | Should -Not -Throw
+        Find-VsCodeLaunchProject -Projects $projects | Should -BeNullOrEmpty
+    }
+
+    It 'returns null (no throw) when launch.json has no configurations property' {
+        New-CsprojStub "$TestDrive/src/App/App.csproj"
+        $vsCodeDir = Join-Path $TestDrive '.vscode'
+        New-Item -ItemType Directory -Path $vsCodeDir -Force | Out-Null
+        Set-Content -Path (Join-Path $vsCodeDir 'launch.json') -Value '{ "version": "0.2.0" }'
+
+        $SearchRoot = $TestDrive
+        $projects = @(Get-Item "$TestDrive/src/App/App.csproj")
+        { Find-VsCodeLaunchProject -Projects $projects } | Should -Not -Throw
+        Find-VsCodeLaunchProject -Projects $projects | Should -BeNullOrEmpty
+    }
 }
 
 Describe 'Ensure-LaunchSettings' {
