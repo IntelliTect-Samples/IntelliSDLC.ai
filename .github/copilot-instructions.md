@@ -186,6 +186,7 @@ Reusable process definitions invoked on demand. Skills enforce methodology and d
 | `code-review-workflow` | Independent review by severity + direct fixes. Use different model for fresh perspective |
 | `systematic-debugging` | 4-phase root cause investigation -- no fixes without understanding |
 | `dev-loop-phase-gate` | Verify phase completion before proceeding -- quality gate enforcement |
+| `security-review` | Scan code for vulnerabilities, exposed secrets, and insecure dependencies (vendored from [github/awesome-copilot](https://github.com/github/awesome-copilot)) |
 
 ### Agents (`.github/agents/`)
 
