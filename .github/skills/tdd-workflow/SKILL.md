@@ -1,19 +1,16 @@
 ---
-name: "TDD Unit Testing"
-description: "Drive feature development through the Red -> Green -> Refactor cycle. Enforces strict test-first methodology — no production code without a failing test. Language-aware: C#/xUnit, PowerShell/Pester, TypeScript/Vitest, and generic support."
-tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand"]
+name: tdd-workflow
+description: "Drive feature development through the Red -> Green -> Refactor cycle. Enforces strict test-first methodology -- no production code without a failing test. Language-aware: C#/xUnit, PowerShell/Pester, TypeScript/Vitest, and generic support."
 ---
 
-# TDD Unit Testing Agent
+# TDD Workflow
 
-You are a Test-Driven Development agent for this project.
 Guide every feature through the classic TDD cycle: write a failing test first, make it
 pass with the simplest code, then refactor.
 
-**Detect the project language** from file extensions and project files (see
-`copilot-instructions.md`). Apply the matching language-specific guidance below. If the
-language is not listed, infer the test framework and conventions from the project's
-existing code and community standards.
+**Detect the project language** from file extensions and project files. Apply the matching
+language-specific guidance below. If the language is not listed, infer the test framework
+and conventions from the project's existing code and community standards.
 
 ## The Iron Law
 
@@ -47,14 +44,14 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
 
 ## Red-Green-Refactor Cycle
 
-### 1. RED — Write a Failing Test
+### 1. RED -- Write a Failing Test
 
 - **Before writing any production code**, create or update a unit test.
 - Place tests in the project's test directory mirroring the source tree.
 - Each test must:
   - Have a clear, descriptive name describing the expected behavior.
   - Assert **one logical behavior** per test case.
-    > One logical behavior may require multiple assertions when they collectively verify a single outcome. For example, testing that a method returns a correctly populated object may assert multiple properties — this is one behavior (correct object creation). However, testing that a method returns the right object AND logs the right message is two behaviors and should be two tests.
+    > One logical behavior may require multiple assertions when they collectively verify a single outcome. For example, testing that a method returns a correctly populated object may assert multiple properties -- this is one behavior (correct object creation). However, testing that a method returns the right object AND logs the right message is two behaviors and should be two tests.
   - Group related behaviors together (e.g., nested classes in xUnit, `Describe`/`Context` blocks in Pester, `describe` in Vitest).
   - **Prefer real implementations over mocks.** Use mocks only when the real dependency is impractical in tests: network calls, file system operations with side effects, or time-dependent behavior. When mocking, verify the interaction contract, not implementation details.
 
@@ -64,7 +61,7 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
 | **Clear** | Name describes behavior | `It 'test1'` |
 | **Shows intent** | Demonstrates desired API | Obscures what code should do |
 
-### Verify RED — Watch It Fail (MANDATORY)
+### Verify RED -- Watch It Fail (MANDATORY)
 
 Run the project's lint/compile step, then run the test to **confirm it fails**.
 
@@ -76,16 +73,16 @@ Confirm:
 **Test passes immediately?** You're testing existing behavior. Fix the test.
 **Test errors instead of failing?** Fix the error, re-run until it fails correctly.
 
-### 2. GREEN — Write Minimal Code
+### 2. GREEN -- Write Minimal Code
 
 - Write the **simplest code** needed to make the failing test pass.
 - Do **not** add features, optimizations, or abstractions yet.
-- **Fake it till you make it** — start with hard-coded returns, then generalize.
-- **Stay in scope** — implement only what the current test requires.
+- **Fake it till you make it** -- start with hard-coded returns, then generalize.
+- **Stay in scope** -- implement only what the current test requires.
 
 Don't add features, refactor other code, or "improve" beyond the test.
 
-### Verify GREEN — Watch It Pass (MANDATORY)
+### Verify GREEN -- Watch It Pass (MANDATORY)
 
 Run lint/compile, then re-run the test.
 
@@ -95,9 +92,9 @@ Confirm:
 - Output is pristine (no errors, warnings)
 
 **Test fails?** Fix code, not the test.
-**Other tests fail?** Fix them now — never leave the suite red.
+**Other tests fail?** Fix them now -- never leave the suite red.
 
-### 3. REFACTOR — Clean Up
+### 3. REFACTOR -- Clean Up
 
 After green and **only after green**:
 - Remove duplication
@@ -114,31 +111,31 @@ Next failing test for next behavior.
 
 ---
 
-## Language-Specific Guidance — C# / .NET (xUnit)
+## Language-Specific Guidance -- C# / .NET (xUnit)
 
 ### Test Location & Naming
 
 - Place tests in `tests/unit/` mirroring the source tree.
-- Example: `src/<ProjectName>/Services/FooService.cs` →
+- Example: `src/<ProjectName>/Services/FooService.cs` ->
   `tests/unit/Services/FooServiceTests.cs`.
 - File naming: `<ClassName>Tests.cs`.
 - Method naming: `MethodName_Scenario_ExpectedBehavior`.
 
-### RED — Run & Verify Failure
+### RED -- Run & Verify Failure
 
 ```bash
 dotnet build --no-restore
 dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~<TestClassName>"
 ```
 
-### GREEN — Run & Verify Pass
+### GREEN -- Run & Verify Pass
 
 ```bash
 dotnet build --no-restore
 dotnet test --no-build --verbosity normal --filter "FullyQualifiedName~<TestClassName>"
 ```
 
-### REFACTOR — Full Suite
+### REFACTOR -- Full Suite
 
 ```bash
 dotnet build --no-restore
@@ -146,7 +143,7 @@ dotnet test --no-build --verbosity normal
 dotnet format --verify-no-changes
 ```
 
-### Test File Template — C#
+### Test File Template -- C#
 
 ```csharp
 using Xunit;
@@ -186,9 +183,9 @@ public class CalculatorServiceTests
 ```
 
 > **Namespace convention:** Test namespace mirrors source namespace with `.Tests.Unit` inserted:
-> `MyProject.Services.CalculatorService` → `MyProject.Tests.Unit.Services.CalculatorServiceTests`.
+> `MyProject.Services.CalculatorService` -> `MyProject.Tests.Unit.Services.CalculatorServiceTests`.
 
-### Rules — C#
+### Rules -- C#
 
 | Rule | Detail |
 |---|---|
@@ -198,41 +195,41 @@ public class CalculatorServiceTests
 | **Format check** | Run `dotnet format --verify-no-changes` to ensure consistent style. |
 | **Test fixtures** | Use saved data files in `tests/fixtures/` for deterministic tests when appropriate. |
 
-### Async Testing — C#
+### Async Testing -- C#
 
-For async methods, use `async Task` test methods (not `async void`). Use `await` directly — do not use `.Result` or `.Wait()` which can deadlock. Test cancellation by passing `CancellationToken` with a short timeout.
+For async methods, use `async Task` test methods (not `async void`). Use `await` directly -- do not use `.Result` or `.Wait()` which can deadlock. Test cancellation by passing `CancellationToken` with a short timeout.
 
 ---
 
-## Language-Specific Guidance — PowerShell (Pester)
+## Language-Specific Guidance -- PowerShell (Pester)
 
 ### Test Location & Naming
 
 - Place tests in `tests/unit/` mirroring the source tree.
 - File naming: `<FunctionName>.Tests.ps1`.
 
-### RED — Run & Verify Failure
+### RED -- Run & Verify Failure
 
 ```powershell
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 Invoke-Pester -Path tests/unit/<TestFile>.Tests.ps1 -Output Detailed
 ```
 
-### GREEN — Run & Verify Pass
+### GREEN -- Run & Verify Pass
 
 ```powershell
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 Invoke-Pester -Path tests/unit/<TestFile>.Tests.ps1 -Output Detailed
 ```
 
-### REFACTOR — Full Suite
+### REFACTOR -- Full Suite
 
 ```powershell
 Invoke-ScriptAnalyzer -Path src/ -Recurse -Severity Warning
 Invoke-Pester -Path tests/ -Output Detailed
 ```
 
-### Rules — PowerShell
+### Rules -- PowerShell
 
 | Rule | Detail |
 |---|---|
@@ -243,36 +240,36 @@ Invoke-Pester -Path tests/ -Output Detailed
 
 ---
 
-## Language-Specific Guidance — TypeScript (Vitest)
+## Language-Specific Guidance -- TypeScript (Vitest)
 
 ### Test Location & Naming
 
 - Place tests in `tests/unit/` mirroring the source tree.
-- Example: `src/services/auth.ts` → `tests/unit/services/auth.test.ts`.
+- Example: `src/services/auth.ts` -> `tests/unit/services/auth.test.ts`.
 - File naming: `<module>.test.ts`.
 
-### RED — Run & Verify Failure
+### RED -- Run & Verify Failure
 
 ```bash
 npx tsc
 npx vitest run --reporter=verbose <path-to-test-file>
 ```
 
-### GREEN — Run & Verify Pass
+### GREEN -- Run & Verify Pass
 
 ```bash
 npx tsc
 npx vitest run --reporter=verbose <path-to-test-file>
 ```
 
-### REFACTOR — Full Suite
+### REFACTOR -- Full Suite
 
 ```bash
 npx tsc
 npx vitest run
 ```
 
-### Rules — TypeScript
+### Rules -- TypeScript
 
 | Rule | Detail |
 |---|---|
@@ -280,13 +277,13 @@ npx vitest run
 | **TypeScript first** | All new source and test files must be `.ts`. Never hand-write `.js` files. |
 | **Compile after every step** | Run `npx tsc` after every RED, GREEN, and REFACTOR step. |
 
-### Async Testing — TypeScript
+### Async Testing -- TypeScript
 
 For async functions, use `async/await` in test bodies. Mock async dependencies with `vi.fn().mockResolvedValue()` or `vi.fn().mockRejectedValue()`. Test error paths with `await expect(fn()).rejects.toThrow()`.
 
 ---
 
-## Language-Specific Guidance — Generic (Any Language)
+## Language-Specific Guidance -- Generic (Any Language)
 
 If the project uses a language not listed above:
 
@@ -303,11 +300,11 @@ If the project uses a language not listed above:
 | Rule | Detail |
 |---|---|
 | **No production code without a test** | Every new function, class, or module must be preceded by a failing test. |
-| **One behavior per cycle** | Do not batch multiple behaviors into a single RED→GREEN pass. |
+| **One behavior per cycle** | Do not batch multiple behaviors into a single RED->GREEN pass. |
 | **Smallest step possible** | Prefer many small cycles over a few large ones. |
 | **Tests are first-class code** | Apply the same quality standards (naming, no duplication, documentation) to test files. |
 | **Real code over mocks** | Prefer real implementations over mocks. Use mocks only when the real dependency is impractical: network calls, external APIs, file system side effects, or time-dependent behavior. Verify interaction contracts, not implementation details. |
-| **Preserve isolation** | Each test must be independent — no shared mutable state between tests. |
+| **Preserve isolation** | Each test must be independent -- no shared mutable state between tests. |
 | **Lint/compile after every step** | Run the project's lint and/or compile command after every RED, GREEN, and REFACTOR step. Fix errors before proceeding. |
 
 ## Common Rationalizations
@@ -324,7 +321,7 @@ If the project uses a language not listed above:
 | "Test hard = design unclear" | Listen to test. Hard to test = hard to use. |
 | "TDD will slow me down" | TDD is faster than debugging. |
 
-## Red Flags — STOP and Start Over
+## Red Flags -- STOP and Start Over
 
 If you catch yourself doing any of these, **delete the code and restart with TDD**:
 
@@ -371,13 +368,13 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ## Execution Guidelines
 
-1. **Analyse requirements** — Break down the feature into testable behaviors.
-2. **Write the simplest failing test** — Start with the most basic scenario. NEVER write multiple tests at once.
-3. **Verify the test fails** — Run the test to confirm it fails for the expected reason.
-4. **Write minimal code** — Add just enough to make the test pass.
-5. **Run all tests** — Ensure new code doesn't break existing functionality.
-6. **Refactor** — Clean up while keeping all tests green.
-7. **Repeat** — Move to the next behavior.
+1. **Analyse requirements** -- Break down the feature into testable behaviors.
+2. **Write the simplest failing test** -- Start with the most basic scenario. NEVER write multiple tests at once.
+3. **Verify the test fails** -- Run the test to confirm it fails for the expected reason.
+4. **Write minimal code** -- Add just enough to make the test pass.
+5. **Run all tests** -- Ensure new code doesn't break existing functionality.
+6. **Refactor** -- Clean up while keeping all tests green.
+7. **Repeat** -- Move to the next behavior.
 
 ## Checklist (per cycle)
 
@@ -388,5 +385,5 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ## When You Are Done
 
-After completing a TDD cycle, invoke the **refactor** agent to do a broader
-duplication scan, then the **functional-testing** agent if the change is user-facing.
+After completing a TDD cycle, invoke the **refactor** skill to do a broader
+duplication scan, then the **functional-testing** skill if the change is user-facing.

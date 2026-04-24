@@ -43,10 +43,10 @@ git config core.hooksPath .githooks
 
 ## Key References
 
-- **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) — code style, testing conventions, branching strategy, commit format, and agent workflow.
-- **TDD guidelines**: [`.github/instructions/tdd.instructions.md`](./.github/instructions/tdd.instructions.md) — mandatory Red→Green→Refactor process.
-- **TypeScript/JS conventions**: [`.github/instructions/typescript.instructions.md`](./.github/instructions/typescript.instructions.md)
-- **Agent prompts**: [`.github/agents/`](./.github/agents/) — specialized agents for planning, TDD, refactoring, code review, debugging, orchestration, and instruction maintenance.
+- **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) -- code style, testing conventions, branching strategy, commit format, and workflow.
+- **Skills**: [`.github/skills/`](./.github/skills/) -- reusable process definitions (TDD, refactoring, code review, debugging, functional testing, phase gates).
+- **Agents**: [`.github/agents/`](./.github/agents/) -- orchestrators and interactive workflows (dev loop, planning, code review, instructions, PRD).
+- **Language conventions**: [`.github/instructions/`](./.github/instructions/) -- C#, PowerShell, TypeScript, TDD principles.
 
 ## Repository Structure
 
@@ -64,6 +64,7 @@ Discover the project layout by examining the root directory. A typical C#/.NET p
 └── .github/
     ├── copilot-instructions.md    # Primary dev conventions (read this first)
     ├── agents/                    # Agent prompt files (.agent.md)
+    ├── skills/                    # Reusable process skills (SKILL.md)
     ├── instructions/              # Language/practice-specific instructions
     └── workflows/                 # GitHub Actions (CI setup steps)
 ```
@@ -114,7 +115,7 @@ Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refact
 Use `@dev-loop` to orchestrate the full cycle. Phases 3-7 use an expanding loop -- each
 phase is a quality gate, and any failure routes back to Phase 3 (TDD). The loop exits
 only when Copilot review passes with zero issues and the dry run succeeds.
-See `.github/copilot-instructions.md` -> **Agent Files** for the complete agent reference.
+See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete reference.
 
 - **Sync instructions first:** Before starting any dev loop, check whether the shared
   IntelliAIInstructions have been updated upstream. Pull and merge the latest, then
