@@ -8,9 +8,39 @@ This file provides orientation for AI assistants working in this repository.
 > or hardcoded paths. All changes must be made in the
 > [IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
 > repo and pulled into consuming projects — never edited locally and pushed back.
-> Project-specific context belongs in the consuming project's own `CLAUDE.md`
-> extensions or `.github/instructions/project.instructions.md`.
+> Project-specific context belongs in the consuming project's own
+> `CLAUDE.project.md` and `.github/instructions/project.instructions.md`.
 > See `README.md` for details.
+
+## Init Protocol for Consuming Projects
+
+When an AI agent runs first-time setup (e.g., Claude Code's `/init`) in a project
+that consumes IntelliAIInstructions, follow this protocol:
+
+**DO NOT modify any upstream-managed file:**
+
+- `CLAUDE.md`
+- `.github/copilot-instructions.md`
+- `.github/agents/*`
+- `.github/instructions/*` (except `project.instructions.md`)
+- `.github/skills/*`
+
+These are pulled from IntelliAIInstructions and any local edits will be lost
+on the next sync. The Validate Instructions workflow may also flag leaks.
+
+**DO create or extend the consumer-owned files:**
+
+- `.github/instructions/project.instructions.md` -- copy from
+  `project.instructions.md.template` if missing. Document project name,
+  architecture, tech stack, build commands, key conventions, and domain
+  glossary here. Read by all coding agents.
+- `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
+  Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the
+  bottom of this file. Use for Claude-specific orientation overrides.
+
+If a `*.template` file is present but the corresponding consumer-owned file
+is not, copy the template (drop the `.template` suffix) and fill in the
+sections. `Pull-Instructions.ps1` does this automatically on first sync.
 
 ## GitHub Repository
 
@@ -157,3 +187,9 @@ See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete re
   4. If the branch was merged, delete it safely: `git branch -d <branch-name>`.
      - If the PR was closed **without** merging and you still want to delete the branch,
        you must force‑delete it: `git branch -D <branch-name>` (this discards any unmerged work).
+
+## Project-Specific Extensions
+
+Project-specific orientation lives in `CLAUDE.project.md` (created by the consuming project from `CLAUDE.project.md.template`). The line below auto-imports it when present; Claude Code silently ignores the import if the file is absent.
+
+@CLAUDE.project.md

@@ -19,21 +19,21 @@ jobs:
           missing=0
           for f in \
             CLAUDE.md \
+            CLAUDE.project.md.template \
             README.md \
             .github/copilot-instructions.md \
             .github/workflows/copilot-setup-steps.yml \
             .github/agents/dev-loop.agent.md \
-            .github/agents/tdd.agent.md \
-            .github/agents/refactor.agent.md \
             .github/agents/code-review.agent.md \
-            .github/agents/functional-testing.agent.md \
-            .github/agents/systematic-debugging.agent.md \
             .github/agents/plan.agent.md \
             .github/agents/instructions.agent.md \
             .github/agents/prd.agent.md \
             .github/instructions/copilot-coding-agent.instructions.md \
+            .github/instructions/csharp.instructions.md \
+            .github/instructions/powershell.instructions.md \
             .github/instructions/tdd.instructions.md \
             .github/instructions/typescript.instructions.md \
+            .github/instructions/project.instructions.md.template \
             .claude/settings.json \
             .claude/hooks/session-start.sh; do
             if [ ! -f "$f" ]; then
@@ -47,11 +47,33 @@ jobs:
           fi
           echo "All required files present."
 
+      - name: Verify every skill has a SKILL.md
+        run: |
+          echo "=== Checking .github/skills/*/SKILL.md ==="
+          if [ ! -d .github/skills ]; then
+            echo "No .github/skills directory; skipping."
+            exit 0
+          fi
+          missing=0
+          for d in .github/skills/*/; do
+            [ -d "$d" ] || continue
+            if [ ! -f "${d}SKILL.md" ]; then
+              echo "::error::Skill directory ${d} is missing SKILL.md"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            exit 1
+          fi
+          echo "All skill directories have SKILL.md."
+
       - name: Check for project-specific content leaks
         run: |
           echo "=== Scanning for project-specific content ==="
           # These patterns should NOT appear in instruction files.
           # README.md is excluded because it legitimately mentions the repo name/org.
+          # *.template files are excluded -- they ship example placeholder names
+          # that consumers replace with their own project context.
           patterns=(
             'GmailNewsClient'
             'GmailSynthesizer'
@@ -68,12 +90,13 @@ jobs:
 
           found=0
           for pattern in "${patterns[@]}"; do
-            # Exclude README.md (may reference repo name), .git, and this workflow file
+            # Exclude README.md, .git, this workflow file, and *.template files.
             matches=$(grep -r -l --include='*.md' --include='*.yml' --include='*.json' --include='*.sh' \
               "$pattern" . \
               --exclude-dir=.git \
               --exclude='validate-instructions.yml' \
-              --exclude='README.md' 2>/dev/null || true)
+              --exclude='README.md' \
+              --exclude='*.template' 2>/dev/null || true)
             if [ -n "$matches" ]; then
               echo "::error::Found '$pattern' in: $matches"
               found=$((found + 1))
