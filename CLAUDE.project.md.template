@@ -1,0 +1,62 @@
+<!--
+This file is OWNED BY THE CONSUMING PROJECT.
+
+It was created from `CLAUDE.project.md.template` (shipped by
+IntelliAIInstructions) and is never modified by `Pull-Instructions.ps1`.
+
+`CLAUDE.md` ends with `@CLAUDE.project.md`, which Claude Code auto-imports
+when this file exists. That means this file extends/overrides the upstream
+`CLAUDE.md` without you having to edit upstream.
+
+Most project-specific guidance should go in
+`.github/instructions/project.instructions.md` (which all coding agents read).
+Use this file for content that is specifically about Claude Code orientation
+(repository tour, essential commands, environment notes) and that you want
+Claude to load alongside `CLAUDE.md`.
+
+Delete the comment blocks below as you fill in each section.
+-->
+
+# Project Orientation (Claude)
+
+<!--
+One-paragraph summary: what is this project, what stack, what's the entry point.
+-->
+
+## Repository Structure (overrides / additions)
+
+<!--
+The upstream `CLAUDE.md` describes a generic C#/.NET layout. Add or override
+anything specific to this project: extra top-level dirs, where the entry-point
+project lives, where infra-as-code lives, etc.
+
+Only document differences from the upstream layout.
+-->
+
+## Technology Stack (overrides)
+
+<!--
+Pin runtime versions and replace any rows where this project differs from the
+upstream baseline. Example:
+
+| Layer | Technology |
+|---|---|
+| Runtime | .NET 8 (NOT 9 -- Azure Functions v4 host pinned) |
+| Test framework | NUnit (NOT xUnit) |
+-->
+
+## Essential Commands (overrides)
+
+<!--
+If this project's run/test/format commands differ from the upstream baseline
+(e.g., a wrapper script, a Makefile, multiple solution files), document them
+here. Otherwise leave this section empty and rely on the upstream defaults.
+-->
+
+## Project-Specific Notes for Claude
+
+<!--
+Anything you want the assistant to keep in mind that doesn't fit elsewhere:
+preferred PR style for this repo, sensitive areas of the code that need
+extra care, performance-critical paths, etc.
+-->

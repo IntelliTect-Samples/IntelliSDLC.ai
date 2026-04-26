@@ -7,7 +7,38 @@
 > [IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
 > repo and pulled into consuming projects -- never edited locally and pushed back.
 > Project-specific context belongs in the consuming project's own
-> `.github/instructions/project.instructions.md`. See `README.md` for details.
+> `.github/instructions/project.instructions.md` (and optionally
+> `CLAUDE.project.md`). See `README.md` for details.
+
+## Init Protocol for Consuming Projects
+
+When an AI agent runs first-time setup (e.g., `/init`) in a project that
+consumes IntelliAIInstructions, follow this protocol:
+
+**DO NOT modify any upstream-managed file:**
+
+- `CLAUDE.md`
+- `.github/copilot-instructions.md`
+- `.github/agents/*`
+- `.github/instructions/*` (except `project.instructions.md`)
+- `.github/skills/*`
+
+These are pulled from IntelliAIInstructions and any local edits will be lost
+on the next sync. The Validate Instructions workflow may also flag leaks.
+
+**DO create or extend the consumer-owned files:**
+
+- `.github/instructions/project.instructions.md` -- copy from
+  `project.instructions.md.template` if missing. Document project name,
+  architecture, tech stack, build commands, key conventions, and domain
+  glossary here.
+- `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
+  Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the
+  bottom of `CLAUDE.md`.
+
+If a `*.template` file is present but the corresponding consumer-owned file
+is not, copy the template (drop the `.template` suffix) and fill in the
+sections. `Pull-Instructions.ps1` does this automatically on first sync.
 
 ## Project Overview
 

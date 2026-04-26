@@ -6,71 +6,81 @@ consistent development workflow (TDD, code review, dev loop orchestration, etc.)
 
 ## Usage
 
-Copy these instruction files into your project repository. The files are designed
-to be **project-agnostic** — they work for any C#/.NET project without modification.
+Two ways to consume these instructions in your project:
 
-## ⚠️ No Project-Specific Content
+- **Initial copy:** clone or download this repo and copy the files into your project.
+- **Ongoing sync:** use `Pull-Instructions.ps1` -- it adds this repo as a git remote
+  named `instructions` and merges updates. See `Pull-Instructions.ps1 -?` for details.
 
-**These instruction files must never contain project-specific information.**
+On first sync, `Pull-Instructions.ps1` also scaffolds the consumer-owned files
+(`.github/instructions/project.instructions.md` and `CLAUDE.project.md`) from
+their `*.template` counterparts. They are never overwritten on subsequent syncs.
 
-Project-specific content includes:
+## File Ownership
 
-- Project names, solution file names, or namespace names
-- Architecture details (e.g., "this is an Azure Function" or "this is a CLI app")
-- Domain concepts (e.g., "email processing", "payment gateway")
-- Specific external dependencies or API references
-- Hardcoded file paths from a particular project
-- Repository owner/org names or URLs
+Files belong to one of two tiers:
 
-This rule exists because multiple projects reference these instructions and may
-pull updates. Project-specific content would be overwritten or would contaminate
-other projects.
+| Tier | Files | Edit rule |
+|---|---|---|
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), `.github/skills/*`, `.claude/*` | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `product-spec.md`, project's own `README.md`, `.gitignore`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-Instructions.ps1`. |
 
-## ⚠️ Upstream-Only Edits
+## Init Protocol for Consuming Projects
 
-**All instruction changes must be made in this repo
-([IntelliTect-Dev/IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions))
-and then pulled into consuming projects.**
+When an AI agent runs first-time setup (e.g., Claude Code's `/init`, or you
+manually onboard a new repo) in a project that consumes IntelliAIInstructions:
 
-Consuming projects must **not** edit these shared instruction files locally and
-push changes back directly. The flow is always:
+**DO NOT modify any upstream-managed file** (see table above). They are pulled
+from this repo and any local edits will be lost on the next sync. The
+`validate-instructions.yml` workflow also scans for project-specific content
+leaks in upstream files.
 
-```
-IntelliAIInstructions (this repo)  ──pull──▶  Your Project
-```
+**DO create or extend the consumer-owned files:**
 
-If you discover an improvement while working in another project, either:
+- `.github/instructions/project.instructions.md` -- copy from
+  `project.instructions.md.template` if missing. Document project name,
+  architecture, tech stack, build commands, key conventions, and domain
+  glossary here. Read by all coding agents.
+- `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
+  Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the bottom
+  of `CLAUDE.md`. Use for Claude-specific orientation overrides.
 
-1. **Come back to this repo**, make the change here, then pull the update into
-   your project, or
-2. **Cherry-pick** the instruction-only commit from your project into this repo
-   (ensuring no project-specific content comes along).
+`Pull-Instructions.ps1` performs the template-to-bare-name copy automatically
+on first sync. You only need to fill in the sections.
 
-### Where Does Project-Specific Content Go?
+## Why the strict separation?
 
-Project-specific instructions belong in the **consuming project's own files**,
-not in these shared instruction files. Recommended locations:
+Multiple projects pull these instructions and may sync updates concurrently.
+Project-specific content in upstream files would be overwritten on the next
+sync or would contaminate other projects. Keeping the two tiers disjoint means:
 
-| Content Type | Where to Put It |
-|---|---|
-| Project architecture, tech stack, domain context | `CLAUDE.md` in your project (add project-specific sections below the generic ones) |
-| Project-specific coding rules or conventions | `.github/instructions/project.instructions.md` in your project |
-| Feature plans and implementation checklists | GitHub Issues (created by the `@plan` agent) |
-| Product requirements and specifications | `product-spec.md` or similar in your project |
-| Project-specific CI/CD configuration | `.github/workflows/` in your project |
+- Updates to shared workflow rules flow downstream cleanly.
+- Project-specific knowledge is preserved across syncs.
+- The `validate-instructions.yml` leak-scanner can statically guarantee no
+  consumer-specific names slip into upstream files.
 
-When your project copies these instructions, it can extend `CLAUDE.md` and add a
-`project.instructions.md` file. Those files are owned by the project and won't be
-overwritten when pulling instruction updates.
+If you discover an improvement to the shared workflow while working in a
+consumer project, either:
+
+1. Come back to this repo, make the change here, then pull the update into
+   your project; or
+2. Cherry-pick the instruction-only commit from your project into this repo
+   (verify no project-specific content comes along).
 
 ## File Inventory
 
 | File | Purpose |
 |---|---|
-| `CLAUDE.md` | Root orientation for Claude Code |
+| `CLAUDE.md` | Root orientation for Claude Code; ends with `@CLAUDE.project.md` import |
+| `CLAUDE.project.md.template` | Template for consumer's Claude orientation file |
 | `.github/copilot-instructions.md` | Primary Copilot workspace instructions |
-| `.github/agents/*.agent.md` | Specialized agent definitions (dev loop, TDD, refactor, etc.) |
-| `.github/instructions/*.instructions.md` | Language/practice-specific instructions |
+| `.github/agents/*.agent.md` | Specialized agent definitions (dev loop, plan, code review, etc.) |
+| `.github/instructions/*.instructions.md` | Language/practice-specific instructions (generic) |
+| `.github/instructions/project.instructions.md.template` | Template for consumer's project instructions |
+| `.github/skills/*/SKILL.md` | Reusable process skills (TDD, refactor, debugging, security review, etc.) |
 | `.github/workflows/copilot-setup-steps.yml` | GitHub Actions setup for Copilot coding agent |
+| `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files |
 | `.claude/settings.json` | Claude Code permission settings |
 | `.claude/hooks/session-start.sh` | Claude Code session initialization |
+| `Pull-Instructions.ps1` | Sync this repo into a consumer project; scaffolds templates on first run |
+| `run.ps1` / `run.Tests.ps1` | Project-agnostic .NET runner (used by both this repo and consumers) |

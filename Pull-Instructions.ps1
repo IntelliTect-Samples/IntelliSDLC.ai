@@ -32,6 +32,62 @@ $ErrorActionPreference = 'Stop'
 
 $RemoteUrl = 'https://github.com/IntelliTect-Dev/IntelliAIInstructions.git'
 
+# Map of <template path> -> <bare target path> used to scaffold consumer-owned
+# files on first sync. Defined at script scope so tests can dot-source and use it.
+$script:TemplateScaffoldMap = [ordered]@{
+    '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
+    'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
+}
+
+function Test-IsUpstreamRepo {
+    <#
+    .SYNOPSIS
+        Returns $true when the current working directory is the upstream
+        IntelliAIInstructions repo itself, $false otherwise. Used to skip
+        template scaffolding when the script runs against its own source.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RemoteUrl = (git remote get-url origin 2>$null)
+    )
+    if (-not $RemoteUrl) { return $false }
+    return $RemoteUrl -match 'IntelliAIInstructions(\.git)?/?$'
+}
+
+function Invoke-TemplateScaffold {
+    <#
+    .SYNOPSIS
+        Copies each *.template file from $SourceRoot to its bare-named target
+        under $TargetRoot, skipping any target that already exists.
+    .OUTPUTS
+        [string[]] Relative paths of the targets that were created.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$TargetRoot,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ScaffoldMap
+    )
+    $scaffolded = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in $ScaffoldMap.GetEnumerator()) {
+        $template = Join-Path $SourceRoot $entry.Key
+        $target   = Join-Path $TargetRoot $entry.Value
+        if (-not (Test-Path -LiteralPath $template)) { continue }
+        if (Test-Path -LiteralPath $target) { continue }
+
+        $targetDir = Split-Path -Parent $target
+        if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $template -Destination $target -Force
+        $scaffolded.Add($entry.Value) | Out-Null
+    }
+    return $scaffolded.ToArray()
+}
+
+# Skip the rest of the script when dot-sourced (e.g. by tests).
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 # Add remote if it doesn't exist
 $existingUrl = git remote get-url $RemoteName 2>$null
 if (-not $existingUrl) {
@@ -179,4 +235,33 @@ if ($mergeExit -ne 0) {
         Write-Host "Conflicted files:`n$($conflicted -join "`n")"
     }
     exit $mergeExit
+}
+
+# --- Scaffold consumer-owned files from templates (first sync only) ---
+# After a successful merge we may now have *.template files in the working
+# tree. For each one, if the corresponding bare-named file does NOT exist in
+# the consumer project, copy the template to the bare name so the consumer
+# starts from a populated stub instead of an empty file. Subsequent syncs
+# never overwrite -- the template-to-bare-name copy only happens when the
+# bare-named file is missing.
+#
+# Skipped when running inside the upstream IntelliAIInstructions repo itself
+# (otherwise scaffolding would create the bare-named files in upstream).
+
+if (Test-IsUpstreamRepo) {
+    Write-Host ""
+    Write-Host "Detected upstream repo (origin -> IntelliAIInstructions). Skipping template scaffolding." -ForegroundColor DarkGray
+}
+else {
+    $cwd = (Get-Location).Path
+    $scaffolded = Invoke-TemplateScaffold -SourceRoot $cwd -TargetRoot $cwd -ScaffoldMap $script:TemplateScaffoldMap
+
+    if ($scaffolded.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Scaffolded consumer-owned files from templates:" -ForegroundColor Green
+        foreach ($f in $scaffolded) {
+            Write-Host "  + $f" -ForegroundColor Green
+        }
+        Write-Host "Open each file and fill in the sections, then commit them to your repo." -ForegroundColor Green
+    }
 }
