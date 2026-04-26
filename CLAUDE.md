@@ -160,6 +160,20 @@ See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete re
 - **Autopilot mode:** When autopilot is used to implement a plan, always use the
   Dev Loop agent (`@dev-loop`). Never skip the full quality cycle for plan work.
 
+## Task Complete Summaries
+
+When calling `task_complete`, include the following fields whenever the data
+exists (omit any that don't apply, e.g., a Q&A turn with no PR):
+
+- **Issue** -- `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)`
+- **PR** -- `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)`
+- **Branch** -- `` [`<branch>`](https://github.com/<owner>/<repo>/tree/<branch>) ``
+- **Test** -- exact local verification command (e.g., `dotnet test --no-build`,
+  `Invoke-Pester -Path .\...`)
+
+See the **Task Complete Summary Format** subsection of
+`.github/copilot-instructions.md` for the canonical specification.
+
 ## Branching & Commits
 
 - Never commit to `main` directly — always use a feature branch in a **worktree**.
