@@ -266,6 +266,33 @@ and branch names -- never plain-text references like `#131`.
 | Issue | `[#60](https://github.com/<owner>/<repo>/issues/60)` |
 | Branch | `` [`feat/126-name`](https://github.com/<owner>/<repo>/tree/feat/126-name) `` |
 
+##### Task Complete Summary Format
+
+Every `task_complete` summary must include the following fields whenever the
+underlying data exists. Omit a field only when it does not apply to the work
+just performed (e.g., a Q&A turn with no PR).
+
+| Field | Required format |
+|---|---|
+| **PR** | Full link: `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)` |
+| **Issue** | Full link: `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)` |
+| **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
+| **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
+
+Place these near the top of the summary so they are immediately scannable.
+The command-to-test field is the project's actual verification command (e.g.,
+`dotnet test`, `npm test`, `Invoke-Pester -Path .\...`). When multiple commands
+are needed, list them in the order they should be run.
+
+Example:
+
+```markdown
+- **Issue**: [#42](https://github.com/owner/repo/issues/42)
+- **PR**: [#57](https://github.com/owner/repo/pull/57) (merged)
+- **Branch**: [`feat/42-user-auth`](https://github.com/owner/repo/tree/feat/42-user-auth)
+- **Test**: `dotnet test --no-build`
+```
+
 ##### PR Summary Formatting
 
 When listing multiple PRs, use a **numbered list format** (not a table):
