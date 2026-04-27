@@ -39,6 +39,64 @@ $script:TemplateScaffoldMap = [ordered]@{
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
 }
 
+# Repo-relative paths that are inherently consumer-owned. The upstream copies
+# act as templates only; once a consumer fills them in, an instructions sync
+# must never overwrite or prompt about them. Compared case-insensitively.
+$script:AlwaysLocalPaths = @('README.md', '.gitignore')
+
+function Test-IsAlwaysLocalPath {
+    <#
+    .SYNOPSIS
+        Returns $true if the given repo-relative path is on the always-local
+        list (README.md, .gitignore). Comparison is case-insensitive and
+        tolerates a leading './' or '.\' prefix.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $normalized = $Path -replace '\\', '/'
+    if ($normalized.StartsWith('./')) { $normalized = $normalized.Substring(2) }
+    foreach ($candidate in $script:AlwaysLocalPaths) {
+        if ([string]::Equals($normalized, $candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Resolve-AlwaysLocalConflicts {
+    <#
+    .SYNOPSIS
+        Given the output of `git status --porcelain` as a string array, returns
+        the repo-relative paths of conflicted files that should be force-kept
+        as the local version because they are on the always-local list.
+
+    .DESCRIPTION
+        Pure classifier - performs no git operations. Caller is responsible for
+        running `git checkout --ours -- <path>` and `git add` on each returned
+        path. Recognises any conflict status (XY contains 'U', or 'AA'/'DD').
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Porcelain
+    )
+    $resolved = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $Porcelain) {
+        if ($null -eq $line -or $line.Length -lt 4) { continue }
+        $xy = $line.Substring(0, 2)
+        $isConflict = ($xy -eq 'AA') -or ($xy -eq 'DD') -or
+                      ($xy[0] -eq 'U') -or ($xy[1] -eq 'U')
+        if (-not $isConflict) { continue }
+        $path = $line.Substring(3).Trim('"')
+        if (Test-IsAlwaysLocalPath -Path $path) {
+            $resolved.Add($path) | Out-Null
+        }
+    }
+    return $resolved.ToArray()
+}
+
 function Test-IsUpstreamRepo {
     <#
     .SYNOPSIS
