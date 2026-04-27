@@ -171,3 +171,36 @@ Describe 'Invoke-TemplateScaffold' {
         $result[0] | Should -Be '.github/instructions/project.instructions.md'
     }
 }
+
+Describe 'Pull-SDLC.ai.ps1 end-to-end (regression for #26)' {
+    BeforeEach {
+        $script:repo = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-e2e-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:repo | Out-Null
+        Push-Location $script:repo
+        git init -q
+        git config user.email 't@t.t'
+        git config user.name 't'
+        git remote add origin 'https://github.com/SomeOrg/SomeProject.git'
+        'seed' | Out-File -Encoding utf8 _seed.txt
+        # Pre-create both scaffold targets so 0 templates get scaffolded.
+        New-Item -ItemType Directory -Path .github/instructions -Force | Out-Null
+        Set-Content -Path .github/instructions/project.instructions.md -Value 'existing'
+        Set-Content -Path CLAUDE.project.md -Value 'existing'
+        git add . | Out-Null
+        git commit -q -m 'initial'
+        Copy-Item (Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1') .
+    }
+
+    AfterEach {
+        Pop-Location
+        Remove-Item -Recurse -Force -LiteralPath $script:repo -ErrorAction SilentlyContinue
+    }
+
+    It 'does not throw "Count cannot be found" when no templates need scaffolding' {
+        $stdout = Join-Path $script:repo 'out.txt'
+        $stderr = Join-Path $script:repo 'err.txt'
+        $proc = Start-Process pwsh -ArgumentList '-NoProfile','-NonInteractive','-File',(Join-Path $script:repo 'Pull-SDLC.ai.ps1') -WorkingDirectory $script:repo -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru -WindowStyle Hidden
+        $combined = (Get-Content $stdout -Raw) + (Get-Content $stderr -Raw)
+        $combined | Should -Not -Match "property 'Count' cannot be found"
+    }
+}

@@ -341,7 +341,7 @@ if (Test-IsUpstreamRepo) {
 }
 else {
     $cwd = (Get-Location).Path
-    $scaffolded = Invoke-TemplateScaffold -SourceRoot $cwd -TargetRoot $cwd -ScaffoldMap $script:TemplateScaffoldMap
+    $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $cwd -TargetRoot $cwd -ScaffoldMap $script:TemplateScaffoldMap)
 
     if ($scaffolded.Count -gt 0) {
         Write-Host ""
