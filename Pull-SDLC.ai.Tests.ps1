@@ -52,6 +52,10 @@ Describe 'Test-IsAlwaysLocalPath' {
     It 'tolerates a leading ./ on the path' {
         Test-IsAlwaysLocalPath -Path './README.md' | Should -BeTrue
     }
+
+    It 'tolerates a leading .\ (backslash) on the path' {
+        Test-IsAlwaysLocalPath -Path '.\README.md' | Should -BeTrue
+    }
 }
 
 Describe 'Resolve-AlwaysLocalConflicts' {
@@ -87,6 +91,12 @@ Describe 'Resolve-AlwaysLocalConflicts' {
         $porcelain = @('AA README.md')
         $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
         $result | Should -Contain 'README.md'
+    }
+
+    It 'also matches DD (both deleted) for always-local paths' {
+        $porcelain = @('DD .gitignore')
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+        $result | Should -Contain '.gitignore'
     }
 
     It 'does not return non-always-local paths even when conflicted' {
