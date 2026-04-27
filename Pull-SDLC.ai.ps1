@@ -9,6 +9,12 @@
     Uses --allow-unrelated-histories for the initial merge, and --no-ff to keep
     a clear merge commit on subsequent syncs.
 
+    The files in $script:AlwaysLocalPaths (README.md and .gitignore) are
+    treated as consumer-owned and immune to upstream syncs: any conflict on
+    those paths -- whether an untracked-file overwrite, a tracked content
+    conflict (UU), or a modify/delete (UD/DU) -- is force-resolved to the
+    local version with no prompt and no diff.
+
 .PARAMETER Branch
     The upstream branch to merge from. Default: main.
 
@@ -179,6 +185,18 @@ if ($untracked) {
             continue
         }
 
+        # Always-local paths (README.md, .gitignore) short-circuit the prompt:
+        # save local content, remove the file so the merge can proceed, then
+        # restore it after the merge. No diff, no Read-Host.
+        if (Test-IsAlwaysLocalPath -Path $file) {
+            $savedPath = [System.IO.Path]::GetTempFileName()
+            Copy-Item -LiteralPath $file -Destination $savedPath -Force
+            $restoreLocal[$file] = $savedPath
+            Remove-Item -LiteralPath $file -Force
+            Write-Host "Auto-keeping local '$file' (always-local policy; no prompt)." -ForegroundColor Cyan
+            continue
+        }
+
         # Extract the incoming version to a temp file and show the diff against local.
         $tempIncoming = [System.IO.Path]::GetTempFileName()
         try {
@@ -257,10 +275,21 @@ foreach ($entry in $restoreLocal.GetEnumerator()) {
 if ($mergeExit -ne 0) {
     $porcelain = @(git status --porcelain)
     $autoResolved = @()
+
+    # Force-keep-local for any conflicted always-local path (UU/AA/etc.).
+    $alwaysLocalConflicts = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+    foreach ($path in $alwaysLocalConflicts) {
+        Write-Host "Auto-keeping local '$path' (always-local policy)." -ForegroundColor Cyan
+        git checkout --ours -- $path | Out-Null
+        git add -- $path | Out-Null
+        $autoResolved += $path
+    }
+
     foreach ($line in $porcelain) {
         if ($line.Length -lt 4) { continue }
         $xy = $line.Substring(0, 2)
         $path = $line.Substring(3).Trim('"')
+        if ($alwaysLocalConflicts -contains $path) { continue }
         switch ($xy) {
             'UD' {
                 Write-Host "Auto-keeping local '$path' (upstream deleted, local modified)." -ForegroundColor Cyan
