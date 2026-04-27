@@ -95,7 +95,7 @@ autonomous run (after Phase 7 completes or when you must pause).
 ### Pre-flight -- Sync Shared Instructions
 
 Before starting, check whether the shared
-[IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
+[IntelliSDLC.ai](https://github.com/IntelliTect-Dev/IntelliSDLC.ai)
 have been updated upstream:
 
 ```bash
@@ -104,7 +104,7 @@ git log HEAD..instructions/main --oneline -- CLAUDE.md .github/copilot-instructi
 ```
 
 If commits appear, pull and merge before proceeding. Skip if working directly
-in the IntelliAIInstructions repo itself.
+in the IntelliSDLC.ai repo itself.
 
 ### Phase 0 -- Brainstorm (Design Before Code)
 

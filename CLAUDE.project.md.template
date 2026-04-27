@@ -2,7 +2,7 @@
 This file is OWNED BY THE CONSUMING PROJECT.
 
 It was created from `CLAUDE.project.md.template` (shipped by
-IntelliAIInstructions) and is never modified by `Pull-Instructions.ps1`.
+IntelliSDLC.ai) and is never modified by `Pull-SDLC.ai.ps1`.
 
 `CLAUDE.md` ends with `@CLAUDE.project.md`, which Claude Code auto-imports
 when this file exists. That means this file extends/overrides the upstream

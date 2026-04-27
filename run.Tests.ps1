@@ -85,7 +85,7 @@ function global:New-RunTestScenario {
         Creates a temp directory with 2 Exe + 1 Library project stubs
         for manually testing run.ps1's detection chain.
     .DESCRIPTION
-        Generates project stubs under $env:Temp\IntelliAIInstructions-<guid>.
+        Generates project stubs under $env:Temp\IntelliSDLC.ai-<guid>.
         No launch config files are created -- add them as needed with
         New-LaunchSettingsStub or New-VsCodeLaunchStub.
 
@@ -102,7 +102,7 @@ function global:New-RunTestScenario {
     }
 
     $guid = [System.Guid]::NewGuid().ToString('N').Substring(0, 8)
-    $dir = Join-Path $env:Temp "IntelliAIInstructions-$guid"
+    $dir = Join-Path $env:Temp "IntelliSDLC.ai-$guid"
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
 
     # Copy run.ps1 into the scenario root so it can be tested directly

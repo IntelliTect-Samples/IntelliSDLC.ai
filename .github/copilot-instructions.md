@@ -4,7 +4,7 @@
 > These instruction files are shared across multiple projects. Never add
 > project names, architecture details, domain concepts, specific dependencies,
 > or hardcoded paths. All changes must be made in the
-> [IntelliAIInstructions](https://github.com/IntelliTect-Dev/IntelliAIInstructions)
+> [IntelliSDLC.ai](https://github.com/IntelliTect-Dev/IntelliSDLC.ai)
 > repo and pulled into consuming projects -- never edited locally and pushed back.
 > Project-specific context belongs in the consuming project's own
 > `.github/instructions/project.instructions.md` (and optionally
@@ -13,7 +13,7 @@
 ## Init Protocol for Consuming Projects
 
 When an AI agent runs first-time setup (e.g., `/init`) in a project that
-consumes IntelliAIInstructions, follow this protocol:
+consumes IntelliSDLC.ai, follow this protocol:
 
 **DO NOT modify any upstream-managed file:**
 
@@ -23,7 +23,7 @@ consumes IntelliAIInstructions, follow this protocol:
 - `.github/instructions/*` (except `project.instructions.md`)
 - `.github/skills/*`
 
-These are pulled from IntelliAIInstructions and any local edits will be lost
+These are pulled from IntelliSDLC.ai and any local edits will be lost
 on the next sync. The Validate Instructions workflow may also flag leaks.
 
 **DO create or extend the consumer-owned files:**
@@ -38,7 +38,7 @@ on the next sync. The Validate Instructions workflow may also flag leaks.
 
 If a `*.template` file is present but the corresponding consumer-owned file
 is not, copy the template (drop the `.template` suffix) and fill in the
-sections. `Pull-Instructions.ps1` does this automatically on first sync.
+sections. `Pull-SDLC.ai.ps1` does this automatically on first sync.
 
 ## Project Overview
 
