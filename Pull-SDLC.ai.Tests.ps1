@@ -24,6 +24,78 @@ Describe 'Test-IsUpstreamRepo' {
     }
 }
 
+Describe 'Test-IsAlwaysLocalPath' {
+    It 'returns $true for README.md' {
+        Test-IsAlwaysLocalPath -Path 'README.md' | Should -BeTrue
+    }
+
+    It 'returns $true for readme.md (case-insensitive)' {
+        Test-IsAlwaysLocalPath -Path 'readme.md' | Should -BeTrue
+    }
+
+    It 'returns $true for .gitignore' {
+        Test-IsAlwaysLocalPath -Path '.gitignore' | Should -BeTrue
+    }
+
+    It 'returns $false for src/Foo.cs' {
+        Test-IsAlwaysLocalPath -Path 'src/Foo.cs' | Should -BeFalse
+    }
+
+    It 'returns $false for CLAUDE.md' {
+        Test-IsAlwaysLocalPath -Path 'CLAUDE.md' | Should -BeFalse
+    }
+
+    It 'returns $false for an empty path' {
+        Test-IsAlwaysLocalPath -Path '' | Should -BeFalse
+    }
+
+    It 'tolerates a leading ./ on the path' {
+        Test-IsAlwaysLocalPath -Path './README.md' | Should -BeTrue
+    }
+}
+
+Describe 'Resolve-AlwaysLocalConflicts' {
+    It 'returns README.md and .gitignore from UU lines, ignoring other paths' {
+        $porcelain = @(
+            'UU README.md',
+            'UU .gitignore',
+            'UU src/Other.cs'
+        )
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+        $result.Count | Should -Be 2
+        $result | Should -Contain 'README.md'
+        $result | Should -Contain '.gitignore'
+        $result | Should -Not -Contain 'src/Other.cs'
+    }
+
+    It 'returns an empty array on empty input' {
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain @())
+        $result.Count | Should -Be 0
+    }
+
+    It 'ignores non-conflict porcelain lines' {
+        $porcelain = @(
+            ' M README.md',
+            '?? .gitignore',
+            'A  README.md'
+        )
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+        $result.Count | Should -Be 0
+    }
+
+    It 'also matches AA (both added) for always-local paths' {
+        $porcelain = @('AA README.md')
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+        $result | Should -Contain 'README.md'
+    }
+
+    It 'does not return non-always-local paths even when conflicted' {
+        $porcelain = @('UU CLAUDE.md', 'UU run.ps1')
+        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
+        $result.Count | Should -Be 0
+    }
+}
+
 Describe 'Invoke-TemplateScaffold' {
     BeforeEach {
         $script:src = Join-Path $TestDrive 'src'
