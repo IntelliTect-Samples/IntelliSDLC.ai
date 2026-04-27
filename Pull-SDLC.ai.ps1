@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    Syncs shared AI instruction files from IntelliAIInstructions into this project.
+    Syncs shared AI instruction files from IntelliSDLC.ai into this project.
 
 .DESCRIPTION
-    Adds IntelliTect-Dev/IntelliAIInstructions as a git remote named 'instructions'
+    Adds IntelliTect-Dev/IntelliSDLC.ai as a git remote named 'instructions'
     (if not already present) and merges the latest changes from its main branch.
 
     Uses --allow-unrelated-histories for the initial merge, and --no-ff to keep
@@ -30,7 +30,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$RemoteUrl = 'https://github.com/IntelliTect-Dev/IntelliAIInstructions.git'
+$RemoteUrl = 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai.git'
 
 # Map of <template path> -> <bare target path> used to scaffold consumer-owned
 # files on first sync. Defined at script scope so tests can dot-source and use it.
@@ -43,7 +43,7 @@ function Test-IsUpstreamRepo {
     <#
     .SYNOPSIS
         Returns $true when the current working directory is the upstream
-        IntelliAIInstructions repo itself, $false otherwise. Used to skip
+        IntelliSDLC.ai repo itself, $false otherwise. Used to skip
         template scaffolding when the script runs against its own source.
     #>
     [CmdletBinding()]
@@ -51,7 +51,7 @@ function Test-IsUpstreamRepo {
         [string]$RemoteUrl = (git remote get-url origin 2>$null)
     )
     if (-not $RemoteUrl) { return $false }
-    return $RemoteUrl -match 'IntelliAIInstructions(\.git)?/?$'
+    return $RemoteUrl -match 'IntelliSDLC\.ai(\.git)?/?$'
 }
 
 function Invoke-TemplateScaffold {
@@ -245,12 +245,12 @@ if ($mergeExit -ne 0) {
 # never overwrite -- the template-to-bare-name copy only happens when the
 # bare-named file is missing.
 #
-# Skipped when running inside the upstream IntelliAIInstructions repo itself
+# Skipped when running inside the upstream IntelliSDLC.ai repo itself
 # (otherwise scaffolding would create the bare-named files in upstream).
 
 if (Test-IsUpstreamRepo) {
     Write-Host ""
-    Write-Host "Detected upstream repo (origin -> IntelliAIInstructions). Skipping template scaffolding." -ForegroundColor DarkGray
+    Write-Host "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding." -ForegroundColor DarkGray
 }
 else {
     $cwd = (Get-Location).Path

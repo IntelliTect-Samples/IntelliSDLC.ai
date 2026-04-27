@@ -1,18 +1,18 @@
 BeforeAll {
-    . $PSScriptRoot/Pull-Instructions.ps1
+    . $PSScriptRoot/Pull-SDLC.ai.ps1
 }
 
 Describe 'Test-IsUpstreamRepo' {
     It 'returns $true for the upstream HTTPS URL' {
-        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliAIInstructions.git' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai.git' | Should -BeTrue
     }
 
     It 'returns $true for the upstream SSH URL' {
-        Test-IsUpstreamRepo -RemoteUrl 'git@github.com:IntelliTect-Dev/IntelliAIInstructions.git' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'git@github.com:IntelliTect-Dev/IntelliSDLC.ai.git' | Should -BeTrue
     }
 
     It 'returns $true with no .git suffix' {
-        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliAIInstructions' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai' | Should -BeTrue
     }
 
     It 'returns $false for a consumer repo' {

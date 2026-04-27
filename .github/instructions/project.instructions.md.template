@@ -1,5 +1,5 @@
 ---
-description: 'Project-specific instructions and conventions. Edit this file in the consuming project; it is never overwritten by Pull-Instructions.ps1.'
+description: 'Project-specific instructions and conventions. Edit this file in the consuming project; it is never overwritten by Pull-SDLC.ai.ps1.'
 applyTo: '**/*'
 ---
 
@@ -7,7 +7,7 @@ applyTo: '**/*'
 This file is OWNED BY THE CONSUMING PROJECT.
 
 It was created from `project.instructions.md.template` (shipped by
-IntelliAIInstructions) and is never modified by `Pull-Instructions.ps1`.
+IntelliSDLC.ai) and is never modified by `Pull-SDLC.ai.ps1`.
 
 Use this file for ANY project-specific guidance that AI agents should follow:
 project name, architecture, tech stack, build/test commands, key conventions,
