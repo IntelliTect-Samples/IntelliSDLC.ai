@@ -67,7 +67,7 @@ README, and build files.
 
 ## Development Philosophy
 
-1. **Test-Driven Development (TDD)** -- Write tests first, always.
+1. **Behavior-first testing** -- Ship a test with every behavior change; default to test-first. The test must fail for a behavioral reason (assertion failure, not compile error) when the change is reverted. Spikes may defer test-first but must be deleted or retro-fitted with behavior-first tests before merge.
 2. **Systematic over ad-hoc** -- Process over guessing. Follow structured workflows.
 3. **Complexity reduction** -- Simplicity as primary goal. YAGNI ruthlessly.
 4. **Evidence over claims** -- Verify before declaring success.
@@ -211,7 +211,7 @@ Reusable process definitions invoked on demand. Skills enforce methodology and d
 
 | Skill | Purpose |
 |---|---|
-| `tdd-workflow` | Red -> Green -> Refactor cycle with Iron Law enforcement |
+| `behavior-first-testing` | Red -> Green -> Refactor cycle with anti-collusion guardrails and a spike clause |
 | `refactor-workflow` | Eliminate duplication after each green step -- YAGNI, simplicity first |
 | `functional-testing` | Generate & maintain functional / E2E tests -- explore first, verify before completion |
 | `code-review-workflow` | Independent review by severity + direct fixes. Use different model for fresh perspective |

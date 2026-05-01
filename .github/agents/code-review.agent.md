@@ -99,7 +99,7 @@ git diff --name-only origin/main...HEAD
 - Brittle tests coupled to implementation details.
 - **Tests that use mocks when real code is feasible** — mocks should be last resort.
 - Test descriptions that don't match what is actually being tested.
-- **TDD compliance** — assess by checking: (a) test files were modified in the same commit as production code, (b) test names follow `MethodName_Scenario_ExpectedBehavior` convention, (c) tests use the Arrange/Act/Assert pattern. *Limitation:* test-first ordering cannot be verified from a diff alone — only co-presence and structure can be assessed.
+- **Test compliance** — assess behavior-first testing by checking: (a) a test ships with each behavior change in the same commit / PR, (b) tests assert observable behavior rather than mirroring implementation, (c) the production change, when mentally reverted, would cause the test to fail with an *assertion* failure (not a compile/import error), (d) implementations do not hard-code the literal values used in the test (collusion), (e) test names follow `MethodName_Scenario_ExpectedBehavior` convention and use Arrange/Act/Assert. *Limitation:* test-first ordering cannot be verified from a diff alone — only co-presence, structure, and collusion signals can be assessed.
 
 ### Security & Performance
 

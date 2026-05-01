@@ -46,7 +46,7 @@ Fix all format violations and test failures before committing. Never commit with
 ## 4. Workflow
 
 1. **Read the issue** — understand the acceptance criteria and implementation checklist fully before writing any code.
-2. **TDD** — write a failing test first (Red), then implement the minimal code to pass it (Green), then refactor (Refactor). See `.github/instructions/tdd.instructions.md`.
+2. **TDD** — write a failing test first (Red), then implement the smallest honest code to pass it (Green) without hard-coding test inputs, then refactor (Refactor). See `.github/instructions/tdd.instructions.md`. Exploratory work may use the spike clause (defer test-first, then delete or retro-fit with behavior-first tests before merge).
 3. **Implement** — make changes in `src/` and `tests/` only (see Scope Boundaries below).
 4. **Format** — run `dotnet format` and fix any violations.
 5. **Commit** — use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`.
