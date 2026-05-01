@@ -16,7 +16,7 @@ throughout the loop.
 
 ## Philosophy
 
-- **Test-Driven Development** -- Write tests first, always
+- **Behavior-first testing** -- Test-first by default; ship a test with every behavior change
 - **Systematic over ad-hoc** -- Process over guessing
 - **Complexity reduction** -- Simplicity as primary goal
 - **Evidence over claims** -- Verify before declaring success
@@ -149,14 +149,24 @@ After user approval, update the GitHub issue with a task checklist.
 
 ### Phase 3 -- TDD (Red -> Green)
 
-**Invoke the `tdd-workflow` skill** for each task in the plan:
+**Invoke the `behavior-first-testing` skill** for each task in the plan:
 
 1. Write a failing unit test for the next behavior.
-2. **Watch it fail** (MANDATORY -- never skip).
-3. Write minimum code to make it pass.
+2. **Watch it fail** (MANDATORY -- never skip). The failure must be a
+   behavioral failure (assertion), not a compile/import error.
+3. Write the smallest honest implementation to make it pass -- do not
+   hard-code test inputs.
 4. **Watch it pass** (MANDATORY -- confirm all tests green).
 
-**Exit criteria:** New test passes, all existing tests green, lint/compile clean.
+> **Spike clause.** If the right shape of the API or algorithm is not yet
+> clear, you may declare a spike and temporarily defer test-first while
+> exploring. Spike code must be either deleted or retro-fitted with
+> behavior-first tests (each test must fail for a behavioral reason when
+> the corresponding production change is reverted) **before exiting Phase 3**.
+> Spikes never reach `main` untested.
+
+**Exit criteria:** New test passes, all existing tests green, lint/compile clean,
+any spike code deleted or retro-fitted.
 **-> If tests pass, proceed to Phase 4. If any test fails, remain in Phase 3.**
 
 ### Phase 4 -- Refactor

@@ -1,6 +1,6 @@
 ---
 name: "Instructions"
-description: "Maintain all instruction files and tooling configuration across platforms (VS Code, Claude, GitHub Copilot). Lightweight workflow — consistency review replaces TDD. No code changes without permission."
+description: "Maintain all instruction files and tooling configuration across platforms (VS Code, Claude, GitHub Copilot). Lightweight workflow — consistency review replaces behavior-first testing. No code changes without permission."
 tools: ["codebase", "filesystem", "search", "edit/editFiles", "runCommands", "terminalLastCommand", "changes"]
 ---
 
@@ -62,8 +62,8 @@ the duplicate with a link or reference.
 
 ## Workflow
 
-This agent uses a lightweight workflow — no TDD, no refactoring agent, no functional
-testing. Consistency is the quality bar.
+This agent uses a lightweight workflow — no behavior-first testing, no
+refactoring agent, no functional testing. Consistency is the quality bar.
 
 ### 1. Read Issue
 
@@ -132,7 +132,7 @@ Exceptions (no permission needed):
 ## Key Principles
 
 - **Read everything first** — instruction files are interconnected; changes ripple
-- **Consistency is the primary quality bar** — this replaces TDD as the verification step
+- **Consistency is the primary quality bar** — this replaces test-driven verification as the verification step
 - **No code changes without permission** — instruction-only scope by default
 - **Single source of truth** — link to authoritative files, never duplicate content
 - **Cross-platform sync** — command allow-lists and environment setup stay aligned
