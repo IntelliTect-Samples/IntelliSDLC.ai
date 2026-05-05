@@ -3,7 +3,7 @@
     Syncs shared AI instruction files from IntelliSDLC.ai into this project.
 
 .DESCRIPTION
-    Adds IntelliTect-Dev/IntelliSDLC.ai as a git remote named 'instructions'
+    Adds IntelliTect-Dev/IntelliSDLC.ai as a git remote named 'sdlc.ai'
     (if not already present) and merges the latest changes from its main branch.
 
     Uses --allow-unrelated-histories for the initial merge, and --no-ff to keep
@@ -19,18 +19,18 @@
     The upstream branch to merge from. Default: main.
 
 .PARAMETER RemoteName
-    Name for the git remote. Default: instructions.
+    Name for the git remote. Default: sdlc.ai.
 
 .EXAMPLE
-    ./sync-instructions.ps1
+    ./Pull-SDLC.ai.ps1
 
 .EXAMPLE
-    ./sync-instructions.ps1 -Branch develop
+    ./Pull-SDLC.ai.ps1 -Branch develop
 #>
 [CmdletBinding()]
 param(
     [string]$Branch = 'main',
-    [string]$RemoteName = 'instructions'
+    [string]$RemoteName = 'sdlc.ai'
 )
 
 Set-StrictMode -Version Latest
