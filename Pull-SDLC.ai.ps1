@@ -3,7 +3,7 @@
     Syncs shared AI instruction files from IntelliSDLC.ai into this project.
 
 .DESCRIPTION
-    Adds IntelliTect-Dev/IntelliSDLC.ai as a git remote named 'sdlc.ai'
+    Adds IntelliTect-Samples/IntelliSDLC.ai as a git remote named 'sdlc.ai'
     (if not already present) and merges the latest changes from its main branch.
 
     Uses --allow-unrelated-histories for the initial merge, and --no-ff to keep
@@ -36,7 +36,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$RemoteUrl = 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai.git'
+$RemoteUrl = 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git'
 
 # Map of <template path> -> <bare target path> used to scaffold consumer-owned
 # files on first sync. Defined at script scope so tests can dot-source and use it.
