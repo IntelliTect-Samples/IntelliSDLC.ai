@@ -112,6 +112,16 @@ If the project maintains a living product specification (e.g., `product-spec.md`
   operations.
 - **GitKraken MCP tools are acceptable** when they provide functionality not easily
   available via the Git CLI.
+- **Playwright MCP output directory: `.playwright-mcp/` at the repo root.** When a
+  coding agent uses the Playwright MCP server (browser automation, console logs,
+  page snapshots), all output -- `console-*.log`, `page-*.yml`, traces, screenshots
+  -- must be written to `.playwright-mcp/` at the repo root. Do not let the MCP
+  server create a different directory (e.g. `.playwright/`, `playwright-output/`,
+  or a per-session temp dir under the user profile). Pin the path explicitly when
+  invoking Playwright tools that accept an output directory. Consuming projects
+  must add `.playwright-mcp/` to their `.gitignore` -- the directory is a
+  per-session scratch area for the agent, not a build artifact, and must never be
+  committed.
 
 ## Branching Strategy
 
