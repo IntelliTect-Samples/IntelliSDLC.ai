@@ -70,10 +70,12 @@ jobs:
       - name: Check for project-specific content leaks
         run: |
           echo "=== Scanning for project-specific content ==="
-          # These patterns should NOT appear in instruction files.
-          # README.md is excluded because it legitimately mentions the repo name/org.
-          # *.template files are excluded -- they ship example placeholder names
-          # that consumers replace with their own project context.
+          # These patterns should NOT appear in upstream-managed instruction files.
+          # We scan an explicit ALLOWLIST of upstream-managed files (per the
+          # "File Ownership" table in README.md). Consumer-owned files
+          # (product-spec.md, CLAUDE.project.md, project.instructions.md,
+          # the project's own README, docs/, src/, etc.) are NOT scanned --
+          # they are expected to contain project-specific content.
           patterns=(
             'GmailNewsClient'
             'GmailSynthesizer'
@@ -88,15 +90,46 @@ jobs:
             'IntelliTect-Samples'
           )
 
+          # Allowlist of upstream-managed paths. Each entry is either a literal
+          # file or a directory whose entire contents (recursively) are scanned.
+          # *.template files are excluded everywhere -- they intentionally
+          # carry placeholder project names that consumers replace.
+          # project.instructions.md is consumer-owned and excluded by basename.
+          scan_roots=(
+            'CLAUDE.md'
+            '.github/copilot-instructions.md'
+            '.github/agents'
+            '.github/instructions'
+            '.github/skills'
+            '.github/workflows/copilot-setup-steps.yml'
+            '.claude'
+          )
+
+          targets=()
+          for root in "${scan_roots[@]}"; do
+            if [ -f "$root" ]; then
+              targets+=("$root")
+            elif [ -d "$root" ]; then
+              while IFS= read -r -d '' f; do
+                targets+=("$f")
+              done < <(find "$root" -type f \
+                \( -name '*.md' -o -name '*.yml' -o -name '*.json' -o -name '*.sh' \) \
+                -not -name '*.template' \
+                -not -name 'project.instructions.md' \
+                -print0)
+            fi
+          done
+
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "::error::Allowlist produced zero files to scan -- likely a repo layout bug."
+            exit 1
+          fi
+
+          echo "Scanning ${#targets[@]} upstream-managed file(s)."
+
           found=0
           for pattern in "${patterns[@]}"; do
-            # Exclude README.md, .git, this workflow file, and *.template files.
-            matches=$(grep -r -l --include='*.md' --include='*.yml' --include='*.json' --include='*.sh' \
-              "$pattern" . \
-              --exclude-dir=.git \
-              --exclude='validate-instructions.yml' \
-              --exclude='README.md' \
-              --exclude='*.template' 2>/dev/null || true)
+            matches=$(grep -l -F "$pattern" "${targets[@]}" 2>/dev/null || true)
             if [ -n "$matches" ]; then
               echo "::error::Found '$pattern' in: $matches"
               found=$((found + 1))
