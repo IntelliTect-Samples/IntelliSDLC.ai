@@ -1,0 +1,68 @@
+# {{IdpName}} federated sign-in
+
+This wrapper authenticates users via OAuth 2.0 + PKCE against **{{IdpName}}**.
+The generated `OAuthAuthenticator` opens the system browser, listens on a
+short-lived loopback port, and persists the resulting tokens via the local
+session store (DPAPI on Windows, `dotnet user-secrets` elsewhere).
+
+## 1. Register an OAuth application with {{IdpName}}
+
+Create an OAuth client of type **Desktop** / **Native** / **Installed app**
+(the exact label varies by IdP - "Desktop app" for Google, "Mobile and
+desktop applications" for Microsoft Entra ID, "Other" for Facebook).
+PKCE-only public clients do not need a client secret.
+
+When prompted for **Authorized redirect URIs**, register the loopback form:
+
+```
+http://localhost/callback
+```
+
+The wrapper chooses a free port at runtime; most IdPs (including {{IdpName}})
+accept any port on `http://localhost` once the path is registered, per
+RFC 8252 section 7.3.
+
+## 2. Required scopes
+
+At minimum request `openid`, `email`, and `profile`. Add any IdP-specific
+scopes your wrapper needs (e.g. `https://www.googleapis.com/auth/calendar`
+for Google Calendar, `User.Read` for Microsoft Graph, `email` for Facebook).
+Configure them via the `{{IdpName}}Scopes` token at generation time.
+
+## 3. Configure the client id
+
+The generator bakes the client id into the emitted authenticator. If you
+need to rotate it, regenerate the wrapper or override the constant before
+publishing.
+
+If your scenario requires a confidential client (rare for desktop apps),
+store the client secret with:
+
+```pwsh
+dotnet user-secrets set "{{IdpName}}:ClientSecret" "<secret>"
+```
+
+on macOS/Linux, or rely on DPAPI on Windows.
+
+## 4. First-run experience
+
+On first invocation the wrapper will:
+
+1. Print the authorize URL to stderr.
+2. Launch the system browser.
+3. Wait for the {{IdpName}} consent screen to redirect back to
+   `http://localhost:<port>/callback`.
+4. Exchange the code for tokens and store them via the cross-platform
+   session store.
+
+Subsequent runs read tokens from the store; expired access tokens are
+silently refreshed using the stored refresh token.
+
+## 5. Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| `redirect_uri_mismatch` | The loopback URI is not registered with {{IdpName}}. Re-check step 1; the path must be exactly `/callback`. |
+| `invalid_grant` on refresh | The refresh token was revoked or expired. Delete the stored session (`dotnet user-secrets clear` or remove the DPAPI blob) and re-run to trigger an interactive login. |
+| Browser opens but never returns | A firewall is blocking loopback. Confirm `http://localhost:<port>/` is reachable from the same machine. |
+| `invalid_client` | The client id baked into the wrapper does not match the one in the {{IdpName}} console. |

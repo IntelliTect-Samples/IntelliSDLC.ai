@@ -1,0 +1,27 @@
+using System.Runtime.InteropServices;
+
+namespace {{Namespace}}.Auth;
+
+/// <summary>
+/// Selects the most appropriate <see cref="ISessionStore"/> for the host OS.
+///
+/// Convention:
+///   * Windows  -> <see cref="DpapiSessionStore"/>     (DPAPI, current user scope)
+///   * macOS    -> <see cref="UserSecretsSessionStore"/> (dotnet user-secrets)
+///   * Linux    -> <see cref="UserSecretsSessionStore"/>
+///   * other    -> <see cref="UserSecretsSessionStore"/>
+///
+/// Callers (typically {{ProjectName}}'s MCP entry point) inject the result via
+/// <see cref="Create"/>. The factory does no I/O of its own.
+/// </summary>
+public static class CrossPlatformSessionStore
+{
+    public static ISessionStore Create()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return new DpapiSessionStore();
+        }
+        return new UserSecretsSessionStore();
+    }
+}

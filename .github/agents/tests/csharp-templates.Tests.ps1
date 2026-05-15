@@ -11,11 +11,15 @@ BeforeAll {
     $script:ManifestPath = Join-Path $script:CsharpDir "manifest.json"
 
     $script:Tokens = [ordered]@{
-        ProjectName = "ContosoEx"
-        Namespace   = "Contoso"
-        BaseUrl     = "https://contoso.example.com"
-        AuthModel   = "cookie+csrf"
-        IdpName     = "Google"
+        ProjectName     = "ContosoEx"
+        Namespace       = "Contoso"
+        BaseUrl         = "https://contoso.example.com"
+        AuthModel       = "cookie+csrf"
+        IdpName         = "Google"
+        IdpAuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth"
+        IdpTokenUrl     = "https://oauth2.googleapis.com/token"
+        IdpClientId     = "contoso-client-id.apps.googleusercontent.com"
+        IdpScopes       = "openid email profile"
     }
 
     function Expand-Template {
@@ -52,7 +56,7 @@ Describe "C# template manifest" {
         $declared | Should -Be $actual
     }
 
-    It "declares the six required templates" {
+    It "declares the required templates" {
         $manifest = Get-Manifest
         $expected = @(
             "Client.cs.tmpl",
@@ -60,7 +64,10 @@ Describe "C# template manifest" {
             "ISessionStore.cs.tmpl",
             "DpapiSessionStore.cs.tmpl",
             "UserSecretsSessionStore.cs.tmpl",
-            "McpProgram.cs.tmpl"
+            "McpProgram.cs.tmpl",
+            "OAuthPkceAuthenticator.cs.tmpl",
+            "CrossPlatformSessionStore.cs.tmpl",
+            "README.SSO.md.tmpl"
         ) | Sort-Object
         $actual = @($manifest.templates | ForEach-Object { $_.file } | Sort-Object)
         ($actual -join ',') | Should -Be ($expected -join ',')
