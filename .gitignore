@@ -12,3 +12,11 @@ Thumbs.db
 
 # Git worktrees managed by Cleanup-Worktree.ps1.
 .worktrees/
+
+# Dogfood / dry-run artifacts (see scripts/run-dogfood.ps1 and
+# docs/dogfood/tripit-dry-run-report.md). Real HAR captures contain auth
+# cookies and request URLs that can leak account info even after PII scrubbing
+# -- never commit them. The dogfood-output directory is the default -Out
+# location when -Out is not passed and TEMP is unsuitable.
+Samples/HAR-Original/
+.dogfood-output/
