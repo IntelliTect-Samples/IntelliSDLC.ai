@@ -1,0 +1,251 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace {{Namespace}}.Auth;
+
+/// <summary>
+/// OAuth 2.0 Authorization Code + PKCE (S256) authenticator for {{ProjectName}}
+/// against the {{IdpName}} identity provider.
+///
+/// Flow:
+///   1. Generate a code verifier + S256 challenge.
+///   2. Pick a free localhost port and start an HttpListener for the redirect.
+///   3. Open the system browser at <c>{{IdpAuthorizeUrl}}</c> with the challenge.
+///   4. Receive the authorization code on the loopback callback and reply with
+///      a small HTML page telling the user to close the tab.
+///   5. POST the code + verifier to <c>{{IdpTokenUrl}}</c>; receive access +
+///      refresh tokens.
+///   6. Persist tokens via <see cref="ISessionStore"/>. The store contract uses
+///      <see cref="SessionCredentials"/>(Cookie, CsrfToken); we map the access
+///      token to <c>Cookie</c> and the refresh token to <c>CsrfToken</c> so
+///      the ISessionStore interface from issue #38 stays unchanged.
+/// </summary>
+public sealed class {{ProjectName}}OAuthAuthenticator
+{
+    private const string AuthorizeUrl = "{{IdpAuthorizeUrl}}";
+    private const string TokenUrl     = "{{IdpTokenUrl}}";
+    private const string ClientId     = "{{IdpClientId}}";
+    private const string Scopes       = "{{IdpScopes}}";
+
+    private readonly ILogger<{{ProjectName}}OAuthAuthenticator> _log;
+    private readonly ISessionStore _store;
+
+    public {{ProjectName}}OAuthAuthenticator(
+        ISessionStore store,
+        ILogger<{{ProjectName}}OAuthAuthenticator>? log = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _log = log ?? NullLogger<{{ProjectName}}OAuthAuthenticator>.Instance;
+    }
+
+    /// <summary>
+    /// Returns a valid access token, refreshing if a refresh token is stored
+    /// and the cached access token has been rejected, or driving an interactive
+    /// login if no tokens are stored.
+    /// </summary>
+    public async Task<string> GetAccessTokenAsync(CancellationToken ct = default)
+    {
+        if (_store.TryLoad(out var saved) && !string.IsNullOrEmpty(saved.Cookie))
+        {
+            return saved.Cookie;
+        }
+        var tokens = await InteractiveLoginAsync(ct).ConfigureAwait(false);
+        return tokens.AccessToken;
+    }
+
+    /// <summary>
+    /// Drives the interactive PKCE flow end-to-end and persists the resulting
+    /// tokens. Returns the token pair. Throws if the user cancels or
+    /// {{IdpName}} returns an error.
+    /// </summary>
+    public async Task<OAuthTokens> InteractiveLoginAsync(CancellationToken ct = default)
+    {
+        var verifier  = GenerateCodeVerifier();
+        var challenge = ComputeS256Challenge(verifier);
+        var state     = GenerateCodeVerifier();
+
+        var port = GetFreeLoopbackPort();
+        var redirectUri = $"http://localhost:{port}/callback";
+
+        using var listener = new HttpListener();
+        listener.Prefixes.Add($"http://localhost:{port}/");
+        listener.Start();
+
+        var authorizeUri = BuildAuthorizeUri(redirectUri, challenge, state);
+        _log.LogInformation("Opening {Idp} consent page in system browser", "{{IdpName}}");
+        OpenInBrowser(authorizeUri);
+
+        var code = await WaitForAuthorizationCodeAsync(listener, state, ct).ConfigureAwait(false);
+        listener.Stop();
+
+        var tokens = await ExchangeCodeAsync(code, verifier, redirectUri, ct).ConfigureAwait(false);
+        _store.Save(new SessionCredentials(tokens.AccessToken, tokens.RefreshToken ?? ""));
+        return tokens;
+    }
+
+    /// <summary>
+    /// Exchanges a stored refresh token for a fresh access token at
+    /// <c>{{IdpTokenUrl}}</c>. Persists the new pair.
+    /// </summary>
+    public async Task<OAuthTokens> RefreshAsync(CancellationToken ct = default)
+    {
+        if (!_store.TryLoad(out var saved) || string.IsNullOrEmpty(saved.CsrfToken))
+        {
+            throw new InvalidOperationException(
+                "No refresh token stored. Call InteractiveLoginAsync first.");
+        }
+        var body = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"]    = "refresh_token",
+            ["refresh_token"] = saved.CsrfToken,
+            ["client_id"]     = ClientId,
+        });
+        var tokens = await PostTokenRequestAsync(body, ct).ConfigureAwait(false);
+        // Some IdPs (e.g. {{IdpName}}) omit refresh_token on refresh - preserve the old one.
+        var refresh = string.IsNullOrEmpty(tokens.RefreshToken) ? saved.CsrfToken : tokens.RefreshToken;
+        _store.Save(new SessionCredentials(tokens.AccessToken, refresh));
+        return tokens with { RefreshToken = refresh };
+    }
+
+    private static Uri BuildAuthorizeUri(string redirectUri, string challenge, string state)
+    {
+        var qp = new Dictionary<string, string>
+        {
+            ["response_type"]         = "code",
+            ["client_id"]             = ClientId,
+            ["redirect_uri"]          = redirectUri,
+            ["scope"]                 = Scopes,
+            ["code_challenge"]        = challenge,
+            ["code_challenge_method"] = "S256",
+            ["state"]                 = state,
+        };
+        var sb = new StringBuilder(AuthorizeUrl);
+        sb.Append(AuthorizeUrl.Contains('?') ? '&' : '?');
+        bool first = true;
+        foreach (var kv in qp)
+        {
+            if (!first) sb.Append('&');
+            sb.Append(Uri.EscapeDataString(kv.Key)).Append('=').Append(Uri.EscapeDataString(kv.Value));
+            first = false;
+        }
+        return new Uri(sb.ToString());
+    }
+
+    private async Task<string> WaitForAuthorizationCodeAsync(
+        HttpListener listener, string expectedState, CancellationToken ct)
+    {
+        using var reg = ct.Register(() => { try { listener.Stop(); } catch { } });
+        var ctx = await listener.GetContextAsync().ConfigureAwait(false);
+        var query = ctx.Request.QueryString;
+        var code  = query["code"];
+        var state = query["state"];
+        var error = query["error"];
+
+        var html = error is null
+            ? "<html><body><h2>Signed in to {{IdpName}}.</h2><p>You can close this tab.</p></body></html>"
+            : $"<html><body><h2>Login failed.</h2><pre>{WebUtility.HtmlEncode(error)}</pre></body></html>";
+        var bytes = Encoding.UTF8.GetBytes(html);
+        ctx.Response.ContentType = "text/html; charset=utf-8";
+        ctx.Response.ContentLength64 = bytes.Length;
+        await ctx.Response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+        ctx.Response.OutputStream.Close();
+
+        if (error is not null)
+            throw new InvalidOperationException($"{{IdpName}} returned error: {error}");
+        if (state != expectedState)
+            throw new InvalidOperationException("OAuth state mismatch - possible CSRF.");
+        if (string.IsNullOrEmpty(code))
+            throw new InvalidOperationException("OAuth callback did not include a code.");
+        return code!;
+    }
+
+    private async Task<OAuthTokens> ExchangeCodeAsync(
+        string code, string verifier, string redirectUri, CancellationToken ct)
+    {
+        var body = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"]    = "authorization_code",
+            ["code"]          = code,
+            ["redirect_uri"]  = redirectUri,
+            ["client_id"]     = ClientId,
+            ["code_verifier"] = verifier,
+        });
+        return await PostTokenRequestAsync(body, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<OAuthTokens> PostTokenRequestAsync(
+        FormUrlEncodedContent body, CancellationToken ct)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        using var resp = await http.PostAsync(TokenUrl, body, ct).ConfigureAwait(false);
+        var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"Token endpoint returned {(int)resp.StatusCode}: {text}");
+        }
+        var parsed = JsonSerializer.Deserialize<OAuthTokens>(text,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+            ?? throw new InvalidOperationException("Empty token response.");
+        if (string.IsNullOrEmpty(parsed.AccessToken))
+            throw new InvalidOperationException("Token response missing access_token.");
+        return parsed;
+    }
+
+    private static string GenerateCodeVerifier()
+    {
+        Span<byte> buf = stackalloc byte[32];
+        RandomNumberGenerator.Fill(buf);
+        return Base64UrlEncode(buf);
+    }
+
+    private static string ComputeS256Challenge(string verifier)
+    {
+        var hash = SHA256.HashData(Encoding.ASCII.GetBytes(verifier));
+        return Base64UrlEncode(hash);
+    }
+
+    private static string Base64UrlEncode(ReadOnlySpan<byte> bytes)
+    {
+        return Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+    }
+
+    private static int GetFreeLoopbackPort()
+    {
+        var l = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        l.Start();
+        try { return ((System.Net.IPEndPoint)l.LocalEndpoint).Port; }
+        finally { l.Stop(); }
+    }
+
+    private static void OpenInBrowser(Uri url)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = url.ToString(),
+            UseShellExecute = true,
+        };
+        System.Diagnostics.Process.Start(psi);
+    }
+}
+
+/// <summary>OAuth 2.0 token response payload.</summary>
+public sealed record OAuthTokens
+{
+    [JsonPropertyName("access_token")]  public string AccessToken { get; init; } = "";
+    [JsonPropertyName("refresh_token")] public string? RefreshToken { get; init; }
+    [JsonPropertyName("expires_in")]    public int ExpiresIn { get; init; }
+    [JsonPropertyName("token_type")]    public string? TokenType { get; init; }
+    [JsonPropertyName("scope")]         public string? Scope { get; init; }
+    [JsonPropertyName("id_token")]      public string? IdToken { get; init; }
+}
