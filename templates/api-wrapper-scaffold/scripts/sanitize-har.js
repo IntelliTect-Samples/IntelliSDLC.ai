@@ -21,7 +21,9 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
+const pii = require(path.join(__dirname, 'pii.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -36,7 +38,7 @@ function parseArgs(argv) {
 }
 
 function usage() {
-    console.error('usage: node sanitize-har.js --in <in.har> --out <out.har> --subs <subs.json> --salt <salt>');
+    console.error('usage: node sanitize-har.js --in <in.har> --out <out.har> --subs <subs.json> --salt <salt> [--pii-subs <.substitutions.json>] [--fixed-time <iso8601>]');
     process.exit(2);
 }
 
@@ -155,13 +157,33 @@ function main() {
     const subs = {};
     walk(har, subs, args.salt);
 
+    // Typed-PII pass (issue #46): runs after legacy regex scrub so that
+    // anything still in the HAR (emails in custom-named fields, phones,
+    // SSNs, credit-cards, IPs, plus context-driven name/address/dob/geo)
+    // gets a deterministic, obviously-fake replacement. The returned
+    // substitutions array contains only hash prefixes of originals so the
+    // file is safe to commit.
+    const piiResult = pii.scrubPii(har);
+
     // Stable key order in output JSON for byte-for-byte determinism.
     const sortedSubs = {};
     for (const k of Object.keys(subs).sort()) sortedSubs[k] = subs[k];
 
     fs.writeFileSync(args.out, JSON.stringify(har, null, 2), 'utf8');
     fs.writeFileSync(args.subs, JSON.stringify(sortedSubs, null, 2), 'utf8');
-    console.log(`sanitize-har: wrote ${args.out} (${Object.keys(subs).length} substitutions)`);
+
+    if (args['pii-subs']) {
+        const createdAt = args['fixed-time'] || new Date().toISOString();
+        const store = {
+            version: 1,
+            createdAt,
+            substitutions: piiResult.substitutions
+        };
+        fs.writeFileSync(args['pii-subs'], JSON.stringify(store, null, 2), 'utf8');
+    }
+
+    const piiCount = piiResult.substitutions.length;
+    console.log(`sanitize-har: wrote ${args.out} (${Object.keys(subs).length} legacy + ${piiCount} typed-PII substitutions)`);
     process.exit(0);
 }
 
