@@ -20,6 +20,8 @@ BeforeAll {
         IdpTokenUrl     = "https://oauth2.googleapis.com/token"
         IdpClientId     = "contoso-client-id.apps.googleusercontent.com"
         IdpScopes       = "openid email profile"
+        HasMobileCoverage = "true"
+        MobileHarPaths    = "Samples/HAR-Original/mobile-android-20260101T000000Z.har"
     }
 
     function Expand-Template {
@@ -67,7 +69,8 @@ Describe "C# template manifest" {
             "McpProgram.cs.tmpl",
             "OAuthPkceAuthenticator.cs.tmpl",
             "CrossPlatformSessionStore.cs.tmpl",
-            "README.SSO.md.tmpl"
+            "README.SSO.md.tmpl",
+            "README.MobileDiscovery.md.tmpl"
         ) | Sort-Object
         $actual = @($manifest.templates | ForEach-Object { $_.file } | Sort-Object)
         ($actual -join ',') | Should -Be ($expected -join ',')
