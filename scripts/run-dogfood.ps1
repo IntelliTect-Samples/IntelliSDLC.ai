@@ -99,7 +99,7 @@ function New-HarEntry {
             httpVersion = 'HTTP/1.1'
             cookies     = @()
             headers     = @(
-                [ordered]@{ name = 'Cookie';       value = 'session_id=REDACTED_SESSION; it_csrf=REDACTED_CSRF' }
+                [ordered]@{ name = 'Cookie';       value = 'session_id=REDACTED_SESSION; it_csrf=REDACTED_CSRF; _abck=REDACTED_AKAMAI' }
                 [ordered]@{ name = 'X-CSRF-Token'; value = 'REDACTED_CSRF' }
                 [ordered]@{ name = 'Accept';       value = 'application/json' }
                 [ordered]@{ name = 'User-Agent';   value = 'Mozilla/5.0' }
