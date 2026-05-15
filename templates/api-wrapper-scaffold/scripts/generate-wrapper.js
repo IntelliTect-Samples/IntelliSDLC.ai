@@ -29,6 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
+const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 const { sdlcIntegrationReadmeSection } = require('./sdlc-integration.js');
 
@@ -798,6 +799,11 @@ function run(args) {
 
     // Secret-gate (pre-commit hook + .gitleaks.toml + secret-scan/ci workflows).
     emitSecretGate({ outDir, opts });
+
+    // Top-level .slnx referencing every emitted csproj so `dotnet build` from
+    // the wrapper root "just works" without -p arguments. Runs LAST so all
+    // csprojs (client + tests) are already on disk for discovery.
+    emitSolution({ outDir, projectName: opts.projectName });
 
     console.log('generate-wrapper: wrote ' + patterns.length + ' REST pattern(s)' +
         (gql.length ? ' + GraphQL' : '') + ' to ' + outDir);
