@@ -241,6 +241,15 @@ if ($hasTarget -and $WorktreePath) {
         Invoke-Git -Arguments @('worktree', 'unlock', $WorktreePath) -IgnoreFailure | Out-Null
     }
 
+    # Pre-clean ephemeral evidence-capture artifacts so `git worktree remove`
+    # doesn't refuse on untracked files. See
+    # .github/skills/evidence-capture/SKILL.md for the lifecycle.
+    $evidenceDir = Join-Path $WorktreePath '.evidence'
+    if (-not $DryRun -and (Test-Path -LiteralPath $evidenceDir)) {
+        Write-Host "  Removing ephemeral .evidence/ from '$WorktreePath'." -ForegroundColor DarkGray
+        Remove-Item -LiteralPath $evidenceDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     Invoke-Git -Arguments @('worktree', 'remove', $WorktreePath) -IgnoreFailure | Out-Null
     if (-not $DryRun -and (Test-Path $WorktreePath)) {
         # `worktree remove` can refuse on dirty state -- retry with --force.
