@@ -25,6 +25,18 @@ the project's existing code and community standards.
 4. **Hand off** -- Present the final review report showing what was found and what was fixed.
    Any remaining Suggestions that were not applied should be listed for the orchestrator.
 
+## When to Review
+
+**Mandatory:**
+- After each task in the development loop.
+- After completing a major feature.
+- Before merge to main.
+
+**Optional but valuable:**
+- When stuck (fresh perspective).
+- Before refactoring (baseline check).
+- After fixing a complex bug.
+
 ## Review Scope
 
 ### Step 0: Run Static Analysis First
@@ -80,6 +92,7 @@ git diff --name-only origin/main...HEAD
 - Brittle tests coupled to implementation details.
 - **Tests that use mocks when real code is feasible** -- mocks should be last resort.
 - Test descriptions that don't match what is actually being tested.
+- **Test compliance** -- assess behavior-first testing by checking: (a) a test ships with each behavior change in the same commit / PR, (b) tests assert observable behavior rather than mirroring implementation, (c) the production change, when mentally reverted, would cause the test to fail with an *assertion* failure (not a compile/import error), (d) implementations do not hard-code the literal values used in the test (collusion), (e) test names follow `MethodName_Scenario_ExpectedBehavior` convention and use Arrange/Act/Assert. *Limitation:* test-first ordering cannot be verified from a diff alone -- only co-presence, structure, and collusion signals can be assessed.
 
 ### Security & Performance
 
@@ -112,6 +125,8 @@ git diff --name-only origin/main...HEAD
 | **Comment-based help** | Every exported function has `<# .SYNOPSIS ... #>`. |
 | **Parameter validation** | Parameters use `[ValidateNotNullOrEmpty()]`, `[ValidateSet()]`, etc. where appropriate. |
 | **Error handling** | `-ErrorAction Stop` on critical calls; `try/catch` with informative error messages. |
+| **Module loads** | `Import-Module ... -Force -ErrorAction Stop` succeeds. |
+| **Pester tests** | `Invoke-Pester -Path tests/ -Output Detailed` passes. |
 
 ## Language-Specific Review -- TypeScript
 
@@ -121,6 +136,16 @@ git diff --name-only origin/main...HEAD
 | **Compilation** | `npm run type-check` completes without errors. |
 | **JSDoc** | Every public function has a JSDoc comment. |
 | **ES modules** | Uses `import`/`export`, not `require`/`module.exports`. |
+| **Vitest** | `npx vitest run` passes. |
+| **Playwright** | `npx playwright test` passes (if E2E tests exist). |
+
+## Language-Specific Review -- Generic (Any Language)
+
+1. **Run the project's lint tool** and report any issues.
+2. **Run the project's test suite** and report any failures.
+3. **Check naming conventions** match the language's community standards.
+4. **Verify documentation comments** exist on public APIs.
+5. **Check error handling** follows the language's idiomatic patterns.
 
 ---
 
@@ -165,7 +190,35 @@ git diff --name-only origin/main...HEAD
 4. **Run the test suite** -- Verify all tests pass before reviewing. Report test failures as Critical.
 5. **Perform the review** -- Apply each review category systematically.
 6. **Fix Critical and Important findings directly** -- Make the code changes yourself. Run tests after each fix to verify correctness.
-7. **Apply low-effort Suggestions** -- Fix suggestions that are quick wins (under 5 minutes, no design decisions, <= 3 files).
+7. **Apply low-effort Suggestions** -- Fix suggestions that are quick wins. **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is NOT low-effort.
 8. **Run the full test suite after all fixes** -- All tests must pass.
 9. **Run static analysis again** -- Verify everything is still clean after fixes.
 10. **Produce the final report** -- Output the structured review showing what was found, what was fixed, and any remaining suggestions.
+
+## Red Flags
+
+**Never:**
+- Skip review because "it's simple".
+- Ignore Critical issues.
+- Proceed with unfixed Important issues.
+- Argue with valid technical feedback without evidence.
+
+**If reviewer is wrong:**
+- Push back with technical reasoning.
+- Show code/tests that prove it works.
+- Request clarification.
+
+## Review Checklist
+
+- [ ] Static analysis tools run and findings fixed.
+- [ ] All changed files examined.
+- [ ] Lint/compile runs without errors.
+- [ ] Tests run and results noted.
+- [ ] Correctness issues identified and fixed.
+- [ ] Code quality issues identified and fixed.
+- [ ] Test quality issues identified and fixed.
+- [ ] Security concerns flagged and fixed.
+- [ ] YAGNI compliance verified.
+- [ ] All tests pass after fixes.
+- [ ] Static analysis re-run and clean after fixes.
+- [ ] Review report produced in structured format with fix status.
