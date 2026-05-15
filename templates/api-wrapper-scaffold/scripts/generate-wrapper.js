@@ -113,6 +113,28 @@ function classifySegment(seg) {
     return null;
 }
 
+// "Opaque id-like" -- numeric, hex, UUID, or base64-ish noise lacking vowel runs.
+// These are the values we are confident represent a path *parameter*, not a
+// stable resource name. (See issue #62: TripIt endpoints like `appConfig`,
+// `gtmDataAsJson`, `purchasedProductInfo` were being mis-classified as `{id}`.)
+function isOpaqueIdLike(seg) {
+    if (typeof seg !== 'string' || seg.length === 0) return false;
+    if (/^\d+$/.test(seg)) return true;                                    // all-numeric
+    if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(seg)) return true; // UUID
+    if (/^[0-9a-fA-F]{24,}$/.test(seg)) return true;                       // long hex (ObjectId, sha, etc.)
+    // base64-ish noise: >= 8 chars from the base64url alphabet with no vowel anywhere.
+    if (/^[A-Za-z0-9_-]{8,}$/.test(seg) && !/[aeiouyAEIOUY]/.test(seg)) return true;
+    return false;
+}
+
+// "Named segment" -- looks like a stable identifier word a developer would
+// hand-write as a literal path segment (e.g. `appConfig`, `gtmDataAsJson`).
+function isNamedSegment(seg) {
+    if (typeof seg !== 'string') return false;
+    if (!/^[A-Za-z][A-Za-z0-9]{2,}$/.test(seg)) return false;
+    return !isOpaqueIdLike(seg);
+}
+
 /**
  * Group entries by (method, host, segCount) then within each group find segments
  * that should collapse to {param}. Returns array of pattern descriptors:
@@ -134,39 +156,7 @@ function dedupePatterns(restEntries) {
     const sortedKeys = Array.from(groups.keys()).sort();
     for (const key of sortedKeys) {
         const g = groups.get(key);
-        // For each segment index, look across samples.
-        const segDescs = [];
-        for (let i = 0; i < g.len; i++) {
-            const values = g.items.map((it) => it.url.segments[i]);
-            const unique = Array.from(new Set(values));
-            // intrinsic param if every sample matches the same intrinsic pattern
-            const intrinsics = values.map(classifySegment);
-            if (intrinsics.every((x) => x) && allSameType(intrinsics)) {
-                segDescs.push({ param: intrinsics[0].name, type: intrinsics[0].type });
-            } else if (unique.length === 1) {
-                segDescs.push({ literal: unique[0] });
-            } else if (unique.length > 1 && g.items.length >= 2) {
-                // Varies across captures with same len -> path param. Guess type.
-                const allInts = values.every((v) => /^\d+$/.test(v));
-                segDescs.push({ param: 'id', type: allInts ? 'int' : 'string' });
-            } else {
-                segDescs.push({ literal: unique[0] });
-            }
-        }
-        // Disambiguate duplicate param names (rare): id, id2, id3...
-        let idCount = 0;
-        for (const s of segDescs) {
-            if (s.param) {
-                if (idCount > 0) s.param = s.param + (idCount + 1);
-                idCount++;
-            }
-        }
-        patterns.push({
-            method: g.method,
-            host: g.host,
-            segments: segDescs,
-            samples: g.items,
-        });
+        for (const p of processGroup(g)) patterns.push(p);
     }
 
     // Now merge patterns that have identical (method, host, segments-shape).
@@ -179,6 +169,77 @@ function dedupePatterns(restEntries) {
     }
     return Array.from(merged.values()).sort((a, b) =>
         patternSignature(a).localeCompare(patternSignature(b)));
+}
+
+// Process one (method, host, segCount) group into one or more pattern descriptors.
+// If a varying segment index contains named-looking values (and no opaque values),
+// split the group by that segment's value and recurse so each named value becomes
+// its own pattern with a literal segment at that index. (Issue #62.)
+function processGroup(g) {
+    for (let i = 0; i < g.len; i++) {
+        const values = g.items.map((it) => it.url.segments[i]);
+        const unique = Array.from(new Set(values));
+        if (unique.length <= 1) continue;
+        // Intrinsic param (all values match same intrinsic) -> param, no split.
+        const intrinsics = values.map(classifySegment);
+        if (intrinsics.every((x) => x) && allSameType(intrinsics)) continue;
+        // Opaque varying (e.g. /trip/123 vs /trip/456) -> param, no split.
+        if (values.every(isOpaqueIdLike)) continue;
+        // Named varying with no opaque mixed in -> split this group by segment value
+        // so each becomes a distinct pattern with a literal segment here.
+        if (unique.every(isNamedSegment)) {
+            const subgroups = new Map();
+            for (const it of g.items) {
+                const v = it.url.segments[i];
+                if (!subgroups.has(v)) {
+                    subgroups.set(v, { method: g.method, host: g.host, len: g.len, items: [] });
+                }
+                subgroups.get(v).items.push(it);
+            }
+            const result = [];
+            // Deterministic order: sort by segment value.
+            const sortedSubKeys = Array.from(subgroups.keys()).sort();
+            for (const k of sortedSubKeys) {
+                for (const p of processGroup(subgroups.get(k))) result.push(p);
+            }
+            return result;
+        }
+        // Mixed (some named, some opaque, or unclassifiable) -> fall through to
+        // legacy behavior, which will emit {id} for this index.
+    }
+
+    // No named-split applied; build segDescs from this group as a single pattern.
+    const segDescs = [];
+    for (let i = 0; i < g.len; i++) {
+        const values = g.items.map((it) => it.url.segments[i]);
+        const unique = Array.from(new Set(values));
+        const intrinsics = values.map(classifySegment);
+        if (intrinsics.every((x) => x) && allSameType(intrinsics)) {
+            segDescs.push({ param: intrinsics[0].name, type: intrinsics[0].type });
+        } else if (unique.length === 1) {
+            segDescs.push({ literal: unique[0] });
+        } else if (unique.length > 1 && g.items.length >= 2) {
+            // Varies across captures with same len -> path param. Guess type.
+            const allInts = values.every((v) => /^\d+$/.test(v));
+            segDescs.push({ param: 'id', type: allInts ? 'int' : 'string' });
+        } else {
+            segDescs.push({ literal: unique[0] });
+        }
+    }
+    // Disambiguate duplicate param names (rare): id, id2, id3...
+    let idCount = 0;
+    for (const s of segDescs) {
+        if (s.param) {
+            if (idCount > 0) s.param = s.param + (idCount + 1);
+            idCount++;
+        }
+    }
+    return [{
+        method: g.method,
+        host: g.host,
+        segments: segDescs,
+        samples: g.items,
+    }];
 }
 
 function allSameType(intrinsics) {
@@ -819,4 +880,6 @@ module.exports = {
     methodNameFor,
     pascalCase,
     singularize,
+    isOpaqueIdLike,
+    isNamedSegment,
 };
