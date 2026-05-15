@@ -93,8 +93,6 @@ function emitTestScaffold(args) {
 
     const tmplDir = path.resolve(__dirname, '..', 'csharp', 'tests');
     if (!fs.existsSync(tmplDir)) return;
-    const manifestPath = path.join(tmplDir, 'manifest.json');
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
     const testProjDir = path.join(outDir, 'tests', testProjectName);
     const pesterDir = path.join(testProjDir, 'pester');
@@ -153,12 +151,8 @@ function emitTestScaffold(args) {
         // avoids interfering with the {{...}} substitution pass.
         const factBlock = facts.join('\n\n').replace(/__CLIENT__/g, clientName);
 
-        // The ClientTests.cs.tmpl emits ONE partial class declaration. To allow
-        // multiple groups to share the same class without duplicating the class
-        // header, we put the full template body in the first emitted file and
-        // bare partial-class bodies in the rest. Simpler approach: emit a full
-        // partial-class file per group; using "partial" + identical name keeps
-        // them in one logical class.
+        // Each group's file is a `partial class` body; using the same class
+        // name across groups keeps every generated [Fact] in one logical type.
         const tokens = Object.assign({}, baseTokens, { Facts: factBlock });
         const body = substitute(ctTmpl, tokens);
         fs.writeFileSync(path.join(testProjDir, 'ClientTests.' + g + '.cs'), body);
