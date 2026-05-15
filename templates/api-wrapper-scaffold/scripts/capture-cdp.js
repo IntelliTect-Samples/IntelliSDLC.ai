@@ -32,6 +32,7 @@ function parseArgs(argv) {
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--headless') { out.headless = true; continue; }
+        if (a === '--validate-only') { out['validate-only'] = true; continue; }
         if (a.startsWith('--')) {
             out[a.slice(2)] = argv[i + 1];
             i++;
@@ -43,8 +44,24 @@ function parseArgs(argv) {
 async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.url || !args.out) {
-        console.error('usage: node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--headless] [--throttle-ms 1000]');
+        console.error('usage: node capture-cdp.js --url <baseUrl> --out <out.har> [--storage-state <path>] [--validate-only] [--headless] [--throttle-ms 1000]');
         process.exit(1);
+    }
+
+    // --validate-only: argument-validation mode. Does not launch the browser.
+    // Verifies that the named --storage-state file exists (if provided) and
+    // that the CLI argument shape is sane. Exits 0 on pass, non-zero with a
+    // clear error on failure. Used by tests and CI smoke checks.
+    if (args['validate-only']) {
+        if (args['storage-state']) {
+            const ssPath = path.resolve(args['storage-state']);
+            if (!require('fs').existsSync(ssPath)) {
+                console.error('capture-cdp: --storage-state file not found: ' + ssPath);
+                process.exit(2);
+            }
+        }
+        console.log('capture-cdp: --validate-only OK');
+        process.exit(0);
     }
 
     let playwright;

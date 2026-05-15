@@ -110,7 +110,7 @@ public sealed partial class {{ProjectName}}Client : IDisposable
         return body;
     }
 
-    protected static T Deserialize<T>(string json)
+    private static T Deserialize<T>(string json)
     {
         var result = JsonSerializer.Deserialize<T>(json, s_jsonOptions);
         if (result is null)
