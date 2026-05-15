@@ -1,0 +1,11 @@
+{
+  "$schema": "../csharp/manifest.schema.json",
+  "description": "Manifest of secret-scanning .tmpl files emitted into each generated wrapper project (issue #52). Drops a defense-in-depth setup: gitleaks pre-commit hook + tuned ruleset + secret-scan CI workflow + baseline build/test CI. Tokens are deliberately empty -- these templates are policy artifacts, not project-shaped. Tests in .github/agents/tests/secret-gate.Tests.ps1 enforce manifest <-> body parity and assert allowlist coverage for PR #47 PII fakes + PR #49 fixtures.",
+  "tokens": {},
+  "templates": [
+    { "file": ".githooks/pre-commit.tmpl", "requiredTokens": [] },
+    { "file": ".gitleaks.toml.tmpl", "requiredTokens": [] },
+    { "file": ".github/workflows/secret-scan.yml.tmpl", "requiredTokens": [] },
+    { "file": ".github/workflows/ci.yml.tmpl", "requiredTokens": [] }
+  ]
+}
