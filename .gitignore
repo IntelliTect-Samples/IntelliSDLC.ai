@@ -1,0 +1,14 @@
+# Ephemeral evidence-capture working directory (see .github/skills/evidence-capture/SKILL.md).
+.evidence/
+
+# Playwright MCP server output directory (per repo conventions).
+.playwright-mcp/
+
+# OS/editor cruft.
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Git worktrees managed by Cleanup-Worktree.ps1.
+.worktrees/
