@@ -221,6 +221,37 @@ Describe 'nuget-metadata' {
     }
 }
 
+Describe 'top-level solution file (issue #65)' {
+    BeforeAll {
+        $script:SlnOut = New-OutDir
+        Invoke-Gen -Har @($script:RestHar) -Out $script:SlnOut | Out-Null
+        $script:SlnxPath = Join-Path $script:SlnOut 'ExampleEx.slnx'
+    }
+    AfterAll {
+        if (Test-Path $script:SlnOut) { Remove-Item -Recurse -Force $script:SlnOut }
+    }
+    It 'emits ExampleEx.slnx at the wrapper root' {
+        Test-Path -LiteralPath $script:SlnxPath | Should -BeTrue
+    }
+    It 'references the client csproj' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match 'src/ExampleEx/ExampleEx\.csproj'
+    }
+    It 'references the tests csproj' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match 'tests/ExampleEx\.Tests/ExampleEx\.Tests\.csproj'
+    }
+    It 'uses POSIX-style forward slashes for cross-platform determinism' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Not -Match '\\'
+    }
+    It 'is wrapped in a <Solution> root element (slnx schema)' {
+        $body = Get-Content -LiteralPath $script:SlnxPath -Raw
+        $body | Should -Match '<Solution>'
+        $body | Should -Match '</Solution>'
+    }
+}
+
 Describe 'storage-state-flag (capture-cdp --validate-only)' {
     It 'exits 0 when storage-state file exists' {
         $tmpState = Join-Path ([IO.Path]::GetTempPath()) ("ss-" + [guid]::NewGuid() + ".json")
