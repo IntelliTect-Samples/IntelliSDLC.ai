@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Pre-commit hook: block commits that introduce secrets.
+#
+# Activate once after `git init` / clone:
+#     git config core.hooksPath .githooks
+#
+# Runs the same gitleaks ruleset that the secret-scan CI workflow uses, so
+# what the CI rejects is rejected locally too. Defense in depth.
+
+set -eu
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    cat >&2 <<'EOF'
+[pre-commit] gitleaks is not installed. Install it before committing:
+    macOS:   brew install gitleaks
+    Linux:   curl -sSfL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_x64.tar.gz | tar -xz -C /usr/local/bin gitleaks
+    Windows: scoop install gitleaks    # or: choco install gitleaks
+    Go:      go install github.com/gitleaks/gitleaks/v8@latest
+EOF
+    exit 1
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+CONFIG="${REPO_ROOT}/.gitleaks.toml"
+
+# `protect --staged` scans only what is about to be committed; fast on every commit.
+if ! gitleaks protect --staged --redact --config "${CONFIG}" --no-banner; then
+    cat >&2 <<'EOF'
+
+[pre-commit] gitleaks found a likely secret in your staged changes.
+- Remove the secret, then `git add` the cleaned file.
+- If this is a deterministic test fixture or scrubbed PII marker, add a narrow
+  allowlist entry to .gitleaks.toml (path + regex) and document why.
+- If a real secret has already been committed, see README.md > Secret Scanning
+  for the rotation runbook.
+EOF
+    exit 1
+fi
+
+exit 0
