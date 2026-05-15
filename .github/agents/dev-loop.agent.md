@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup. Each phase failure routes back to TDD. Language-aware."
+description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup. Each phase failure routes back to TDD. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -33,6 +33,7 @@ Phases are classified as **interactive** or **autonomous**:
 | 1 -- Create Worktree | Autonomous | Proceed without asking |
 | 2 -- Write Plan | Interactive | Requires user approval of plan |
 | 3-7 (TDD -> PR+Dry Run) | **Autonomous** | Execute continuously without pausing |
+| 5b -- Evidence + Verify | **Autonomous** (inner loop) | Hard gate; may pause for user only at iteration-3 escalation |
 | 8 -- Cleanup | **Autonomous** | Runs after PR is merged or closed |
 
 **Once the user approves the plan (end of Phase 2), execute Phases 3 through 7 as a
@@ -49,6 +50,7 @@ passes with zero unresolved threads and the dry run succeeds.
 **Only pause autonomous execution when:**
 - A test or build fails after 3 consecutive fix attempts (escalate to user).
 - A code review finding requires a design decision not covered by the approved plan.
+- Phase 5b (Evidence + Verify) escalates after 3 capture-review iterations.
 - The maximum loop iteration limit (3) is reached with unresolved Critical issues.
 
 **Progress reporting:** Present the Loop Status Template **once** at the end of the full
@@ -73,6 +75,11 @@ autonomous run (after Phase 7 completes or when you must pause).
 |   |        |                              |                   |
 |   |    5. Functional Testing -- fails? --+                   |
 |   |        |                              |                   |
+|   |    5b. Evidence + Verify -- review fails? -+             |
+|   |        |  (inner loop, max 3 iter)         |             |
+|   |        v                                   v             |
+|   |        artifact captured & AI-verified     escalate      |
+|   |        |                                                  |
 |   |    6. Code Review + Fix -- issues? --+                   |
 |   |        |                              |                   |
 |   |    7. PR + Copilot Review - issues? -+                   |
@@ -189,7 +196,62 @@ any spike code deleted or retro-fitted.
 3. Run tests and fix any failures.
 
 **Exit criteria:** All functional tests pass, user-facing behavior verified.
-**-> If functional tests fail -> back to Phase 3. Otherwise proceed to Phase 6.**
+**-> If functional tests fail -> back to Phase 3. Otherwise proceed to Phase 5b.**
+
+### Phase 5b -- Evidence and Verify
+
+**Invoke the `evidence-capture` skill.** This phase is a **hard gate**: it does not
+exit until an AI review of a captured runtime artifact confirms the change visibly
+matches its issue intent (or until 3 iterations escalate to the human).
+
+1. **Identify the change type** from the table in
+   `.github/skills/evidence-capture/SKILL.md` (CLI, library, bug fix, refactor,
+   UI, perf, config/docs). Select the matching template from
+   `.github/skills/evidence-capture/templates/`.
+2. **Create the artifact directory:**
+   ```bash
+   mkdir -p .evidence/phase-5b-$(date -u +%Y%m%dT%H%M%SZ)
+   ```
+   Record the HEAD SHA: `git rev-parse HEAD > .evidence/<phase-id>/HEAD_SHA`.
+3. **Capture the artifact** by actually running the code:
+   - CLI/PowerShell: re-run the canonical sample command, redirect stdout/stderr
+     into the markdown template.
+   - Library/API: invoke through an existing functional test, capture output.
+   - Bug fix: check out `HEAD~1` in a side worktree, run the repro, capture
+     "before"; return to HEAD, run again, capture "after".
+   - UI: run `templates/playwright-capture.js.tmpl` (customized for the change)
+     to produce `recording.mp4` + `before.png` + `after.png` + the populated
+     `ui-evidence.html` page.
+   - Perf: run the benchmark on baseline and HEAD; populate
+     `perf-evidence.md.tmpl`.
+   - Refactor (no behavior change): produce an attestation markdown file with
+     `git diff --stat` and the test-run summary.
+4. **Run the AI review.** Provide the reviewer with three inputs, all
+   re-read fresh:
+   - The GitHub issue body (`gh issue view <num> --json body --jq .body`).
+   - The code diff (`git diff main...HEAD`).
+   - The captured artifact.
+   The reviewer answers two questions:
+   - **A.** Does the artifact visibly confirm the intent given the diff?
+   - **B.** Does the artifact reveal any *new* problem introduced by the diff
+     (extra warnings, layout regression, slowdown, wording drift,
+     accessibility break)?
+5. **Branch on the review:**
+   - A=yes, B=no -> write `.evidence/<phase-id>/PASSED`, run
+     `Publish-Evidence.ps1 -ArtifactPath <artifact> -PullRequest <num>` (or
+     stage it for after PR creation), proceed to Phase 6.
+   - Either fails -> append the diagnosis to `.evidence/<phase-id>/diagnosis.md`,
+     increment `.evidence/<phase-id>/iteration.txt`. If iteration <= 3, apply
+     the diagnosed fix (this is a fix-in-place within Phase 5b, *not* a route
+     back to Phase 3) and re-capture. If iteration == 3, write
+     `.evidence/<phase-id>/ESCALATED`, post the diagnosis as a PR comment, and
+     pause for the user.
+
+**Exit criteria:** `PASSED` marker exists in `.evidence/<phase-id>/`, artifact
+uploaded (or earmarked) to the PR, Task Complete Summary will include the
+Evidence field.
+**-> On PASS, proceed to Phase 6. On ESCALATE, pause for user input. If a
+structural fix is required that affects other tests, return to Phase 3.**
 
 ### Phase 6 -- Code Review + Fix
 
@@ -340,6 +402,7 @@ Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` 
 | 3 -- TDD (Red -> Green) | Done/In Progress/Pending | <details> |
 | 4 -- Refactor | Done/In Progress/Pending | <details> |
 | 5 -- Functional Testing | Done/In Progress/Pending/Skipped | <details> |
+| 5b -- Evidence + Verify | Done/In Progress/Pending/Escalated | <details> |
 | 6 -- Code Review + Fix | Done/In Progress/Pending | <details> |
 | 7 -- PR + Copilot Review + Dry Run | Done/In Progress/Pending | <details> |
 | 8 -- Cleanup | Done/Pending (after merge) | <details> |
