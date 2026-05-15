@@ -224,6 +224,7 @@ Reusable process definitions invoked on demand. Skills enforce methodology and d
 | `behavior-first-testing` | Red -> Green -> Refactor cycle with anti-collusion guardrails and a spike clause |
 | `refactor-workflow` | Eliminate duplication after each green step -- YAGNI, simplicity first |
 | `functional-testing` | Generate & maintain functional / E2E tests -- explore first, verify before completion |
+| `evidence-capture` | Produce a runtime artifact for every change + AI review loop verifying it visibly matches the issue intent (max 3 iterations, then escalate) |
 | `code-review-workflow` | Independent review by severity + direct fixes. Use different model for fresh perspective |
 | `systematic-debugging` | 4-phase root cause investigation -- no fixes without understanding |
 | `dev-loop-phase-gate` | Verify phase completion before proceeding -- quality gate enforcement |
@@ -235,7 +236,7 @@ Orchestrators and interactive workflows with specific tooling and model requirem
 
 | Agent | Purpose |
 |---|---|
-| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup |
 | `plan.agent.md` | Design and planning -- Socratic questioning, approach trade-offs, GitHub issue creation |
 | `code-review.agent.md` | Code review agent running on `gpt-4.1` for independent perspective |
 | `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
@@ -248,7 +249,7 @@ Phases 3-7 use an expanding loop -- each phase is a quality gate, failure routes
 back to Phase 3 (TDD).
 
 ```
-Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup
+Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup
 ```
 
 #### CI Failure Restart Loop
@@ -288,11 +289,16 @@ just performed (e.g., a Q&A turn with no PR).
 | **Issue** | Full link: `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)` |
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
+| **Evidence** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran (i.e. whenever the change has observable effects). |
 
 Place these near the top of the summary so they are immediately scannable.
 The command-to-test field is the project's actual verification command (e.g.,
 `dotnet test`, `npm test`, `Invoke-Pester -Path .\...`). When multiple commands
 are needed, list them in the order they should be run.
+
+The Evidence field links to the artifact produced by the evidence-capture skill
+(Phase 5b). See `.github/skills/evidence-capture/SKILL.md` for the artifact
+formats and `Publish-Evidence.ps1` for the upload helper.
 
 Example:
 
@@ -301,6 +307,7 @@ Example:
 - **PR**: [#57](https://github.com/owner/repo/pull/57) (merged)
 - **Branch**: [`feat/42-user-auth`](https://github.com/owner/repo/tree/feat/42-user-auth)
 - **Test**: `dotnet test --no-build`
+- **Evidence**: [PR comment](https://github.com/owner/repo/pull/57#issuecomment-1234567)
 ```
 
 ##### PR Summary Formatting
