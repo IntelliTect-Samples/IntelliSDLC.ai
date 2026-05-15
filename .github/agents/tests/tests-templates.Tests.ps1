@@ -117,7 +117,7 @@ Describe "Codegen integration: emits test project" {
     }
     It "emits exactly one [Fact] per detected endpoint" {
         $clientCs = Get-Content (Join-Path $script:Out "src/ExampleEx/ExampleExClient.Generated.cs") -Raw
-        $methodCount = ([regex]::Matches($clientCs, "public\s+async\s+Task<[^>]+>\s+\w+Async\s*\(")).Count
+        $methodCount = ([regex]::Matches($clientCs, "public\s+async\s+Task<.*?>\s+\w+Async\s*\(")).Count
         $methodCount | Should -BeGreaterThan 0
         $factCount = 0
         Get-ChildItem $script:TestProjDir -Filter "ClientTests.*.cs" | ForEach-Object {
@@ -143,7 +143,7 @@ Describe "Codegen integration: emits test project" {
     }
     It "Mcp.Tests.ps1 references every generated method name" {
         $clientCs = Get-Content (Join-Path $script:Out "src/ExampleEx/ExampleExClient.Generated.cs") -Raw
-        $methods = [regex]::Matches($clientCs, "public\s+async\s+Task<[^>]+>\s+(\w+Async)\s*\(") |
+        $methods = [regex]::Matches($clientCs, "public\s+async\s+Task<.*?>\s+(\w+Async)\s*\(") |
             ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
         $methods.Count | Should -BeGreaterThan 0
         $pester = Get-Content (Join-Path $script:TestProjDir "pester/Mcp.Tests.ps1") -Raw
