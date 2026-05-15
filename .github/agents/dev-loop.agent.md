@@ -118,16 +118,26 @@ in the IntelliSDLC.ai repo itself.
 
 ### Phase 0 -- Brainstorm (Design Before Code)
 
-Follow the `@plan` agent workflow:
+**Classification:** Interactive. Requires user approval of the design.
 
-1. Explore project context -- check files, docs, recent commits.
-2. Ask clarifying questions -- one at a time, multiple choice preferred.
-3. Propose 2-3 approaches with trade-offs and your recommendation.
-4. Get user approval of the design.
-5. Save design to a GitHub issue (or reference an existing one).
-6. Record the issue number for Phase 7.
+**Delegate to the Plan agent.** The dev-loop does not run the design dialogue
+itself -- `@plan` (`.github/agents/plan.agent.md`) is the authoritative owner
+of context exploration, Socratic clarifying questions, 2-3 approach trade-offs,
+and GitHub-issue creation.
 
-**Exit criteria:** User has approved the design. GitHub issue exists with the design.
+1. **If a design issue already exists** for this task (user supplied an issue
+   number, or one is linked from the request), **skip Phase 0**. Record the
+   issue number for Phase 7 and proceed directly to Phase 1.
+2. **Otherwise, invoke `@plan`** to drive the design dialogue end-to-end.
+3. When `@plan` returns with an approved design saved as a GitHub issue,
+   record the issue number and continue to Phase 1.
+
+Do not duplicate the Plan agent's recipe here. See `plan.agent.md` for the
+authoritative checklist (explore context -> clarifying questions one at a time
+-> 2-3 approaches with trade-offs -> approval -> GitHub issue).
+
+**Exit criteria:** A GitHub issue captures the approved design, and its number
+is recorded for Phase 7 (`Closes #<issue-number>`).
 
 ### Phase 1 -- Create Worktree on Feature Branch
 
@@ -395,7 +405,8 @@ Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` 
 
 ## Execution Guidelines
 
-1. **Always brainstorm first** -- save design to a GitHub issue.
+1. **Always brainstorm first** -- delegate Phase 0 to `@plan` so the approved
+   design lands in a GitHub issue before any code is written.
 2. **Create a worktree before writing files** -- verify you are NOT on `main`.
 3. **Execute phases 3-7 autonomously** -- one continuous flow, no pausing.
 4. **One behavior at a time** -- complete the full loop before starting the next.

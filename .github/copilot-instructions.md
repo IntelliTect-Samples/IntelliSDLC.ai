@@ -150,7 +150,9 @@ If the project maintains a living product specification (e.g., `product-spec.md`
 
 Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 
-- **Create the issue during Brainstorm (Phase 0).**
+- **Brainstorm (Phase 0) is owned by the `@plan` agent.** `@dev-loop`
+  delegates the design dialogue to `@plan`, which creates the GitHub issue.
+  If a design issue already exists, Phase 0 is skipped.
 - **Update the issue with the implementation plan (Phase 2).**
 - **Link the PR to the issue** with `Closes #<issue-number>`.
 

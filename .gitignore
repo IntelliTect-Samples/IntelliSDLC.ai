@@ -20,3 +20,4 @@ Thumbs.db
 # location when -Out is not passed and TEMP is unsuitable.
 Samples/HAR-Original/
 .dogfood-output/
+testResults.xml
