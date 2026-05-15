@@ -70,7 +70,8 @@ Describe "C# template manifest" {
             "OAuthPkceAuthenticator.cs.tmpl",
             "CrossPlatformSessionStore.cs.tmpl",
             "README.SSO.md.tmpl",
-            "README.MobileDiscovery.md.tmpl"
+            "README.MobileDiscovery.md.tmpl",
+            ".gitignore.tmpl"
         ) | Sort-Object
         $actual = @($manifest.templates | ForEach-Object { $_.file } | Sort-Object)
         ($actual -join ',') | Should -Be ($expected -join ',')
