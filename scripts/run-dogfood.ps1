@@ -329,25 +329,30 @@ $buildLog = Join-Path $Out 'build.log'
 $testLog  = Join-Path $Out 'test.log'
 $buildExit = -1
 $testExit  = -1
-# Find a build target -- generator emits no .sln, so use the test csproj
-# which references the main library.
-$testProj = Get-ChildItem -Path $wrapperDir -Recurse -Filter '*.Tests.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
-$libProj  = Get-ChildItem -Path (Join-Path $wrapperDir 'src') -Recurse -Filter '*.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1
-$buildTarget = if ($testProj) { $testProj.FullName } else { $libProj.FullName }
+# The generator now emits a top-level .slnx (issue #65) so `dotnet build`
+# from the wrapper root "just works" without probing for a specific csproj.
+$slnFile = Get-ChildItem -Path $wrapperDir -Filter '*.slnx' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $slnFile) {
+    # Defensive fallback for older generator output: classic .sln, else first csproj.
+    $slnFile = Get-ChildItem -Path $wrapperDir -Filter '*.sln' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+$buildTarget = if ($slnFile) { $slnFile.FullName } else {
+    (Get-ChildItem -Path $wrapperDir -Recurse -Filter '*.csproj' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+}
 
 if ($buildTarget) {
     Write-Host "[dogfood] dotnet build $buildTarget" -ForegroundColor Cyan
     & dotnet build $buildTarget --nologo -v minimal *> $buildLog
     $buildExit = $LASTEXITCODE
     Write-Host "[dogfood] dotnet build exit=$buildExit (log: $buildLog)"
-    if ($buildExit -eq 0 -and $testProj) {
-        Write-Host "[dogfood] dotnet test $($testProj.FullName)" -ForegroundColor Cyan
-        & dotnet test $testProj.FullName --nologo --no-build -v minimal *> $testLog
+    if ($buildExit -eq 0) {
+        Write-Host "[dogfood] dotnet test $buildTarget" -ForegroundColor Cyan
+        & dotnet test $buildTarget --nologo --no-build -v minimal *> $testLog
         $testExit = $LASTEXITCODE
         Write-Host "[dogfood] dotnet test exit=$testExit (log: $testLog)"
     }
 } else {
-    Set-Content -Path $buildLog -Value 'no csproj found to build'
+    Set-Content -Path $buildLog -Value 'no solution or csproj found to build'
 }
 
 # Diff vs reference
