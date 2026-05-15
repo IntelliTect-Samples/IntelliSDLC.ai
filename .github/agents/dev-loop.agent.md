@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Cleanup. Each phase failure routes back to TDD. Language-aware."
+description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Merge -> Cleanup. Each phase failure routes back to TDD. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -34,7 +34,8 @@ Phases are classified as **interactive** or **autonomous**:
 | 2 -- Write Plan | Interactive | Requires user approval of plan |
 | 3-7 (TDD -> PR+Dry Run) | **Autonomous** | Execute continuously without pausing |
 | 5b -- Evidence + Verify | **Autonomous** (inner loop) | Hard gate; may pause for user only at iteration-3 escalation |
-| 8 -- Cleanup | **Autonomous** | Runs after PR is merged or closed |
+| 8 -- Merge | **Autonomous** | Rebase-merge once exit criteria met |
+| 9 -- Cleanup | **Autonomous** | Runs after PR is merged or closed |
 
 **Once the user approves the plan (end of Phase 2), execute Phases 3 through 7 as a
 continuous flow.** Do NOT pause between phases to ask for confirmation, report status, or
@@ -92,7 +93,9 @@ autonomous run (after Phase 7 completes or when you must pause).
 |        |                                                     |
 |        YES (zero unresolved threads + dry run passes)         |
 |        |                                                     |
-|   8. Branch + Worktree Cleanup (after PR merges)             |
+|   8. Merge PR (rebase, delete branch)                         |
+|        |                                                     |
+|   9. Branch + Worktree Cleanup (after PR merges)             |
 |                                                              |
 +--------------------------------------------------------------+
 ```
@@ -357,7 +360,26 @@ Body Formatting.
 **Exit criteria:** PR created, CI green, all review threads resolved, latest Copilot
 review introduced zero new threads, dry run passes (if applicable), no mojibake.
 
-### Phase 8 -- Branch + Worktree Cleanup
+### Phase 8 -- Merge
+
+Runs after Phase 7 exits cleanly. **Preconditions:** CI green, all review
+threads resolved, latest Copilot review introduced zero new threads, dry run
+passes (if applicable).
+
+This repo only allows **rebase merges**. Squash and merge-commit modes are
+disabled. Use:
+
+```powershell
+gh pr merge <pr-number> --rebase --delete-branch
+```
+
+Never merge while CI is red. If a post-merge check fails, route back to
+Phase 3 (TDD) on a new branch.
+
+**Exit criteria:** PR merged, remote feature branch deleted, ``main`` contains
+the change.
+
+### Phase 9 -- Branch + Worktree Cleanup
 
 Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` script:
 
@@ -405,7 +427,8 @@ Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` 
 | 5b -- Evidence + Verify | Done/In Progress/Pending/Escalated | <details> |
 | 6 -- Code Review + Fix | Done/In Progress/Pending | <details> |
 | 7 -- PR + Copilot Review + Dry Run | Done/In Progress/Pending | <details> |
-| 8 -- Cleanup | Done/Pending (after merge) | <details> |
+| 8 -- Merge | Done/In Progress/Pending | <details> |
+| 9 -- Cleanup | Done/Pending (after merge) | <details> |
 
 **Review verdict:** PASS / NEEDS CHANGES / CRITICAL ISSUES
 **Dry run:** Pass / Failed / Skipped
@@ -421,5 +444,7 @@ Once Phase 7 passes with zero unresolved threads and a successful dry run:
 3. Summarize: branch name, what was implemented, what was refactored,
    functional tests added, loop iterations, dry run result, PR number,
    linked issue number, Copilot review status.
-4. **Do NOT merge to `main` directly** -- the user decides when to merge.
-5. Present Phase 8 cleanup commands with actual values (no placeholders).
+4. **Execute Phase 8 (Merge)** -- rebase-merge the PR with
+   ``gh pr merge <pr-number> --rebase --delete-branch``. Never merge while CI
+   is red or with unresolved review threads.
+5. Execute Phase 9 (Cleanup) commands with actual values (no placeholders).
