@@ -205,6 +205,95 @@ Describe 'polite-crawl note' {
     }
 }
 
+Describe 'anti-bot challenge warning (issue #66)' {
+    BeforeAll {
+        function New-AkamaiHarFixture {
+            param(
+                [Parameter(Mandatory)][string] $Path,
+                [switch] $IncludeAkamai
+            )
+            $reqHeaders = @(
+                @{ name = 'Accept'; value = 'application/json' }
+            )
+            $respHeaders = @(
+                @{ name = 'Content-Type'; value = 'application/json' }
+            )
+            if ($IncludeAkamai) {
+                $reqHeaders += @{ name = 'Cookie'; value = '_abck=opaque; session_id=abc' }
+                $respHeaders += @{ name = 'Set-Cookie'; value = 'bm_sz=opaque; Path=/; HttpOnly' }
+            } else {
+                $reqHeaders += @{ name = 'Cookie'; value = 'session_id=abc' }
+                $respHeaders += @{ name = 'Set-Cookie'; value = 'session_id=abc; Path=/; HttpOnly' }
+            }
+            $har = @{
+                log = @{
+                    entries = @(
+                        @{
+                            startedDateTime = '2026-01-01T00:00:00Z'
+                            request  = @{
+                                method = 'GET'
+                                url    = 'https://api.example.com/v1/widgets'
+                                httpVersion = 'HTTP/1.1'
+                                cookies = @()
+                                headers = $reqHeaders
+                                queryString = @()
+                                headersSize = -1
+                                bodySize = 0
+                            }
+                            response = @{
+                                status      = 200
+                                statusText  = 'OK'
+                                httpVersion = 'HTTP/1.1'
+                                cookies     = @()
+                                headers     = $respHeaders
+                                content     = @{ size = 2; mimeType = 'application/json'; text = '{}' }
+                                redirectURL = ''
+                                headersSize = -1
+                                bodySize    = 2
+                            }
+                            cache    = @{}
+                            timings  = @{ send = 0; wait = 1; receive = 0 }
+                            time     = 1
+                        }
+                    )
+                }
+            }
+            Set-Content -Encoding utf8 -LiteralPath $Path -Value ($har | ConvertTo-Json -Depth 12)
+        }
+    }
+
+    It 'README includes an Anti-bot challenge warning section when Akamai cookies are present' {
+        $out = New-OutDir
+        $har = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+        try {
+            New-AkamaiHarFixture -Path $har -IncludeAkamai
+            Invoke-Gen -Har @($har) -Out $out | Out-Null
+            $readme = Get-Content (Join-Path $out 'README.md') -Raw
+            $readme | Should -Match '(?i)Anti-bot challenge warning'
+            $readme | Should -Match '_abck'
+            $readme | Should -Match 'bm_sz'
+            $readme | Should -Match '(?i)public landing page'
+        } finally {
+            if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+            if (Test-Path $har) { Remove-Item -Force $har }
+        }
+    }
+
+    It 'README does NOT include the warning section when no Akamai cookies are present' {
+        $out = New-OutDir
+        $har = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+        try {
+            New-AkamaiHarFixture -Path $har
+            Invoke-Gen -Har @($har) -Out $out | Out-Null
+            $readme = Get-Content (Join-Path $out 'README.md') -Raw
+            $readme | Should -Not -Match '(?i)Anti-bot challenge warning'
+        } finally {
+            if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+            if (Test-Path $har) { Remove-Item -Force $har }
+        }
+    }
+}
+
 Describe 'nuget-metadata' {
     It '.csproj contains required Package* elements' {
         $out = New-OutDir

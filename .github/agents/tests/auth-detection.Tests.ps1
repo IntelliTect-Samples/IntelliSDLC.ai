@@ -88,3 +88,103 @@ Describe 'detect-auth.js classifier' {
         $LASTEXITCODE | Should -Not -Be 0
     }
 }
+
+Describe 'detect-auth.js Akamai bot-management cookie detection (issue #66)' {
+    BeforeAll {
+        function New-AkamaiHar {
+            param(
+                [string[]] $RequestCookieNames = @(),
+                [string[]] $SetCookieNames     = @()
+            )
+            $reqCookieValue = ($RequestCookieNames | ForEach-Object { "$_=opaque" }) -join '; '
+            $reqHeaders = @(
+                @{ name = 'Accept'; value = 'application/json' }
+            )
+            if ($reqCookieValue) {
+                $reqHeaders += @{ name = 'Cookie'; value = $reqCookieValue }
+            }
+            $respHeaders = @(
+                @{ name = 'Content-Type'; value = 'application/json' }
+            )
+            foreach ($n in $SetCookieNames) {
+                $respHeaders += @{ name = 'Set-Cookie'; value = "$n=opaque; Path=/; HttpOnly" }
+            }
+            $har = @{
+                log = @{
+                    entries = @(
+                        @{
+                            startedDateTime = '2026-01-01T00:00:00Z'
+                            request  = @{
+                                method = 'GET'
+                                url    = 'https://api.example.com/v1/widgets'
+                                httpVersion = 'HTTP/1.1'
+                                cookies = @()
+                                headers = $reqHeaders
+                                queryString = @()
+                                headersSize = -1
+                                bodySize = 0
+                            }
+                            response = @{
+                                status      = 200
+                                statusText  = 'OK'
+                                httpVersion = 'HTTP/1.1'
+                                cookies     = @()
+                                headers     = $respHeaders
+                                content     = @{ size = 0; mimeType = 'application/json'; text = '{}' }
+                                redirectURL = ''
+                                headersSize = -1
+                                bodySize    = 0
+                            }
+                            cache    = @{}
+                            timings  = @{ send = 0; wait = 1; receive = 0 }
+                            time     = 1
+                        }
+                    )
+                }
+            }
+            $path = Join-Path ([IO.Path]::GetTempPath()) ("akamai-" + [guid]::NewGuid() + ".har")
+            Set-Content -Encoding utf8 -LiteralPath $path -Value ($har | ConvertTo-Json -Depth 12)
+            return $path
+        }
+
+        function Invoke-DetectPath {
+            param([Parameter(Mandatory)][string]$Path)
+            $stdout = & node $script:DetectJs $Path 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "detect-auth.js exited $LASTEXITCODE" }
+            return ($stdout -join "`n") | ConvertFrom-Json
+        }
+    }
+
+    It 'flags _abck when present in request Cookie header' {
+        $p = New-AkamaiHar -RequestCookieNames @('_abck','session_id')
+        $r = Invoke-DetectPath -Path $p
+        $r.antiBotCookies | Should -Contain '_abck'
+    }
+
+    It 'flags bm_sz when present in Set-Cookie response header' {
+        $p = New-AkamaiHar -SetCookieNames @('bm_sz')
+        $r = Invoke-DetectPath -Path $p
+        $r.antiBotCookies | Should -Contain 'bm_sz'
+    }
+
+    It 'flags bm_sv when present in request Cookie header' {
+        $p = New-AkamaiHar -RequestCookieNames @('bm_sv')
+        $r = Invoke-DetectPath -Path $p
+        $r.antiBotCookies | Should -Contain 'bm_sv'
+    }
+
+    It 'flags ak_bmsc when present in Set-Cookie response header' {
+        $p = New-AkamaiHar -SetCookieNames @('ak_bmsc')
+        $r = Invoke-DetectPath -Path $p
+        $r.antiBotCookies | Should -Contain 'ak_bmsc'
+    }
+
+    It 'does NOT emit antiBotCookies array when no Akamai cookies are present' {
+        $p = New-AkamaiHar -RequestCookieNames @('session_id') -SetCookieNames @('session_id')
+        $r = Invoke-DetectPath -Path $p
+        # Either absent, or present and empty.
+        if ($null -ne $r.antiBotCookies) {
+            @($r.antiBotCookies).Count | Should -Be 0
+        }
+    }
+}

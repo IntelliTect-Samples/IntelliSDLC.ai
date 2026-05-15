@@ -32,6 +32,7 @@ const { emitTestScaffold } = require('./tests-emit.js');
 const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 const { sdlcIntegrationReadmeSection } = require('./sdlc-integration.js');
+const { detectAntiBotCookies } = require('./detect-auth.js');
 
 // -------------------- CLI --------------------
 
@@ -672,7 +673,44 @@ function emitReadme(opts, patterns, hasGraphQL) {
     lines.push(secretGateReadmeSection());
     lines.push('');
     lines.push(sdlcIntegrationReadmeSection());
+    if (Array.isArray(opts.antiBotCookies) && opts.antiBotCookies.length > 0) {
+        lines.push('');
+        lines.push(antiBotWarningSection(opts.antiBotCookies));
+    }
     return lines.join('\n');
+}
+
+/**
+ * Build the "Anti-bot challenge warning" README section (issue #66).
+ *
+ * Rendered only when the captured HAR contained one or more Akamai
+ * bot-management cookies (`_abck`, `bm_sz`, `bm_sv`, `ak_bmsc`). The section
+ * does NOT implement a bypass -- it warns the human consumer that a pure
+ * session-replay wrapper may hit a non-200 anti-bot challenge response and
+ * points at a documented warm-up workaround.
+ */
+function antiBotWarningSection(cookies) {
+    const list = cookies.map((c) => '`' + c + '`').join(', ');
+    return [
+        '## Anti-bot challenge warning',
+        '',
+        'The captured HAR contains Akamai bot-management cookies (' + list + '). ' +
+        'This API almost certainly fronts traffic with Akamai Bot Manager, which ' +
+        'means a **session-replay-only wrapper may hit a non-200 anti-bot ' +
+        'challenge response** instead of the expected payload. This generator ' +
+        'does not attempt to derive a bypass from the HAR alone.',
+        '',
+        '### Documented workaround',
+        '',
+        'Before issuing the first authenticated request, send a plain `GET` to ' +
+        "the target's **public landing page** with no auth headers. That request " +
+        'lets Akamai seed `_abck` / `bm_sz` on the client; subsequent ' +
+        'authenticated calls then ride a cookie jar Akamai recognises as ' +
+        'human-shaped. If you still see challenge responses, add a brief delay ' +
+        'and retry once before surfacing the error to callers.',
+        '',
+        'Detected cookies: ' + list + '.',
+    ].join('\n');
 }
 
 function buildRecipes(opts, patterns, hasGraphQL) {
@@ -794,6 +832,19 @@ function run(args) {
     const bundles = harPaths.map(loadHar);
     const sourceShas = bundles.map((b) => b.sha).sort();
 
+    // Detect Akamai bot-management cookies across all input HARs (issue #66).
+    // Union the per-HAR detections so a multi-HAR run still surfaces every
+    // cookie the consumer should be warned about.
+    const antiBotSet = new Set();
+    for (const b of bundles) {
+        for (const name of detectAntiBotCookies(b.har)) antiBotSet.add(name);
+    }
+    if (antiBotSet.size > 0) {
+        // Preserve canonical detector ordering for deterministic README output.
+        const canonical = ['_abck', 'bm_sz', 'bm_sv', 'ak_bmsc'];
+        opts.antiBotCookies = canonical.filter((n) => antiBotSet.has(n));
+    }
+
     // Partition entries into GraphQL vs REST.
     const gql = [], rest = [];
     for (const item of iterEntries(bundles)) {
@@ -888,4 +939,6 @@ module.exports = {
     singularize,
     isOpaqueIdLike,
     isNamedSegment,
+    emitReadme,
+    antiBotWarningSection,
 };
