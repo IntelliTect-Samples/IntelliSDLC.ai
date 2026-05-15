@@ -1,0 +1,165 @@
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace {{Namespace}}.Auth;
+
+/// <summary>
+/// Acquires a {{ProjectName}} session against <c>{{BaseUrl}}</c>.
+///
+/// Two strategies:
+///   1. <see cref="TryCliLoginAsync"/> - best-effort form-post; often blocked by
+///      {{IdpName}} / bot-detection.
+///   2. <see cref="BrowserLoginAsync"/> - spawns the Playwright-based capture
+///      script (<c>scripts/capture-cdp.js</c>) and reads the resulting session
+///      file written by the scrubber.
+/// </summary>
+public sealed class {{ProjectName}}Authenticator
+{
+    private const string BaseUrl = "{{BaseUrl}}";
+    private readonly ILogger<{{ProjectName}}Authenticator> _log;
+
+    public {{ProjectName}}Authenticator(ILogger<{{ProjectName}}Authenticator>? log = null)
+    {
+        _log = log ?? NullLogger<{{ProjectName}}Authenticator>.Instance;
+    }
+
+    /// <summary>
+    /// Best-effort credential flow over HttpClient. The target site may delegate
+    /// to {{IdpName}}; bot-protection routinely blocks scripted form-posts, so callers
+    /// should fall back to <see cref="BrowserLoginAsync"/> on
+    /// <see cref="LoginChallengeException"/>.
+    /// </summary>
+    public async Task<SessionCredentials> TryCliLoginAsync(
+        string userName,
+        string password,
+        CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(userName))
+            throw new ArgumentException("userName required", nameof(userName));
+        if (string.IsNullOrWhiteSpace(password))
+            throw new ArgumentException("password required", nameof(password));
+
+        var cookies = new CookieContainer();
+        using var handler = new HttpClientHandler
+        {
+            CookieContainer = cookies,
+            UseCookies = true,
+            AllowAutoRedirect = true,
+            AutomaticDecompression = DecompressionMethods.All,
+        };
+        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
+        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
+
+        _log.LogDebug("CLI login: GET {BaseUrl}", BaseUrl);
+        using var homeResp = await http.GetAsync(BaseUrl, ct).ConfigureAwait(false);
+        _ = await homeResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        var form = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["email"] = userName,
+            ["password"] = password,
+        });
+        _log.LogDebug("CLI login: POST {BaseUrl}/login", BaseUrl);
+        using var loginResp = await http.PostAsync(BaseUrl + "/login", form, ct).ConfigureAwait(false);
+        _ = await loginResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        var cookieHeader = cookies.GetCookieHeader(new Uri(BaseUrl));
+        if (string.IsNullOrEmpty(cookieHeader))
+        {
+            throw new LoginChallengeException(
+                "{{ProjectName}} login did not yield a session cookie. " +
+                "{{IdpName}}/bot-protection likely intercepted the flow; " +
+                "use browser-based capture instead.");
+        }
+
+        // CSRF token typically only available after an authenticated XHR. Leave
+        // blank; caller can upgrade via BrowserLoginAsync if needed.
+        return new SessionCredentials(cookieHeader, "");
+    }
+
+    /// <summary>
+    /// Spawns <c>node scripts/capture-cdp.js</c> (Playwright-based capture) and
+    /// reads the resulting session file. The path resolution mirrors the
+    /// convention used by the api-wrapper-scaffold agent.
+    /// </summary>
+    public async Task<SessionCredentials> BrowserLoginAsync(
+        string? captureScriptPath = null,
+        CancellationToken ct = default)
+    {
+        var script = captureScriptPath ?? FindCaptureScript()
+            ?? throw new FileNotFoundException(
+                "Could not locate scripts/capture-cdp.js. Pass captureScriptPath explicitly.");
+
+        _log.LogInformation("Launching browser-based login via {Script}", script);
+        var psi = new ProcessStartInfo("node", $"\"{script}\"")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = false,
+        };
+        using var proc = Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start node process.");
+        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+        if (proc.ExitCode != 0)
+        {
+            var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+            throw new InvalidOperationException(
+                $"capture-cdp.js exited with code {proc.ExitCode}. stderr:\n{stderr}");
+        }
+
+        var sessionPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".{{ProjectName}}", "session.json");
+        if (!File.Exists(sessionPath))
+        {
+            throw new FileNotFoundException(
+                $"capture-cdp.js completed but no session file was written to {sessionPath}.");
+        }
+
+        var json = await File.ReadAllTextAsync(sessionPath, ct).ConfigureAwait(false);
+        var data = JsonSerializer.Deserialize<SessionFileShape>(json,
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+            ?? throw new InvalidOperationException("session.json was empty or unparseable.");
+        if (string.IsNullOrEmpty(data.Cookie))
+        {
+            throw new InvalidOperationException("session.json is missing the cookie value.");
+        }
+        return new SessionCredentials(data.Cookie, data.CsrfToken ?? "");
+    }
+
+    private static string? FindCaptureScript()
+    {
+        var dir = AppContext.BaseDirectory;
+        for (int i = 0; i < 8 && dir is not null; i++)
+        {
+            var candidate = Path.Combine(dir, "scripts", "capture-cdp.js");
+            if (File.Exists(candidate)) return candidate;
+            dir = Path.GetDirectoryName(dir);
+        }
+        return null;
+    }
+
+    private sealed class SessionFileShape
+    {
+        [JsonPropertyName("cookie")]     public string? Cookie { get; set; }
+        [JsonPropertyName("csrf_token")] public string? CsrfToken { get; set; }
+    }
+}
+
+/// <summary>
+/// Thrown when CLI-flow authentication is blocked (typically by {{IdpName}} or a
+/// bot-detection layer). Callers should fall back to browser-based capture.
+/// </summary>
+public sealed class LoginChallengeException : Exception
+{
+    public LoginChallengeException(string message) : base(message) { }
+}
