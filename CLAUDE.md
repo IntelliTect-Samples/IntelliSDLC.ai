@@ -151,9 +151,10 @@ See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete re
   IntelliSDLC.ai have been updated upstream. Pull and merge the latest, then
   reload instructions so the current session uses the most recent rules.
 
-- **Plan tracking:** Create a GitHub issue during Brainstorm (Phase 0) to capture
-  the design. Update it with the implementation checklist in Phase 2. Link the PR
-  with `Closes #<issue-number>` so merging auto-closes the issue.
+- **Plan tracking:** Brainstorm (Phase 0) is delegated to the `@plan` agent,
+  which produces the GitHub issue that captures the design. Update that issue
+  with the implementation checklist in Phase 2. Link the PR with
+  `Closes #<issue-number>` so merging auto-closes the issue.
 - **Issue-before-implementation:** When using plan mode before a dev loop, create
   the GitHub issue at the end of planning (before implementation starts). The dev
   loop then references the existing issue instead of creating a new one.
