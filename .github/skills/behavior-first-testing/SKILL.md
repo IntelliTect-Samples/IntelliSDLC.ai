@@ -330,6 +330,16 @@ If the project uses a language not listed above:
 | **Preserve isolation** | Each test must be independent -- no shared mutable state between tests. |
 | **Lint/compile after every step** | Run the project's lint and/or compile command after every RED, GREEN, and REFACTOR step. Fix errors before proceeding. |
 
+## Test Quality (F.I.R.S.T.)
+
+Behavior-first tests should be:
+
+- **Fast** -- Tests should run quickly so the feedback loop stays tight.
+- **Independent** -- Tests must not depend on each other or share mutable state.
+- **Repeatable** -- Same inputs produce the same result every time, in any environment.
+- **Self-validating** -- Pass/fail is unambiguous; no manual inspection of output required.
+- **Timely** -- Written before (or alongside) the production change, per the two-part rule.
+
 ## Common Rationalizations
 
 | Excuse | Reality |
