@@ -1,0 +1,6 @@
+# Preserve LF for cross-platform hooks and templates emitted by
+# api-wrapper-scaffold (the rendered pre-commit hook must run under bash on
+# Linux / macOS / Git-for-Windows). Without this, Windows checkouts would
+# convert CRLF and break the shell shebang.
+*.tmpl text eol=lf
+.githooks/* text eol=lf
