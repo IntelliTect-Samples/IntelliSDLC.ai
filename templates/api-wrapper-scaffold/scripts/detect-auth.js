@@ -23,7 +23,13 @@
  *
  * Exit codes: 0 on success; 1 on read/parse error; 2 on usage error.
  *
- * Usage: node detect-auth.js <path-to-har>
+ * Usage: node detect-auth.js <path-to-har> [--source-label=<label>]
+ *
+ * When --source-label is given (e.g. "mobile-android"), every entry in the
+ * emitted evidence[] array gains a `source` field. This lets the agent
+ * distinguish auth signals captured from mobile-app traffic (issue #44)
+ * from those captured from the website. When the flag is absent, the
+ * evidence shape is unchanged (backwards compatible with PR #41).
  */
 'use strict';
 
@@ -194,10 +200,25 @@ function classifyAuth(har) {
 
 function main(argv) {
   if (argv.length < 1) {
-    process.stderr.write('usage: detect-auth.js <path-to-har>\n');
+    process.stderr.write('usage: detect-auth.js <path-to-har> [--source-label=<label>]\n');
     process.exit(2);
   }
-  const harPath = argv[0];
+  let harPath = null;
+  let sourceLabel = null;
+  for (const a of argv) {
+    if (a.startsWith('--source-label=')) {
+      sourceLabel = a.slice('--source-label='.length);
+    } else if (a.startsWith('--')) {
+      process.stderr.write(`error: unknown flag ${a}\n`);
+      process.exit(2);
+    } else if (harPath === null) {
+      harPath = a;
+    }
+  }
+  if (harPath === null) {
+    process.stderr.write('usage: detect-auth.js <path-to-har> [--source-label=<label>]\n');
+    process.exit(2);
+  }
   let raw;
   try {
     raw = fs.readFileSync(harPath, 'utf8');
@@ -213,6 +234,11 @@ function main(argv) {
     process.exit(1);
   }
   const result = classifyAuth(har);
+  if (sourceLabel !== null) {
+    for (const e of result.evidence) {
+      e.source = sourceLabel;
+    }
+  }
   process.stdout.write(JSON.stringify(result) + '\n');
   process.exit(0);
 }

@@ -10,7 +10,9 @@
     "IdpAuthorizeUrl": "OAuth 2.0 authorize endpoint of the IdP, e.g. https://accounts.google.com/o/oauth2/v2/auth. Baked into OAuthPkceAuthenticator.",
     "IdpTokenUrl": "OAuth 2.0 token endpoint of the IdP, e.g. https://oauth2.googleapis.com/token. Baked into OAuthPkceAuthenticator.",
     "IdpClientId": "OAuth 2.0 client id registered with the IdP for this wrapper. Public PKCE client - no secret required.",
-    "IdpScopes": "Space-delimited OAuth scopes to request, e.g. 'openid email profile'."
+    "IdpScopes": "Space-delimited OAuth scopes to request, e.g. 'openid email profile'.",
+    "HasMobileCoverage": "String 'true' or 'false'. Set by the agent when Phase 1.5 (Mobile App Discovery, issue #44) contributed at least one HAR or endpoint list to the generated client. Drives the README.MobileDiscovery section.",
+    "MobileHarPaths": "Newline-joined list of mobile HAR paths (relative to project root) that fed the generated client. Empty when HasMobileCoverage is 'false'."
   },
   "templates": [
     {
@@ -81,6 +83,14 @@
       "file": "README.SSO.md.tmpl",
       "requiredTokens": [
         "IdpName"
+      ]
+    },
+    {
+      "file": "README.MobileDiscovery.md.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "HasMobileCoverage",
+        "MobileHarPaths"
       ]
     }
   ]

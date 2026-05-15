@@ -62,6 +62,58 @@ generated.
   `login.microsoftonline.com`, `facebook.com/v*/dialog/oauth`) for the
   auth-style heuristic.
 
+### Phase 1.5 -- Mobile App Discovery (optional)
+
+Many target services have a mobile app whose backend API differs from --
+or is a superset of -- the website's API. Mobile-app endpoints frequently
+expose richer data, internal APIs not visible on the web, and different
+auth shapes. Including mobile traffic produces a more complete wrapper.
+
+This phase is **opt-in**. After Phase 1 completes, ask the user exactly:
+
+> Does the target service have a mobile app (iOS or Android)? Including it
+> can reveal additional API surface. [y/N]
+
+If the answer is `N` (default), skip this phase and continue with Phase 2
+(web-only). On `y`, collect three follow-up inputs:
+
+| Input | Values | Notes |
+|---|---|---|
+| Platform | `ios` / `android` / `both` | Drives the instruction set printed by `import-mobile-app.js`. |
+| Capture mode | `proxy` / `decompile` / `both` | `proxy` (mitmproxy / Charles) is preferred for live traffic; `decompile` (jadx / class-dump) is a fallback for static endpoint discovery. |
+| Proxy capture path | default `Samples/HAR-Original/mobile-<platform>-<timestamp>.har` | Where the captured HAR is exported. |
+
+Then run the guided importer (it prints commands and waits for the user
+to confirm each step; it never invokes proxies or decompilers itself):
+
+```pwsh
+node templates/api-wrapper-scaffold/scripts/import-mobile-app.js \
+  --platform=<ios|android|both> --mode=<proxy|decompile|both>
+```
+
+The script's outputs feed the same downstream pipeline as web HARs:
+
+- **Proxy mode** produces `Samples/HAR-Original/mobile-<platform>-*.har`,
+  which is fed through `sanitize-har.js` + `verify-scrub.js` (Phase 3)
+  exactly like web HARs. The resulting scrubbed HAR is then classified by
+  `detect-auth.js` -- pass `--source-label=mobile-<platform>` so the
+  `evidence[]` array records which traffic source each auth signal came
+  from.
+- **Decompile mode** produces `Samples/MobileApp-Discovered/<platform>-endpoints.txt`,
+  a sorted-unique URL list. Phase 5 (Endpoint Deduplication) merges this
+  list into the endpoint catalog before code generation.
+
+The generator records `{{HasMobileCoverage}} = "true"` and
+`{{MobileHarPaths}} = <newline-joined list>` in the manifest token set so
+the emitted `README.MobileDiscovery.md` lists exactly which mobile sources
+contributed to `Client.cs`.
+
+**Legal constraint.** Decompilation must only be performed against apps
+the user is legally permitted to inspect (their own account, or where the
+app's Terms of Service permit security research). The agent must surface
+this warning before running `import-mobile-app.js --mode=decompile` and
+must not proceed without explicit user acknowledgement.
+
 ### Phase 2 -- Probe with Playwright
 
 - Launch chromium via Playwright (CDP attach so the user can interact).
