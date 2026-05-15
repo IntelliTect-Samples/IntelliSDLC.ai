@@ -47,6 +47,19 @@ npx tsc && npx vitest run
 - [ ] OR: Phase was correctly skipped (all changes are internal/non-user-facing)
 - [ ] Lint/compile passes without errors
 
+### After Phase 5b (Evidence and Verify)
+
+- [ ] `.evidence/<phase-id>/` directory exists with a captured artifact
+- [ ] `.evidence/<phase-id>/iteration.txt` records the loop iteration count
+- [ ] Either `.evidence/<phase-id>/PASSED` or `.evidence/<phase-id>/ESCALATED` exists
+- [ ] If `PASSED`: the artifact was uploaded to the PR (or earmarked for upload
+      when the PR is opened) via `Publish-Evidence.ps1`
+- [ ] The artifact's `HEAD_SHA` matches the current `git rev-parse HEAD` (no
+      stale artifacts)
+- [ ] The artifact was produced from an actual runtime invocation, not
+      hand-edited text
+- [ ] The Task Complete Summary will include an Evidence field
+
 ### After Phase 6 (Code Review)
 
 - [ ] Static analysis tools ran and are clean
@@ -72,6 +85,8 @@ If any verification fails:
 | Phase 3 (tests fail) | Stay in Phase 3 |
 | Phase 4 (tests break) | Back to Phase 3 |
 | Phase 5 (functional tests fail) | Back to Phase 3 |
+| Phase 5b (AI-review fails, iter < 3) | Stay in Phase 5b -- fix and re-capture |
+| Phase 5b (AI-review fails, iter == 3) | Escalate to human; pause autonomous loop |
 | Phase 6 (review issues found) | Back to Phase 3 |
 | Phase 7 (CI fails or review issues) | Back to Phase 3 |
 
