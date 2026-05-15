@@ -28,6 +28,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { emitTestScaffold } = require('./tests-emit.js');
 
 // -------------------- CLI --------------------
 
@@ -779,6 +780,16 @@ function run(args) {
 
     // Test fixtures
     emitTestFixtures(outDir, patterns, gql.length > 0, gql);
+
+    // xUnit + Pester test-project scaffold (one [Fact] per detected endpoint).
+    emitTestScaffold({
+        outDir,
+        opts,
+        patterns,
+        hasGraphQL: gql.length > 0,
+        methodNameFor,
+        patternPath,
+    });
 
     console.log('generate-wrapper: wrote ' + patterns.length + ' REST pattern(s)' +
         (gql.length ? ' + GraphQL' : '') + ' to ' + outDir);
