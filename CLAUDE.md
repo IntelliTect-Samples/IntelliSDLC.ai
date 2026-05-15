@@ -139,7 +139,7 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Cleanup
+Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Merge → Cleanup
 ```
 
 Use `@dev-loop` to orchestrate the full cycle. Phases 3-7 use an expanding loop -- each
@@ -180,7 +180,9 @@ See the **Task Complete Summary Format** subsection of
 - Create worktrees in `.worktrees/`: `git worktree add .worktrees/<issue#>-<name> -b <branch> main`.
 - Branch naming: `<type>/<issue#>-<short-description>` (e.g., `feat/42-user-auth`)
 - Commit format: `type(scope): description` (Conventional Commits)
-- Merge to `main` only via pull request after the dev loop passes.
+- Merge to `main` only via pull request after the dev loop passes. **This repo
+  only allows rebase merges** -- use `gh pr merge <pr-number> --rebase --delete-branch`.
+  Never merge while CI is red.
 - **All commits must come from a worktree** — the pre-commit hook blocks commits from the repo root.
   See the "Concurrent Session Safety" section in `.github/copilot-instructions.md` for details.
 - **After a PR closes**, clean up the worktree and local branch. The recommended
