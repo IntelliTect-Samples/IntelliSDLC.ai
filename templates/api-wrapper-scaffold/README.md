@@ -1,10 +1,10 @@
 # api-wrapper-scaffold templates
 
-Reusable assets consumed by the [`api-wrapper-scaffold`](../../.github/agents/api-wrapper-scaffold.agent.md)
-agent when it scaffolds a new .NET API-wrapper project from a probed website.
+Reusable assets consumed by the [`api-wrapper-scaffold`](../../.github/skills/api-wrapper-scaffold/SKILL.md)
+skill when it scaffolds a new .NET API-wrapper project from a probed website.
 
-These files are **input** to the agent, not generated **by** the agent. The
-agent reads them, performs token substitution, and writes the result into the
+These files are **input** to the skill, not generated **by** the skill. The
+skill reads them, performs token substitution, and writes the result into the
 user's chosen output directory.
 
 ## Layout
@@ -39,7 +39,7 @@ templates/api-wrapper-scaffold/
 
 ## Token format
 
-Templates use double-brace tokens that the agent replaces verbatim at
+Templates use double-brace tokens that the skill replaces verbatim at
 scaffold time:
 
 | Token | Replaced with |
@@ -58,6 +58,6 @@ PII -- that would short-circuit the gitleaks gate in CI on every consumer.
 ## Status
 
 This directory is currently scaffolded but most assets are pending; the
-agent definition references them and they will be added in follow-up PRs
+skill definition references them and they will be added in follow-up PRs
 tracked by issue #34. See the `.tmpl` extension as the marker for "still
 to be authored".
