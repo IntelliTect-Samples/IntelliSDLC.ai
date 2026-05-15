@@ -362,6 +362,136 @@ function widenPrimitive(a, b) {
     return 'string';
 }
 
+// -------------------- Envelope detection (issue #64) --------------------
+
+/**
+ * Metadata-name regex: top-level field names that, when present alongside
+ * exactly one substantial payload field, indicate a wrapper envelope (e.g.
+ * { data, meta }, { items, count }, { result, errors }).
+ *
+ * Word-anchored, case-insensitive. Underscores are optional between word
+ * fragments (so `has_more`, `hasmore`, `hasMore` all match).
+ */
+const METADATA_NAME_RE = /^(count|total|page|pages|cursor|next|prev|previous|has_?more|timestamp|status|offset|limit|size|per_?page|total_?pages|total_?count|page_?size|errors?|meta|metadata|pagination|links?|info|warnings?|debug)$/i;
+
+/**
+ * True when an object shape is "metadata-typed": every field is a primitive
+ * scalar AND every field name matches METADATA_NAME_RE. An empty object
+ * counts as metadata as well (carries no payload).
+ *
+ * The structural primitive-only check alone is too aggressive: a payload like
+ * `{ id, name }` is also primitive-only, yet clearly the real payload. The
+ * name check is what distinguishes wrapper boilerplate (`{ count, page }`)
+ * from a small but meaningful payload (`{ id, name }`).
+ */
+function isMetadataObjectShape(shape) {
+    if (!shape || shape.kind !== 'object') return false;
+    const keys = Object.keys(shape.fields);
+    if (keys.length === 0) return true;
+    for (const k of keys) {
+        const f = shape.fields[k];
+        if (!f || !f.shape) return false;
+        if (f.shape.kind !== 'primitive') return false;
+        if (f.shape.type === 'object') return false; // JsonElement sentinel
+        if (!METADATA_NAME_RE.test(k)) return false;
+    }
+    return true;
+}
+
+/**
+ * Classify a top-level field as `substantial` (the real payload candidate)
+ * or `metadata` (boilerplate envelope sibling). Returns 'substantial',
+ * 'metadata', or 'ambiguous'.
+ *
+ * Rules:
+ *   - primitive scalar -> metadata
+ *   - key matches METADATA_NAME_RE AND shape is object-of-primitives or
+ *     array-of-primitives or array-of-metadata-objects -> metadata
+ *   - object with >= 1 non-primitive field -> substantial
+ *   - object that is purely metadata-typed -> metadata
+ *   - array of objects -> substantial (unless key matches metadata regex)
+ *   - array of primitives -> metadata only if key matches regex; else
+ *     substantial (e.g. a `tags: string[]` payload)
+ *   - unknown / JsonElement -> ambiguous (treated as substantial so the
+ *     heuristic abstains)
+ */
+function classifyEnvelopeField(key, shape) {
+    if (!shape) return 'ambiguous';
+    const keyIsMeta = METADATA_NAME_RE.test(key);
+    if (shape.kind === 'primitive') {
+        return 'metadata';
+    }
+    if (shape.kind === 'object') {
+        if (isMetadataObjectShape(shape)) return 'metadata';
+        if (keyIsMeta) return 'metadata';
+        return 'substantial';
+    }
+    if (shape.kind === 'array') {
+        const el = shape.element;
+        if (!el || el.kind === 'unknown') return keyIsMeta ? 'metadata' : 'ambiguous';
+        if (el.kind === 'primitive') {
+            return keyIsMeta ? 'metadata' : 'substantial';
+        }
+        if (el.kind === 'object') {
+            if (keyIsMeta && isMetadataObjectShape(el)) return 'metadata';
+            return 'substantial';
+        }
+        return 'ambiguous';
+    }
+    return 'ambiguous';
+}
+
+/**
+ * Detect whether a response shape is a single-payload envelope worth
+ * unwrapping. Conservative: returns `{ envelope: false }` whenever the
+ * heuristic is uncertain. See docs/designs/2026-05-15-envelope-unwrap-plan.md.
+ *
+ * @param {object} shape - shape descriptor from inferShape/mergeShapes
+ * @param {object} [opts]
+ * @param {number} [opts.maxFields=5] - maximum top-level field count
+ * @returns {{envelope: false} | {envelope: true, payloadField: string, payloadShape: object}}
+ */
+function detectEnvelope(shape, opts) {
+    const maxFields = (opts && opts.maxFields) || 5;
+    if (!shape || shape.kind !== 'object') return { envelope: false };
+    const fieldKeys = Object.keys(shape.fields);
+    if (fieldKeys.length < 1 || fieldKeys.length > maxFields) return { envelope: false };
+
+    const substantial = [];
+    let hasAmbiguous = false;
+    for (const k of fieldKeys) {
+        const f = shape.fields[k];
+        // Conservatism: the payload field must appear in every sample.
+        // Optional fields (missing from some merged samples) cannot anchor
+        // an unwrap -- callers would get null at runtime for the missing
+        // case. Cf. issue #64 requirement 4 ("stable name across samples").
+        if (f && f.optional) continue;
+        const verdict = classifyEnvelopeField(k, f && f.shape);
+        if (verdict === 'substantial') substantial.push(k);
+        else if (verdict === 'ambiguous') hasAmbiguous = true;
+    }
+
+    // Exactly one substantial field, no ambiguous siblings.
+    if (substantial.length !== 1) return { envelope: false };
+    if (hasAmbiguous) return { envelope: false };
+
+    const payloadField = substantial[0];
+
+    // Field-name conflict: pascalCase of payload field must not collide with
+    // pascalCase of any sibling top-level key.
+    const payloadPascal = pascalCase(payloadField);
+    for (const k of fieldKeys) {
+        if (k === payloadField) continue;
+        if (pascalCase(k) === payloadPascal) return { envelope: false };
+    }
+
+    return {
+        envelope: true,
+        payloadField,
+        payloadShape: shape.fields[payloadField].shape,
+    };
+}
+
 // -------------------- Name helpers --------------------
 
 function pascalCase(s) {
@@ -579,7 +709,17 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
         lines.push('    public async Task<' + modelName + '> ' + methodName + '(' + sig + ')');
         lines.push('    {');
         lines.push('        var raw = await SendRawAsync(' + pathExpr + ', query: null, ct: ct).ConfigureAwait(false);');
-        lines.push('        return Deserialize<' + modelName + '>(raw);');
+        if (p.envelope && p.wrapperModel) {
+            // Deserialize the wrapper record (kept available in Models.Generated.cs)
+            // then return the inner payload property. Conservatism: heuristic
+            // only fires for shapes with a single substantial field, so the
+            // PascalCase property is guaranteed to exist on the wrapper.
+            const propName = pascalCase(p.envelope.payloadField);
+            lines.push('        var envelope = Deserialize<' + p.wrapperModel + '>(raw);');
+            lines.push('        return envelope.' + propName + '!;');
+        } else {
+            lines.push('        return Deserialize<' + modelName + '>(raw);');
+        }
         lines.push('    }');
         lines.push('');
     }
@@ -880,7 +1020,25 @@ function run(args) {
             merged = merged ? mergeShapes(merged, inferred) : inferred;
         }
         if (merged && merged.kind === 'object') {
-            p.responseModel = registerModel(modelMap, modelNameFor(p), merged);
+            // Always register the wrapper model so consumers retain access to
+            // the raw envelope via a strongly-typed record (issue #64 req. 3).
+            const wrapperModel = registerModel(modelMap, modelNameFor(p), merged);
+            p.wrapperModel = wrapperModel;
+
+            const env = detectEnvelope(merged);
+            if (env.envelope) {
+                // Hint must match what emitModels uses for the wrapper's
+                // property of the same name, so the inner model is registered
+                // once (not duplicated under a different baseName). emitModels
+                // calls csTypeFor with hint = pascalCase(fieldKey); for arrays
+                // csTypeFor singularizes that for the element type. Mirroring
+                // that here guarantees a single shared model.
+                const hint = pascalCase(env.payloadField);
+                p.responseModel = csTypeFor(env.payloadShape, modelMap, hint);
+                p.envelope = { payloadField: env.payloadField };
+            } else {
+                p.responseModel = wrapperModel;
+            }
         } else if (merged && merged.kind === 'array') {
             // Array response: emit a list type directly; introduce a wrapper model.
             const itemModel = registerModel(modelMap, singularize(modelNameFor(p).replace(/Response$/, '')) + 'Item', merged.element.kind === 'object' ? merged.element : { kind: 'object', fields: {} });
@@ -949,6 +1107,8 @@ module.exports = {
     mergeShapes,
     registerModel,
     emitModels,
+    detectEnvelope,
+    classifyEnvelopeField,
     dedupePatterns,
     methodNameFor,
     pascalCase,
