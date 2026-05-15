@@ -30,6 +30,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
+const { sdlcIntegrationReadmeSection } = require('./sdlc-integration.js');
 
 // -------------------- CLI --------------------
 
@@ -607,6 +608,8 @@ function emitReadme(opts, patterns, hasGraphQL) {
         lines.push('');
     }
     lines.push(secretGateReadmeSection());
+    lines.push('');
+    lines.push(sdlcIntegrationReadmeSection());
     return lines.join('\n');
 }
 

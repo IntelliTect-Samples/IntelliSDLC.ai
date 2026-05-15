@@ -12,10 +12,17 @@
  *                     [--authors <s>] [--description <s>]
  *                     [--repository-url <s>] [--package-tags <s>]
  *                     [--fixed-time <iso8601>]
+ *                     [--sdlc-script <path>] [--sdlc-yes | --no-sdlc]
+ *
+ * SDLC integration (optional final stage): when --sdlc-yes is passed and a
+ * Pull-SDLC.ai.ps1 script is discovered (via --sdlc-script, IntelliSDLC_AI_PATH,
+ * or a sibling clone), the script is invoked with cwd=<out> to pull shared
+ * IntelliSDLC.ai instructions into the freshly generated project. Default in
+ * non-interactive mode (no TTY) is to skip the stage and print a one-line hint.
  *
  * Exit codes:
- *   0 -- all four stages succeeded
- *   2 -- usage / argument error
+ *   0 -- all stages succeeded
+ *   2 -- usage / argument error (incl. mutually exclusive SDLC flags)
  *   N -- exit code of the first failing sub-step (passed through unchanged)
  */
 
@@ -24,6 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const sdlc = require('./sdlc-integration.js');
 
 function parseArgs(argv) {
     const out = {};
@@ -50,8 +58,15 @@ function usage(msg) {
     process.exit(2);
 }
 
+let transcriptPath = null;
+function transcript(line) {
+    if (!transcriptPath) return;
+    try { fs.appendFileSync(transcriptPath, line + '\n', 'utf8'); } catch { /* best-effort */ }
+}
+
 function runStage(label, cmd, cmdArgs) {
     process.stdout.write(`==> Stage: ${label}\n`);
+    transcript(`stage: ${label}: started`);
     const r = spawnSync(cmd, cmdArgs, { stdio: 'inherit' });
     if (r.error) {
         process.stderr.write(`run-agent: failed to spawn ${cmd}: ${r.error.message}\n`);
@@ -71,6 +86,13 @@ function main() {
     if (!args.project) usage('missing --project');
     if (!args.namespace) usage('missing --namespace');
 
+    // Validate mutually-exclusive SDLC flags up-front so we fail fast (exit 2)
+    // before doing any expensive HAR processing.
+    if (args['sdlc-yes'] === true && args['no-sdlc'] === true) {
+        process.stderr.write('run-agent: --sdlc-yes and --no-sdlc are mutually exclusive\n');
+        process.exit(2);
+    }
+
     const har = path.resolve(args.har);
     if (!fs.existsSync(har)) {
         process.stderr.write(`run-agent: --har file not found: ${har}\n`);
@@ -88,6 +110,12 @@ function main() {
     const legacySubs  = path.join(work, 'substitutions.legacy.json');
     const piiSubs     = path.join(work, 'substitutions.json');
     const authJson    = path.join(work, 'auth.json');
+    // Transcript captures stage outcomes for post-hoc inspection and tests.
+    // Truncated on each run; contents are intentionally timestamp-free to
+    // preserve determinism of the working directory (the .run-agent folder
+    // is already excluded from emitted-output parity checks).
+    transcriptPath = path.join(work, 'transcript.log');
+    fs.writeFileSync(transcriptPath, '', 'utf8');
 
     const scriptsDir = __dirname;
     const sanitize = path.join(scriptsDir, 'sanitize-har.js');
@@ -142,6 +170,23 @@ function main() {
         '--package-tags', args['package-tags'] || 'example;api;wrapper',
     ];
     runStage('generate-wrapper', process.execPath, genArgs);
+
+    // Stage 5 (optional): SDLC integration. Default is a no-op when stdin is
+    // not a TTY -- preserves the unattended-safety contract of e2e tests.
+    // scaffoldRepoRoot points at the IntelliSDLC.ai checkout that contains
+    // this scaffold (used for the sibling-discovery fallback).
+    const scaffoldRepoRoot = path.resolve(scriptsDir, '..', '..', '..');
+    const sdlcResult = sdlc.runSdlcStage({
+        outDir,
+        args,
+        isTTY: !!(process.stdin && process.stdin.isTTY),
+        env: process.env,
+        scaffoldRepoRoot,
+        transcriptPath,
+    });
+    if (sdlcResult.outcome === 'error') {
+        process.exit(sdlcResult.exitCode || 2);
+    }
 
     process.stdout.write(`==> Done. Wrapper project written to ${outDir}\n`);
 }
