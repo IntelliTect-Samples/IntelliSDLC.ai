@@ -224,6 +224,17 @@ Describe "Codegen integration: emits secret-gate files into wrapper output" {
         $readme = Get-Content -Raw (Join-Path $script:Out "README.md")
         $readme | Should -Match 'core\.hooksPath'
     }
+    It "emitted pre-commit hook is executable on non-Windows" {
+        if ($IsWindows) {
+            Set-ItResult -Skipped -Because "Windows file modes do not carry the +x bit"
+            return
+        }
+        $hookPath = Join-Path $script:Out ".githooks/pre-commit"
+        # Use Linux/macOS test -x via stat
+        $mode = (stat -c "%a" $hookPath 2>$null)
+        if (-not $mode) { $mode = (stat -f "%A" $hookPath 2>$null) }  # BSD/macOS fallback
+        $mode | Should -Match '^[1-7]?7[0-7]{2}$' -Because "owner-executable bit must be set; Git silently skips non-exec hooks. Got mode=$mode"
+    }
 }
 
 Describe "Determinism (secret-gate emitted files)" {

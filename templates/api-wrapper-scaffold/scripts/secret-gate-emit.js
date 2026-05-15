@@ -40,6 +40,13 @@ function emitSecretGate(args) {
         const destPath = path.join(outDir, rel);
         fs.mkdirSync(path.dirname(destPath), { recursive: true });
         fs.writeFileSync(destPath, subbed);
+        // Mark git hooks executable. On Linux / macOS / WSL, Git silently
+        // skips non-executable hook files, so without this the gate would
+        // appear installed but be a no-op after `git config core.hooksPath`.
+        // (Windows fs.chmod is a no-op for the executable bit; harmless.)
+        if (rel.startsWith('.githooks/') || rel.startsWith('.githooks\\')) {
+            try { fs.chmodSync(destPath, 0o755); } catch (_) { /* best-effort */ }
+        }
     }
 }
 

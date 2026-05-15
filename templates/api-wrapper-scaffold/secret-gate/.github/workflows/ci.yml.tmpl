@@ -17,6 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup .NET
+        # Keep this version pinned to the same major.minor as the generated
+        # wrapper csproj's <TargetFramework> (currently net8.0). Update both
+        # together when bumping to a new LTS.
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
