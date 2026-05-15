@@ -2,7 +2,7 @@
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
 # Behavior tests for the mobile-app discovery sub-phase (issue #44).
-# Exercises import-mobile-app.js in --non-interactive mode, the new agent.md
+# Exercises import-mobile-app.js in --non-interactive mode, the new SKILL.md
 # Phase 1.5 section, the README.MobileDiscovery.md.tmpl token contract,
 # and the --source-label flag added to detect-auth.js.
 
@@ -13,7 +13,7 @@ BeforeAll {
     $script:DetectJs   = Join-Path $script:ScriptsDir 'detect-auth.js'
     $script:CsharpDir  = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/csharp'
     $script:ManifestPath = Join-Path $script:CsharpDir 'manifest.json'
-    $script:AgentPath  = Join-Path $script:RepoRoot '.github/agents/api-wrapper-scaffold.agent.md'
+    $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/api-wrapper-scaffold/SKILL.md'
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures/har'
 
     function Invoke-Import {
@@ -141,31 +141,31 @@ Describe 'detect-auth.js --source-label integration' {
     }
 }
 
-Describe 'api-wrapper-scaffold.agent.md mobile-discovery section' {
+Describe 'api-wrapper-scaffold SKILL.md mobile-discovery section' {
 
     BeforeAll {
-        $script:AgentText = Get-Content -LiteralPath $script:AgentPath -Raw
+        $script:SkillText = Get-Content -LiteralPath $script:SkillPath -Raw
     }
 
     It 'introduces "Phase 1.5" referencing the mobile app discovery sub-phase' {
-        $script:AgentText | Should -Match 'Phase 1\.5'
-        $script:AgentText | Should -Match '(?i)mobile app'
+        $script:SkillText | Should -Match 'Phase 1\.5'
+        $script:SkillText | Should -Match '(?i)mobile app'
     }
 
     It 'documents the y/N opt-in prompt' {
-        $script:AgentText | Should -Match '\[y/N\]'
+        $script:SkillText | Should -Match '\[y/N\]'
     }
 
     It 'mentions iOS, Android, proxy, and decompile capture options' {
-        $script:AgentText | Should -Match '(?i)iOS'
-        $script:AgentText | Should -Match '(?i)Android'
-        $script:AgentText | Should -Match '(?i)proxy'
-        $script:AgentText | Should -Match '(?i)decompile'
+        $script:SkillText | Should -Match '(?i)iOS'
+        $script:SkillText | Should -Match '(?i)Android'
+        $script:SkillText | Should -Match '(?i)proxy'
+        $script:SkillText | Should -Match '(?i)decompile'
     }
 
     It 'preserves the existing 11 ordered phases' {
         1..11 | ForEach-Object {
-            $script:AgentText | Should -Match "Phase $_ --"
+            $script:SkillText | Should -Match "Phase $_ --"
         }
     }
 }

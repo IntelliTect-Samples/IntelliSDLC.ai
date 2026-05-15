@@ -231,6 +231,7 @@ Reusable process definitions invoked on demand. Skills enforce methodology and d
 | `systematic-debugging` | 4-phase root cause investigation -- no fixes without understanding |
 | `dev-loop-phase-gate` | Verify phase completion before proceeding -- quality gate enforcement |
 | `security-review` | Scan code for vulnerabilities, exposed secrets, and insecure dependencies (vendored from [github/awesome-copilot](https://github.com/github/awesome-copilot)) |
+| `api-wrapper-scaffold` | Generate a complete .NET API-wrapper project from a target website -- Playwright HAR capture, scrub, codegen for typed client + PowerShell module + MCP server + tests |
 
 ### Agents (`.github/agents/`)
 
@@ -243,7 +244,6 @@ Orchestrators and interactive workflows with specific tooling and model requirem
 | `code-review.agent.md` | Code review agent running on `gpt-4.1` for independent perspective |
 | `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
 | `prd.agent.md` | Generate Product Requirements Documents with user stories and acceptance criteria |
-| `api-wrapper-scaffold.agent.md` | Generate a complete .NET API-wrapper project from a target website -- Playwright HAR capture, scrub, codegen for typed client + PowerShell module + MCP server + tests |
 
 ### Development Workflow
 
