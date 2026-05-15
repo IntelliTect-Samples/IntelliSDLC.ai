@@ -29,6 +29,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { emitTestScaffold } = require('./tests-emit.js');
+const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 
 // -------------------- CLI --------------------
 
@@ -605,6 +606,7 @@ function emitReadme(opts, patterns, hasGraphQL) {
         lines.push('```');
         lines.push('');
     }
+    lines.push(secretGateReadmeSection());
     return lines.join('\n');
 }
 
@@ -791,8 +793,13 @@ function run(args) {
         patternPath,
     });
 
+    // Secret-gate (pre-commit hook + .gitleaks.toml + secret-scan/ci workflows).
+    emitSecretGate({ outDir, opts });
+
     console.log('generate-wrapper: wrote ' + patterns.length + ' REST pattern(s)' +
         (gql.length ? ' + GraphQL' : '') + ' to ' + outDir);
+    console.log('generate-wrapper: next step -- activate the pre-commit hook with:');
+    console.log('                  git -C ' + outDir + ' config core.hooksPath .githooks');
 }
 
 if (require.main === module) {
