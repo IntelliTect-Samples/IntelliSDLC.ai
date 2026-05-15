@@ -236,6 +236,56 @@ Generate:
   belt-and-suspenders step that fails if any file under that path is
   present in the commit tree.
 
+### Pipeline entry point: `run-agent.js`
+
+Once a HAR has been captured (Phase 2), the entire downstream pipeline
+(Phases 3 - 8) can be invoked through a single zero-dependency orchestrator:
+
+```pwsh
+node templates/api-wrapper-scaffold/scripts/run-agent.js `
+  --har <path/to/captured.har> `
+  --out <output-dir> `
+  --project <Name> `
+  --namespace <Namespace> `
+  [--base-url <https://x>] `
+  [--authors <s>] [--description <s>] `
+  [--repository-url <s>] [--package-tags <s>] `
+  [--salt <s>] [--fixed-time <iso8601>]
+```
+
+`run-agent.js` prints a clear stage banner (`==> Stage: <name>`) before each
+step and chains them in order:
+
+1. `sanitize-har.js`  -- regex + typed-PII scrub; writes
+   `<out>/.run-agent/scrubbed.har` and `substitutions.json`.
+2. `verify-scrub.js`  -- asserts no plaintext PII / token leaked.
+3. `detect-auth.js`   -- classifies the HAR; result lands in
+   `<out>/.run-agent/auth.json` and is fed to the next stage.
+4. `generate-wrapper.js` -- emits the complete buildable project tree.
+
+The runner exits with the first failing stage's exit code (fail-fast), so a
+regression anywhere in the pipeline produces an obvious banner pointing at
+the broken stage.
+
+### End-to-end smoke test
+
+The executable spec for this agent is
+[`.github/agents/tests/agent-e2e.Tests.ps1`](../tests/agent-e2e.Tests.ps1).
+It runs `run-agent.js` against the synthetic HAR fixtures
+`tests/fixtures/har/e2e-rest.har` and `tests/fixtures/har/e2e-graphql.har`,
+then asserts the emitted project:
+
+- contains the canonical file tree (Client.cs, *.Generated.cs, Authenticator,
+  session stores, McpProgram.cs, secret-gate files, tests project),
+- builds with `dotnet build` -- 0 warnings, 0 errors,
+- passes `dotnet test` -- every emitted `[Fact]` green,
+- passes the emitted Pester smoke (`tests/<Name>.Tests/pester/Mcp.Tests.ps1`),
+- is byte-identical on a second run (determinism),
+- has `GraphQLAsync<T>` (not REST methods) when the input HAR is GraphQL.
+
+A regression in any prior pipeline script causes this single test to fail
+with a clear stage banner -- treat it as the agent's regression detector.
+
 ### Phase 9 -- Capture Helper
 
 Generate `scripts/connect-<name>.ps1` and a matching `capture-cdp.js`:
