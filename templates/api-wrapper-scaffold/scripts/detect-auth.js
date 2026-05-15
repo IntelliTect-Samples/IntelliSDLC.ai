@@ -36,9 +36,9 @@ const CSRF_HEADER_NAMES = new Set([
 ]);
 
 const SSO_HOSTS = [
-  { authModel: 'sso-google',    idpName: 'Google',    test: (u) => /(^|\.)accounts\.google\.com$/i.test(u.hostname) },
-  { authModel: 'sso-microsoft', idpName: 'Microsoft', test: (u) => /(^|\.)login\.microsoftonline\.com$/i.test(u.hostname) },
-  { authModel: 'sso-facebook',  idpName: 'Facebook',  test: (u) => /(^|\.)facebook\.com$/i.test(u.hostname) && /\/v[\w.]+\/dialog\/oauth/i.test(u.pathname) },
+  { authModel: 'sso-google',    idpName: 'Google',    label: 'Google',    test: (u) => /(^|\.)accounts\.google\.com$/i.test(u.hostname) },
+  { authModel: 'sso-microsoft', idpName: 'Microsoft', label: 'Microsoft', test: (u) => /(^|\.)login\.microsoftonline\.com$/i.test(u.hostname) },
+  { authModel: 'sso-facebook',  idpName: 'Facebook',  label: 'Facebook',  test: (u) => /(^|\.)facebook\.com$/i.test(u.hostname) && /\/v[\w.]+\/dialog\/oauth/i.test(u.pathname) },
 ];
 
 function headerValue(headers, name) {
@@ -57,7 +57,10 @@ function findBearerJwt(entry) {
   if (!auth) return null;
   const m = /^Bearer\s+(\S+)$/i.exec(auth);
   if (!m) return null;
-  return JWT_RE.test(m[1]) ? m[1] : m[1]; // accept any opaque bearer; JWT shape is preferred but not required.
+  // Accept any opaque bearer token; JWT shape is preferred but not required
+  // (some APIs hand out non-JWT opaque tokens). JWT_RE is exposed for callers
+  // that want to assert the stronger shape.
+  return m[1];
 }
 
 function findCsrfHeader(entry) {
@@ -116,7 +119,6 @@ function classifyAuth(har) {
   let ssoMatch = null;
   let setCookieEntry = null;
   let csrfEntry = null;
-  let csrfHeaderName = null;
 
   for (const e of entries) {
     const url = (e.request && e.request.url) || '';
@@ -128,7 +130,7 @@ function classifyAuth(har) {
 
     const sso = findSsoRedirect(e);
     if (sso && !ssoEntry) {
-      ssoEntry = { url, signal: `redirect through ${sso.authModel.slice(4)} IdP host` };
+      ssoEntry = { url, signal: `redirect through ${sso.label} IdP host` };
       ssoMatch = sso;
     }
 
@@ -145,7 +147,6 @@ function classifyAuth(har) {
     const csrf = findCsrfHeader(e);
     if (csrf && !csrfEntry) {
       csrfEntry = { url, signal: `${csrf} request header` };
-      csrfHeaderName = csrf;
     }
   }
 
@@ -216,7 +217,7 @@ function main(argv) {
   process.exit(0);
 }
 
-module.exports = { classifyAuth };
+module.exports = { classifyAuth, JWT_RE };
 
 if (require.main === module) {
   main(process.argv.slice(2));
