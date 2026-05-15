@@ -1,0 +1,17 @@
+#!/usr/bin/env pwsh
+#Requires -Version 7.0
+
+# Entry-point wrapper for the {{TestProjectName}} Pester smoke suite.
+# Installs Pester 5 on demand and runs every *.Tests.ps1 next to this script.
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Get-Module -ListAvailable Pester | Where-Object { $_.Version -ge [version]"5.0.0" })) {
+    Write-Host "Installing Pester 5 (CurrentUser scope)..."
+    Install-Module -Name Pester -MinimumVersion 5.0.0 -Scope CurrentUser -Force -SkipPublisherCheck
+}
+
+Import-Module Pester -MinimumVersion 5.0.0
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+Invoke-Pester -Path $here -Output Detailed
+exit $LASTEXITCODE

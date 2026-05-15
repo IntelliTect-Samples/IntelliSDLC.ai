@@ -1,0 +1,52 @@
+#Requires -Version 7.0
+#Requires -Modules @{ ModuleName = "Pester"; ModuleVersion = "5.0.0" }
+
+# MCP smoke test for the {{ProjectName}} wrapper.
+#
+# Verifies that every method on {{ProjectName}}Client carries a [Description]
+# attribute - the MCP runtime ({{ProjectName}}McpServer, registered via
+# WithToolsFromAssembly()) lifts those descriptions into JSON-RPC tool
+# manifests, so a missing [Description] would degrade the tool catalogue.
+#
+# The expected method list below is baked in by the generator from the
+# captured HAR; re-run generate-wrapper.js to refresh it.
+#
+# Run via: pwsh -File ./tests/{{ProjectName}}.Tests/pester/run-pester.ps1
+# (or invoke this file directly with Invoke-Pester).
+
+BeforeAll {
+    $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
+    $script:ClientCs = Join-Path $script:RepoRoot "src/{{ProjectName}}/{{ProjectName}}Client.Generated.cs"
+    $script:ExpectedMethods = @(
+{{ExpectedMethods}}
+    )
+}
+
+Describe "{{ProjectName}} MCP smoke" {
+    It "Client.Generated.cs exists" {
+        Test-Path $script:ClientCs | Should -BeTrue
+    }
+
+    It "every expected method declares a [Description] attribute" {
+        $body = Get-Content -Raw $script:ClientCs
+        $script:ExpectedMethods.Count | Should -BeGreaterThan 0 -Because "the generator should have emitted at least one method"
+        foreach ($m in $script:ExpectedMethods) {
+            $pattern = '\[Description\("[^"]+"\)\]\s*(?:\r?\n\s*)*public\s+async\s+Task<[^>]+>\s+' + [regex]::Escape($m)
+            $body | Should -Match $pattern -Because "method $m must be preceded by a [Description] attribute"
+        }
+    }
+
+    It "dotnet is available (smoke-build the wrapper)" {
+        if ($null -eq (Get-Command dotnet -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "dotnet SDK not on PATH"
+            return
+        }
+        Push-Location $script:RepoRoot
+        try {
+            & dotnet build "src/{{ProjectName}}/{{ProjectName}}.csproj" --nologo -v minimal 2>&1 | Out-Null
+            $LASTEXITCODE | Should -Be 0 -Because "wrapper csproj must compile"
+        } finally {
+            Pop-Location
+        }
+    }
+}
