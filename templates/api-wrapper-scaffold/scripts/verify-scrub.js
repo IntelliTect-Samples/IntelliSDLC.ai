@@ -55,16 +55,49 @@ const LEAK_PATTERNS = [
         re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
         // Fake emails always use the @example.invalid domain.
         isFake: (m) => /@example\.invalid$/i.test(m)
+    },
+    {
+        // E.164-shaped phone numbers (issue #46). Fakes use the 555 area code.
+        name: 'phone',
+        re: /\+\d{10,15}\b/g,
+        isFake: (m) => /^\+1555\d{7}$/.test(m)
+    },
+    {
+        // US SSN. Fakes use the 9XX prefix that the SSA never issues.
+        name: 'ssn',
+        re: /\b\d{3}-\d{2}-\d{4}\b/g,
+        isFake: (m) => /^9\d{2}-/.test(m)
+    },
+    {
+        // Luhn-valid credit-card-shaped digit runs. Fakes are Luhn-valid too
+        // (so we can't use validity as the fake marker); instead, fakes always
+        // start with the 4242 IIN test prefix.
+        name: 'credit-card',
+        re: /\b\d{13,19}\b/g,
+        isFake: (m) => /^4242/.test(m),
+        precheck: (m) => luhnValid(m)
     }
 ];
+
+function luhnValid(s) {
+    let sum = 0, alt = false;
+    for (let i = s.length - 1; i >= 0; i--) {
+        let d = s.charCodeAt(i) - 48;
+        if (d < 0 || d > 9) return false;
+        if (alt) { d *= 2; if (d > 9) d -= 9; }
+        sum += d; alt = !alt;
+    }
+    return sum % 10 === 0;
+}
 
 function findLeaks(text) {
     const leaks = [];
     for (const p of LEAK_PATTERNS) {
         const matches = text.match(p.re) || [];
         for (const m of matches) {
+            if (p.precheck && !p.precheck(m)) continue;
             if (p.isFake(m)) continue;
-            leaks.push({ kind: p.name, sample: m.slice(0, 40) + (m.length > 40 ? '…' : '') });
+            leaks.push({ kind: p.name, sample: m.slice(0, 40) + (m.length > 40 ? '...' : '') });
         }
     }
     return leaks;

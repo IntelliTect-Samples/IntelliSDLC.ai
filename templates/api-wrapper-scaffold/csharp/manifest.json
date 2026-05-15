@@ -92,6 +92,10 @@
         "HasMobileCoverage",
         "MobileHarPaths"
       ]
+    },
+    {
+      "file": ".gitignore.tmpl",
+      "requiredTokens": []
     }
   ]
 }
