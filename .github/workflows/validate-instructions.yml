@@ -213,3 +213,30 @@ jobs:
             exit 1
           fi
           echo "All agent files have valid frontmatter."
+
+  pester:
+    name: Pester tests (.github/)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # .NET is optional. Agent-e2e dotnet build/test It blocks gracefully
+      # skip when the SDK is absent; we install it here so CI exercises the
+      # full pipeline (build + test) on the emitted wrapper project.
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Run Pester suite
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          $r = Invoke-Pester -Path ./.github -Output Detailed -PassThru
+          if ($r.FailedCount -gt 0) { exit 1 }
