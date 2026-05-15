@@ -1,0 +1,58 @@
+{
+  "$schema": "manifest.schema.json",
+  "description": "Manifest of C# .tmpl files emitted by the api-wrapper-scaffold agent. Lists each template and the {{Token}} placeholders it requires. Tests in .github/agents/tests/csharp-templates.Tests.ps1 enforce manifest <-> body parity.",
+  "tokens": {
+    "ProjectName": "PascalCase wrapper name, e.g. TripItEx. Used for class names, exception types, MCP tool prefix, and per-user storage folder.",
+    "Namespace": "Root .NET namespace, e.g. TripIt. Auth types live under {Namespace}.Auth.",
+    "BaseUrl": "HTTPS scheme + host of the target site, e.g. https://www.tripit.com.",
+    "AuthModel": "One of cookie, cookie+csrf, bearer, sso-google, sso-microsoft, sso-facebook, oauth2-pkce. Recorded as a banner comment in the MCP entry point.",
+    "IdpName": "Friendly IdP name (Google / Microsoft / Facebook). Substituted into the generated authenticator's bot-challenge messages."
+  },
+  "templates": [
+    {
+      "file": "Client.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace",
+        "BaseUrl"
+      ]
+    },
+    {
+      "file": "Authenticator.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace",
+        "BaseUrl",
+        "IdpName"
+      ]
+    },
+    {
+      "file": "ISessionStore.cs.tmpl",
+      "requiredTokens": [
+        "Namespace"
+      ]
+    },
+    {
+      "file": "DpapiSessionStore.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace"
+      ]
+    },
+    {
+      "file": "UserSecretsSessionStore.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace"
+      ]
+    },
+    {
+      "file": "McpProgram.cs.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "Namespace",
+        "AuthModel"
+      ]
+    }
+  ]
+}

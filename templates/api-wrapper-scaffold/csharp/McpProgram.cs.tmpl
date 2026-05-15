@@ -1,0 +1,43 @@
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using {{Namespace}};
+using {{Namespace}}.Auth;
+
+// MCP entry point for the {{ProjectName}} wrapper.
+// Auth model: {{AuthModel}}.
+//
+// MCP servers using stdio MUST log to stderr only - the stdout channel is
+// reserved for the JSON-RPC protocol frames.
+
+var builder = Host.CreateApplicationBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+
+// Resolve a session: prefer DPAPI on Windows, fall back to user-secrets.
+builder.Services.AddSingleton<ISessionStore>(_ =>
+    OperatingSystem.IsWindows()
+        ? new DpapiSessionStore()
+        : new UserSecretsSessionStore());
+
+builder.Services.AddSingleton<SessionCredentials>(sp =>
+{
+    var store = sp.GetRequiredService<ISessionStore>();
+    if (!store.TryLoad(out var creds))
+    {
+        throw new InvalidOperationException(
+            $"No {{ProjectName}} session found in {store.Description}. " +
+            "Run the {{ProjectName}} authenticator first.");
+    }
+    return creds;
+});
+
+builder.Services.AddSingleton<{{ProjectName}}Client>();
+
+builder.Services
+    .AddMcpServer()
+    .WithStdioServerTransport()
+    .WithToolsFromAssembly();
+
+await builder.Build().RunAsync();

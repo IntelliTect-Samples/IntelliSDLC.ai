@@ -1,0 +1,68 @@
+using System.Runtime.Versioning;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+
+namespace {{Namespace}}.Auth;
+
+/// <summary>
+/// Windows-only session store. Encrypts the session JSON for the current user
+/// via DPAPI (<see cref="ProtectedData"/>) and persists it under
+/// <c>%LOCALAPPDATA%\{{ProjectName}}\session.dpapi</c>.
+/// </summary>
+[SupportedOSPlatform("windows")]
+public sealed class DpapiSessionStore : ISessionStore
+{
+    private readonly string _path;
+
+    public DpapiSessionStore(string? path = null)
+    {
+        _path = path ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "{{ProjectName}}",
+            "session.dpapi");
+    }
+
+    public string Description => $"DPAPI:{_path}";
+
+    public bool TryLoad(out SessionCredentials credentials)
+    {
+        credentials = new SessionCredentials("", "");
+        if (!File.Exists(_path)) return false;
+        if (!OperatingSystem.IsWindows()) return false;
+        try
+        {
+            var protectedBytes = File.ReadAllBytes(_path);
+            var unprotectedBytes = ProtectedData.Unprotect(protectedBytes, null, DataProtectionScope.CurrentUser);
+            var json = Encoding.UTF8.GetString(unprotectedBytes);
+            var creds = JsonSerializer.Deserialize<SessionCredentials>(json);
+            if (creds is null || string.IsNullOrEmpty(creds.Cookie)) return false;
+            credentials = creds;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public void Save(SessionCredentials credentials)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException(
+                "DpapiSessionStore is only supported on Windows. " +
+                "Use UserSecretsSessionStore on other platforms.");
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        var json = JsonSerializer.Serialize(credentials);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        var protectedBytes = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+        File.WriteAllBytes(_path, protectedBytes);
+    }
+
+    public void Clear()
+    {
+        if (File.Exists(_path)) File.Delete(_path);
+    }
+}

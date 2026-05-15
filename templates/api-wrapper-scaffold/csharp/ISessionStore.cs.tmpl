@@ -1,0 +1,30 @@
+namespace {{Namespace}}.Auth;
+
+/// <summary>
+/// Cookie + CSRF pair representing an authenticated session.
+/// </summary>
+public sealed record SessionCredentials(string Cookie, string CsrfToken);
+
+/// <summary>
+/// Persists and retrieves <see cref="SessionCredentials"/> on the local machine.
+/// Implementations: <c>DpapiSessionStore</c> (Windows), <c>UserSecretsSessionStore</c>
+/// (cross-platform).
+/// </summary>
+public interface ISessionStore
+{
+    /// <summary>Human-readable description of where credentials are stored.</summary>
+    string Description { get; }
+
+    /// <summary>
+    /// Attempts to load saved credentials. Returns false when no credentials
+    /// have been stored yet (callers should treat this as a normal first-run
+    /// condition, not an error).
+    /// </summary>
+    bool TryLoad(out SessionCredentials credentials);
+
+    /// <summary>Persists credentials, overwriting any existing entry.</summary>
+    void Save(SessionCredentials credentials);
+
+    /// <summary>Removes any stored credentials.</summary>
+    void Clear();
+}
