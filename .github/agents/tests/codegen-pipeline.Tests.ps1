@@ -92,7 +92,7 @@ Describe 'endpoint-dedup' {
             $r.ExitCode | Should -Be 0
             $code = Get-Content (Join-Path $out 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
             # exactly one GetUsers<id>Async method (the /users/{id} endpoint)
-            $matches = [regex]::Matches($code, 'public\s+async\s+Task<[^>]+>\s+GetUsersByIdAsync\s*\(')
+            $matches = [regex]::Matches($code, 'public\s+async\s+Task<.*?>\s+GetUsersByIdAsync\s*\(')
             $matches.Count | Should -Be 1
             # signature carries an int id
             $code | Should -Match 'GetUsersByIdAsync\s*\(\s*int\s+id'
