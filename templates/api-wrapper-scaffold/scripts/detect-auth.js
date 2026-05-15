@@ -41,6 +41,15 @@ const CSRF_HEADER_NAMES = new Set([
   'x-csrf-token', 'x-xsrf-token', 'csrf-token', 'x-requested-with',
 ]);
 
+// Akamai bot-management cookie names (issue #66). When any of these appear in
+// either the HAR's request `Cookie` header or response `Set-Cookie` header, the
+// target almost certainly fronts traffic with Akamai Bot Manager, which means
+// a session-replay-only wrapper may hit a non-200 anti-bot challenge response.
+// We surface the cookie names so downstream tooling (the README emitter) can
+// warn the consumer; we do NOT attempt to implement a bypass.
+const AKAMAI_BOT_COOKIE_NAMES = ['_abck', 'bm_sz', 'bm_sv', 'ak_bmsc'];
+const AKAMAI_BOT_COOKIE_SET = new Set(AKAMAI_BOT_COOKIE_NAMES);
+
 const SSO_HOSTS = [
   { authModel: 'sso-google',    idpName: 'Google',    label: 'Google',    test: (u) => /(^|\.)accounts\.google\.com$/i.test(u.hostname) },
   { authModel: 'sso-microsoft', idpName: 'Microsoft', label: 'Microsoft', test: (u) => /(^|\.)login\.microsoftonline\.com$/i.test(u.hostname) },
@@ -82,6 +91,47 @@ function findCsrfHeader(entry) {
 
 function findSetCookie(entry) {
   return headerValue(entry.response && entry.response.headers, 'Set-Cookie') || null;
+}
+
+/**
+ * Scan a HAR for Akamai bot-management cookie names. Inspects both:
+ *   - request `Cookie` header values (cookies the client already holds)
+ *   - response `Set-Cookie` header values (cookies the server is issuing)
+ * Returns a sorted, de-duplicated array of cookie names that were observed.
+ * The cookie *value* is irrelevant -- only the *name* signals Akamai.
+ */
+function detectAntiBotCookies(har) {
+  const entries = (har && har.log && Array.isArray(har.log.entries)) ? har.log.entries : [];
+  const found = new Set();
+  for (const entry of entries) {
+    const reqHeaders = entry.request && entry.request.headers;
+    if (Array.isArray(reqHeaders)) {
+      for (const h of reqHeaders) {
+        if (!h || typeof h.name !== 'string' || typeof h.value !== 'string') continue;
+        if (h.name.toLowerCase() !== 'cookie') continue;
+        for (const pair of h.value.split(';')) {
+          const eq = pair.indexOf('=');
+          const name = (eq >= 0 ? pair.slice(0, eq) : pair).trim();
+          if (AKAMAI_BOT_COOKIE_SET.has(name)) found.add(name);
+        }
+      }
+    }
+    const respHeaders = entry.response && entry.response.headers;
+    if (Array.isArray(respHeaders)) {
+      for (const h of respHeaders) {
+        if (!h || typeof h.name !== 'string' || typeof h.value !== 'string') continue;
+        if (h.name.toLowerCase() !== 'set-cookie') continue;
+        // A Set-Cookie header value is "name=value; attr=...; attr". The cookie
+        // name is everything up to the first '='. (HAR may also concatenate
+        // multiple Set-Cookie headers; we accept either as separate entries.)
+        const eq = h.value.indexOf('=');
+        const name = (eq >= 0 ? h.value.slice(0, eq) : h.value).trim();
+        if (AKAMAI_BOT_COOKIE_SET.has(name)) found.add(name);
+      }
+    }
+  }
+  // Preserve canonical ordering for deterministic output.
+  return AKAMAI_BOT_COOKIE_NAMES.filter((n) => found.has(n));
 }
 
 function tryUrl(u) {
@@ -198,6 +248,20 @@ function classifyAuth(har) {
   return { authModel: 'unknown', evidence };
 }
 
+/**
+ * Classify a HAR for auth AND surface any Akamai bot-management cookies as a
+ * separate `antiBotCookies` field. The field is only included when at least
+ * one Akamai cookie was detected; benign APIs get a clean result object.
+ */
+function classifyAuthWithAntiBot(har) {
+  const result = classifyAuth(har);
+  const antiBot = detectAntiBotCookies(har);
+  if (antiBot.length > 0) {
+    result.antiBotCookies = antiBot;
+  }
+  return result;
+}
+
 function main(argv) {
   if (argv.length < 1) {
     process.stderr.write('usage: detect-auth.js <path-to-har> [--source-label=<label>]\n');
@@ -234,6 +298,10 @@ function main(argv) {
     process.exit(1);
   }
   const result = classifyAuth(har);
+  const antiBot = detectAntiBotCookies(har);
+  if (antiBot.length > 0) {
+    result.antiBotCookies = antiBot;
+  }
   if (sourceLabel !== null) {
     for (const e of result.evidence) {
       e.source = sourceLabel;
@@ -243,7 +311,7 @@ function main(argv) {
   process.exit(0);
 }
 
-module.exports = { classifyAuth, JWT_RE };
+module.exports = { classifyAuth, classifyAuthWithAntiBot, detectAntiBotCookies, AKAMAI_BOT_COOKIE_NAMES, JWT_RE };
 
 if (require.main === module) {
   main(process.argv.slice(2));
