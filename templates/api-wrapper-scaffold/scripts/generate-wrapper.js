@@ -289,18 +289,31 @@ function inferShape(val) {
         const keys = Object.keys(val).sort();
         for (const k of keys) {
             const sub = inferShape(val[k]);
-            fields[k] = { shape: sub, optional: false, presentCount: 1 };
+            // Field-level nullability: was THIS field observed as null in this sample?
+            // (Distinct from primitive shape.nullable, which is the value-side flag and
+            // gets lost when a null sample is merged with an object/array sample.)
+            fields[k] = { shape: sub, optional: false, presentCount: 1, nullable: val[k] === null };
         }
         return { kind: 'object', fields, sampleCount: 1 };
     }
     return { kind: 'unknown' };
 }
 
+function isNullSentinel(s) {
+    return !!s && s.kind === 'primitive' && s.type === 'object' && s.nullable === true;
+}
+
 function mergeShapes(a, b) {
     if (!a || a.kind === 'unknown') return b;
     if (!b || b.kind === 'unknown') return a;
     if (a.kind !== b.kind) {
-        // mixed -> fall back to unknown (will emit as JsonElement)
+        // A `null` JSON value infers as { kind:'primitive', type:'object', nullable:true }.
+        // When merged against a real object/array shape from another sample, prefer the
+        // real shape and let field-level nullability tracking record the null observation
+        // (otherwise the shape collapses to JsonElement and the diff is lost).
+        if (isNullSentinel(a)) return b;
+        if (isNullSentinel(b)) return a;
+        // genuinely mixed -> fall back to unknown (will emit as JsonElement)
         return { kind: 'unknown' };
     }
     if (a.kind === 'primitive') {
@@ -322,11 +335,12 @@ function mergeShapes(a, b) {
                     shape: mergeShapes(fa.shape, fb.shape),
                     optional: fa.optional || fb.optional,
                     presentCount: (fa.presentCount || 0) + (fb.presentCount || 0),
+                    nullable: (fa.nullable || false) || (fb.nullable || false),
                 };
             } else if (fa) {
-                fields[k] = { shape: fa.shape, optional: true, presentCount: fa.presentCount || 0 };
+                fields[k] = { shape: fa.shape, optional: true, presentCount: fa.presentCount || 0, nullable: fa.nullable || false };
             } else {
-                fields[k] = { shape: fb.shape, optional: true, presentCount: fb.presentCount || 0 };
+                fields[k] = { shape: fb.shape, optional: true, presentCount: fb.presentCount || 0, nullable: fb.nullable || false };
             }
         }
         return { kind: 'object', fields, sampleCount: newCount };
@@ -463,7 +477,7 @@ function shapeSignature(shape) {
     if (shape.kind === 'object') {
         const parts = Object.keys(shape.fields).sort().map((k) => {
             const f = shape.fields[k];
-            return k + (f.optional ? '?' : '') + ':' + shapeSignature(f.shape);
+            return k + (f.optional ? '?' : '') + (f.nullable ? 'n' : '') + ':' + shapeSignature(f.shape);
         });
         return 'O:{' + parts.join(',') + '}';
     }
@@ -491,7 +505,7 @@ function emitModels(modelMap) {
                 const f = info.shape.fields[k];
                 const propName = pascalCase(k);
                 let type = csTypeFor(f.shape, modelMap, propName);
-                if (f.optional && !type.endsWith('?')) type = type + '?';
+                if ((f.optional || f.nullable) && !type.endsWith('?')) type = type + '?';
                 buf.push('    [JsonPropertyName("' + escapeCs(k) + '")]');
                 const init = initializerFor(type);
                 buf.push('    public ' + type + ' ' + propName + ' { get; init; }' + (init ? init + ';' : ''));
@@ -933,6 +947,8 @@ module.exports = {
     isGraphQL,
     inferShape,
     mergeShapes,
+    registerModel,
+    emitModels,
     dedupePatterns,
     methodNameFor,
     pascalCase,
