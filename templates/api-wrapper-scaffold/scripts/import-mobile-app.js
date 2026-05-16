@@ -36,7 +36,7 @@ const fs   = require('fs');
 const path = require('path');
 
 const VALID_PLATFORMS = new Set(['ios', 'android', 'both']);
-const VALID_MODES     = new Set(['proxy', 'decompile', 'both']);
+const VALID_MODES     = new Set(['proxy', 'decompile', 'download', 'both']);
 
 function parseArgs(argv) {
   const args = {
@@ -68,7 +68,7 @@ function validatePlatformMode(args) {
     process.exit(2);
   }
   if (!args.mode || !VALID_MODES.has(args.mode)) {
-    process.stderr.write(`error: --mode must be one of proxy|decompile|both (got ${args.mode})\n`);
+    process.stderr.write(`error: --mode must be one of proxy|decompile|download|both (got ${args.mode})\n`);
     process.exit(2);
   }
 }
@@ -78,7 +78,7 @@ function expandPlatforms(p) {
 }
 
 function expandModes(m) {
-  return m === 'both' ? ['proxy', 'decompile'] : [m];
+  return m === 'both' ? ['download', 'proxy', 'decompile'] : [m];
 }
 
 const LEGAL_WARNING =
@@ -174,11 +174,84 @@ function printDecompileInstructions(platform) {
   return lines.join('\n');
 }
 
+function printDownloadInstructions(platform) {
+  const lines = [];
+  lines.push(`=== ${platform.toUpperCase()} :: download app binary (${platform === 'android' ? 'APK' : 'IPA'}) ===`);
+  lines.push('');
+  lines.push(LEGAL_WARNING);
+  lines.push('App Store / Play Store Terms of Service generally prohibit');
+  lines.push('redistribution of downloaded binaries -- keep the file local and');
+  lines.push('do not commit it to any public repository.');
+  lines.push('');
+  if (platform === 'android') {
+    lines.push('OPTION A -- adb pull from your own device (recommended; preserves signature):');
+    lines.push('  1. Install the target app from the Play Store on a personal device.');
+    lines.push('  2. Enable Developer Options + USB debugging; connect via USB.');
+    lines.push('  3. Resolve the installed APK path(s):');
+    lines.push('       adb shell pm path com.example.targetapp');
+    lines.push('     (Returns one or more "package:/data/app/.../base.apk" lines. Split');
+    lines.push('     APKs may emit multiple paths -- pull each.)');
+    lines.push('  4. Pull the file(s):');
+    lines.push('       adb pull /data/app/.../base.apk \\');
+    lines.push('         Samples/MobileApp-Binaries/android-com.example.targetapp.apk');
+    lines.push('');
+    lines.push('OPTION B -- gplaycli (CLI Play Store downloader using your own Google account):');
+    lines.push('  1. pipx install gplaycli');
+    lines.push('  2. gplaycli -d com.example.targetapp \\');
+    lines.push('       -f Samples/MobileApp-Binaries/');
+    lines.push('');
+    lines.push('OPTION C -- reputable mirror (APKMirror / APKPure):');
+    lines.push('  1. Download the APK from https://apkmirror.com or https://apkpure.com.');
+    lines.push('  2. Verify the developer signature matches the Play Store listing:');
+    lines.push('       apksigner verify --print-certs <downloaded.apk>');
+    lines.push('     If the signing cert does not match the official one, discard the file.');
+    lines.push('  3. Move to Samples/MobileApp-Binaries/android-<package>.apk');
+    lines.push('');
+    lines.push('Expected output:');
+    lines.push('  Samples/MobileApp-Binaries/android-<package>.apk');
+  } else {
+    lines.push('OPTION A -- ipatool with your own Apple ID (recommended):');
+    lines.push('  1. Install ipatool (https://github.com/majd/ipatool):');
+    lines.push('       brew install ipatool   # macOS');
+    lines.push('       winget install majd.ipatool   # Windows');
+    lines.push('  2. Authenticate (uses your own Apple ID; supports 2FA):');
+    lines.push('       ipatool auth login -e <apple-id-email>');
+    lines.push('  3. Search and download:');
+    lines.push('       ipatool search "TargetApp"');
+    lines.push('       ipatool download -b com.example.targetapp \\');
+    lines.push('         -o Samples/MobileApp-Binaries/ios-com.example.targetapp.ipa');
+    lines.push('');
+    lines.push('OPTION B -- Apple Configurator 2 (macOS, GUI):');
+    lines.push('  1. Install Apple Configurator 2 from the Mac App Store.');
+    lines.push('  2. Sign in with your Apple ID, connect an iOS device with the app installed.');
+    lines.push('  3. Account -> "Sign in to download apps" -> select the app -> "Get".');
+    lines.push('  4. The IPA lands in ~/Library/Group Containers/K36BKF7T3D.group.com.apple.configurator/Library/Caches/Assets/');
+    lines.push('  5. Copy it to Samples/MobileApp-Binaries/ios-<package>.ipa');
+    lines.push('');
+    lines.push('OPTION C -- iMazing (cross-platform, GUI):');
+    lines.push('  1. Install iMazing (https://imazing.com).');
+    lines.push('  2. Connect your iOS device. Library -> Apps -> right-click target -> Download.');
+    lines.push('  3. Export the .ipa to Samples/MobileApp-Binaries/ios-<package>.ipa');
+    lines.push('');
+    lines.push('Expected output:');
+    lines.push('  Samples/MobileApp-Binaries/ios-<package>.ipa');
+  }
+  lines.push('');
+  lines.push('Once the binary is in Samples/MobileApp-Binaries/, you can:');
+  lines.push('  - run this script again with --mode=decompile to extract endpoint strings, or');
+  lines.push('  - install the binary on a test device + run --mode=proxy to capture live traffic.');
+  return lines.join('\n');
+}
+
 function printInstructions(args) {
   const out = [];
   for (const p of expandPlatforms(args.platform)) {
     for (const m of expandModes(args.mode)) {
-      out.push(m === 'proxy' ? printProxyInstructions(p) : printDecompileInstructions(p));
+      let section;
+      if (m === 'proxy')       section = printProxyInstructions(p);
+      else if (m === 'decompile') section = printDecompileInstructions(p);
+      else                     section = printDownloadInstructions(p);
+      out.push(section);
       out.push('');
     }
   }
