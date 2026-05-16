@@ -102,8 +102,9 @@ inputs:
 | Input | Values | Notes |
 |---|---|---|
 | Platform | `ios` / `android` / `both` | Drives the instruction set printed by `import-mobile-app.js`. |
-| Capture mode | `proxy` / `decompile` / `both` | `proxy` (mitmproxy / Charles) is preferred for live traffic; `decompile` (jadx / class-dump) is a fallback for static endpoint discovery. |
+| Capture mode | `download` / `proxy` / `decompile` / `both` | `download` (recommended first step) prints platform-specific instructions for acquiring the `.apk` (Android) or `.ipa` (iOS) binary. `proxy` (mitmproxy / Charles) captures live traffic. `decompile` (jadx / class-dump) extracts endpoint strings statically; it requires the binary, so `download` is a prerequisite. |
 | Proxy capture path | default `Samples/HAR-Original/mobile-<platform>-<timestamp>.har` | Where the captured HAR is exported. |
+| Binary path | `Samples/MobileApp-Binaries/<platform>-<package>.{apk,ipa}` | Where downloaded binaries land. Always gitignored; never commit. |
 
 Then run the guided importer (it prints commands and waits for the user
 to confirm each step; it never invokes proxies or decompilers itself):

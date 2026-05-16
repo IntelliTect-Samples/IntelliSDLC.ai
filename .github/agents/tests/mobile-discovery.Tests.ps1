@@ -105,6 +105,37 @@ Describe 'import-mobile-app.js (non-interactive instruction printer)' {
         $r = Invoke-Import @('--non-interactive', '--platform=blackberry', '--mode=proxy')
         $r.ExitCode | Should -Not -Be 0
     }
+
+    It 'android + download: prints adb pull, gplaycli, and Samples/MobileApp-Binaries path' {
+        $r = Invoke-Import @('--non-interactive', '--platform=android', '--mode=download')
+        $r.ExitCode | Should -Be 0
+        $r.Output   | Should -Match 'adb pull'
+        $r.Output   | Should -Match '(?i)gplaycli|APKMirror|APKPure'
+        $r.Output   | Should -Match 'Samples/MobileApp-Binaries/'
+        $r.Output   | Should -Match '\.apk'
+    }
+
+    It 'ios + download: references ipatool and Apple Configurator / iMazing' {
+        $r = Invoke-Import @('--non-interactive', '--platform=ios', '--mode=download')
+        $r.ExitCode | Should -Be 0
+        $r.Output   | Should -Match 'ipatool'
+        $r.Output   | Should -Match '(?i)Apple Configurator|iMazing'
+        $r.Output   | Should -Match 'Samples/MobileApp-Binaries/'
+        $r.Output   | Should -Match '\.ipa'
+    }
+
+    It 'download mode prints a legal / ToS reminder' {
+        $r = Invoke-Import @('--non-interactive', '--platform=android', '--mode=download')
+        $r.ExitCode | Should -Be 0
+        $r.Output   | Should -Match '(?i)legal|terms of service|permitted|redistribut'
+    }
+
+    It '--mode=both expands to include download instructions for both platforms' {
+        $r = Invoke-Import @('--non-interactive', '--platform=both', '--mode=both')
+        $r.ExitCode | Should -Be 0
+        $r.Output   | Should -Match 'adb pull'
+        $r.Output   | Should -Match 'ipatool'
+    }
 }
 
 Describe 'detect-auth.js --source-label integration' {
@@ -161,6 +192,12 @@ Describe 'api-wrapper-scaffold SKILL.md mobile-discovery section' {
         $script:SkillText | Should -Match '(?i)Android'
         $script:SkillText | Should -Match '(?i)proxy'
         $script:SkillText | Should -Match '(?i)decompile'
+    }
+
+    It 'documents the download mode for acquiring APK / IPA binaries' {
+    $script:SkillText | Should -Match '(?i)download'
+    $script:SkillText | Should -Match '(?i)\.apk'
+    $script:SkillText | Should -Match '(?i)\.ipa'
     }
 
     It 'preserves the existing 11 ordered phases' {
