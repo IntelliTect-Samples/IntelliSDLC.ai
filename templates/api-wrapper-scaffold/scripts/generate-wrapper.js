@@ -789,6 +789,7 @@ function emitCsproj(opts) {
         '  <ItemGroup>',
         '    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />',
         '    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />',
+        '    <PackageReference Include="Microsoft.Playwright" Version="1.49.0" />',
         '    <PackageReference Include="ModelContextProtocol" Version="0.4.1-preview.1" />',
         '    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />',
         '  </ItemGroup>',

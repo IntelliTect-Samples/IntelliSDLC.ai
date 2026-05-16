@@ -121,6 +121,44 @@ Describe "Token substitution" {
     }
 }
 
+Describe "Authenticator.cs.tmpl uses Microsoft.Playwright (issue #97)" {
+    BeforeAll {
+        $script:AuthBody = Get-Content -Raw (Join-Path $script:CsharpDir "Authenticator.cs.tmpl")
+    }
+
+    It "does NOT contain a credential-form-post login path" {
+        $script:AuthBody | Should -Not -Match "TryCliLoginAsync" -Because "wrapper must never accept the user's password"
+        $script:AuthBody | Should -Not -Match "LoginChallengeException" -Because "the credential-flow exception is no longer needed"
+        $script:AuthBody | Should -Not -Match "userName" -Because "no username parameter belongs in the Authenticator surface"
+        $script:AuthBody | Should -Not -Match "password" -Because "no password parameter belongs in the Authenticator surface"
+        $script:AuthBody | Should -Not -Match '/login' -Because "wrappers must not POST credentials to {BaseUrl}/login"
+    }
+
+    It "does NOT shell out to node + capture-cdp.js for runtime auth" {
+        $script:AuthBody | Should -Not -Match 'capture-cdp\.js' -Because "runtime auth must use Microsoft.Playwright directly, not the HAR-capture node script"
+        $script:AuthBody | Should -Not -Match 'Process\.Start' -Because "no node subprocess for runtime auth"
+        $script:AuthBody | Should -Not -Match 'ProcessStartInfo' -Because "no node subprocess for runtime auth"
+    }
+
+    It "uses Microsoft.Playwright directly from C#" {
+        $script:AuthBody | Should -Match 'using Microsoft\.Playwright;'
+        $script:AuthBody | Should -Match 'IPlaywright|Playwright\.CreateAsync'
+        $script:AuthBody | Should -Match 'Chromium\.LaunchAsync'
+        $script:AuthBody | Should -Match 'CookiesAsync' -Because "session credentials are extracted from the live browser context"
+    }
+
+    It "uses Channel = `"chrome`" to reuse the user's installed browser" {
+        $script:AuthBody | Should -Match 'Channel\s*=\s*"chrome"' -Because "matches the CodiwomplerSocialMedia reference pattern and avoids the 150MB Chromium download"
+    }
+}
+
+Describe "Generated csproj declares Microsoft.Playwright (issue #97)" {
+    It "generate-wrapper.js emitCsproj output includes Microsoft.Playwright PackageReference" {
+        $generator = Get-Content -Raw (Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/scripts/generate-wrapper.js")
+        $generator | Should -Match 'Microsoft\.Playwright' -Because "the generated client csproj must reference Microsoft.Playwright so the Authenticator compiles"
+    }
+}
+
 Describe "Buildable output" {
     BeforeAll {
         $script:DotnetAvailable = $null -ne (Get-Command dotnet -ErrorAction SilentlyContinue)
@@ -158,7 +196,7 @@ Describe "Buildable output" {
             Set-Content -LiteralPath $kv.Value -Value $expanded -NoNewline
         }
 
-        $csproj = "<Project Sdk=`"Microsoft.NET.Sdk`">`n  <PropertyGroup>`n    <TargetFramework>net8.0</TargetFramework>`n    <Nullable>enable</Nullable>`n    <ImplicitUsings>enable</ImplicitUsings>`n    <RootNamespace>Contoso</RootNamespace>`n    <AssemblyName>Contoso</AssemblyName>`n  </PropertyGroup>`n  <ItemGroup>`n    <PackageReference Include=`"Microsoft.Extensions.Logging.Abstractions`" Version=`"8.0.0`" />`n    <PackageReference Include=`"System.Security.Cryptography.ProtectedData`" Version=`"8.0.0`" />`n  </ItemGroup>`n</Project>`n"
+        $csproj = "<Project Sdk=`"Microsoft.NET.Sdk`">`n  <PropertyGroup>`n    <TargetFramework>net8.0</TargetFramework>`n    <Nullable>enable</Nullable>`n    <ImplicitUsings>enable</ImplicitUsings>`n    <RootNamespace>Contoso</RootNamespace>`n    <AssemblyName>Contoso</AssemblyName>`n  </PropertyGroup>`n  <ItemGroup>`n    <PackageReference Include=`"Microsoft.Extensions.Logging.Abstractions`" Version=`"8.0.0`" />`n    <PackageReference Include=`"Microsoft.Playwright`" Version=`"1.49.0`" />`n    <PackageReference Include=`"System.Security.Cryptography.ProtectedData`" Version=`"8.0.0`" />`n  </ItemGroup>`n</Project>`n"
         Set-Content -LiteralPath (Join-Path $script:BuildDir "Contoso.csproj") -Value $csproj -NoNewline
 
         Push-Location $script:BuildDir
