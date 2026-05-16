@@ -60,12 +60,20 @@ public sealed partial class {{ProjectName}}Client : IDisposable
     public bool IsConfigured => !string.IsNullOrEmpty(_session.Cookie);
 
     /// <summary>
-    /// Issues an authenticated GET against an arbitrary path under <c>{{BaseUrl}}</c>
-    /// and returns the raw response body. Public escape hatch for endpoints that
-    /// do not yet have a typed wrapper.
+    /// Issues an authenticated HTTP request (verb supplied by the caller) against
+    /// an arbitrary path under <c>{{BaseUrl}}</c> and returns the raw response body.
+    /// Public escape hatch for endpoints that do not yet have a typed wrapper.
     /// </summary>
+    /// <param name="path">URL path (with leading slash) relative to <c>{{BaseUrl}}</c>.</param>
+    /// <param name="method">HTTP method to use. Defaults to GET when null.</param>
+    /// <param name="jsonBody">Optional JSON request body. When supplied, sent as
+    /// <c>application/json</c>; the HTTP method should typically be POST/PUT/PATCH.</param>
+    /// <param name="query">Optional query-string key/value pairs.</param>
+    /// <param name="ct">Cancellation token.</param>
     public async Task<string> SendRawAsync(
         string path,
+        HttpMethod? method = null,
+        string? jsonBody = null,
         IEnumerable<KeyValuePair<string, string?>>? query = null,
         CancellationToken ct = default)
     {
@@ -76,10 +84,11 @@ public sealed partial class {{ProjectName}}Client : IDisposable
                 "or populate the configured ISessionStore.");
         }
 
+        method ??= HttpMethod.Get;
         var qs = BuildQuery(query);
         var url = BaseUrl + path + qs;
 
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        using var req = new HttpRequestMessage(method, url);
         req.Headers.UserAgent.ParseAdd(UserAgent);
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         req.Headers.AcceptEncoding.ParseAdd("gzip, deflate, br");
@@ -92,7 +101,12 @@ public sealed partial class {{ProjectName}}Client : IDisposable
         }
         req.Headers.Add("Cookie", _session.Cookie);
 
-        _log.LogDebug("GET {Url}", url);
+        if (jsonBody is not null)
+        {
+            req.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+        }
+
+        _log.LogDebug("{Method} {Url}", method.Method, url);
         using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
 

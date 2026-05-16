@@ -380,3 +380,55 @@ Describe 'determinism' {
         }
     }
 }
+
+Describe 'verb-passthrough (issue #100)' {
+    BeforeAll {
+        $script:PostHar = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/rest-post-and-get.har'
+        $script:PostOut = New-OutDir
+        $script:PostRes = Invoke-Gen -Har @($script:PostHar) -Out $script:PostOut
+    }
+    AfterAll {
+        if (Test-Path $script:PostOut) { Remove-Item -Recurse -Force $script:PostOut }
+    }
+
+    It 'codegen exits 0 on the POST/GET fixture' {
+        $script:PostRes.ExitCode | Should -Be 0 -Because $script:PostRes.Output
+    }
+
+    It 'generated POST endpoint passes HttpMethod.Post to SendRawAsync' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'CreateWidgetsCreateAsync'
+        # The generated POST wrapper must thread the verb through to SendRawAsync.
+        $code | Should -Match 'CreateWidgetsCreateAsync[\s\S]*?SendRawAsync\([^)]*HttpMethod\.Post'
+    }
+
+    It 'generated POST endpoint accepts an optional body parameter' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'CreateWidgetsCreateAsync\(\s*string\?\s+body\s*=\s*null'
+    }
+
+    It 'generated GET endpoint passes HttpMethod.Get to SendRawAsync' {
+        $code = Get-Content (Join-Path $script:PostOut 'src/ExampleEx/ExampleExClient.Generated.cs') -Raw
+        $code | Should -Match 'GetWidgetsListAsync[\s\S]*?SendRawAsync\([^)]*HttpMethod\.Get'
+    }
+}
+
+Describe 'Client.cs.tmpl SendRawAsync verb support (issue #100)' {
+    BeforeAll {
+        $tmpl = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/csharp/Client.cs.tmpl'
+        $script:ClientTmpl = Get-Content -Raw $tmpl
+    }
+
+    It 'SendRawAsync signature includes an HttpMethod parameter' {
+        $script:ClientTmpl | Should -Match 'SendRawAsync\([\s\S]*?HttpMethod\??\s+method'
+    }
+
+    It 'SendRawAsync signature accepts an optional JSON body' {
+        $script:ClientTmpl | Should -Match 'SendRawAsync\([\s\S]*?string\?\s+jsonBody'
+    }
+
+    It 'HttpRequestMessage uses the supplied method, not a hard-coded GET' {
+        $script:ClientTmpl | Should -Not -Match 'new HttpRequestMessage\(HttpMethod\.Get,'
+        $script:ClientTmpl | Should -Match 'new HttpRequestMessage\(method,'
+    }
+}

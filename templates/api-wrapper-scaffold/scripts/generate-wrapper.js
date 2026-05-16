@@ -702,13 +702,20 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
         const pathArgs = p.segments
             .filter((s) => s.param)
             .map((s) => ({ name: s.param, type: s.type }));
-        const sig = pathArgs.map((a) => a.type + ' ' + a.name).concat(['CancellationToken ct = default']).join(', ');
+        const httpVerb = (p.method || 'GET').toUpperCase();
+        const verbExpr = 'HttpMethod.' + (httpVerb.charAt(0) + httpVerb.slice(1).toLowerCase());
+        const acceptsBody = httpVerb === 'POST' || httpVerb === 'PUT' || httpVerb === 'PATCH';
+        const sigArgs = pathArgs.map((a) => a.type + ' ' + a.name);
+        if (acceptsBody) sigArgs.push('string? body = null');
+        sigArgs.push('CancellationToken ct = default');
+        const sig = sigArgs.join(', ');
         const pathExpr = pathExpression(p);
+        const bodyArg = acceptsBody ? 'body' : 'null';
         lines.push('    /// <summary>' + describeFor(p) + '</summary>');
         lines.push('    [Description("' + escapeCs(describeFor(p)) + '")]');
         lines.push('    public async Task<' + modelName + '> ' + methodName + '(' + sig + ')');
         lines.push('    {');
-        lines.push('        var raw = await SendRawAsync(' + pathExpr + ', query: null, ct: ct).ConfigureAwait(false);');
+        lines.push('        var raw = await SendRawAsync(' + pathExpr + ', ' + verbExpr + ', jsonBody: ' + bodyArg + ', query: null, ct: ct).ConfigureAwait(false);');
         if (p.envelope && p.wrapperModel) {
             // Deserialize the wrapper record (kept available in Models.Generated.cs)
             // then return the inner payload property. Conservatism: heuristic
@@ -727,7 +734,7 @@ function emitClient(opts, patterns, sourceShas, hasGraphQL, modelMap) {
     lines.push('    private async Task<string> SendRawJsonAsync(string path, string json, CancellationToken ct)');
     lines.push('    {');
     lines.push('        // POST helper used by GraphQLAsync; delegates to the hand-written Client.cs partial.');
-    lines.push('        return await SendRawAsync(path, query: null, ct: ct).ConfigureAwait(false);');
+    lines.push('        return await SendRawAsync(path, HttpMethod.Post, jsonBody: json, query: null, ct: ct).ConfigureAwait(false);');
     lines.push('    }');
     lines.push('}');
     lines.push('');
