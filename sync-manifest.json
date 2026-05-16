@@ -1,0 +1,32 @@
+{
+  "$comment": "Canonical list of files and globs that Pull-SDLC.ai.ps1 will pull into a consumer project. Patterns are matched against the upstream tree via git ls-tree -r <ref>. Globs use wildmatch semantics (* matches a single path segment, ** matches any number of segments). Paths in .github/instructions/project.instructions.md (or anything listed under script:AlwaysLocalPaths) are NEVER overwritten regardless of whether they appear in this manifest.",
+  "paths": [
+    "CLAUDE.md",
+    ".github/copilot-instructions.md",
+    "Cleanup-Worktree.ps1",
+    "Pull-SDLC.ai.ps1",
+    "Pull-SDLC.ai.Tests.ps1",
+    "sync-manifest.json",
+    ".github/agents/*.agent.md",
+    ".github/instructions/csharp.instructions.md",
+    ".github/instructions/powershell.instructions.md",
+    ".github/instructions/typescript.instructions.md",
+    ".github/instructions/tdd.instructions.md",
+    ".github/instructions/copilot-coding-agent.instructions.md",
+    ".github/skills/behavior-first-testing/**",
+    ".github/skills/code-review-workflow/**",
+    ".github/skills/dev-loop-phase-gate/**",
+    ".github/skills/evidence-capture/**",
+    ".github/skills/functional-testing/**",
+    ".github/skills/refactor-workflow/**",
+    ".github/skills/security-review/**",
+    ".github/skills/systematic-debugging/**",
+    ".github/skills/windows-terminal-copilot/**"
+  ],
+  "consumer_owned": [
+    "README.md",
+    ".gitignore",
+    ".github/instructions/project.instructions.md",
+    "CLAUDE.project.md"
+  ]
+}
