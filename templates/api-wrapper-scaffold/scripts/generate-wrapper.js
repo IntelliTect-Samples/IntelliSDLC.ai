@@ -826,12 +826,79 @@ function emitReadme(opts, patterns, hasGraphQL) {
     }
     lines.push(secretGateReadmeSection());
     lines.push('');
+    lines.push(mobileImportReadmeSection());
+    lines.push('');
     lines.push(sdlcIntegrationReadmeSection());
     if (Array.isArray(opts.antiBotCookies) && opts.antiBotCookies.length > 0) {
         lines.push('');
         lines.push(antiBotWarningSection(opts.antiBotCookies));
     }
     return lines.join('\n');
+}
+
+/**
+ * Build the "Adding mobile-app coverage" README section (issue #90.a).
+ *
+ * A scaffolded project starts from web traffic only. The skill's Phase 1.5
+ * lets the user opt into mobile-app HAR / endpoint-list capture, but
+ * scaffolds driven by `run-agent.js` skip that prompt entirely. This
+ * section is rendered into every generated README so consumers know how
+ * to add mobile coverage retroactively without having to re-read SKILL.md.
+ *
+ * The section is intentionally generic (no project-specific paths): the
+ * commands work identically against any wrapper that this generator emits.
+ */
+function mobileImportReadmeSection() {
+    return [
+        '## Adding mobile-app coverage',
+        '',
+        'A scaffold built from web HAR alone misses any endpoints that only',
+        'appear in the target service\'s iOS or Android app. Mobile traffic',
+        'frequently exposes richer data, internal APIs not visible on the web,',
+        'and different auth shapes.',
+        '',
+        'To add mobile coverage to this project, run the importer from the',
+        'IntelliSDLC.ai repo and feed the captured traffic back through this',
+        'project\'s pipeline:',
+        '',
+        '```pwsh',
+        '# 1. Print the platform-specific capture instructions and create the',
+        '#    target paths under Samples/HAR-Original/ (proxy mode) or',
+        '#    Samples/MobileApp-Discovered/ (decompile mode).',
+        'node <IntelliSDLC.ai>/templates/api-wrapper-scaffold/scripts/import-mobile-app.js `',
+        '  --platform=<ios|android|both> `',
+        '  --mode=<proxy|decompile|both>',
+        '',
+        '# 2. Follow the on-screen instructions to:',
+        '#    - PROXY mode: install a TLS-intercepting proxy (mitmproxy, Charles,',
+        '#      Proxyman, Fiddler), trust its CA on the device, exercise the app,',
+        '#      then export the captured session as HAR.',
+        '#    - DECOMPILE mode: use a static-analysis tool (jadx for Android,',
+        '#      class-dump for iOS) to dump candidate endpoint URLs to a sorted',
+        '#      unique list at Samples/MobileApp-Discovered/<platform>-endpoints.txt.',
+        '',
+        '# 3. Re-run the wrapper pipeline against the new mobile HAR. Each',
+        '#    captured mobile HAR is processed exactly like a web HAR.',
+        'node <IntelliSDLC.ai>/templates/api-wrapper-scaffold/scripts/run-agent.js `',
+        '  --har Samples/HAR-Original/mobile-android-<timestamp>.har `',
+        '  --out . --project <Name> --namespace <Namespace>',
+        '```',
+        '',
+        '### Legal note on decompilation',
+        '',
+        'Only decompile apps you are **legally permitted to inspect** -- apps',
+        'tied to your own account, or apps whose Terms of Service explicitly',
+        'allow security research. The importer surfaces this warning before it',
+        'prints decompile-mode instructions and will not proceed without your',
+        'explicit acknowledgement.',
+        '',
+        '### What gets merged',
+        '',
+        'Re-running the pipeline merges the new mobile endpoints into the same',
+        '`(method, path-template)` catalog used for the web HARs. Generated',
+        'files (`*.g.cs`, fixtures) are rewritten in place; any hand-written',
+        'partials and user-edited `Client.cs` content are preserved.',
+    ].join('\n');
 }
 
 /**
