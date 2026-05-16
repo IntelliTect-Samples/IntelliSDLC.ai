@@ -236,6 +236,33 @@ Generated rules:
 - MCP tool descriptions are first-drafted from `(method, path-template,
   response keys, query params)` with `// TODO: refine`.
 
+**Authenticator contract (issue #97).** The generated
+`<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
+the interactive sign-in ceremony. It must **never**:
+
+- Accept a username / password parameter -- the wrapper never sees the
+  user's credentials.
+- POST credentials to a `/login` endpoint over `HttpClient`.
+- Shell out to `node scripts/capture-cdp.js` for runtime auth.
+
+The required shape is:
+
+1. `using Microsoft.Playwright;`
+2. `Playwright.CreateAsync` -> `playwright.Chromium.LaunchAsync(new
+   BrowserTypeLaunchOptions { Headless = false, Channel = "chrome" })`.
+3. `context.NewPageAsync().GotoAsync(BaseUrl)`.
+4. Print a console prompt asking the user to complete sign-in (any IdP,
+   any 2FA flow -- it's a real browser) and press Enter on the console.
+5. After the user signals completion, capture session credentials from
+   the live browser context: `context.CookiesAsync()` (joined as the
+   `Cookie` header) plus a best-effort CSRF token via
+   `page.EvaluateAsync<string?>(...)`. Persist via `ISessionStore`.
+
+The generated csproj declares `<PackageReference Include="Microsoft.Playwright" />`.
+
+Reference implementation pattern:
+`D:\Git\CodiwomplerSocialMedia\src\CodiwomplerSocialMedia.Cli\PlaywrightCredentialSetup.cs`.
+
 ### Phase 7 -- Tests
 
 Generate:
@@ -311,15 +338,24 @@ with a clear stage banner -- treat it as the skill's regression detector.
 
 ### Phase 9 -- Capture Helper
 
-Generate `scripts/connect-<name>.ps1` and a matching `capture-cdp.js`:
+Runtime authentication is handled by the C# `<Name>Authenticator`
+generated in Phase 6, which uses `Microsoft.Playwright` directly (see
+the Authenticator contract above). This phase only generates a thin
+PowerShell convenience wrapper:
 
-- First run: launches Playwright, user logs in, captured cookies / tokens
-  go to `~/.config/<Name>/session.dar` (DPAPI on Windows, file-mode 0600
-  on POSIX).
-- Subsequent runs: if a fresh `session.dar` exists, the wrapper uses it
-  silently; otherwise re-prompts.
-- `--storage-state <path>` supported so non-interactive runs (CI,
-  dogfood) skip the browser.
+- `scripts/connect-<name>.ps1` -- invokes the wrapper's `Connect-<Name>`
+  cmdlet, which calls `<Name>Authenticator.BrowserLoginAsync` and
+  persists the result via `ISessionStore` (DPAPI on Windows, file-mode
+  0600 on POSIX).
+- Subsequent runs: if a fresh stored session exists, the wrapper uses it
+  silently; otherwise it re-launches the Playwright browser for
+  re-authentication.
+- `scripts/capture-cdp.js` (the Node-based Playwright helper) is now
+  used **only** for the Phase 2 HAR-discovery flow during initial
+  scaffold generation. It is **not** used for runtime authentication --
+  the wrapper consumer never needs Node.js installed.
+- `--storage-state <path>` is still supported on the HAR-capture helper
+  so non-interactive runs (CI, dogfood) skip the browser during Phase 2.
 
 ### Phase 10 -- Generated README
 

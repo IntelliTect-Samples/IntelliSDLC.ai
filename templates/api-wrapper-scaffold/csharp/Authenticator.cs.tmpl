@@ -1,165 +1,160 @@
-using System.Diagnostics;
-using System.Net;
-using System.Net.Http.Headers;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Playwright;
 
 namespace {{Namespace}}.Auth;
 
 /// <summary>
-/// Acquires a {{ProjectName}} session against <c>{{BaseUrl}}</c>.
+/// Acquires a {{ProjectName}} session against <c>{{BaseUrl}}</c> by
+/// launching a real Chromium browser via <see cref="Microsoft.Playwright"/>,
+/// letting the user authenticate interactively (any SSO, any 2FA, any
+/// captcha -- it's a real browser), and then capturing the resulting
+/// session cookies from the live browser context.
 ///
-/// Two strategies:
-///   1. <see cref="TryCliLoginAsync"/> - best-effort form-post; often blocked by
-///      {{IdpName}} / bot-detection.
-///   2. <see cref="BrowserLoginAsync"/> - spawns the Playwright-based capture
-///      script (<c>scripts/capture-cdp.js</c>) and reads the resulting session
-///      file written by the scrubber.
+/// The wrapper never sees the user's credentials; it only receives the
+/// post-authentication cookies and storage state from Playwright.
+///
+/// Use <see cref="BrowserLoginAsync"/> to run the ceremony. The returned
+/// <see cref="SessionCredentials"/> can be persisted via the existing
+/// <c>ISessionStore</c>.
 /// </summary>
 public sealed class {{ProjectName}}Authenticator
 {
     private const string BaseUrl = "{{BaseUrl}}";
     private readonly ILogger<{{ProjectName}}Authenticator> _log;
+    private readonly Func<Task<IPlaywright>> _playwrightFactory;
+    private readonly Action<string> _writeLine;
+    private readonly Func<string> _readLine;
 
+    /// <summary>
+    /// Creates a new authenticator wired to the real Playwright runtime
+    /// and the process console.
+    /// </summary>
     public {{ProjectName}}Authenticator(ILogger<{{ProjectName}}Authenticator>? log = null)
+        : this(log, playwrightFactory: null, writeLine: null, readLine: null)
+    {
+    }
+
+    /// <summary>
+    /// Test-friendly constructor. Allows the unit tests to swap in a fake
+    /// <see cref="IPlaywright"/> and capture console output without
+    /// spinning up a real browser.
+    /// </summary>
+    public {{ProjectName}}Authenticator(
+        ILogger<{{ProjectName}}Authenticator>? log,
+        Func<Task<IPlaywright>>? playwrightFactory,
+        Action<string>? writeLine,
+        Func<string>? readLine)
     {
         _log = log ?? NullLogger<{{ProjectName}}Authenticator>.Instance;
+        _playwrightFactory = playwrightFactory ?? Playwright.CreateAsync;
+        _writeLine = writeLine ?? Console.Out.WriteLine;
+        _readLine = readLine ?? (() => Console.In.ReadLine() ?? string.Empty);
     }
 
     /// <summary>
-    /// Best-effort credential flow over HttpClient. The target site may delegate
-    /// to {{IdpName}}; bot-protection routinely blocks scripted form-posts, so callers
-    /// should fall back to <see cref="BrowserLoginAsync"/> on
-    /// <see cref="LoginChallengeException"/>.
+    /// Builds the Chromium launch options used by <see cref="BrowserLoginAsync"/>.
+    /// <para>
+    /// <c>Channel = "chrome"</c> reuses the user's installed system Chrome
+    /// instead of Playwright's bundled Chromium build. This avoids the
+    /// ~150 MB Chromium download (which is not present unless the user
+    /// has run <c>playwright.ps1 install</c>) and gives the user a
+    /// familiar browser for the sign-in ceremony.
+    /// </para>
     /// </summary>
-    public async Task<SessionCredentials> TryCliLoginAsync(
-        string userName,
-        string password,
+    internal static BrowserTypeLaunchOptions BuildLaunchOptions() =>
+        new()
+        {
+            Headless = false,
+            Channel = "chrome",
+        };
+
+    /// <summary>
+    /// Launches Chromium, navigates to <c>{{BaseUrl}}</c>, prompts the user to
+    /// complete the {{IdpName}} sign-in flow in the visible browser window,
+    /// and captures the resulting cookies + storage state once the user
+    /// signals completion (Enter on the console).
+    ///
+    /// Returns the captured <see cref="SessionCredentials"/>. Callers should
+    /// persist via the project's <c>ISessionStore</c>.
+    /// </summary>
+    /// <param name="ct">Cancellation token. Cancelling closes the browser
+    /// and propagates <see cref="OperationCanceledException"/>.</param>
+    public async Task<SessionCredentials> BrowserLoginAsync(CancellationToken ct = default)
+    {
+        _log.LogInformation("Launching Playwright Chromium for interactive sign-in to {BaseUrl}", BaseUrl);
+
+        using var playwright = await _playwrightFactory().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(BuildLaunchOptions()).ConfigureAwait(false);
+        await using var context = await browser.NewContextAsync().ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+
+        try
+        {
+            await page.GotoAsync(BaseUrl).ConfigureAwait(false);
+
+            _writeLine("");
+            _writeLine($"  A browser window has opened to {BaseUrl}.");
+            _writeLine($"  Please complete the {{IdpName}} sign-in flow there.");
+            _writeLine("  When you reach the authenticated landing page, return here");
+            _writeLine("  and press <Enter> to capture the session cookies.");
+            _writeLine("");
+
+            await Task.Run(() => _readLine(), ct).ConfigureAwait(false);
+
+            return await CaptureSessionAsync(context, page, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await page.CloseAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Extracts the cookie header and best-effort CSRF token from the
+    /// live browser context after the user has completed sign-in.
+    /// Exposed internally so unit tests can drive the extraction step
+    /// without launching a real Chromium.
+    /// </summary>
+    internal async Task<SessionCredentials> CaptureSessionAsync(
+        IBrowserContext context,
+        IPage page,
         CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(userName))
-            throw new ArgumentException("userName required", nameof(userName));
-        if (string.IsNullOrWhiteSpace(password))
-            throw new ArgumentException("password required", nameof(password));
+        ct.ThrowIfCancellationRequested();
 
-        var cookies = new CookieContainer();
-        using var handler = new HttpClientHandler
-        {
-            CookieContainer = cookies,
-            UseCookies = true,
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All,
-        };
-        using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36");
-        http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("text/html"));
+        var baseUri = new Uri(BaseUrl);
+        var cookies = await context.CookiesAsync(new[] { BaseUrl }).ConfigureAwait(false);
+        var cookieHeader = string.Join("; ", cookies
+            .Where(c => c.Domain.EndsWith(baseUri.Host, StringComparison.OrdinalIgnoreCase)
+                        || baseUri.Host.EndsWith(c.Domain.TrimStart('.'), StringComparison.OrdinalIgnoreCase))
+            .Select(c => $"{c.Name}={c.Value}"));
 
-        _log.LogDebug("CLI login: GET {BaseUrl}", BaseUrl);
-        using var homeResp = await http.GetAsync(BaseUrl, ct).ConfigureAwait(false);
-        _ = await homeResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-        var form = new FormUrlEncodedContent(new Dictionary<string, string>
-        {
-            ["email"] = userName,
-            ["password"] = password,
-        });
-        _log.LogDebug("CLI login: POST {BaseUrl}/login", BaseUrl);
-        using var loginResp = await http.PostAsync(BaseUrl + "/login", form, ct).ConfigureAwait(false);
-        _ = await loginResp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-
-        var cookieHeader = cookies.GetCookieHeader(new Uri(BaseUrl));
         if (string.IsNullOrEmpty(cookieHeader))
         {
-            throw new LoginChallengeException(
-                "{{ProjectName}} login did not yield a session cookie. " +
-                "{{IdpName}}/bot-protection likely intercepted the flow; " +
-                "use browser-based capture instead.");
-        }
-
-        // CSRF token typically only available after an authenticated XHR. Leave
-        // blank; caller can upgrade via BrowserLoginAsync if needed.
-        return new SessionCredentials(cookieHeader, "");
-    }
-
-    /// <summary>
-    /// Spawns <c>node scripts/capture-cdp.js</c> (Playwright-based capture) and
-    /// reads the resulting session file. The path resolution mirrors the
-    /// convention used by the api-wrapper-scaffold agent.
-    /// </summary>
-    public async Task<SessionCredentials> BrowserLoginAsync(
-        string? captureScriptPath = null,
-        CancellationToken ct = default)
-    {
-        var script = captureScriptPath ?? FindCaptureScript()
-            ?? throw new FileNotFoundException(
-                "Could not locate scripts/capture-cdp.js. Pass captureScriptPath explicitly.");
-
-        _log.LogInformation("Launching browser-based login via {Script}", script);
-        var psi = new ProcessStartInfo("node", $"\"{script}\"")
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = false,
-        };
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start node process.");
-        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-        if (proc.ExitCode != 0)
-        {
-            var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
             throw new InvalidOperationException(
-                $"capture-cdp.js exited with code {proc.ExitCode}. stderr:\n{stderr}");
+                "{{ProjectName}}Authenticator: no cookies were captured from the browser. " +
+                "Did you complete the {{IdpName}} sign-in before pressing <Enter>?");
         }
 
-        var sessionPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".{{ProjectName}}", "session.json");
-        if (!File.Exists(sessionPath))
-        {
-            throw new FileNotFoundException(
-                $"capture-cdp.js completed but no session file was written to {sessionPath}.");
-        }
+        var csrfToken = await TryReadCsrfTokenAsync(page).ConfigureAwait(false);
+        _log.LogInformation("Captured {Count} cookies from {BaseUrl} (csrf {CsrfState})",
+            cookies.Count, BaseUrl, string.IsNullOrEmpty(csrfToken) ? "absent" : "present");
 
-        var json = await File.ReadAllTextAsync(sessionPath, ct).ConfigureAwait(false);
-        var data = JsonSerializer.Deserialize<SessionFileShape>(json,
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
-            ?? throw new InvalidOperationException("session.json was empty or unparseable.");
-        if (string.IsNullOrEmpty(data.Cookie))
-        {
-            throw new InvalidOperationException("session.json is missing the cookie value.");
-        }
-        return new SessionCredentials(data.Cookie, data.CsrfToken ?? "");
+        return new SessionCredentials(cookieHeader, csrfToken ?? string.Empty);
     }
 
-    private static string? FindCaptureScript()
+    private static async Task<string?> TryReadCsrfTokenAsync(IPage page)
     {
-        var dir = AppContext.BaseDirectory;
-        for (int i = 0; i < 8 && dir is not null; i++)
+        try
         {
-            var candidate = Path.Combine(dir, "scripts", "capture-cdp.js");
-            if (File.Exists(candidate)) return candidate;
-            dir = Path.GetDirectoryName(dir);
+            return await page.EvaluateAsync<string?>(
+                "() => document.querySelector('meta[name=\"csrf-token\"]')?.content " +
+                "|| window.__CSRF_TOKEN__ || null").ConfigureAwait(false);
         }
-        return null;
+        catch (PlaywrightException)
+        {
+            return null;
+        }
     }
-
-    private sealed class SessionFileShape
-    {
-        [JsonPropertyName("cookie")]     public string? Cookie { get; set; }
-        [JsonPropertyName("csrf_token")] public string? CsrfToken { get; set; }
-    }
-}
-
-/// <summary>
-/// Thrown when CLI-flow authentication is blocked (typically by {{IdpName}} or a
-/// bot-detection layer). Callers should fall back to browser-based capture.
-/// </summary>
-public sealed class LoginChallengeException : Exception
-{
-    public LoginChallengeException(string message) : base(message) { }
 }
