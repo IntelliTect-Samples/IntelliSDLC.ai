@@ -41,6 +41,10 @@
 
 .PARAMETER NoPrompt
     Equivalent to -Bootstrap when no anchor is found; never prompts.
+
+.PARAMETER AllowDefaultBranch
+    Bypass the pre-flight check that blocks running from the protected branch.
+    Only needed in consumers without the .githooks/pre-commit policy active.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -48,7 +52,8 @@ param(
     [string]$RemoteName = 'sdlc.ai',
     [switch]$Force,
     [switch]$Bootstrap,
-    [switch]$NoPrompt
+    [switch]$NoPrompt,
+    [switch]$AllowDefaultBranch
 )
 
 Set-StrictMode -Version Latest
@@ -220,6 +225,9 @@ function Resolve-SyncAnchor {
         [switch]$NoPrompt
     )
     $state = Get-SdlcSyncState -RepoRoot $RepoRoot
+    if ($Bootstrap) {
+        return @{ Sha = ''; Source = 'bootstrap' }
+    }
     if ($null -ne $state -and $state.PSObject.Properties.Name -contains 'lastSyncCommit' -and $state.lastSyncCommit) {
         return @{ Sha = $state.lastSyncCommit; Source = 'state' }
     }
@@ -401,6 +409,35 @@ function Test-LocalDriftOnManagedPaths {
     finally { Pop-Location }
 }
 
+function Test-CommitContextAllowed {
+    <#
+    .SYNOPSIS
+        Returns @{ Allowed = $true/$false; Reason = <string>; Branch = <branch> }.
+        Used by Invoke-PullSDLC to fail fast before mutating the working tree when
+        the consumer is on the protected branch (typically 'main'), which would
+        cause the sync commit to fail (either via .githooks/pre-commit policy or
+        a remote branch-protection rule on push).
+    .DESCRIPTION
+        Only the protected-branch rule is enforced here. Worktree / repo-root
+        policies are left to .githooks/pre-commit so we don't duplicate or
+        diverge from local conventions.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$RepoRoot = '.',
+        [string]$ProtectedBranch = 'main'
+    )
+    Push-Location $RepoRoot
+    try {
+        $branch = (git symbolic-ref --short HEAD 2>$null)
+        if ($branch -eq $ProtectedBranch) {
+            return @{ Allowed = $false; Reason = "on protected branch '$ProtectedBranch'"; Branch = $branch }
+        }
+        return @{ Allowed = $true; Reason = $null; Branch = $branch }
+    }
+    finally { Pop-Location }
+}
+
 function Invoke-PullSDLC {
     <#
     .SYNOPSIS
@@ -419,11 +456,29 @@ function Invoke-PullSDLC {
         [switch]$Force,
         [switch]$Bootstrap,
         [switch]$NoPrompt,
-        [switch]$NoFetch
+        [switch]$NoFetch,
+        [switch]$AllowDefaultBranch
     )
 
     if (-not $RepoRoot) {
         $RepoRoot = (git rev-parse --show-toplevel).Trim()
+    }
+
+    if (-not $AllowDefaultBranch -and -not $WhatIfPreference) {
+        $ctx = Test-CommitContextAllowed -RepoRoot $RepoRoot -ProtectedBranch $Branch
+        if (-not $ctx.Allowed) {
+            Write-Host ''
+            Write-Host "ABORT: cannot create sync commit -- $($ctx.Reason)." -ForegroundColor Red
+            Write-Host ''
+            Write-Host 'Create a worktree first:' -ForegroundColor Yellow
+            Write-Host '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main' -ForegroundColor Yellow
+            Write-Host '  cd .worktrees/sdlc-sync' -ForegroundColor Yellow
+            Write-Host '  ../../Pull-SDLC.ai.ps1' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host 'Or rerun with -AllowDefaultBranch to bypass this check (consumers without a pre-commit hook policy).' -ForegroundColor DarkGray
+            Write-Host 'Use -WhatIf to preview ops without committing.' -ForegroundColor DarkGray
+            return 3
+        }
     }
 
     Push-Location $RepoRoot
@@ -528,7 +583,14 @@ function Invoke-PullSDLC {
         $pending = git status --porcelain
         if ($pending) {
             $msg = "chore: sync IntelliSDLC.ai to $($upstreamHead.Substring(0,7))`n`nReplayed $($ops.Count) ops from upstream $mergeRef.`n`nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+            $headBefore = (git rev-parse HEAD 2>$null).Trim()
             git commit -m $msg | Out-Null
+            $headAfter = (git rev-parse HEAD 2>$null).Trim()
+            if ($headBefore -eq $headAfter) {
+                Write-Host 'ERROR: git commit did not advance HEAD. The commit was likely blocked by a pre-commit hook or branch protection.' -ForegroundColor Red
+                Write-Host 'Working tree changes have been left in place for inspection. Resolve the policy violation and rerun.' -ForegroundColor Yellow
+                return 4
+            }
             Write-Host "Created sync commit: $(git rev-parse --short HEAD)" -ForegroundColor Green
         }
         else {
@@ -559,5 +621,5 @@ function Invoke-PullSDLC {
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
-    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -WhatIf:$WhatIfPreference
+    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch -WhatIf:$WhatIfPreference
 exit $exitCode
