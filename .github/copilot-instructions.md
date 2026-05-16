@@ -244,6 +244,7 @@ Orchestrators and interactive workflows with specific tooling and model requirem
 | `code-review.agent.md` | Code review agent running on `gpt-4.1` for independent perspective |
 | `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
 | `prd.agent.md` | Generate Product Requirements Documents with user stories and acceptance criteria |
+| `api-wrapper-scaffold.agent.md` | Thin agent stub that invokes the `api-wrapper-scaffold` skill for HAR-driven .NET wrapper generation |
 
 ### Development Workflow
 
