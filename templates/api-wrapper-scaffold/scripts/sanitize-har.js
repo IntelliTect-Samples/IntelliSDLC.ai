@@ -43,6 +43,11 @@ function usage() {
 }
 
 // Format-preserving fake generators keyed by HMAC(salt, original).
+// hex64 and hex32 fakes get a deterministic sentinel prefix so verify-scrub.js
+// can distinguish a fake from a real (non-scrubbed) source value (issue #85).
+const HEX64_FAKE_PREFIX = 'f00ded'; //  6 hex chars  -> 58 hex follow
+const HEX32_FAKE_PREFIX = 'deaf00'; //  6 hex chars  -> 26 hex follow
+
 function fakeFor(kind, original, salt) {
     const h = crypto.createHmac('sha256', salt).update(original).digest('hex');
     switch (kind) {
@@ -51,8 +56,8 @@ function fakeFor(kind, original, salt) {
             const seg = (n, offset) => h.slice(offset, offset + n);
             return `eyJ${seg(18, 0)}.${seg(40, 18)}.${seg(43, 58)}`;
         }
-        case 'hex64':   return h.slice(0, 64);
-        case 'hex32':   return h.slice(0, 32);
+        case 'hex64':   return HEX64_FAKE_PREFIX + h.slice(0, 64 - HEX64_FAKE_PREFIX.length);
+        case 'hex32':   return HEX32_FAKE_PREFIX + h.slice(0, 32 - HEX32_FAKE_PREFIX.length);
         case 'email':   return `user-${h.slice(0, 8)}@example.invalid`;
         case 'bearer':  return `Bearer ${h.slice(0, 40)}`;
         case 'uuid':    return [h.slice(0, 8), h.slice(8, 12), h.slice(12, 16), h.slice(16, 20), h.slice(20, 32)].join('-');

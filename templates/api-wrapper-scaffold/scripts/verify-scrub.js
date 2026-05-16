@@ -42,7 +42,15 @@ const LEAK_PATTERNS = [
     {
         name: 'hex64',
         re: /\b[0-9a-fA-F]{64}\b/g,
-        isFake: () => false
+        // Fake hex64 values produced by sanitize-har.js start with the `f00ded`
+        // sentinel (issue #85). Real source values do not.
+        isFake: (m) => /^f00ded[0-9a-f]{58}$/.test(m)
+    },
+    {
+        name: 'hex32',
+        re: /\b[0-9a-fA-F]{32}\b/g,
+        // Fake hex32 values start with the `deaf00` sentinel.
+        isFake: (m) => /^deaf00[0-9a-f]{26}$/.test(m)
     },
     {
         name: 'bearer',

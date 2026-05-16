@@ -95,26 +95,42 @@ Describe 'templates/api-wrapper-scaffold/' {
     }
 }
 
-Describe 'api-wrapper-scaffold agent->skill migration (issue #70)' {
+Describe 'api-wrapper-scaffold agent stub + skill registration (issues #70, #83)' {
 
-    It 'no longer ships the legacy agent file' {
-        Test-Path -LiteralPath $script:AgentPath | Should -BeFalse
+    # Issue #70 originally migrated this scaffold from an @-agent to a pure
+    # skill (the agent file was deleted). Issue #83 reversed the file
+    # deletion to preserve `@api-wrapper-scaffold` discoverability while
+    # keeping the canonical instructions in the skill. The current
+    # invariants are therefore:
+    #   - a thin delegating agent stub DOES ship at the canonical path,
+    #   - that stub delegates to the skill (it does not duplicate it),
+    #   - both the skill (in the Skills table) and the agent stub
+    #     (in the Agents table) appear in copilot-instructions.md.
+
+    It 'ships a delegating agent stub at the canonical path' {
+        Test-Path -LiteralPath $script:AgentPath | Should -BeTrue
+        $agent = Get-Content -LiteralPath $script:AgentPath -Raw
+        # The stub must delegate to the skill rather than duplicating it.
+        $agent | Should -Match 'skills/api-wrapper-scaffold/SKILL\.md'
     }
 
-    It 'is listed in the Skills table of copilot-instructions.md, not the Agents table' {
+    It 'lists the skill in the Skills table of copilot-instructions.md' {
         $instructions = Get-Content -LiteralPath $script:CopilotInstructionsPath -Raw
-
-        # The agent filename must be gone from the dispatch index.
-        $instructions | Should -Not -Match 'api-wrapper-scaffold\.agent\.md'
-
-        # The skill must be advertised under the Skills heading. Capture the
-        # Skills section (everything between "### Skills" and the next "### "
-        # heading) and assert the skill name appears inside it.
         $skillsSection = [regex]::Match(
             $instructions,
             '(?s)###\s+Skills\b.*?(?=\n###\s)'
         ).Value
         $skillsSection | Should -Not -BeNullOrEmpty
         $skillsSection | Should -Match '`api-wrapper-scaffold`'
+    }
+
+    It 'lists the agent stub in the Agents table of copilot-instructions.md' {
+        $instructions = Get-Content -LiteralPath $script:CopilotInstructionsPath -Raw
+        $agentsSection = [regex]::Match(
+            $instructions,
+            '(?s)###\s+Agents\b.*?(?=\n###\s|\z)'
+        ).Value
+        $agentsSection | Should -Not -BeNullOrEmpty
+        $agentsSection | Should -Match 'api-wrapper-scaffold\.agent\.md'
     }
 }
