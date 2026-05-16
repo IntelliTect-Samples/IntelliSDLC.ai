@@ -83,9 +83,28 @@ const LEAK_PATTERNS = [
         name: 'credit-card',
         re: /\b\d{13,19}\b/g,
         isFake: (m) => /^4242/.test(m),
-        precheck: (m) => luhnValid(m)
+        precheck: (m) => luhnValid(m) && !isPlausibleRecentUnixMs(m)
     }
 ];
+
+// A 13-digit numeric run that ALSO parses as a Unix-millisecond timestamp
+// between year 2010 and year 2050 is overwhelmingly more likely to be a
+// timestamp than a credit-card number, even when it happens to be Luhn-valid
+// (~10% of 13-digit numbers are). Suppress this slot so embedded API
+// timestamps do not produce false-positive credit-card leaks (issue #87).
+//
+// Bounds (UTC):
+//   2010-01-01 00:00:00.000 -> 1262304000000
+//   2050-01-01 00:00:00.000 -> 2524608000000
+//
+// Both bounds are 13-digit values, so this exclusion is naturally scoped to
+// the 13-digit length only; 14-19 digit credit-card-shaped numbers are
+// outside the window and continue to be flagged.
+function isPlausibleRecentUnixMs(s) {
+    if (s.length !== 13) return false;
+    const n = Number(s);
+    return n >= 1262304000000 && n <= 2524608000000;
+}
 
 function luhnValid(s) {
     let sum = 0, alt = false;
