@@ -686,6 +686,42 @@ function Invoke-SelfReExec {
     exit $LASTEXITCODE
 }
 
+function Invoke-SelfRefreshGate {
+    <#
+    .SYNOPSIS
+        Top-level self-refresh check for Pull-SDLC.ai.ps1. If an upstream
+        update is available and successfully applied, re-execs the script
+        with the supplied bound parameters and never returns.
+    .DESCRIPTION
+        Must be called from the script's top level (NOT from inside
+        Invoke-PullSDLC). The `$BoundParameters` argument must be the
+        script's outer `$PSBoundParameters` so every key is, by
+        definition, bindable to the freshly-downloaded script on re-exec.
+
+        See issue #110: invoking this from inside Invoke-PullSDLC caused
+        function-only parameters such as `RemoteUrl` to leak into the
+        splat, breaking re-exec on the outer script (which has no
+        `RemoteUrl` parameter).
+    .OUTPUTS
+        [bool] $true if a re-exec was attempted (in production this path
+        never returns; mocks may return synchronously). $false if no
+        update was needed or the refresh failed.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ScriptPath,
+        [hashtable]$BoundParameters = @{},
+        [switch]$NoSelfUpdate
+    )
+    if (Test-SelfRefreshRequired -ScriptPath $ScriptPath -NoSelfUpdate:$NoSelfUpdate) {
+        if (Invoke-SelfRefresh -ScriptPath $ScriptPath) {
+            Invoke-SelfReExec -ScriptPath $ScriptPath -BoundParameters $BoundParameters
+            return $true
+        }
+    }
+    return $false
+}
+
 function Invoke-PullSDLC {
     <#
     .SYNOPSIS
@@ -710,13 +746,6 @@ function Invoke-PullSDLC {
         [switch]$NoAutoPR,
         [switch]$NoSelfUpdate
     )
-
-    if (Test-SelfRefreshRequired -ScriptPath $PSCommandPath -NoSelfUpdate:$NoSelfUpdate) {
-        if (Invoke-SelfRefresh -ScriptPath $PSCommandPath) {
-            Invoke-SelfReExec -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters
-            return
-        }
-    }
 
     if (-not $RepoRoot) {
         $RepoRoot = (git rev-parse --show-toplevel).Trim()
@@ -908,6 +937,13 @@ function Invoke-PullSDLC {
 
 # Skip the rest of the script when dot-sourced (e.g. by tests).
 if ($MyInvocation.InvocationName -eq '.') { return }
+
+# Self-refresh check at script top level (issue #110). `$PSBoundParameters`
+# here is the script's outer bound params, so every key is guaranteed to be
+# bindable to the freshly-downloaded script on re-exec.
+if (Invoke-SelfRefreshGate -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters -NoSelfUpdate:$NoSelfUpdate) {
+    exit $LASTEXITCODE
+}
 
 $exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
     -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch `

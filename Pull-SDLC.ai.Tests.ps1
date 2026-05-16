@@ -814,27 +814,86 @@ Describe 'Invoke-PullSDLC self-refresh wiring' {
         $script:fixtureRoot = Join-Path $TestDrive ("sr-" + [guid]::NewGuid().ToString('N'))
     }
 
-    It 'does not call Invoke-SelfRefresh when -NoSelfUpdate is passed' {
-        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
-            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
-        Mock -CommandName Invoke-SelfRefresh -MockWith { return $false }
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoSelfUpdate
-        $rc | Should -Be 0
-        Should -Invoke -CommandName Invoke-SelfRefresh -Times 0 -Exactly
-    }
-
-    It 're-execs via Invoke-SelfReExec when Invoke-SelfRefresh signals update' {
+    It 'Invoke-PullSDLC no longer performs self-refresh internally (moved to script top level)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
         Mock -CommandName Invoke-SelfRefresh -MockWith { return $true }
-        $script:reExecCalled = 0
+        Mock -CommandName Invoke-SelfReExec -MockWith { return 0 }
+        # Even when self-refresh would say "go", Invoke-PullSDLC must not
+        # invoke the gate -- it is the script's top-level responsibility now.
+        Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch | Out-Null
+        Should -Invoke -CommandName Test-SelfRefreshRequired -Times 0 -Exactly
+        Should -Invoke -CommandName Invoke-SelfRefresh -Times 0 -Exactly
+        Should -Invoke -CommandName Invoke-SelfReExec -Times 0 -Exactly
+    }
+}
+
+Describe 'Invoke-SelfRefreshGate (issue #110)' {
+    It 'short-circuits when Test-SelfRefreshRequired returns $false' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $false }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
+        Mock -CommandName Invoke-SelfReExec    -MockWith { return 0 }
+        $result = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters @{}
+        $result | Should -BeFalse
+        Should -Invoke -CommandName Invoke-SelfRefresh -Times 0 -Exactly
+        Should -Invoke -CommandName Invoke-SelfReExec  -Times 0 -Exactly
+    }
+
+    It 'short-circuits when Invoke-SelfRefresh returns $false (hashes match / fetch failed)' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $false }
+        Mock -CommandName Invoke-SelfReExec    -MockWith { return 0 }
+        $result = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters @{}
+        $result | Should -BeFalse
+        Should -Invoke -CommandName Invoke-SelfReExec -Times 0 -Exactly
+    }
+
+    It 're-execs via Invoke-SelfReExec when an update was applied' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
+        $script:reExecCount = 0
         Mock -CommandName Invoke-SelfReExec -MockWith {
-            $script:reExecCalled++
+            $script:reExecCount++
             return 0
         }
-        Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch | Out-Null
-        $script:reExecCalled | Should -Be 1
+        $null = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters @{ Branch = 'main' }
+        $script:reExecCount | Should -Be 1
+    }
+
+    It 'forwards exactly the supplied BoundParameters to Invoke-SelfReExec (regression for #110)' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
+        $script:capturedBound = $null
+        $script:capturedScriptPath = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters)
+            $script:capturedScriptPath = $ScriptPath
+            $script:capturedBound = $BoundParameters
+        }
+        $inputBound = @{ Branch = 'main'; RemoteName = 'sdlc.ai'; NoAutoPR = $true }
+        $null = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters $inputBound
+        $script:capturedScriptPath | Should -Be 'C:\fake\Pull-SDLC.ai.ps1'
+        # Captured keys must match input exactly -- no function-only leak (e.g. RemoteUrl).
+        ($script:capturedBound.Keys | Sort-Object) -join ',' | Should -Be (($inputBound.Keys | Sort-Object) -join ',')
+        $script:capturedBound.Keys | Should -Not -Contain 'RemoteUrl'
+    }
+}
+
+Describe 'Script top-level self-refresh (issue #110 end-to-end)' {
+    It 'the script has no RemoteUrl parameter, so re-exec with script PSBoundParameters cannot leak it' {
+        # The bug fired because Invoke-PullSDLC's $PSBoundParameters
+        # contained 'RemoteUrl' (a function-only param). Moving the
+        # gate to script top level means $PSBoundParameters there is
+        # bounded by the script's own param block, which by assertion
+        # does not declare RemoteUrl.
+        $scriptCmd = Get-Command "$PSScriptRoot\Pull-SDLC.ai.ps1"
+        $scriptCmd.Parameters.Keys | Should -Not -Contain 'RemoteUrl'
+        $scriptCmd.Parameters.Keys | Should -Not -Contain 'RepoRoot'
+        $scriptCmd.Parameters.Keys | Should -Not -Contain 'NoFetch'
+        # Sanity: outer params we expect are present.
+        $scriptCmd.Parameters.Keys | Should -Contain 'Branch'
+        $scriptCmd.Parameters.Keys | Should -Contain 'NoSelfUpdate'
     }
 }
 
