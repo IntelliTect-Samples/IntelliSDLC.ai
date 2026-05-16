@@ -58,51 +58,9 @@ Describe 'Test-IsAlwaysLocalPath' {
     }
 }
 
-Describe 'Resolve-AlwaysLocalConflicts' {
-    It 'returns README.md and .gitignore from UU lines, ignoring other paths' {
-        $porcelain = @(
-            'UU README.md',
-            'UU .gitignore',
-            'UU src/Other.cs'
-        )
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
-        $result.Count | Should -Be 2
-        $result | Should -Contain 'README.md'
-        $result | Should -Contain '.gitignore'
-        $result | Should -Not -Contain 'src/Other.cs'
-    }
-
-    It 'returns an empty array on empty input' {
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain @())
-        $result.Count | Should -Be 0
-    }
-
-    It 'ignores non-conflict porcelain lines' {
-        $porcelain = @(
-            ' M README.md',
-            '?? .gitignore',
-            'A  README.md'
-        )
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
-        $result.Count | Should -Be 0
-    }
-
-    It 'also matches AA (both added) for always-local paths' {
-        $porcelain = @('AA README.md')
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
-        $result | Should -Contain 'README.md'
-    }
-
-    It 'also matches DD (both deleted) for always-local paths' {
-        $porcelain = @('DD .gitignore')
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
-        $result | Should -Contain '.gitignore'
-    }
-
-    It 'does not return non-always-local paths even when conflicted' {
-        $porcelain = @('UU CLAUDE.md', 'UU run.ps1')
-        $result = @(Resolve-AlwaysLocalConflicts -Porcelain $porcelain)
-        $result.Count | Should -Be 0
+Describe 'Resolve-AlwaysLocalConflicts (removed)' {
+    It 'is no longer exported (subsumed by always-local op filter in diff-replay)' {
+        Get-Command Resolve-AlwaysLocalConflicts -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
     }
 }
 
@@ -205,224 +163,318 @@ Describe 'Pull-SDLC.ai.ps1 end-to-end (regression for #26)' {
     }
 }
 
-Describe 'Get-SyncManifestPaths' {
-    It 'returns empty arrays on null input' {
-        $r = Get-SyncManifestPaths -Json $null
-        $r.Paths.Count | Should -Be 0
-        $r.ConsumerOwned.Count | Should -Be 0
-    }
+# --- New tests for diff-replay functionality (issue #298) ---
 
-    It 'returns empty arrays on empty/whitespace input' {
-        (Get-SyncManifestPaths -Json '').Paths.Count | Should -Be 0
-        (Get-SyncManifestPaths -Json "   `n  ").Paths.Count | Should -Be 0
-    }
+function global:New-DiffReplayFixture {
+    <#
+    .SYNOPSIS
+        Builds a self-contained upstream + consumer git layout in $Root.
+        - $Root\upstream is a normal repo seeded with managed paths.
+        - $Root\consumer is a separate repo with $RemoteName -> upstream.
+        Returns @{ Upstream; Consumer; AnchorSha; UpstreamHead }.
+    .DESCRIPTION
+        $Seed builds the anchor commit. $Tweak (optional) runs after the
+        anchor commit and before the final commit; use it to stage adds,
+        modifies, renames, deletes for the next upstream commit.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][scriptblock]$Seed,
+        [scriptblock]$Tweak,
+        [string]$RemoteName = 'sdlc.ai'
+    )
+    $upstream = Join-Path $Root 'upstream'
+    $consumer = Join-Path $Root 'consumer'
+    New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+    New-Item -ItemType Directory -Path $consumer -Force | Out-Null
 
-    It 'returns empty arrays on invalid JSON (with warning)' {
-        $r = Get-SyncManifestPaths -Json '{ not valid' -WarningAction SilentlyContinue
-        $r.Paths.Count | Should -Be 0
-    }
+    Push-Location $upstream
+    try {
+        git init -q -b main
+        git config user.email u@u.u
+        git config user.name u
+        & $Seed
+        git add -A | Out-Null
+        git commit -q -m "anchor"
+        $anchorSha = (git rev-parse HEAD).Trim()
+        if ($Tweak) {
+            & $Tweak
+            git add -A | Out-Null
+            git commit -q -m "upstream change"
+        }
+        $upstreamHead = (git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
 
-    It 'parses paths and consumer_owned arrays' {
-        $json = @'
-{
-  "paths": ["CLAUDE.md", ".github/agents/*.agent.md"],
-  "consumer_owned": ["README.md", "CLAUDE.project.md"]
-}
-'@
-        $r = Get-SyncManifestPaths -Json $json
-        $r.Paths.Count | Should -Be 2
-        $r.Paths | Should -Contain 'CLAUDE.md'
-        $r.Paths | Should -Contain '.github/agents/*.agent.md'
-        $r.ConsumerOwned | Should -Contain 'README.md'
-        $r.ConsumerOwned | Should -Contain 'CLAUDE.project.md'
-    }
+    Push-Location $consumer
+    try {
+        git init -q -b main
+        git config user.email c@c.c
+        git config user.name c
+        # Seed the consumer with the upstream anchor contents so HEAD blobs match anchor.
+        & $Seed
+        # Ensure README.md / .gitignore exist as consumer-owned baseline.
+        if (-not (Test-Path README.md)) { 'consumer readme' | Out-File -Encoding utf8 README.md -NoNewline }
+        if (-not (Test-Path .gitignore)) { '*.local' | Out-File -Encoding utf8 .gitignore -NoNewline }
+        git add -A | Out-Null
+        git commit -q -m "seed"
+        git remote add $RemoteName $upstream
+        git fetch $RemoteName --quiet 2>$null | Out-Null
+    } finally { Pop-Location }
 
-    It 'tolerates missing consumer_owned key' {
-        $r = Get-SyncManifestPaths -Json '{ "paths": ["CLAUDE.md"] }'
-        $r.Paths.Count | Should -Be 1
-        $r.ConsumerOwned.Count | Should -Be 0
-    }
-
-    It 'filters out null/whitespace path entries' {
-        $r = Get-SyncManifestPaths -Json '{ "paths": ["CLAUDE.md", "", "   ", null, ".gitignore"] }'
-        $r.Paths.Count | Should -Be 2
-    }
-}
-
-Describe 'Convert-GlobToRegex' {
-    It 'matches a literal path exactly' {
-        $rx = [regex]::new((Convert-GlobToRegex -Glob 'CLAUDE.md'))
-        $rx.IsMatch('CLAUDE.md')  | Should -BeTrue
-        $rx.IsMatch('CLAUDExmd')  | Should -BeFalse
-        $rx.IsMatch('sub/CLAUDE.md') | Should -BeFalse
-    }
-
-    It 'single * does not cross /' {
-        $rx = [regex]::new((Convert-GlobToRegex -Glob '.github/agents/*.agent.md'))
-        $rx.IsMatch('.github/agents/dev-loop.agent.md') | Should -BeTrue
-        $rx.IsMatch('.github/agents/nested/dev-loop.agent.md') | Should -BeFalse
-        $rx.IsMatch('.github/agents/dev-loop.md') | Should -BeFalse
-    }
-
-    It '** matches across path segments' {
-        $rx = [regex]::new((Convert-GlobToRegex -Glob '.github/skills/foo/**'))
-        $rx.IsMatch('.github/skills/foo/SKILL.md') | Should -BeTrue
-        $rx.IsMatch('.github/skills/foo/helpers/Bar.ps1') | Should -BeTrue
-        $rx.IsMatch('.github/skills/foo/helpers/sub/Bar.ps1') | Should -BeTrue
-        $rx.IsMatch('.github/skills/bar/SKILL.md') | Should -BeFalse
-    }
-
-    It 'escapes regex metacharacters in literal segments' {
-        $rx = [regex]::new((Convert-GlobToRegex -Glob 'docs/file.name+ext.md'))
-        $rx.IsMatch('docs/file.name+ext.md') | Should -BeTrue
-        $rx.IsMatch('docs/fileXnameXextXmd') | Should -BeFalse
+    return @{
+        Upstream     = $upstream
+        Consumer     = $consumer
+        AnchorSha    = $anchorSha
+        UpstreamHead = $upstreamHead
     }
 }
 
-Describe 'Expand-SyncPaths' {
-    BeforeAll {
-        $script:tree = @(
-            'CLAUDE.md',
-            '.github/copilot-instructions.md',
-            '.github/agents/dev-loop.agent.md',
-            '.github/agents/plan.agent.md',
-            '.github/agents/tests/some-test.Tests.ps1',
-            '.github/skills/foo/SKILL.md',
-            '.github/skills/foo/helpers/Helper.ps1',
-            'templates/api-wrapper-scaffold/scripts/generate-wrapper.js',
-            'docs/dogfood/report.md'
-        )
-    }
+Describe 'Get-UpstreamOps' {
 
-    It 'returns an empty array when nothing matches' {
-        $r = @(Expand-SyncPaths -Patterns @('does/not/exist.md') -TreeListing $script:tree)
-        $r.Count | Should -Be 0
-    }
-
-    It 'returns literal paths only when present in tree' {
-        $r = @(Expand-SyncPaths -Patterns @('CLAUDE.md', 'NONEXISTENT.md') -TreeListing $script:tree)
-        $r.Count | Should -Be 1
-        $r | Should -Contain 'CLAUDE.md'
-    }
-
-    It 'expands a single-segment glob' {
-        $r = @(Expand-SyncPaths -Patterns @('.github/agents/*.agent.md') -TreeListing $script:tree)
-        $r.Count | Should -Be 2
-        $r | Should -Contain '.github/agents/dev-loop.agent.md'
-        $r | Should -Contain '.github/agents/plan.agent.md'
-        $r | Should -Not -Contain '.github/agents/tests/some-test.Tests.ps1'
-    }
-
-    It 'expands a ** glob into a full subtree' {
-        $r = @(Expand-SyncPaths -Patterns @('.github/skills/foo/**') -TreeListing $script:tree)
-        $r.Count | Should -Be 2
-        $r | Should -Contain '.github/skills/foo/SKILL.md'
-        $r | Should -Contain '.github/skills/foo/helpers/Helper.ps1'
-    }
-
-    It 'leaves upstream-only paths absent when not in the manifest' {
-        # This is the key regression assertion for upstream issue #82: junk
-        # outside the manifest must stay unselected.
-        $r = @(Expand-SyncPaths -Patterns @(
-            'CLAUDE.md',
-            '.github/agents/*.agent.md',
-            '.github/skills/foo/**'
-        ) -TreeListing $script:tree)
-        $r | Should -Not -Contain 'templates/api-wrapper-scaffold/scripts/generate-wrapper.js'
-        $r | Should -Not -Contain 'docs/dogfood/report.md'
-        $r | Should -Not -Contain '.github/agents/tests/some-test.Tests.ps1'
-    }
-
-    It 'de-duplicates paths matched by multiple patterns' {
-        $r = @(Expand-SyncPaths -Patterns @('CLAUDE.md', 'CLAUDE.md', '**/CLAUDE.md') -TreeListing $script:tree)
-        $r.Count | Should -Be 1
-    }
-}
-
-Describe 'Selective-mode integration: only manifest paths are pulled (#82)' {
     BeforeEach {
-        # Create an isolated upstream + consumer pair.
-        $script:root = Join-Path ([System.IO.Path]::GetTempPath()) ("sel-" + [guid]::NewGuid().ToString('N'))
-        $script:upstream = Join-Path $script:root 'upstream'
-        $script:consumer = Join-Path $script:root 'consumer'
-        New-Item -ItemType Directory -Path $script:upstream | Out-Null
-        New-Item -ItemType Directory -Path $script:consumer | Out-Null
+        $script:fixtureRoot = Join-Path $TestDrive ("fx-" + [guid]::NewGuid().ToString('N'))
+    }
 
-        # --- Build upstream repo with manifest + good and junk files. ---
-        Push-Location $script:upstream
-        git init -q -b main
-        git config user.email 't@t.t'; git config user.name 't'
+    It 'returns an A row for a newly added file under a managed path' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline } `
+            -Tweak { 'two' | Out-File -Encoding utf8 .github/agents/b.md -NoNewline }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Op -eq 'A' -and $_.Path -eq '.github/agents/b.md' }) | Should -Not -BeNullOrEmpty
+    }
 
-        Set-Content -Path CLAUDE.md -Value 'UPSTREAM_CLAUDE'
-        New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
-        Set-Content -Path .github/agents/dev-loop.agent.md -Value 'UPSTREAM_DEVLOOP'
-        New-Item -ItemType Directory -Path templates/junk -Force | Out-Null
-        Set-Content -Path templates/junk/generated.js -Value 'UPSTREAM_JUNK_GENERATED'
-        New-Item -ItemType Directory -Path docs -Force | Out-Null
-        Set-Content -Path docs/dogfood-report.md -Value 'UPSTREAM_DOGFOOD'
+    It 'returns a D row when upstream deletes a managed file' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline } `
+            -Tweak { Remove-Item .github/agents/a.md }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Op -eq 'D' -and $_.Path -eq '.github/agents/a.md' }) | Should -Not -BeNullOrEmpty
+    }
 
-        $manifest = @'
-{
-  "paths": ["CLAUDE.md", ".github/agents/*.agent.md"],
-  "consumer_owned": ["README.md"]
+    It 'returns an M row when upstream modifies a managed file' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'v1' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'v2 with more content to avoid break detection threshold' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Op -eq 'M' -and $_.Path -eq 'CLAUDE.md' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'returns an R row for an upstream rename' {
+        $body = ("aaaaaaaa`nbbbbbbbb`ncccccccc`ndddddddd`neeeeeeee`n" * 4)
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; $body | Out-File -Encoding utf8 .github/agents/old.md -NoNewline } `
+            -Tweak { git mv .github/agents/old.md .github/agents/new.md }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        $r = $ops | Where-Object { $_.Op -eq 'R' }
+        $r | Should -Not -BeNullOrEmpty
+        $r.OldPath | Should -Be '.github/agents/old.md'
+        $r.Path    | Should -Be '.github/agents/new.md'
+    }
+
+    It 'returns every managed file when called with empty anchor (bootstrap)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'x' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'y' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                'z' | Out-File -Encoding utf8 .github/agents/b.md -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor '' -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        $paths = $ops | ForEach-Object { $_.Path } | Sort-Object
+        $paths | Should -Contain 'CLAUDE.md'
+        $paths | Should -Contain '.github/agents/a.md'
+        $paths | Should -Contain '.github/agents/b.md'
+        ($ops | Where-Object { $_.Op -ne 'A' }) | Should -BeNullOrEmpty
+    }
+
+    It 'filters out always-local paths even when upstream changed them' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'orig readme' | Out-File -Encoding utf8 README.md -NoNewline } `
+            -Tweak { 'upstream readme override' | Out-File -Encoding utf8 README.md -NoNewline }
+        # Include README.md explicitly in managed paths to simulate the worst case.
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('README.md') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq 'README.md' }) | Should -BeNullOrEmpty
+    }
+
+    It 'filters out .github/instructions/project.instructions.md (always-local under managed prefix)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/instructions -Force | Out-Null
+                'should not sync' | Out-File -Encoding utf8 .github/instructions/project.instructions.md -NoNewline
+            } `
+            -Tweak { 'changed upstream' | Out-File -Encoding utf8 .github/instructions/project.instructions.md -NoNewline }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -match 'project\.instructions\.md' }) | Should -BeNullOrEmpty
+    }
 }
-'@
-        Set-Content -Path sync-manifest.json -Value $manifest
-        Copy-Item (Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1') .
-        git add . | Out-Null
-        git commit -q -m 'upstream initial'
-        Pop-Location
 
-        # --- Build consumer repo. ---
-        Push-Location $script:consumer
-        git init -q -b main
-        git config user.email 't@t.t'; git config user.name 't'
-        git remote add origin 'https://github.com/SomeOrg/SomeProject.git'
-        Set-Content -Path README.md -Value 'CONSUMER_README'
-        Set-Content -Path CLAUDE.md -Value 'CONSUMER_OLD_CLAUDE'
-        git add . | Out-Null
-        git commit -q -m 'consumer initial'
-        Copy-Item (Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1') .
-        Pop-Location
+Describe 'Invoke-UpstreamOp' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("op-" + [guid]::NewGuid().ToString('N'))
     }
 
-    AfterEach {
-        Pop-Location -ErrorAction SilentlyContinue
-        Remove-Item -Recurse -Force -LiteralPath $script:root -ErrorAction SilentlyContinue
-    }
-
-    It 'pulls only manifest paths and does not leak upstream junk' {
-        Push-Location $script:consumer
+    It 'A op writes the upstream blob byte-for-byte' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'baseline' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; "hello`nworld`n" | Out-File -Encoding utf8 .github/agents/new.md -NoNewline }
+        Invoke-UpstreamOp -Op @{ Op = 'A'; Path = '.github/agents/new.md'; OldPath = $null } -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        Push-Location $fx.Consumer
         try {
-            $upstreamUrl = $script:upstream -replace '\\','/'
-            # Pre-wire the remote so the script's `git remote add` short-circuits.
-            git remote add sdlc.ai $upstreamUrl 2>$null | Out-Null
+            $local = (git hash-object -- .github/agents/new.md).Trim()
+            $upstream = (git rev-parse "sdlc.ai/main:.github/agents/new.md").Trim()
+            $local | Should -Be $upstream
+        } finally { Pop-Location }
+    }
 
-            $stdout = Join-Path $script:consumer 'out.txt'
-            $stderr = Join-Path $script:consumer 'err.txt'
-            $proc = Start-Process pwsh -ArgumentList '-NoProfile','-NonInteractive','-File',
-                (Join-Path $script:consumer 'Pull-SDLC.ai.ps1') `
-                -WorkingDirectory $script:consumer -Wait -PassThru -WindowStyle Hidden `
-                -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            $combined = (Get-Content $stdout -Raw -ErrorAction SilentlyContinue) + (Get-Content $stderr -Raw -ErrorAction SilentlyContinue)
-            $combined | Should -Match 'Selective sync mode'
+    It 'D op removes the local file' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'x' | Out-File -Encoding utf8 .github/agents/old.md -NoNewline }
+        Test-Path (Join-Path $fx.Consumer '.github/agents/old.md') | Should -BeTrue
+        Invoke-UpstreamOp -Op @{ Op = 'D'; Path = '.github/agents/old.md'; OldPath = $null } -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        Test-Path (Join-Path $fx.Consumer '.github/agents/old.md') | Should -BeFalse
+    }
 
-            # CLAUDE.md and the agent file should be staged with upstream content.
-            $staged = @(git diff --name-only --cached)
-            $staged | Should -Contain 'CLAUDE.md'
-            $staged | Should -Contain '.github/agents/dev-loop.agent.md'
+    It 'R op deletes the old path and writes the new one' {
+        $body = ("aaaaaaaa`nbbbbbbbb`ncccccccc`ndddddddd`neeeeeeee`n" * 4)
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; $body | Out-File -Encoding utf8 .github/agents/old.md -NoNewline } `
+            -Tweak { git mv .github/agents/old.md .github/agents/new.md }
+        Invoke-UpstreamOp -Op @{ Op = 'R'; Path = '.github/agents/new.md'; OldPath = '.github/agents/old.md' } -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        Test-Path (Join-Path $fx.Consumer '.github/agents/old.md') | Should -BeFalse
+        Test-Path (Join-Path $fx.Consumer '.github/agents/new.md') | Should -BeTrue
+    }
+}
 
-            # Junk paths must NOT have been staged or written to working tree.
-            Test-Path (Join-Path $script:consumer 'templates/junk/generated.js') | Should -BeFalse
-            Test-Path (Join-Path $script:consumer 'docs/dogfood-report.md')     | Should -BeFalse
-            $staged | Should -Not -Contain 'templates/junk/generated.js'
-            $staged | Should -Not -Contain 'docs/dogfood-report.md'
+Describe 'Invoke-PullSDLC end-to-end' {
 
-            # README.md (consumer_owned) must be untouched.
-            (Get-Content (Join-Path $script:consumer 'README.md') -Raw).Trim() | Should -Be 'CONSUMER_README'
-        }
-        finally {
-            Pop-Location
-        }
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("e2e-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'bootstraps when no anchor is present and writes the state file + sync commit' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            }
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        Test-Path (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeTrue
+        $state = Get-Content (Join-Path $fx.Consumer '.sdlc-ai-sync.json') -Raw | ConvertFrom-Json
+        $state.lastSyncCommit | Should -Be $fx.UpstreamHead
+        Push-Location $fx.Consumer
+        try {
+            (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to'
+        } finally { Pop-Location }
+    }
+
+    It 'D row deletes the file and a rerun is a no-op' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'will be deleted' | Out-File -Encoding utf8 .github/agents/zap.md -NoNewline } `
+            -Tweak { Remove-Item .github/agents/zap.md }
+        # Seed the state file with the anchor so we don't bootstrap.
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        Test-Path (Join-Path $fx.Consumer '.github/agents/zap.md') | Should -BeFalse
+
+        # Rerun -- no ops, no new sync commit (state already current).
+        $beforeSha = $null
+        Push-Location $fx.Consumer
+        try { $beforeSha = (git rev-parse HEAD).Trim() } finally { Pop-Location }
+        $rc2 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc2 | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            $afterSha = (git rev-parse HEAD).Trim()
+            # Allow a state-file refresh commit (syncedAt timestamp changes) but
+            # never a content commit.
+            $changed = git diff --name-only "$beforeSha..HEAD"
+            $changed | Where-Object { $_ -ne '.sdlc-ai-sync.json' } | Should -BeNullOrEmpty
+        } finally { Pop-Location }
+    }
+
+    It 'pre-flight guard aborts when an upstream-managed file has local drift' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'anchor body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'upstream new body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Consumer locally edits the managed file -- policy violation.
+        'consumer override' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'CLAUDE.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add CLAUDE.md; git commit -q -m 'local edit to managed file' } finally { Pop-Location }
+        # Set anchor.
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 2
+        # CLAUDE.md should NOT have been overwritten.
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'consumer override'
+    }
+
+    It '-Force bypasses the pre-flight guard and overwrites' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'anchor body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'upstream new body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'consumer override' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'CLAUDE.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add CLAUDE.md; git commit -q -m 'local edit to managed file' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -Force
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'upstream new body'
+    }
+
+    It '-WhatIf prints ops but leaves the working tree untouched' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline } `
+            -Tweak {
+                'TWO' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                'three' | Out-File -Encoding utf8 .github/agents/b.md -NoNewline
+            }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $beforeA = (Get-Content (Join-Path $fx.Consumer '.github/agents/a.md') -Raw)
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer '.github/agents/a.md') -Raw) | Should -Be $beforeA
+        Test-Path (Join-Path $fx.Consumer '.github/agents/b.md') | Should -BeFalse
+    }
+
+    It 'README.md is immune to upstream changes' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'consumer-baseline' | Out-File -Encoding utf8 README.md -NoNewline
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            } `
+            -Tweak {
+                'UPSTREAM README OVERRIDE' | Out-File -Encoding utf8 README.md -NoNewline
+                'new claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+        # Make consumer README differ from upstream anchor by re-writing post-seed:
+        'consumer-only readme content' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'README.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add README.md; git commit -q -m 'consumer readme' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'README.md') -Raw) | Should -Be 'consumer-only readme content'
+        # CLAUDE.md did get updated.
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'new claude'
     }
 }
