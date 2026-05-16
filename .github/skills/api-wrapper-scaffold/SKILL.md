@@ -41,7 +41,12 @@ Do not invoke for:
 1. Confirmed the target URL with the user.
 2. Confirmed a project name + .NET namespace + output directory.
 3. Confirmed the auth model (or accepted "let the detector decide").
-4. Created a GitHub issue (or referenced an existing one) that describes
+4. **Asked the user whether the target service has a mobile app to include**
+   (Phase 1.5). The agent must ask -- the user may still answer no.
+5. **Asked the user whether to seed the project with the IntelliSDLC.ai
+   instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
+   must ask -- the user may still answer no.
+6. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
 
 ## Inputs (asked one at a time)
@@ -53,7 +58,7 @@ Do not invoke for:
 | 3 | Output directory | `D:\Git\{{ProjectName}}` on Windows, `~/git/{{ProjectName}}` elsewhere | -- | Must not already exist. |
 | 4 | Auth model | autodetect | `{{AuthModel}}` | One of: `cookie`, `cookie+csrf`, `bearer`, `sso-google`, `sso-microsoft`, `sso-facebook`, `oauth2-pkce`, `autodetect`. |
 | 5 | OAuth client_id / client_secret | none | -- | Only asked when (4) is `oauth2-pkce`. Stored in user-secrets, never on disk in plaintext. |
-| 6 | Seed IntelliSDLC.ai? | yes | -- | If yes, run `Pull-SDLC.ai.ps1` after scaffold. |
+| 6 | Seed IntelliSDLC.ai? | yes | -- | If yes, the agent runs `git init` and pulls upstream instructions (Phases 10.5 + 11). |
 | 7 | Pre-captured Playwright `storageState.json`? | none | -- | When present, the capture phase skips interactive login and replays the storage state. Required for non-interactive dogfood runs. |
 | -- | .NET root namespace | `{{ProjectName}}` | `{{Namespace}}` | Asked only when the user wants to override the default. |
 | -- | IdP friendly name | derived from `{{AuthModel}}` | `{{IdpName}}` | `Google` / `Microsoft` / `Facebook` -- substituted into the generated README's re-auth section. |
@@ -75,20 +80,24 @@ generated.
   `login.microsoftonline.com`, `facebook.com/v*/dialog/oauth`) for the
   auth-style heuristic.
 
-### Phase 1.5 -- Mobile App Discovery (optional)
+### Phase 1.5 -- Mobile App Discovery (required prompt)
 
 Many target services have a mobile app whose backend API differs from --
 or is a superset of -- the website's API. Mobile-app endpoints frequently
 expose richer data, internal APIs not visible on the web, and different
 auth shapes. Including mobile traffic produces a more complete wrapper.
 
-This phase is **opt-in**. After Phase 1 completes, ask the user exactly:
+The agent **must** prompt for this phase on every run. The developer may
+answer N, but skipping the prompt silently is a hard regression -- the
+choice to exclude mobile coverage has to be an informed one. After
+Phase 1 completes, ask the user exactly:
 
 > Does the target service have a mobile app (iOS or Android)? Including it
 > can reveal additional API surface. [y/N]
 
-If the answer is `N` (default), skip this phase and continue with Phase 2
-(web-only). On `y`, collect three follow-up inputs:
+If the answer is `N` (default), record the decision in the run transcript
+and continue with Phase 2 (web-only). On `y`, collect three follow-up
+inputs:
 
 | Input | Values | Notes |
 |---|---|---|
@@ -325,12 +334,41 @@ Per-endpoint recipe section in the project README:
 - NuGet packaging notes (Description, Authors, RepositoryUrl,
   PackageLicenseExpression, version-from-git already filled in).
 
-### Phase 11 -- IntelliSDLC.ai Seed (optional)
+### Phase 10.5 -- Initialize git repository
 
-If the user opted in (input 6), `cd` into the new project and run
-`Pull-SDLC.ai.ps1`. Confirm the `CLAUDE.project.md` and
-`project.instructions.md` template files were materialized; populate
-their identity sections from the project name + namespace.
+Before Phase 11 runs, the agent **must** initialize the generated project
+as a git repository:
+
+```pwsh
+cd <output-dir>
+git init -b main
+git add -A
+git commit -m "chore: initial scaffold from api-wrapper-scaffold skill"
+```
+
+The initial commit is what `Pull-SDLC.ai.ps1` merges into during Phase 11,
+so this step is mandatory whether or not the developer opts into the SDLC
+pull. Skipping `git init` leaves the project in a fragile, unversioned
+state and forces a manual remediation step on the developer.
+
+### Phase 11 -- IntelliSDLC.ai Seed (required prompt; user may decline)
+
+Immediately after Phase 10.5 (`git init`), the agent **must** prompt:
+
+> Pull the IntelliSDLC.ai shared instructions, skills, and agents into
+> this project and add an `sdlc.ai` git remote? [Y/n]
+
+Default is `Y`. On `Y`, run `Pull-SDLC.ai.ps1` from the project root --
+this adds a remote called `sdlc.ai` pointing at
+`https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git`, merges the
+upstream `main` into the project's initial commit (using
+`--allow-unrelated-histories` on first sync), and materializes
+`CLAUDE.project.md` and `project.instructions.md` from their templates.
+Populate the identity sections of both files from the project name and
+namespace.
+
+On `n`, print the manual-run hint (`git clone ... ; Pull-SDLC.ai.ps1`)
+so the developer can opt in later without re-running the agent.
 
 ## Output
 
