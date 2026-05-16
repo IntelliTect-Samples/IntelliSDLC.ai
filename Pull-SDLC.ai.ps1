@@ -92,7 +92,11 @@ $script:UpstreamManagedPaths = @(
     '.github/copilot-instructions.md',
     '.github/agents/',
     '.github/skills/',
-    '.github/instructions/'
+    '.github/instructions/',
+    'Pull-SDLC.ai.ps1',
+    'Pull-SDLC.ai.Tests.ps1',
+    'Cleanup-Worktree.ps1',
+    'sync-manifest.json'
 )
 
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths

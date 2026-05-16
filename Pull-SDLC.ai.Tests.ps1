@@ -64,6 +64,36 @@ Describe 'Resolve-AlwaysLocalConflicts (removed)' {
     }
 }
 
+Describe 'Test-IsUpstreamManagedPath -- self-managing sync tooling (#112)' {
+    It 'returns $true for Pull-SDLC.ai.ps1' {
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.ps1' | Should -BeTrue
+    }
+
+    It 'returns $true for Pull-SDLC.ai.Tests.ps1' {
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'returns $true for Cleanup-Worktree.ps1' {
+        Test-IsUpstreamManagedPath -Path 'Cleanup-Worktree.ps1' | Should -BeTrue
+    }
+
+    It 'returns $true for sync-manifest.json' {
+        Test-IsUpstreamManagedPath -Path 'sync-manifest.json' | Should -BeTrue
+    }
+
+    It 'returns $true for CLAUDE.md (existing baseline preserved)' {
+        Test-IsUpstreamManagedPath -Path 'CLAUDE.md' | Should -BeTrue
+    }
+
+    It 'still returns $false for always-local README.md (always-local trumps managed)' {
+        Test-IsUpstreamManagedPath -Path 'README.md' | Should -BeFalse
+    }
+
+    It 'returns $false for an unrelated repo file' {
+        Test-IsUpstreamManagedPath -Path 'src/Foo.cs' | Should -BeFalse
+    }
+}
+
 Describe 'Invoke-TemplateScaffold' {
     BeforeEach {
         $script:src = Join-Path $TestDrive 'src'
