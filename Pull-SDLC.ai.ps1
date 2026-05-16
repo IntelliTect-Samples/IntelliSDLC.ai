@@ -53,6 +53,12 @@
 .PARAMETER NoAutoPR
     During auto-worktree mode, commit + push but do NOT open a pull request.
     Useful in CI or when gh is misconfigured.
+
+.PARAMETER NoSelfUpdate
+    Skip the start-of-run self-refresh check that pulls the latest
+    Pull-SDLC.ai.ps1 from upstream raw.githubusercontent.com. Also honored
+    via the PULL_SDLC_NO_SELF_UPDATE environment variable. The re-exec path
+    always passes this flag to prevent an infinite refresh loop.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -63,7 +69,8 @@ param(
     [switch]$NoPrompt,
     [switch]$AllowDefaultBranch,
     [switch]$NoAutoWorktree,
-    [switch]$NoAutoPR
+    [switch]$NoAutoPR,
+    [switch]$NoSelfUpdate
 )
 
 Set-StrictMode -Version Latest
@@ -581,6 +588,104 @@ function Invoke-AutoWorktreeSync {
     finally { Pop-Location }
 }
 
+function Test-SelfRefreshRequired {
+    <#
+    .SYNOPSIS
+        Decides whether Invoke-PullSDLC should attempt a network self-refresh
+        of Pull-SDLC.ai.ps1 from upstream raw.githubusercontent.com.
+    .DESCRIPTION
+        Skips the refresh when any opt-out applies: -NoSelfUpdate parameter,
+        $env:PULL_SDLC_NO_SELF_UPDATE, missing/empty ScriptPath, ScriptPath
+        leaf is not 'Pull-SDLC.ai.ps1', running from inside .worktrees/sdlc-sync,
+        or running from the upstream IntelliSDLC.ai repo itself (so upstream
+        developers and tests don't have their working copy clobbered).
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][AllowNull()][string]$ScriptPath,
+        [switch]$NoSelfUpdate
+    )
+    if ($NoSelfUpdate) { return $false }
+    if ($env:PULL_SDLC_NO_SELF_UPDATE) { return $false }
+    if ([string]::IsNullOrWhiteSpace($ScriptPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $ScriptPath)) { return $false }
+    if ((Split-Path -Leaf $ScriptPath) -ne 'Pull-SDLC.ai.ps1') { return $false }
+    $normalized = ($ScriptPath -replace '\\', '/')
+    if ($normalized -match '\.worktrees/sdlc-sync(/|$)') { return $false }
+    # Never self-refresh when the script lives in the upstream repo itself.
+    $scriptDir = Split-Path -Parent $ScriptPath
+    if ($scriptDir) {
+        $originUrl = $null
+        try {
+            Push-Location $scriptDir
+            $originUrl = (git remote get-url origin 2>$null)
+        } catch { }
+        finally { Pop-Location -ErrorAction SilentlyContinue }
+        if ($originUrl -and (Test-IsUpstreamRepo -RemoteUrl $originUrl)) { return $false }
+    }
+    return $true
+}
+
+function Invoke-SelfRefresh {
+    <#
+    .SYNOPSIS
+        Fetches the upstream Pull-SDLC.ai.ps1 and, if its SHA256 differs from
+        the local copy, atomically replaces $ScriptPath with the new content.
+    .OUTPUTS
+        [bool] $true if the local file was updated (caller should re-exec).
+        $false if hashes match, the fetch failed, or any error occurred.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [string]$Url = 'https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1',
+        [int]$TimeoutSec = 15
+    )
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-sdlc-self-" + [guid]::NewGuid().ToString('N') + ".ps1")
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
+    }
+    catch {
+        Write-Warning "Self-update check skipped: $($_.Exception.Message)"
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+    try {
+        $remoteHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
+        $localHash = (Get-FileHash -LiteralPath $ScriptPath -Algorithm SHA256).Hash
+        if ($remoteHash -eq $localHash) {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+        Write-Host ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7)) -ForegroundColor Cyan
+        Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force
+        return $true
+    }
+    catch {
+        Write-Warning "Self-update check skipped: $($_.Exception.Message)"
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+}
+
+function Invoke-SelfReExec {
+    <#
+    .SYNOPSIS
+        Re-invokes the freshly self-updated Pull-SDLC.ai.ps1 with the caller's
+        original bound parameters, force-adding -NoSelfUpdate to prevent loops.
+        Exits the host process with the child script's exit code.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [hashtable]$BoundParameters = @{}
+    )
+    $reArgs = @{} + $BoundParameters
+    $reArgs['NoSelfUpdate'] = $true
+    & $ScriptPath @reArgs
+    exit $LASTEXITCODE
+}
+
 function Invoke-PullSDLC {
     <#
     .SYNOPSIS
@@ -602,8 +707,16 @@ function Invoke-PullSDLC {
         [switch]$NoFetch,
         [switch]$AllowDefaultBranch,
         [switch]$NoAutoWorktree,
-        [switch]$NoAutoPR
+        [switch]$NoAutoPR,
+        [switch]$NoSelfUpdate
     )
+
+    if (Test-SelfRefreshRequired -ScriptPath $PSCommandPath -NoSelfUpdate:$NoSelfUpdate) {
+        if (Invoke-SelfRefresh -ScriptPath $PSCommandPath) {
+            Invoke-SelfReExec -ScriptPath $PSCommandPath -BoundParameters $PSBoundParameters
+            return
+        }
+    }
 
     if (-not $RepoRoot) {
         $RepoRoot = (git rev-parse --show-toplevel).Trim()
@@ -694,17 +807,33 @@ function Invoke-PullSDLC {
     finally { Pop-Location }
 
     $anchorLabel = if ($anchorSha) { $anchorSha.Substring(0, 7) } else { '(empty tree)' }
+    $upstreamLabel = $upstreamHead.Substring(0, 7)
     Write-Host ''
-    Write-Host "Planned ops ($($ops.Count)) from $anchorLabel -> $($upstreamHead.Substring(0,7)):" -ForegroundColor Cyan
+    if ($ops.Count -eq 0) {
+        Write-Host "Files to update: 0 (already at upstream $upstreamLabel -- nothing to sync)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "Files to update: $($ops.Count) (syncing $anchorLabel -> $upstreamLabel)" -ForegroundColor Cyan
+    }
     $grouped = $ops | Group-Object { $_.Op } | Sort-Object Name
     foreach ($g in $grouped) {
         Write-Host ("  {0}: {1}" -f $g.Name, $g.Count) -ForegroundColor Cyan
     }
     foreach ($op in $ops) {
-        $label = switch ($op.Op) {
-            'R' { "R  $($op.OldPath) -> $($op.Path)" }
-            'C' { "C  $($op.OldPath) -> $($op.Path)" }
-            default { "$($op.Op)  $($op.Path)" }
+        $word = switch -Regex ($op.Op) {
+            '^A$' { 'add' ; break }
+            '^M$' { 'update' ; break }
+            '^D$' { 'delete' ; break }
+            '^R'  { 'rename' ; break }
+            '^C'  { 'copy' ; break }
+            default { $op.Op }
+        }
+        $col = $word.PadRight(8)
+        $label = if ($op.Op -like 'R*' -or $op.Op -like 'C*') {
+            "{0}{1} -> {2}" -f $col, $op.OldPath, $op.Path
+        }
+        else {
+            "{0}{1}" -f $col, $op.Path
         }
         Write-Host "    $label" -ForegroundColor DarkGray
     }
@@ -782,5 +911,5 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 $exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
     -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch `
-    -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR -WhatIf:$WhatIfPreference
+    -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR -NoSelfUpdate:$NoSelfUpdate -WhatIf:$WhatIfPreference
 exit $exitCode

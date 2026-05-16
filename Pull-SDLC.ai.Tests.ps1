@@ -669,3 +669,176 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 }
+
+# --- Tests for issue #106: self-refresh + clearer Planned ops wording ---
+
+Describe 'Test-SelfRefreshRequired' {
+    BeforeEach {
+        Remove-Item Env:PULL_SDLC_NO_SELF_UPDATE -ErrorAction SilentlyContinue
+        $script:fakeScript = Join-Path $TestDrive 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $script:fakeScript -Value '# fake'
+    }
+
+    It 'returns $false when -NoSelfUpdate is set' {
+        Test-SelfRefreshRequired -ScriptPath $script:fakeScript -NoSelfUpdate | Should -BeFalse
+    }
+
+    It 'returns $false when PULL_SDLC_NO_SELF_UPDATE env var is set' {
+        $env:PULL_SDLC_NO_SELF_UPDATE = '1'
+        try {
+            Test-SelfRefreshRequired -ScriptPath $script:fakeScript | Should -BeFalse
+        } finally {
+            Remove-Item Env:PULL_SDLC_NO_SELF_UPDATE -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns $false when ScriptPath is empty' {
+        Test-SelfRefreshRequired -ScriptPath '' | Should -BeFalse
+    }
+
+    It 'returns $false when ScriptPath leaf is not Pull-SDLC.ai.ps1' {
+        $other = Join-Path $TestDrive 'Some-Other.ps1'
+        Set-Content -LiteralPath $other -Value '# other'
+        Test-SelfRefreshRequired -ScriptPath $other | Should -BeFalse
+    }
+
+    It 'returns $false when running from inside .worktrees/sdlc-sync' {
+        $wtPath = Join-Path $TestDrive '.worktrees/sdlc-sync/Pull-SDLC.ai.ps1'
+        New-Item -ItemType Directory -Path (Split-Path $wtPath) -Force | Out-Null
+        Set-Content -LiteralPath $wtPath -Value '# wt'
+        Test-SelfRefreshRequired -ScriptPath $wtPath | Should -BeFalse
+    }
+
+    It 'returns $true for a normal script path with no opt-out' {
+        Test-SelfRefreshRequired -ScriptPath $script:fakeScript | Should -BeTrue
+    }
+
+    It 'returns $false when the script lives in the upstream IntelliSDLC.ai repo' {
+        # Initialize a git repo at the script's dir with an upstream-looking origin.
+        $repoDir = Join-Path $TestDrive 'upstream-check'
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $script = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $script -Value '# upstream'
+        Push-Location $repoDir
+        try {
+            git init -q
+            git remote add origin 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git'
+        } finally { Pop-Location }
+        Test-SelfRefreshRequired -ScriptPath $script | Should -BeFalse
+    }
+}
+
+Describe 'Invoke-SelfRefresh' {
+    BeforeEach {
+        $script:scriptPath = Join-Path $TestDrive 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $script:scriptPath -Value 'original-body' -NoNewline
+    }
+
+    It 'returns $false and leaves the file unchanged when remote hash matches local' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
+            Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline
+        }
+        $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
+        $result | Should -BeFalse
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
+    }
+
+    It 'returns $true and overwrites the local file when remote hash differs' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
+            Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline
+        }
+        $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
+        $result | Should -BeTrue
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'NEW-upstream-body'
+    }
+
+    It 'returns $false and emits a warning when Invoke-WebRequest throws' {
+        Mock -CommandName Invoke-WebRequest -MockWith { throw 'simulated network failure' }
+        $warnings = @()
+        $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath -WarningVariable warnings -WarningAction SilentlyContinue
+        $result | Should -BeFalse
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
+        ($warnings -join ' ') | Should -Match 'Self-update check skipped'
+    }
+}
+
+Describe 'Invoke-PullSDLC self-refresh wiring' {
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("sr-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'does not call Invoke-SelfRefresh when -NoSelfUpdate is passed' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Mock -CommandName Invoke-SelfRefresh -MockWith { return $false }
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoSelfUpdate
+        $rc | Should -Be 0
+        Should -Invoke -CommandName Invoke-SelfRefresh -Times 0 -Exactly
+    }
+
+    It 're-execs via Invoke-SelfReExec when Invoke-SelfRefresh signals update' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh -MockWith { return $true }
+        $script:reExecCalled = 0
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            $script:reExecCalled++
+            return 0
+        }
+        Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch | Out-Null
+        $script:reExecCalled | Should -Be 1
+    }
+}
+
+Describe 'Planned ops output wording (issue #106)' {
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("ops-" + [guid]::NewGuid().ToString('N'))
+        $script:hostLines = New-Object System.Collections.Generic.List[string]
+        Mock -CommandName Write-Host -MockWith {
+            param($Object, $ForegroundColor, $NoNewline, $BackgroundColor, $Separator)
+            $script:hostLines.Add([string]$Object) | Out-Null
+        }
+    }
+
+    It 'renders the no-op message when count == 0' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.UpstreamHead
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoSelfUpdate | Out-Null
+        $sha7 = $fx.UpstreamHead.Substring(0,7)
+        ($script:hostLines -join "`n") | Should -Match "Files to update: 0 \(already at upstream $sha7 -- nothing to sync\)"
+    }
+
+    It 'renders the syncing message and word-coded op rows when count > 0' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'one'  | Out-File -Encoding utf8 .github/agents/keep.md -NoNewline
+                'gone' | Out-File -Encoding utf8 .github/agents/zap.md -NoNewline
+            } `
+            -Tweak {
+                'NEW'   | Out-File -Encoding utf8 .github/agents/keep.md -NoNewline
+                'added' | Out-File -Encoding utf8 .github/agents/fresh.md -NoNewline
+                Remove-Item .github/agents/zap.md
+            }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoSelfUpdate -WhatIf | Out-Null
+        $anchor7 = $fx.AnchorSha.Substring(0,7)
+        $head7   = $fx.UpstreamHead.Substring(0,7)
+        $combined = $script:hostLines -join "`n"
+        $combined | Should -Match "Files to update: 3 \(syncing $anchor7 -> $head7\)"
+        # Word-coded rows (8-char column, ASCII only).
+        $combined | Should -Match 'add     \.github/agents/fresh\.md'
+        $combined | Should -Match 'update  \.github/agents/keep\.md'
+        $combined | Should -Match 'delete  \.github/agents/zap\.md'
+    }
+}
