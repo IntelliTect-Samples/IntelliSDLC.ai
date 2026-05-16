@@ -762,6 +762,51 @@ Describe 'Invoke-SelfRefresh' {
         (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
         ($warnings -join ' ') | Should -Match 'Self-update check skipped'
     }
+
+    It 'deletes its temp file even when $WhatIfPreference is true' {
+        # Clean any stragglers from prior runs so this assertion is hermetic.
+        Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
+            # -WhatIf:$false so the mock itself doesn't get short-circuited by the
+            # caller's $WhatIfPreference; we are simulating a real network write.
+            Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline -WhatIf:$false
+        }
+        $WhatIfPreference = $true
+        try {
+            $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
+        }
+        finally {
+            $WhatIfPreference = $false
+        }
+        $result | Should -BeFalse
+        $leftover = Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue
+        $leftover | Should -BeNullOrEmpty
+    }
+
+    It 'produces no "What if:" output when called with $WhatIfPreference = $true' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
+            Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline -WhatIf:$false
+        }
+        $transcriptPath = Join-Path $TestDrive ("transcript-" + [guid]::NewGuid().ToString('N') + ".txt")
+        $WhatIfPreference = $true
+        try {
+            Start-Transcript -LiteralPath $transcriptPath -Force -WhatIf:$false | Out-Null
+            try {
+                Invoke-SelfRefresh -ScriptPath $script:scriptPath | Out-Null
+            }
+            finally {
+                Stop-Transcript -WhatIf:$false | Out-Null
+            }
+        }
+        finally {
+            $WhatIfPreference = $false
+        }
+        $captured = Get-Content -LiteralPath $transcriptPath -Raw
+        $captured | Should -Not -Match 'What if:.*pull-sdlc-self-'
+    }
 }
 
 Describe 'Invoke-PullSDLC self-refresh wiring' {

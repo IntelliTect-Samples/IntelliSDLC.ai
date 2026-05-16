@@ -647,23 +647,23 @@ function Invoke-SelfRefresh {
     }
     catch {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
         return $false
     }
     try {
         $remoteHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
         $localHash = (Get-FileHash -LiteralPath $ScriptPath -Algorithm SHA256).Hash
         if ($remoteHash -eq $localHash) {
-            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
             return $false
         }
         Write-Host ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7)) -ForegroundColor Cyan
-        Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force
+        Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force -WhatIf:$false -Confirm:$false
         return $true
     }
     catch {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
-        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
         return $false
     }
 }
