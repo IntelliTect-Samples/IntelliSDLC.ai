@@ -581,6 +581,79 @@ Describe 'Resolve-SyncAnchor -Bootstrap regression' {
     }
 }
 
+Describe 'Resolve-SyncAnchor -- WhatIf semantics (#114)' {
+
+    BeforeEach {
+        $script:wifRoot = Join-Path $TestDrive ("whatif-anchor-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:wifRoot -Force | Out-Null
+        Push-Location $script:wifRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'x' | Out-File -Encoding utf8 README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m seed
+        } finally { Pop-Location }
+    }
+
+    It 'auto-bootstraps without prompting when $WhatIfPreference is set' {
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host must not be invoked under -WhatIf' }
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { throw 'Confirm-SyncBootstrap must not be invoked under -WhatIf' }
+
+        $WhatIfPreference = $true
+        $anchor = Resolve-SyncAnchor -RepoRoot $script:wifRoot
+
+        $anchor | Should -Not -BeNullOrEmpty
+        $anchor.Source | Should -Be 'bootstrap'
+        $anchor.Sha | Should -Be ''
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 0 -Exactly
+    }
+
+    It 'uses Confirm-SyncBootstrap (not Read-Host) for the interactive prompt' {
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host should be replaced by Confirm-SyncBootstrap' }
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { $true }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $script:wifRoot
+
+        $anchor.Source | Should -Be 'bootstrap'
+        $anchor.Sha | Should -Be ''
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 1 -Exactly
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+    }
+
+    It 'returns $null when Confirm-SyncBootstrap declines' {
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host should be replaced by Confirm-SyncBootstrap' }
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { $false }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $script:wifRoot
+
+        $anchor | Should -BeNullOrEmpty
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 1 -Exactly
+    }
+
+    It 'Invoke-PullSDLC -WhatIf on a fresh repo exits 0 without prompting or writing state' {
+        $fx = New-DiffReplayFixture -Root (Join-Path $TestDrive ("whatif-e2e-" + [guid]::NewGuid().ToString('N'))) `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            }
+        # Strip any state/grep anchor so the no-anchor path is the only way forward.
+        $stateFile = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        if (Test-Path $stateFile) { Remove-Item $stateFile -Force }
+
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host must not be invoked under -WhatIf' }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf -AllowDefaultBranch
+
+        $rc | Should -Be 0
+        Test-Path $stateFile | Should -BeFalse
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+    }
+}
+
 Describe 'Invoke-PullSDLC auto-worktree mode' {
 
     BeforeEach {

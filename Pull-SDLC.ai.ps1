@@ -228,14 +228,37 @@ function Set-SdlcSyncState {
     [System.IO.File]::WriteAllText($absPath, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
+function Confirm-SyncBootstrap {
+    <#
+    .SYNOPSIS
+        Asks the user (via $PSCmdlet.ShouldContinue) whether to bootstrap a
+        first-time sync from upstream HEAD. Extracted as its own function so
+        tests can mock the prompt deterministically.
+    .OUTPUTS
+        [bool] $true if the user accepts; $false otherwise.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$PSCmdletRef
+    )
+    $message = 'No .sdlc-ai-sync.json and no prior sync commit found. Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).'
+    $caption = 'Proceed with bootstrap?'
+    return $PSCmdletRef.ShouldContinue($message, $caption)
+}
+
 function Resolve-SyncAnchor {
     <#
     .SYNOPSIS
         Determines the anchor SHA. Returns @{ Sha = <sha or empty>; Source = <state|grep|bootstrap> }.
         Returns $null if no anchor could be determined and -Bootstrap / -NoPrompt
         not set and user declines the prompt.
+    .DESCRIPTION
+        Under $WhatIfPreference, the bootstrap prompt is skipped and the
+        function auto-returns a bootstrap anchor so the caller's dry-run can
+        proceed to enumerate the would-be op list. The real file writes and
+        sync commit are still gated by ShouldProcess in Invoke-PullSDLC.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [string]$RepoRoot = '.',
         [switch]$Bootstrap,
@@ -263,8 +286,11 @@ function Resolve-SyncAnchor {
     Write-Host ''
     Write-Host 'No .sdlc-ai-sync.json and no prior sync commit found.' -ForegroundColor Yellow
     Write-Host 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).' -ForegroundColor Yellow
-    $ans = Read-Host 'Proceed with bootstrap? [y/N]'
-    if ($ans -match '^[Yy]') {
+    if ($WhatIfPreference) {
+        Write-Host 'What if: would prompt to bootstrap; proceeding with dry-run preview.' -ForegroundColor DarkGray
+        return @{ Sha = ''; Source = 'bootstrap' }
+    }
+    if (Confirm-SyncBootstrap -PSCmdletRef $PSCmdlet) {
         return @{ Sha = ''; Source = 'bootstrap' }
     }
     return $null
