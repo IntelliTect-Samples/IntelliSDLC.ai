@@ -45,6 +45,14 @@
 .PARAMETER AllowDefaultBranch
     Bypass the pre-flight check that blocks running from the protected branch.
     Only needed in consumers without the .githooks/pre-commit policy active.
+
+.PARAMETER NoAutoWorktree
+    When on the protected branch with a gate, do NOT auto-create a worktree.
+    Restores the previous behavior: print remediation and exit rc=3.
+
+.PARAMETER NoAutoPR
+    During auto-worktree mode, commit + push but do NOT open a pull request.
+    Useful in CI or when gh is misconfigured.
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -53,7 +61,9 @@ param(
     [switch]$Force,
     [switch]$Bootstrap,
     [switch]$NoPrompt,
-    [switch]$AllowDefaultBranch
+    [switch]$AllowDefaultBranch,
+    [switch]$NoAutoWorktree,
+    [switch]$NoAutoPR
 )
 
 Set-StrictMode -Version Latest
@@ -438,6 +448,139 @@ function Test-CommitContextAllowed {
     finally { Pop-Location }
 }
 
+function Invoke-AutoWorktreeSync {
+    <#
+    .SYNOPSIS
+        Auto-worktree workflow: create or reuse .worktrees/sdlc-sync on
+        branch chore/sdlc-sync, re-invoke the sync inside it, push, and
+        (unless -NoAutoPR) open a PR via gh.
+    .DESCRIPTION
+        Returns an integer status code:
+            0 = success (PR opened OR push done with manual PR URL printed)
+            5 = existing .worktrees/sdlc-sync has uncommitted work; aborted
+            6 = sync inside worktree returned non-zero (passed through)
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$ProtectedBranch,
+        [string]$WorktreePath = '.worktrees/sdlc-sync',
+        [string]$SyncBranch = 'chore/sdlc-sync',
+        [switch]$NoAutoPR,
+        [hashtable]$SyncArgs = @{}
+    )
+    $absWorktree = Join-Path $RepoRoot $WorktreePath
+    Push-Location $RepoRoot
+    try {
+        # Reuse-if-clean, abort-if-dirty, otherwise create.
+        # A worktree directory always contains a .git FILE (not directory).
+        $worktreeMarker = Join-Path $absWorktree '.git'
+        $reusing = (Test-Path $worktreeMarker -PathType Leaf)
+        if ($reusing) {
+            Push-Location $absWorktree
+            try {
+                $dirty = git status --porcelain
+                if ($dirty) {
+                    Pop-Location
+                    Write-Host ''
+                    Write-Host "ABORT: existing worktree '$WorktreePath' has uncommitted changes." -ForegroundColor Red
+                    Write-Host 'Resolve or remove the worktree before rerunning:' -ForegroundColor Yellow
+                    Write-Host "  cd $WorktreePath; git status" -ForegroundColor Yellow
+                    Write-Host "  cd $RepoRoot; git worktree remove $WorktreePath" -ForegroundColor Yellow
+                    return 5
+                }
+            } finally { if ((Get-Location).Path -eq $absWorktree) { Pop-Location } }
+            Write-Host "Reusing existing worktree '$WorktreePath' (clean)." -ForegroundColor DarkGray
+        }
+        else {
+            Write-Host "Creating worktree '$WorktreePath' on '$SyncBranch' from '$ProtectedBranch' ..." -ForegroundColor DarkGray
+            $branchListing = git branch --list $SyncBranch 2>$null
+            $branchExists = $branchListing -ne $null -and ("$branchListing".Trim() -ne '')
+            if ($branchExists) {
+                git worktree add $absWorktree $SyncBranch | Out-Null
+            } else {
+                git worktree add -b $SyncBranch $absWorktree $ProtectedBranch | Out-Null
+            }
+        }
+    }
+    finally { Pop-Location }
+
+    Push-Location $absWorktree
+    try {
+        Write-Host "Running sync inside worktree (branch '$SyncBranch') ..." -ForegroundColor DarkGray
+        $args = @{} + $SyncArgs
+        $args['RepoRoot'] = $absWorktree
+        $rc = Invoke-PullSDLC @args
+        if ($rc -ne 0) {
+            Write-Host "Worktree sync returned rc=$rc. Aborting auto-PR." -ForegroundColor Red
+            return 6
+        }
+
+        # Anything to push?
+        $unpushed = git log "origin/$SyncBranch..HEAD" --oneline 2>$null
+        $needsPush = $true
+        $remoteHasBranch = (git ls-remote --heads origin $SyncBranch 2>$null)
+        if ($remoteHasBranch -and -not $unpushed) {
+            # No new commits vs remote.
+            $needsPush = $false
+        }
+        $newCommits = git log "$ProtectedBranch..HEAD" --oneline 2>$null
+        if (-not $newCommits) {
+            Write-Host 'No new commits to push (worktree already in sync with main). Nothing to PR.' -ForegroundColor DarkGray
+            return 0
+        }
+
+        if ($needsPush) {
+            Write-Host "Pushing '$SyncBranch' to origin ..." -ForegroundColor DarkGray
+            git push -u origin $SyncBranch 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "WARNING: git push failed; PR step skipped." -ForegroundColor Yellow
+                return 0
+            }
+        }
+
+        if ($NoAutoPR) {
+            Write-Host "Skipping PR creation (-NoAutoPR)." -ForegroundColor DarkGray
+            Write-Host "Open one manually: gh pr create --base $ProtectedBranch --head $SyncBranch" -ForegroundColor Yellow
+            return 0
+        }
+
+        $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+        if (-not $ghCmd) {
+            Write-Host 'gh CLI not found; skipping automatic PR creation.' -ForegroundColor Yellow
+            $remoteUrl = (git remote get-url origin).Trim()
+            $compareUrl = $remoteUrl -replace '\.git$','' -replace '^git@github\.com:','https://github.com/'
+            Write-Host "Open one manually: $compareUrl/compare/${ProtectedBranch}...${SyncBranch}?expand=1" -ForegroundColor Yellow
+            return 0
+        }
+
+        # Is there already an open PR for this branch?
+        $existingPr = gh pr list --head $SyncBranch --base $ProtectedBranch --state open --json url 2>$null | ConvertFrom-Json
+        if ($existingPr -and $existingPr.Count -gt 0) {
+            Write-Host "Existing PR updated: $($existingPr[0].url)" -ForegroundColor Green
+            return 0
+        }
+
+        $title = "chore: sync IntelliSDLC.ai content"
+        $bodyText = "Automated sync from upstream IntelliSDLC.ai. See commit log for replayed ops.`n`nGenerated by Pull-SDLC.ai.ps1 auto-worktree mode."
+        $bodyFile = Join-Path $absWorktree '.sdlc-sync-pr-body.tmp'
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($bodyFile, $bodyText, $utf8NoBom)
+        try {
+            $prUrl = gh pr create --base $ProtectedBranch --head $SyncBranch --title $title --body-file $bodyFile 2>&1 | Select-Object -Last 1
+            if ($LASTEXITCODE -eq 0 -and $prUrl) {
+                Write-Host "Opened PR: $prUrl" -ForegroundColor Green
+            } else {
+                Write-Host "PR creation failed: $prUrl" -ForegroundColor Yellow
+            }
+        }
+        finally { Remove-Item $bodyFile -ErrorAction SilentlyContinue }
+
+        return 0
+    }
+    finally { Pop-Location }
+}
+
 function Invoke-PullSDLC {
     <#
     .SYNOPSIS
@@ -457,7 +600,9 @@ function Invoke-PullSDLC {
         [switch]$Bootstrap,
         [switch]$NoPrompt,
         [switch]$NoFetch,
-        [switch]$AllowDefaultBranch
+        [switch]$AllowDefaultBranch,
+        [switch]$NoAutoWorktree,
+        [switch]$NoAutoPR
     )
 
     if (-not $RepoRoot) {
@@ -467,17 +612,32 @@ function Invoke-PullSDLC {
     if (-not $AllowDefaultBranch -and -not $WhatIfPreference) {
         $ctx = Test-CommitContextAllowed -RepoRoot $RepoRoot -ProtectedBranch $Branch
         if (-not $ctx.Allowed) {
-            Write-Host ''
-            Write-Host "ABORT: cannot create sync commit -- $($ctx.Reason)." -ForegroundColor Red
-            Write-Host ''
-            Write-Host 'Create a worktree first:' -ForegroundColor Yellow
-            Write-Host '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main' -ForegroundColor Yellow
-            Write-Host '  cd .worktrees/sdlc-sync' -ForegroundColor Yellow
-            Write-Host '  ../../Pull-SDLC.ai.ps1' -ForegroundColor Yellow
-            Write-Host ''
-            Write-Host 'Or rerun with -AllowDefaultBranch to bypass this check (consumers without a pre-commit hook policy).' -ForegroundColor DarkGray
-            Write-Host 'Use -WhatIf to preview ops without committing.' -ForegroundColor DarkGray
-            return 3
+            if ($NoAutoWorktree) {
+                Write-Host ''
+                Write-Host "ABORT: cannot create sync commit -- $($ctx.Reason)." -ForegroundColor Red
+                Write-Host ''
+                Write-Host 'Create a worktree first:' -ForegroundColor Yellow
+                Write-Host '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main' -ForegroundColor Yellow
+                Write-Host '  cd .worktrees/sdlc-sync' -ForegroundColor Yellow
+                Write-Host '  ../../Pull-SDLC.ai.ps1' -ForegroundColor Yellow
+                Write-Host ''
+                Write-Host 'Or rerun with -AllowDefaultBranch to bypass this check (consumers without a pre-commit hook policy).' -ForegroundColor DarkGray
+                Write-Host 'Use -WhatIf to preview ops without committing.' -ForegroundColor DarkGray
+                return 3
+            }
+
+            Write-Host "On protected branch '$($ctx.Branch)'. Switching to auto-worktree workflow ..." -ForegroundColor Cyan
+            $syncArgs = @{
+                Branch              = $Branch
+                RemoteName          = $RemoteName
+                Force               = [bool]$Force
+                Bootstrap           = [bool]$Bootstrap
+                NoPrompt            = [bool]$NoPrompt
+                NoFetch             = [bool]$NoFetch
+                AllowDefaultBranch  = $false
+                NoAutoWorktree      = $true
+            }
+            return Invoke-AutoWorktreeSync -RepoRoot $RepoRoot -ProtectedBranch $Branch -NoAutoPR:$NoAutoPR -SyncArgs $syncArgs
         }
     }
 
@@ -621,5 +781,6 @@ function Invoke-PullSDLC {
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 $exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
-    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch -WhatIf:$WhatIfPreference
+    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch `
+    -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR -WhatIf:$WhatIfPreference
 exit $exitCode

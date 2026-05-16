@@ -518,7 +518,7 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         $script:fixtureRoot = Join-Path $TestDrive ("guard-" + [guid]::NewGuid().ToString('N'))
     }
 
-    It 'aborts with rc=3 when invoked on main without -AllowDefaultBranch' {
+    It 'aborts with rc=3 when invoked on main with -NoAutoWorktree (no -AllowDefaultBranch)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
@@ -526,7 +526,7 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         Push-Location $fx.Consumer
         try { git checkout -q main } finally { Pop-Location }
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoWorktree
         $rc | Should -Be 3
         # Working tree must be untouched.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
@@ -578,5 +578,94 @@ Describe 'Resolve-SyncAnchor -Bootstrap regression' {
         $anchor = Resolve-SyncAnchor -RepoRoot $root -Bootstrap
         $anchor.Source | Should -Be 'bootstrap'
         $anchor.Sha | Should -Be ''
+    }
+}
+
+Describe 'Invoke-PullSDLC auto-worktree mode' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("auto-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'on main without -NoAutoWorktree, creates .worktrees/sdlc-sync, syncs, and pushes -NoAutoPR' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Add a fake origin pointing back to a bare clone so push has a target.
+        $origin = Join-Path $fx.Consumer.._origin.git
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote add origin $origin
+        # Push main so origin/main exists.
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git push -q origin main
+        } finally { Pop-Location }
+
+        # Invoke from main (we *are* on main after checkout above).
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        # Worktree should exist at .worktrees/sdlc-sync.
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Test-Path $wt | Should -BeTrue
+        # Worktree HEAD has the sync commit; main untouched.
+        Push-Location $fx.Consumer
+        try {
+            (git rev-parse --abbrev-ref HEAD).Trim() | Should -Be 'main'
+            (git log -1 --pretty=%s main).Trim() | Should -Be 'seed'
+            # Pushed branch exists on origin.
+            (git ls-remote --heads origin chore/sdlc-sync) | Should -Not -BeNullOrEmpty
+        } finally { Pop-Location }
+        Push-Location $wt
+        try {
+            (git rev-parse --abbrev-ref HEAD).Trim() | Should -Be 'chore/sdlc-sync'
+            (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to'
+            (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
+        } finally { Pop-Location }
+    }
+
+    It 'aborts rc=5 when existing worktree has uncommitted changes' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Pre-create the worktree with a dirty file.
+        # Fixture leaves consumer on chore/sdlc-sync; switch to main, then check out branch into a worktree.
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git worktree add $wt chore/sdlc-sync | Out-Null
+        } finally { Pop-Location }
+        'dirty work' | Out-File -Encoding utf8 (Join-Path $wt 'README.md') -NoNewline
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc | Should -Be 5
+        # Dirty file untouched.
+        (Get-Content (Join-Path $wt 'README.md') -Raw) | Should -Be 'dirty work'
+    }
+
+    It 'reuses existing clean worktree' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git push -q origin main
+            $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+            git worktree add $wt chore/sdlc-sync | Out-Null
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 }
