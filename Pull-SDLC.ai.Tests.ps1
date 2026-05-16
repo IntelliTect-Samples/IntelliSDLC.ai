@@ -218,6 +218,7 @@ function global:New-DiffReplayFixture {
         if (-not (Test-Path .gitignore)) { '*.local' | Out-File -Encoding utf8 .gitignore -NoNewline }
         git add -A | Out-Null
         git commit -q -m "seed"
+        git checkout -q -b chore/sdlc-sync
         git remote add $RemoteName $upstream
         git fetch $RemoteName --quiet 2>$null | Out-Null
     } finally { Pop-Location }
@@ -476,5 +477,106 @@ Describe 'Invoke-PullSDLC end-to-end' {
         (Get-Content (Join-Path $fx.Consumer 'README.md') -Raw) | Should -Be 'consumer-only readme content'
         # CLAUDE.md did get updated.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'new claude'
+    }
+}
+
+Describe 'Test-CommitContextAllowed' {
+
+    BeforeEach {
+        $script:ctxRoot = Join-Path $TestDrive ("ctx-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:ctxRoot -Force | Out-Null
+        Push-Location $script:ctxRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'seed' | Out-File -Encoding utf8 README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+        } finally { Pop-Location }
+    }
+
+    It 'blocks when HEAD is on the protected branch' {
+        $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
+        $r.Allowed | Should -BeFalse
+        $r.Branch | Should -Be 'main'
+        $r.Reason | Should -Match "protected branch 'main'"
+    }
+
+    It 'allows when HEAD is on a feature branch' {
+        Push-Location $script:ctxRoot
+        try { git checkout -q -b chore/sdlc-sync } finally { Pop-Location }
+        $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
+        $r.Allowed | Should -BeTrue
+        $r.Branch | Should -Be 'chore/sdlc-sync'
+    }
+}
+
+Describe 'Invoke-PullSDLC protected-branch guard' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("guard-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'aborts with rc=3 when invoked on main without -AllowDefaultBranch' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Move the consumer back onto main so the guard fires.
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 3
+        # Working tree must be untouched.
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
+        Test-Path (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
+    }
+
+    It '-AllowDefaultBranch bypasses the guard on main' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -AllowDefaultBranch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
+    It '-WhatIf bypasses the guard even on main (no mutation possible)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -WhatIf
+        $rc | Should -Be 0
+        # Untouched.
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
+    }
+}
+
+Describe 'Resolve-SyncAnchor -Bootstrap regression' {
+
+    It 'returns bootstrap anchor even when state file is present (regression for upstream #102)' {
+        $root = Join-Path $TestDrive ("anchor-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'x' | Out-File -Encoding utf8 README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m seed
+        } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $root -Remote 'sdlc.ai' -Ref 'main' -Commit 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root -Bootstrap
+        $anchor.Source | Should -Be 'bootstrap'
+        $anchor.Sha | Should -Be ''
     }
 }
