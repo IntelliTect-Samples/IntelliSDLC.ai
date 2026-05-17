@@ -33,8 +33,8 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path 'readme.md' | Should -BeTrue
     }
 
-    It 'returns $true for .gitignore' {
-        Test-IsAlwaysLocalPath -Path '.gitignore' | Should -BeTrue
+    It 'returns $false for .gitignore (moved to merge-paths)' {
+        Test-IsAlwaysLocalPath -Path '.gitignore' | Should -BeFalse
     }
 
     It 'returns $false for src/Foo.cs' {
@@ -946,3 +946,269 @@ Describe 'Planned ops output wording (issue #106)' {
         $combined | Should -Match 'delete  \.github/agents/zap\.md'
     }
 }
+
+Describe 'Test-IsMergePath' {
+    It 'returns $true for .gitignore' {
+        Test-IsMergePath -Path '.gitignore' | Should -BeTrue
+    }
+
+    It 'returns $true for .GitIgnore (case-insensitive)' {
+        Test-IsMergePath -Path '.GitIgnore' | Should -BeTrue
+    }
+
+    It 'tolerates a leading ./ on the path' {
+        Test-IsMergePath -Path './.gitignore' | Should -BeTrue
+    }
+
+    It 'tolerates a leading .\ (backslash) on the path' {
+        Test-IsMergePath -Path '.\.gitignore' | Should -BeTrue
+    }
+
+    It 'returns $false for README.md' {
+        Test-IsMergePath -Path 'README.md' | Should -BeFalse
+    }
+
+    It 'returns $false for src/Foo.cs' {
+        Test-IsMergePath -Path 'src/Foo.cs' | Should -BeFalse
+    }
+
+    It 'returns $false for an empty path' {
+        Test-IsMergePath -Path '' | Should -BeFalse
+    }
+}
+
+Describe 'ConvertTo-GitignoreChunk' {
+    It 'returns an empty array for empty input' {
+        $chunks = ConvertTo-GitignoreChunk -Text ''
+        @($chunks).Count | Should -Be 0
+    }
+
+    It 'groups a comment block with its following entries into one chunk' {
+        $text = "# header`n.evidence/`n.playwright-mcp/`n"
+        $chunks = @(ConvertTo-GitignoreChunk -Text $text)
+        $chunks.Count | Should -Be 1
+        $chunks[0].Comments | Should -Be @('# header')
+        $chunks[0].Entries  | Should -Be @('.evidence/', '.playwright-mcp/')
+    }
+
+    It 'splits chunks on blank lines' {
+        $text = "# a`nfoo`n`n# b`nbar`n"
+        $chunks = @(ConvertTo-GitignoreChunk -Text $text)
+        $chunks.Count | Should -Be 2
+        $chunks[0].Entries | Should -Be @('foo')
+        $chunks[1].Entries | Should -Be @('bar')
+    }
+
+    It 'allows entries without preceding comments' {
+        $text = "foo`nbar`n"
+        $chunks = @(ConvertTo-GitignoreChunk -Text $text)
+        $chunks.Count | Should -Be 1
+        $chunks[0].Comments | Should -BeNullOrEmpty
+        $chunks[0].Entries  | Should -Be @('foo', 'bar')
+    }
+
+    It 'preserves multi-line comment blocks' {
+        $text = "# line 1`n# line 2`nfoo`n"
+        $chunks = @(ConvertTo-GitignoreChunk -Text $text)
+        $chunks[0].Comments | Should -Be @('# line 1', '# line 2')
+        $chunks[0].Entries  | Should -Be @('foo')
+    }
+}
+
+Describe 'Merge-FileFromUpstream (.gitignore union)' {
+
+    BeforeAll {
+        function New-MergeFixture {
+            param([string]$Root, [string]$UpstreamContent, [string]$ConsumerContent)
+            $upstream = Join-Path $Root 'upstream'
+            $consumer = Join-Path $Root 'consumer'
+            New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+            New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+            Push-Location $upstream
+            try {
+                git init -q -b main
+                git config user.email u@u.u
+                git config user.name u
+                Set-Content -LiteralPath '.gitignore' -Value $UpstreamContent -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "upstream"
+            } finally { Pop-Location }
+
+            Push-Location $consumer
+            try {
+                git init -q -b main
+                git config user.email c@c.c
+                git config user.name c
+                if ($null -ne $ConsumerContent) {
+                    Set-Content -LiteralPath '.gitignore' -Value $ConsumerContent -NoNewline
+                    git add -A | Out-Null
+                    git commit -q -m "seed"
+                }
+                else {
+                    Set-Content -LiteralPath 'README.md' -Value 'r' -NoNewline
+                    git add -A | Out-Null
+                    git commit -q -m "seed"
+                }
+                git remote add sdlc.ai $upstream
+                git fetch sdlc.ai --quiet 2>$null | Out-Null
+            } finally { Pop-Location }
+
+            return @{ Upstream = $upstream; Consumer = $consumer }
+        }
+    }
+
+    BeforeEach {
+        $script:mergeRoot = Join-Path $TestDrive ("merge-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'creates .gitignore with full upstream content when absent locally' {
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent "# header`n.evidence/`n.worktrees/`n" `
+            -ConsumerContent $null
+        $changed = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $changed | Should -BeTrue
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Match '\.evidence/'
+        $result | Should -Match '\.worktrees/'
+    }
+
+    It 'appends only missing entries when local .gitignore is present' {
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent "# upstream`n.evidence/`n.worktrees/`n" `
+            -ConsumerContent "*.local`n.evidence/`n"
+        $changed = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $changed | Should -BeTrue
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Match '\*\.local'
+        $result | Should -Match '\.evidence/'
+        $result | Should -Match '\.worktrees/'
+        ([regex]::Matches($result, '\.evidence/')).Count | Should -Be 1
+    }
+
+    It 'is idempotent -- second run produces no change' {
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent "# upstream`n.evidence/`n.worktrees/`n" `
+            -ConsumerContent "*.local`n"
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $afterFirst = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $changed = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $changed | Should -BeFalse
+        $afterSecond = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $afterSecond | Should -BeExactly $afterFirst
+    }
+
+    It 'skips chunks where every entry is already local' {
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent "# OS cruft.`n.DS_Store`nThumbs.db`n" `
+            -ConsumerContent ".DS_Store`nThumbs.db`n"
+        $changed = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $changed | Should -BeFalse
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Not -Match 'OS cruft'
+    }
+
+    It 'preserves CRLF line endings when local file uses CRLF' {
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent "# upstream`n.worktrees/`n" `
+            -ConsumerContent "*.local`r`n"
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $fx.Consumer '.gitignore'))
+        $crlfCount = 0
+        for ($i = 0; $i -lt $bytes.Length - 1; $i++) {
+            if ($bytes[$i] -eq 13 -and $bytes[$i + 1] -eq 10) { $crlfCount++ }
+        }
+        $crlfCount | Should -BeGreaterThan 0
+    }
+}
+
+Describe 'Invoke-MainTreeCleanup' {
+
+    BeforeAll {
+        function New-CleanupFixture {
+            param([string]$Root)
+            $upstream = Join-Path $Root 'upstream'
+            $consumer = Join-Path $Root 'consumer'
+            New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+            New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+            $upstreamScript = "# upstream Pull-SDLC.ai.ps1 content`nWrite-Host 'hi'`n"
+            $upstreamManifest = '{"paths":[]}'
+
+            Push-Location $upstream
+            try {
+                git init -q -b main
+                git config user.email u@u.u
+                git config user.name u
+                Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $upstreamScript -NoNewline
+                Set-Content -LiteralPath 'sync-manifest.json' -Value $upstreamManifest -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "upstream"
+            } finally { Pop-Location }
+
+            Push-Location $consumer
+            try {
+                git init -q -b main
+                git config user.email c@c.c
+                git config user.name c
+                Set-Content -LiteralPath 'README.md' -Value 'r' -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "seed"
+                git remote add sdlc.ai $upstream
+                git fetch sdlc.ai --quiet 2>$null | Out-Null
+            } finally { Pop-Location }
+
+            return @{
+                Upstream         = $upstream
+                Consumer         = $consumer
+                UpstreamScript   = $upstreamScript
+                UpstreamManifest = $upstreamManifest
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:cleanupRoot = Join-Path $TestDrive ("cleanup-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'deletes an untracked-and-identical bootstrap file' {
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        $target = Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $target -Value $fx.UpstreamScript -NoNewline
+        Test-Path -LiteralPath $target | Should -BeTrue
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' | Out-Null
+        Test-Path -LiteralPath $target | Should -BeFalse
+    }
+
+    It 'preserves an untracked-modified copy and emits a warning' {
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        $target = Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $target -Value "# my local edits`n" -NoNewline
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+        Test-Path -LiteralPath $target | Should -BeTrue
+        ($warns | Out-String) | Should -Match 'Pull-SDLC\.ai\.ps1'
+    }
+
+    It 'does not delete when -WhatIf is set' {
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        $target = Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1'
+        Set-Content -LiteralPath $target -Value $fx.UpstreamScript -NoNewline
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WhatIf | Out-Null
+        Test-Path -LiteralPath $target | Should -BeTrue
+    }
+
+    It 'reverts a tracked-modified-to-upstream-identical file via git checkout' {
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        Push-Location $fx.Consumer
+        try {
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# old tracked content`n" -NoNewline
+            git add Pull-SDLC.ai.ps1 | Out-Null
+            git commit -q -m "track stale script"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
+        } finally { Pop-Location }
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' | Out-Null
+        $reverted = Get-Content -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1') -Raw
+        $reverted | Should -Match 'old tracked content'
+    }
+}
+
