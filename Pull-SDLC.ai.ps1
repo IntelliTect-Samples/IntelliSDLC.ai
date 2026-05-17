@@ -100,10 +100,19 @@ $script:UpstreamManagedPaths = @(
 # .github/instructions/ tree but is filtered out of the op list).
 $script:AlwaysLocalPaths = @(
     'README.md',
-    '.gitignore',
     '.github/instructions/project.instructions.md',
     'CLAUDE.project.md',
     '.sdlc-ai-sync.json'
+)
+
+# Paths whose upstream content is union-merged into the consumer's copy rather
+# than overwritten (managed-paths) or left alone (always-local). The consumer
+# keeps any local entries; any new upstream entries are appended. Today this is
+# used only for .gitignore -- upstream is the single source of truth for
+# sdlc.ai-mandated ignore patterns (.evidence/, .playwright-mcp/, .worktrees/,
+# etc.) and consumers receive new patterns automatically as upstream evolves.
+$script:MergePaths = @(
+    '.gitignore'
 )
 
 $script:SdlcSyncStateFile = '.sdlc-ai-sync.json'
@@ -139,13 +148,15 @@ function Test-IsUpstreamManagedPath {
     <#
     .SYNOPSIS
         Returns $true if the given path is under an upstream-managed prefix
-        AND not on the always-local list. Always-local trumps managed.
+        AND not on the always-local or merge-paths list. Always-local and
+        merge-paths trump managed.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     $n = ConvertTo-RepoRelativePath -Path $Path
     if (-not $n) { return $false }
     if (Test-IsAlwaysLocalPath -Path $n) { return $false }
+    if (Test-IsMergePath -Path $n) { return $false }
     foreach ($p in $script:UpstreamManagedPaths) {
         $pp = $p -replace '\\', '/'
         if ($pp.EndsWith('/')) {
@@ -153,6 +164,25 @@ function Test-IsUpstreamManagedPath {
         }
         else {
             if ([string]::Equals($n, $pp, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-IsMergePath {
+    <#
+    .SYNOPSIS
+        Returns $true if the given repo-relative path is on the merge-paths
+        list (upstream content union-merged into the consumer's copy).
+        Comparison is case-insensitive and tolerates ./ or .\ prefix.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    $n = ConvertTo-RepoRelativePath -Path $Path
+    if (-not $n) { return $false }
+    foreach ($candidate in $script:MergePaths) {
+        if ([string]::Equals($n, $candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
         }
     }
     return $false
@@ -186,6 +216,240 @@ function Invoke-TemplateScaffold {
         $scaffolded.Add($entry.Value) | Out-Null
     }
     return $scaffolded.ToArray()
+}
+
+function ConvertTo-GitignoreChunk {
+    <#
+    .SYNOPSIS
+        Parses .gitignore text into ordered chunks. Each chunk is a contiguous
+        run of comment lines (lines beginning with '#') followed by a
+        contiguous run of entry lines (non-blank, non-comment). Blank lines
+        and EOF terminate a chunk. A chunk may have only comments, only
+        entries, or both -- but the comments always precede the entries.
+    .OUTPUTS
+        Array of hashtables: @{ Comments = [string[]]; Entries = [string[]] }.
+        Order matches input order.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    $lines = $Text -split "`r?`n"
+    $chunks = New-Object System.Collections.Generic.List[hashtable]
+    $current = @{ Comments = [System.Collections.Generic.List[string]]::new(); Entries = [System.Collections.Generic.List[string]]::new() }
+    $flush = {
+        if ($current.Comments.Count -gt 0 -or $current.Entries.Count -gt 0) {
+            $chunks.Add(@{
+                Comments = $current.Comments.ToArray()
+                Entries  = $current.Entries.ToArray()
+            }) | Out-Null
+        }
+        $script:__convertCurrent = @{ Comments = [System.Collections.Generic.List[string]]::new(); Entries = [System.Collections.Generic.List[string]]::new() }
+    }
+    foreach ($line in $lines) {
+        $trim = $line.Trim()
+        if (-not $trim) {
+            & $flush
+            $current = $script:__convertCurrent
+            continue
+        }
+        if ($trim.StartsWith('#')) {
+            if ($current.Entries.Count -gt 0) {
+                & $flush
+                $current = $script:__convertCurrent
+            }
+            $current.Comments.Add($line) | Out-Null
+        }
+        else {
+            $current.Entries.Add($line) | Out-Null
+        }
+    }
+    & $flush
+    Remove-Variable -Name __convertCurrent -Scope Script -ErrorAction SilentlyContinue
+    return $chunks.ToArray()
+}
+
+function Get-GitignoreLineEnding {
+    <#
+    .SYNOPSIS
+        Detects whether the file at $Path uses CRLF or LF line endings.
+        Returns "`r`n" or "`n". Default LF when the file is missing, empty,
+        or contains no line breaks.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return "`n" }
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return "`n" }
+    # CRLF detection: any CR (0x0D) followed by LF (0x0A) in the file.
+    for ($i = 0; $i -lt $bytes.Length - 1; $i++) {
+        if ($bytes[$i] -eq 13 -and $bytes[$i + 1] -eq 10) { return "`r`n" }
+    }
+    return "`n"
+}
+
+function Merge-FileFromUpstream {
+    <#
+    .SYNOPSIS
+        Union-merges an upstream file's content into the consumer's copy.
+        Today only supports .gitignore (chunked comment-block + entry
+        semantics). Creates the local file if absent. Idempotent.
+    .DESCRIPTION
+        Reads the upstream file via `git show $Ref:$Path`. Parses both the
+        upstream and the local copy into (comment-block + entry) chunks.
+        For each upstream chunk: drops any entries already present in the
+        local file; if no entries remain, drops the whole chunk. Surviving
+        chunks are appended to the local file (or written as the new file
+        if no local copy existed).
+
+        Line endings are preserved -- if the local file uses CRLF, the
+        appended content uses CRLF; otherwise LF.
+    .OUTPUTS
+        [bool] $true if the local file was modified (or created); $false
+        when no changes were needed (already in sync).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Ref,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+    Push-Location $RepoRoot
+    try {
+        $upstreamRaw = & git show "${Ref}:${Path}" 2>$null
+        if ($LASTEXITCODE -ne 0 -or $null -eq $upstreamRaw) { return $false }
+    }
+    finally { Pop-Location }
+
+    $upstreamText = if ($upstreamRaw -is [array]) { $upstreamRaw -join "`n" } else { [string]$upstreamRaw }
+    $upstreamChunks = ConvertTo-GitignoreChunk -Text $upstreamText
+
+    $localAbs = Join-Path $RepoRoot $Path
+    $localExists = Test-Path -LiteralPath $localAbs
+    $localText = if ($localExists) { Get-Content -LiteralPath $localAbs -Raw } else { '' }
+    if ($null -eq $localText) { $localText = '' }
+    $localChunks = ConvertTo-GitignoreChunk -Text $localText
+
+    $localEntrySet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($chunk in $localChunks) {
+        foreach ($entry in $chunk.Entries) {
+            $localEntrySet.Add($entry.Trim()) | Out-Null
+        }
+    }
+
+    $additions = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $upstreamChunks) {
+        if ($chunk.Entries.Count -eq 0) { continue }   # comment-only chunk -- skip
+        $missing = New-Object System.Collections.Generic.List[string]
+        foreach ($entry in $chunk.Entries) {
+            if (-not $localEntrySet.Contains($entry.Trim())) {
+                $missing.Add($entry) | Out-Null
+            }
+        }
+        if ($missing.Count -eq 0) { continue }
+        if ($additions.Count -gt 0 -or $localExists) {
+            $additions.Add('') | Out-Null
+        }
+        foreach ($c in $chunk.Comments) { $additions.Add($c) | Out-Null }
+        foreach ($e in $missing) { $additions.Add($e) | Out-Null }
+    }
+
+    if ($additions.Count -eq 0) { return $false }
+
+    $eol = Get-GitignoreLineEnding -Path $localAbs
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $trimmedLocal = if ($localExists) { $localText.TrimEnd("`r", "`n") } else { '' }
+    $newContent = if ($trimmedLocal) {
+        $trimmedLocal + $eol + ($additions -join $eol) + $eol
+    } else {
+        ($additions -join $eol) + $eol
+    }
+    $localDir = Split-Path -Parent $localAbs
+    if ($localDir -and -not (Test-Path -LiteralPath $localDir)) {
+        New-Item -ItemType Directory -Path $localDir -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllText($localAbs, $newContent, $utf8NoBom)
+    return $true
+}
+
+function Invoke-MainTreeCleanup {
+    <#
+    .SYNOPSIS
+        Restores a parent (typically `main`) working tree to a clean state
+        after a successful auto-worktree sync. For every manifest path that
+        the user dropped into the parent tree to bootstrap the script
+        (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, etc.), if the local copy is
+        byte-identical to upstream the script either deletes it (untracked
+        case -- PR merge will restore as tracked) or `git checkout`s it
+        (tracked-but-modified case). When local content differs from
+        upstream, the file is left in place and a warning is printed.
+    .OUTPUTS
+        Array of strings describing each action taken (for caller logging /
+        test inspection). Empty when nothing needed cleanup.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$UpstreamRef,
+        [string[]]$Candidates = @(
+            'Pull-SDLC.ai.ps1',
+            'Pull-SDLC.ai.Tests.ps1',
+            'Cleanup-Worktree.ps1',
+            'sync-manifest.json'
+        )
+    )
+    $actions = New-Object System.Collections.Generic.List[string]
+    Push-Location $RepoRoot
+    try {
+        $porcelain = git status --porcelain 2>$null
+        $untracked = @()
+        $modified = @()
+        foreach ($line in $porcelain) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line.Length -lt 4) { continue }
+            $xy = $line.Substring(0, 2)
+            $path = $line.Substring(3).Trim('"')
+            if ($xy -eq '??') { $untracked += $path }
+            elseif ($xy[1] -eq 'M' -or $xy[0] -eq 'M') { $modified += $path }
+        }
+
+        foreach ($path in $Candidates) {
+            $abs = Join-Path $RepoRoot $path
+            if (-not (Test-Path -LiteralPath $abs -PathType Leaf)) { continue }
+            $isUntracked = ($untracked -contains $path)
+            $isModified = ($modified -contains $path)
+            if (-not ($isUntracked -or $isModified)) { continue }
+
+            $upstreamSha = (& git rev-parse "${UpstreamRef}:${path}" 2>$null)
+            if (-not $upstreamSha -or $LASTEXITCODE -ne 0) { continue }
+            $localSha = (& git hash-object -- $abs 2>$null)
+            if (-not $localSha) { continue }
+
+            if ($localSha.Trim() -eq $upstreamSha.Trim()) {
+                if ($isUntracked) {
+                    if ($PSCmdlet.ShouldProcess($path, 'Remove untracked-and-identical file')) {
+                        Remove-Item -LiteralPath $abs -Force
+                        $msg = "Cleanup: removed untracked '$path' (byte-identical to upstream; PR merge will restore tracked)."
+                        Write-Host $msg -ForegroundColor DarkGray
+                        $actions.Add($msg) | Out-Null
+                    }
+                }
+                else {
+                    if ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified-to-identical file')) {
+                        & git checkout -- $path 2>$null | Out-Null
+                        $msg = "Cleanup: reverted '$path' to HEAD (working tree was modified but identical to upstream)."
+                        Write-Host $msg -ForegroundColor DarkGray
+                        $actions.Add($msg) | Out-Null
+                    }
+                }
+            }
+            else {
+                $msg = "Cleanup: '$path' has local changes that differ from upstream; left in place."
+                Write-Warning $msg
+                $actions.Add($msg) | Out-Null
+            }
+        }
+    }
+    finally { Pop-Location }
+    return $actions.ToArray()
 }
 
 function Get-SdlcSyncState {
@@ -324,10 +588,13 @@ function Get-UpstreamOps {
             }
         }
         if ($null -eq $entry) { continue }
-        # Drop ops whose primary path is always-local. For R/C, also drop if
-        # the OldPath is always-local (don't delete consumer-owned files).
+        # Drop ops whose primary path is always-local or merge-managed. For
+        # R/C, also drop if the OldPath is always-local or merge-managed
+        # (don't delete consumer-owned or merged files).
         if (Test-IsAlwaysLocalPath -Path $entry.Path) { continue }
+        if (Test-IsMergePath -Path $entry.Path) { continue }
         if ($entry.OldPath -and (Test-IsAlwaysLocalPath -Path $entry.OldPath)) { continue }
+        if ($entry.OldPath -and (Test-IsMergePath -Path $entry.OldPath)) { continue }
         $ops.Add($entry) | Out-Null
     }
     return $ops.ToArray()
@@ -779,7 +1046,15 @@ function Invoke-PullSDLC {
                 AllowDefaultBranch  = $false
                 NoAutoWorktree      = $true
             }
-            return Invoke-AutoWorktreeSync -RepoRoot $RepoRoot -ProtectedBranch $Branch -NoAutoPR:$NoAutoPR -SyncArgs $syncArgs
+            $rc = Invoke-AutoWorktreeSync -RepoRoot $RepoRoot -ProtectedBranch $Branch -NoAutoPR:$NoAutoPR -SyncArgs $syncArgs
+            if ($rc -eq 0) {
+                # After a successful worktree sync, clean up the parent tree:
+                # delete untracked-and-identical bootstrap files (PR merge will
+                # restore them tracked), revert tracked-modified-to-identical
+                # files, leave real local edits alone with a warning.
+                $null = Invoke-MainTreeCleanup -RepoRoot $RepoRoot -UpstreamRef "$RemoteName/$Branch"
+            }
+            return $rc
         }
     }
 
@@ -884,14 +1159,27 @@ function Invoke-PullSDLC {
         Write-Host "Applied $($ops.Count) ops." -ForegroundColor Green
     }
 
+    # Union-merge merge-managed files (today: .gitignore). Done after the
+    # main op loop so the merge always sees the latest upstream blob. The
+    # merge is idempotent -- a no-op when local already contains every
+    # upstream entry.
+    $mergedPaths = New-Object System.Collections.Generic.List[string]
+    foreach ($mp in $script:MergePaths) {
+        if (Merge-FileFromUpstream -Path $mp -Ref $mergeRef -RepoRoot $RepoRoot) {
+            $mergedPaths.Add($mp) | Out-Null
+            Write-Host "Merged upstream entries into $mp" -ForegroundColor Green
+        }
+    }
+
     Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
 
     Push-Location $RepoRoot
     try {
         # Only include pathspecs that actually exist in the working tree --
-        # `git add` aborts the entire operation on a missing pathspec.
+        # `git add` aborts the entire operation on a missing pathspec. We add
+        # both upstream-managed paths and any merge-managed file we touched.
         $addPaths = @()
-        foreach ($p in @($script:UpstreamManagedPaths + $script:SdlcSyncStateFile)) {
+        foreach ($p in @($script:UpstreamManagedPaths + $script:SdlcSyncStateFile + $mergedPaths.ToArray())) {
             if (Test-Path -LiteralPath $p) { $addPaths += $p }
         }
         if ($addPaths.Count -gt 0) {
