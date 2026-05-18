@@ -198,7 +198,7 @@ Emit, into the output directory:
 <Name>/
 ├── <Name>.slnx
 ├── Directory.Build.props
-├── .gitignore                              # includes samples/har-original/, .har-substitutions.json
+├── .gitignore                              # consumer-root: appended with Samples/HAR-Original/ + Samples/MobileApp-Binaries/ (idempotent)
 ├── .githooks/pre-commit                    # gitleaks
 ├── .gitleaks.toml                          # HAR-aware rules
 ├── .github/workflows/ci.yml                # build + test + gitleaks
