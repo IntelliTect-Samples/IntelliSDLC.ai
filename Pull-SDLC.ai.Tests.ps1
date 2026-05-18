@@ -1120,6 +1120,87 @@ Describe 'Merge-FileFromUpstream (.gitignore union)' {
         }
         $crlfCount | Should -BeGreaterThan 0
     }
+
+    It 'strips an upstream-only marker block so its entries never reach the consumer' {
+        $upstream = @(
+            '# shared header',
+            '.evidence/',
+            '',
+            '# >>> upstream-only >>>',
+            '# Upstream-only dogfood artifacts.',
+            '.dogfood-output/',
+            '# <<< upstream-only <<<',
+            ''
+        ) -join "`n"
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent $upstream `
+            -ConsumerContent $null
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Match '\.evidence/'
+        $result | Should -Not -Match '\.dogfood-output/'
+        $result | Should -Not -Match 'upstream-only'
+    }
+
+    It 'treats an unterminated upstream-only marker as "rest of file is upstream-only"' {
+        $upstream = @(
+            '.evidence/',
+            '',
+            '# >>> upstream-only >>>',
+            '.dogfood-output/',
+            'secret-internal/'
+        ) -join "`n"
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent $upstream `
+            -ConsumerContent $null
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Match '\.evidence/'
+        $result | Should -Not -Match '\.dogfood-output/'
+        $result | Should -Not -Match 'secret-internal/'
+    }
+
+    It 'strips multiple non-contiguous upstream-only marker blocks' {
+        $upstream = @(
+            '# >>> upstream-only >>>',
+            'first-private/',
+            '# <<< upstream-only <<<',
+            '',
+            '# shared',
+            '.evidence/',
+            '',
+            '# >>> upstream-only >>>',
+            'second-private/',
+            '# <<< upstream-only <<<',
+            '',
+            '.worktrees/'
+        ) -join "`n"
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent $upstream `
+            -ConsumerContent $null
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Match '\.evidence/'
+        $result | Should -Match '\.worktrees/'
+        $result | Should -Not -Match 'first-private/'
+        $result | Should -Not -Match 'second-private/'
+    }
+
+    It 'matches the upstream-only marker case-insensitively' {
+        $upstream = @(
+            '.evidence/',
+            '',
+            '# >>> UPSTREAM-ONLY >>>',
+            'sneaky/',
+            '# <<< Upstream-Only <<<'
+        ) -join "`n"
+        $fx = New-MergeFixture -Root $script:mergeRoot `
+            -UpstreamContent $upstream `
+            -ConsumerContent $null
+        $null = Merge-FileFromUpstream -Path '.gitignore' -Ref 'sdlc.ai/main' -RepoRoot $fx.Consumer
+        $result = Get-Content -LiteralPath (Join-Path $fx.Consumer '.gitignore') -Raw
+        $result | Should -Not -Match 'sneaky/'
+    }
 }
 
 Describe 'Invoke-MainTreeCleanup' {

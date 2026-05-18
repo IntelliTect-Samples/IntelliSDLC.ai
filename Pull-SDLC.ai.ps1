@@ -286,6 +286,47 @@ function Get-GitignoreLineEnding {
     return "`n"
 }
 
+function Remove-UpstreamOnlyMarkerBlocks {
+    <#
+    .SYNOPSIS
+        Strips upstream-only marker blocks from .gitignore text before it is
+        propagated to a consumer. A block starts with a comment line matching
+        `^#\s*>>>\s*upstream-only\s*>>>` and ends with the matching closer
+        `^#\s*<<<\s*upstream-only\s*<<<` (case-insensitive). The markers and
+        every line between them are dropped. If the closing marker is missing,
+        everything from the opening marker to end of file is dropped
+        (defensive: never leak upstream-only entries downstream just because
+        someone forgot the closer).
+    .OUTPUTS
+        [string] the input text with all upstream-only blocks removed.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    $openRe  = '^\s*#\s*>>>\s*upstream-only\s*>>>'
+    $closeRe = '^\s*#\s*<<<\s*upstream-only\s*<<<'
+    $opts = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    $lines = $Text -split "`r?`n"
+    $out = New-Object System.Collections.Generic.List[string]
+    $inBlock = $false
+    foreach ($line in $lines) {
+        if (-not $inBlock) {
+            if ([regex]::IsMatch($line, $openRe, $opts)) {
+                $inBlock = $true
+                continue
+            }
+            $out.Add($line) | Out-Null
+        }
+        else {
+            if ([regex]::IsMatch($line, $closeRe, $opts)) {
+                $inBlock = $false
+            }
+            # else: still inside block, drop the line.
+        }
+    }
+    return ($out -join "`n")
+}
+
 function Merge-FileFromUpstream {
     <#
     .SYNOPSIS
@@ -299,6 +340,12 @@ function Merge-FileFromUpstream {
         local file; if no entries remain, drops the whole chunk. Surviving
         chunks are appended to the local file (or written as the new file
         if no local copy existed).
+
+        Upstream-only marker blocks (lines between `# >>> upstream-only >>>`
+        and `# <<< upstream-only <<<`, case-insensitive) are stripped from
+        the upstream text before chunking, so entries inside the markers
+        are never propagated to the consumer. An unterminated marker drops
+        everything from the opener to end of file.
 
         Line endings are preserved -- if the local file uses CRLF, the
         appended content uses CRLF; otherwise LF.
@@ -320,6 +367,7 @@ function Merge-FileFromUpstream {
     finally { Pop-Location }
 
     $upstreamText = if ($upstreamRaw -is [array]) { $upstreamRaw -join "`n" } else { [string]$upstreamRaw }
+    $upstreamText = Remove-UpstreamOnlyMarkerBlocks -Text $upstreamText
     $upstreamChunks = ConvertTo-GitignoreChunk -Text $upstreamText
 
     $localAbs = Join-Path $RepoRoot $Path
