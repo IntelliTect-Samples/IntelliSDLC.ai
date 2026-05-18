@@ -86,9 +86,31 @@ Reference templates live alongside this skill at
 - `perf-evidence.md.tmpl` -- benchmark before/after table
 - `ui-evidence.html.tmpl` -- self-contained HTML shell with video and screenshots
 - `playwright-capture.js.tmpl` -- generic Playwright script
+- `evidence-index.md.tmpl` -- single-anchor `evidence.md` for UI captures that
+  link to the `.html`, recording, and screenshots
 
 Copy the relevant template into `.evidence/<phase-id>/` and fill in the
 placeholders for the specific change.
+
+## Local-link contract
+
+Every capture produces a single **entry-point file** in `.evidence/<phase-id>/`
+that the reviewer opens directly:
+
+| Change type | Entry-point file |
+|---|---|
+| CLI / library / perf / refactor / bug fix / config / docs | `evidence.md` |
+| UI (single or before/after) | `evidence.md` -- an index that links to the `.html` capture, `recording.mp4`, and screenshots |
+
+The dev-loop prints a clickable `file:///` URL to this entry point in its
+output (Windows Terminal, VS Code, and most modern terminals render it as a
+hyperlink). The reviewer's primary review path is **the local file**; the PR
+upload is for durability and team visibility, not the primary review path.
+
+`Publish-Evidence.ps1` emits this URL on every run. When invoked with
+`-LocalOnly` (used during the Phase 5b inner loop), it skips the PR comment
+entirely and only prints the local link; the final non-`-LocalOnly` run during
+Phase 7 posts the artifact to the PR.
 
 ## Storage and lifecycle
 
@@ -190,18 +212,24 @@ On each capture-review cycle:
 
 ## Integration with Task Complete Summary
 
-Every task-complete summary must include an **Evidence** field whenever
-applicable:
+Every task-complete summary must include an **Evidence** block whenever the
+change has observable effects. The block has two lines:
 
 ```markdown
 - **Issue**: [#NNN](https://github.com/owner/repo/issues/NNN)
 - **PR**: [#NNN](https://github.com/owner/repo/pull/NNN)
 - **Branch**: [`feat/...`](https://github.com/owner/repo/tree/feat/...)
 - **Test**: `dotnet test --no-build`
-- **Evidence**: [PR comment](https://github.com/owner/repo/pull/NNN#issuecomment-XXX)
+- **Evidence (local)**: file:///abs/path/.evidence/<phase-id>/evidence.md
+- **Evidence (PR)**: https://github.com/owner/repo/pull/NNN#issuecomment-XXX
 ```
 
-For files > 25 MB the URL is the GitHub Actions artifact URL.
+The **local** link is the primary review path -- a one-click open from the
+terminal. The **PR** link is for durability and teammates. Both are required
+when Phase 5b ran.
+
+For files > 25 MB the PR-side URL is the GitHub Actions artifact URL instead
+of a PR comment URL; the local link is unchanged.
 
 ## Compliance checklist (used by dev-loop-phase-gate)
 
@@ -210,10 +238,17 @@ After invoking this skill, the following must all be true:
 - [ ] An artifact exists at `.evidence/<phase-id>/`
 - [ ] The artifact directory contains an `iteration.txt` and either a `PASSED`
       marker or an `ESCALATED` marker.
+- [ ] The entry-point file is named `evidence.md` (per the Local-link contract)
+      so the reviewer has a single anchor.
+- [ ] A clickable `file:///` URL to the entry-point file was printed in the
+      agent's output (emitted by `Publish-Evidence.ps1`).
 - [ ] If `PASSED`, the artifact was uploaded to the PR (or earmarked for upload
       when the PR is opened).
 - [ ] The artifact was produced from a fresh run against the current HEAD SHA.
-- [ ] The Task Complete Summary includes an Evidence field.
+- [ ] The Task Complete Summary includes both **Evidence (local)** and
+      **Evidence (PR)** sub-fields.
+- [ ] The plan's Evidence Plan section matches the artifact that was produced
+      (format, command, entry-point file).
 
 ## Out of scope (deferred)
 
