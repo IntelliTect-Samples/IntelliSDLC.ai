@@ -5,9 +5,12 @@
     ".github/copilot-instructions.md",
     ".gitattributes.template",
     "Cleanup-Worktree.ps1",
+    "Consolidate-Tasks.ps1",
+    "Consolidate-Tasks.Tests.ps1",
     "Pull-SDLC.ai.ps1",
     "Pull-SDLC.ai.Tests.ps1",
     "sync-manifest.json",
+    "tasks/README.md.template",
     ".github/agents/*.agent.md",
     ".github/instructions/csharp.instructions.md",
     ".github/instructions/powershell.instructions.md",
@@ -31,6 +34,7 @@
     "README.md",
     ".github/instructions/project.instructions.md",
     "CLAUDE.project.md",
-    ".gitattributes"
+    ".gitattributes",
+    "tasks/"
   ]
 }

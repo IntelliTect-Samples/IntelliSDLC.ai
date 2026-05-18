@@ -84,6 +84,7 @@ $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     '.gitattributes.template'                               = '.gitattributes'
+    'tasks/README.md.template'                              = 'tasks/README.md'
 }
 
 # Paths (file or directory prefixes) that upstream owns. Anything under one
@@ -105,7 +106,8 @@ $script:AlwaysLocalPaths = @(
     '.github/instructions/project.instructions.md',
     'CLAUDE.project.md',
     '.gitattributes',
-    '.sdlc-ai-sync.json'
+    '.sdlc-ai-sync.json',
+    'tasks/'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather
@@ -133,15 +135,25 @@ function Test-IsAlwaysLocalPath {
     <#
     .SYNOPSIS
         Returns $true if the given repo-relative path is on the always-local
-        list. Comparison is case-insensitive and tolerates ./ or .\ prefix.
+        list. Entries ending in '/' are treated as directory prefixes
+        (anything under them is consumer-owned). Other entries match exactly.
+        Comparison is case-insensitive and tolerates ./ or .\ prefix.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
     $n = ConvertTo-RepoRelativePath -Path $Path
     if (-not $n) { return $false }
     foreach ($candidate in $script:AlwaysLocalPaths) {
-        if ([string]::Equals($n, $candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return $true
+        $cc = $candidate -replace '\\', '/'
+        if ($cc.EndsWith('/')) {
+            if ($n.StartsWith($cc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+        else {
+            if ([string]::Equals($n, $cc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
         }
     }
     return $false
@@ -444,6 +456,8 @@ function Invoke-MainTreeCleanup {
             'Pull-SDLC.ai.ps1',
             'Pull-SDLC.ai.Tests.ps1',
             'Cleanup-Worktree.ps1',
+            'Consolidate-Tasks.ps1',
+            'Consolidate-Tasks.Tests.ps1',
             'sync-manifest.json'
         )
     )
