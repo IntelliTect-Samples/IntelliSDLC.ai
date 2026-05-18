@@ -133,11 +133,30 @@ See ``.github/skills/evidence-capture/SKILL.md`` for the full lifecycle.
 "@
 }
 
+function Get-CommentBody {
+    param(
+        [string]$Mode,
+        [string]$ResolvedPath,
+        [System.IO.FileInfo]$FileInfo,
+        [long]$SizeBytes
+    )
+    if ($Mode -eq 'Inline') {
+        return Format-InlineComment -MarkdownBody (Get-Content -LiteralPath $ResolvedPath -Raw)
+    }
+    return Format-ArtifactReferenceComment -ArtifactFileName $FileInfo.Name -SizeBytes $SizeBytes
+}
+
 # Main flow ------------------------------------------------------------------
 
 $resolvedPath = (Resolve-Path -LiteralPath $ArtifactPath).ProviderPath
 $fileInfo = Get-Item -LiteralPath $resolvedPath
 $sizeBytes = $fileInfo.Length
+
+# Always classify the artifact (Inline vs ArtifactReference) so callers
+# get a previewable comment body even in LocalOnly mode.
+$classifiedMode = Get-ArtifactMode -Path $resolvedPath -SizeBytes $sizeBytes -MaxInlineBytes $MaxInlineSizeBytes
+$comment = Get-CommentBody -Mode $classifiedMode -ResolvedPath $resolvedPath `
+    -FileInfo $fileInfo -SizeBytes $sizeBytes
 
 # Surface a clickable file:/// URL on stdout regardless of post mode. This is
 # the local-link contract from .github/skills/evidence-capture/SKILL.md --
@@ -146,12 +165,6 @@ $fileUri = ConvertTo-FileUri -Path $resolvedPath
 Write-Host "Evidence (local): $fileUri"
 
 if ($LocalOnly) {
-    $comment = if ([System.IO.Path]::GetExtension($resolvedPath).ToLowerInvariant() -eq '.md' `
-            -and $sizeBytes -le $MaxInlineSizeBytes) {
-        Format-InlineComment -MarkdownBody (Get-Content -LiteralPath $resolvedPath -Raw)
-    } else {
-        Format-ArtifactReferenceComment -ArtifactFileName $fileInfo.Name -SizeBytes $sizeBytes
-    }
     return [pscustomobject]@{
         Mode         = 'LocalOnly'
         Comment      = $comment
@@ -160,13 +173,7 @@ if ($LocalOnly) {
     }
 }
 
-$mode = Get-ArtifactMode -Path $resolvedPath -SizeBytes $sizeBytes -MaxInlineBytes $MaxInlineSizeBytes
-
-$comment = if ($mode -eq 'Inline') {
-    Format-InlineComment -MarkdownBody (Get-Content -LiteralPath $resolvedPath -Raw)
-} else {
-    Format-ArtifactReferenceComment -ArtifactFileName $fileInfo.Name -SizeBytes $sizeBytes
-}
+$mode = $classifiedMode
 
 if ($PSCmdlet.ShouldProcess("PR #$PullRequest", "post evidence comment ($mode)")) {
     # Write the comment body to a temp file -- per repo conventions
