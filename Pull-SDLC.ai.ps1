@@ -95,7 +95,8 @@ $script:UpstreamManagedPaths = @(
     '.gitattributes.template',
     '.github/agents/',
     '.github/skills/',
-    '.github/instructions/'
+    '.github/instructions/',
+    'tasks/'
 )
 
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths
@@ -136,7 +137,11 @@ function Test-IsAlwaysLocalPath {
     .SYNOPSIS
         Returns $true if the given repo-relative path is on the always-local
         list. Entries ending in '/' are treated as directory prefixes
-        (anything under them is consumer-owned). Other entries match exactly.
+        (anything under them is consumer-owned), with one carve-out: files
+        whose leaf name ends in '.template' or is exactly '.gitkeep' are
+        upstream-managed even when they live inside a consumer-owned
+        directory prefix (so first-time scaffolds and directory anchors can
+        still flow from upstream). Other entries match exactly.
         Comparison is case-insensitive and tolerates ./ or .\ prefix.
     #>
     [CmdletBinding()]
@@ -147,6 +152,9 @@ function Test-IsAlwaysLocalPath {
         $cc = $candidate -replace '\\', '/'
         if ($cc.EndsWith('/')) {
             if ($n.StartsWith($cc, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $leaf = Split-Path -Leaf $n
+                if ($leaf.EndsWith('.template', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+                if ([string]::Equals($leaf, '.gitkeep', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
                 return $true
             }
         }

@@ -73,6 +73,14 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path 'tasks/README.md' | Should -BeTrue
     }
 
+    It 'returns $false for tasks/README.md.template (template still flows from upstream)' {
+        Test-IsAlwaysLocalPath -Path 'tasks/README.md.template' | Should -BeFalse
+    }
+
+    It 'returns $false for tasks/.gitkeep (directory anchor flows from upstream)' {
+        Test-IsAlwaysLocalPath -Path 'tasks/.gitkeep' | Should -BeFalse
+    }
+
     It 'does not match a path that merely starts with the letters "tasks" but is not the directory' {
         Test-IsAlwaysLocalPath -Path 'tasksy.md' | Should -BeFalse
         Test-IsAlwaysLocalPath -Path 'src/tasks-runner.cs' | Should -BeFalse
