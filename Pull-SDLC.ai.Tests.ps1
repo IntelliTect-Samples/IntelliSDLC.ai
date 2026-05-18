@@ -130,6 +130,57 @@ Describe 'Invoke-TemplateScaffold' {
     }
 }
 
+Describe '.gitattributes.template bootstrap (issue #119)' {
+    BeforeAll {
+        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
+    }
+
+    It '$script:TemplateScaffoldMap maps .gitattributes.template -> .gitattributes' {
+        $script:TemplateScaffoldMap.Keys | Should -Contain '.gitattributes.template'
+        $script:TemplateScaffoldMap['.gitattributes.template'] | Should -Be '.gitattributes'
+    }
+
+    It '.gitattributes.template exists at upstream repo root' {
+        Test-Path -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') | Should -BeTrue
+    }
+
+    It '.gitattributes is on the always-local list (consumer-owned once placed)' {
+        Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
+    }
+
+    It 'creates consumer .gitattributes on first scaffold when none exists' {
+        $src = Join-Path $TestDrive 'gabt-src'
+        $dst = Join-Path $TestDrive 'gabt-dst1'
+        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
+        Set-Content -Path (Join-Path $src '.gitattributes.template') -Value '* text=auto'
+        $map = [ordered]@{ '.gitattributes.template' = '.gitattributes' }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
+        $result | Should -Contain '.gitattributes'
+        Test-Path (Join-Path $dst '.gitattributes') | Should -BeTrue
+    }
+
+    It 'leaves an existing consumer .gitattributes untouched' {
+        $src = Join-Path $TestDrive 'gabt-src2'
+        $dst = Join-Path $TestDrive 'gabt-dst2'
+        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
+        Set-Content -Path (Join-Path $src '.gitattributes.template') -Value '* text=auto'
+        Set-Content -Path (Join-Path $dst '.gitattributes')          -Value 'CONSUMER_OWNED'
+        $map = [ordered]@{ '.gitattributes.template' = '.gitattributes' }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
+        $result.Count | Should -Be 0
+        (Get-Content (Join-Path $dst '.gitattributes') -Raw).Trim() | Should -Be 'CONSUMER_OWNED'
+    }
+
+    It 'template content includes the baseline rules (LF for .sh, CRLF for .ps1, .png binary)' {
+        $body = Get-Content -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') -Raw
+        $body | Should -Match '(?m)^\*\.sh\s+text\s+eol=lf'
+        $body | Should -Match '(?m)^\*\.ps1\s+text\s+eol=crlf'
+        $body | Should -Match '(?m)^\*\.bat\s+text\s+eol=crlf'
+        $body | Should -Match '(?m)^\*\.png\s+binary'
+        $body | Should -Match '(?m)^\*\s+text=auto'
+    }
+}
+
 Describe 'Pull-SDLC.ai.ps1 end-to-end (regression for #26)' {
     BeforeEach {
         $script:repo = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-e2e-" + [guid]::NewGuid().ToString('N'))

@@ -1,0 +1,47 @@
+# Default: let Git auto-detect text vs binary and normalize text to LF in the repo.
+* text=auto
+
+# Shell scripts must be LF or bash breaks on Windows checkouts.
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows shells require CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell: pin CRLF for Windows-first tooling and signing compatibility.
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Dotfiles and structured text: LF for cross-platform consistency.
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.editorconfig text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Source code: normalize to LF in repo (Git handles native checkout).
+*.cs text
+*.ts text
+*.tsx text
+*.js text
+*.jsx text
+*.py text
+*.go text
+*.rs text
+*.java text
+
+# Common binaries -- never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.dll binary
+*.exe binary
