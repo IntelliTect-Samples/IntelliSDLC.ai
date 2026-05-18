@@ -52,6 +52,57 @@ function parseArgs(argv) {
 
 function fail(msg) { console.error('generate-wrapper: ' + msg); process.exit(1); }
 
+// -------------------- Consumer .gitignore maintenance --------------------
+
+// Entries this skill owns. They live in the consumer's repo-root .gitignore
+// (not upstream IntelliSDLC.ai's .gitignore -- moved here per issue #119) so
+// only repos that actually scaffold a wrapper carry them.
+//
+// - Samples/HAR-Original/    real captures, always contain real PII/tokens.
+// - Samples/MobileApp-Binaries/  downloaded apk/ipa binaries; documented as
+//                            "always gitignored" in SKILL.md Phase 1.
+const SCAFFOLD_GITIGNORE_ENTRIES = [
+    'Samples/HAR-Original/',
+    'Samples/MobileApp-Binaries/',
+];
+
+function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {
+    // Idempotent: appends only entries that are not already present (exact
+    // line match, ignoring leading/trailing whitespace). Creates the file
+    // when absent. Returns the array of entries actually added (empty when
+    // already in sync).
+    const list = entries || SCAFFOLD_GITIGNORE_ENTRIES;
+    const target = path.join(outDir, '.gitignore');
+    let existing = '';
+    let hadFile = false;
+    if (fs.existsSync(target)) {
+        existing = fs.readFileSync(target, 'utf8');
+        hadFile = true;
+    }
+    const present = new Set(
+        existing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    );
+    const missing = list.filter((e) => !present.has(e.trim()));
+    if (missing.length === 0) return [];
+    // Detect existing line ending. Default LF.
+    const eol = /\r\n/.test(existing) ? '\r\n' : '\n';
+    let block = '';
+    if (hadFile && existing.length > 0 && !existing.endsWith('\n') && !existing.endsWith('\r')) {
+        block += eol;
+    }
+    if (hadFile && existing.length > 0) {
+        block += eol;
+        block += '# Added by api-wrapper-scaffold (see .github/skills/api-wrapper-scaffold/SKILL.md).' + eol;
+        block += '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.' + eol;
+    } else {
+        block += '# Added by api-wrapper-scaffold (see .github/skills/api-wrapper-scaffold/SKILL.md).' + eol;
+        block += '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.' + eol;
+    }
+    block += missing.join(eol) + eol;
+    fs.writeFileSync(target, existing + block);
+    return missing;
+}
+
 // -------------------- HAR loading --------------------
 
 function loadHar(filePath) {
@@ -1164,6 +1215,15 @@ function run(args) {
     // csprojs (client + tests) are already on disk for discovery.
     emitSolution({ outDir, projectName: opts.projectName });
 
+    // Ensure consumer repo-root .gitignore carries the entries this skill
+    // owns (Samples/HAR-Original/ and Samples/MobileApp-Binaries/). Idempotent
+    // on re-run. See issue #119 -- these moved out of upstream IntelliSDLC.ai's
+    // .gitignore so only repos that actually scaffold a wrapper carry them.
+    const addedIgnores = ensureRepoRootGitignoreHasScaffoldEntries(outDir);
+    if (addedIgnores.length > 0) {
+        console.log('generate-wrapper: added to .gitignore: ' + addedIgnores.join(', '));
+    }
+
     console.log('generate-wrapper: wrote ' + patterns.length + ' REST pattern(s)' +
         (gql.length ? ' + GraphQL' : '') + ' to ' + outDir);
     console.log('generate-wrapper: next step -- activate the pre-commit hook with:');
@@ -1192,4 +1252,6 @@ module.exports = {
     isNamedSegment,
     emitReadme,
     antiBotWarningSection,
+    ensureRepoRootGitignoreHasScaffoldEntries,
+    SCAFFOLD_GITIGNORE_ENTRIES,
 };
