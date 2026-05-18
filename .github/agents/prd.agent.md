@@ -207,6 +207,18 @@ Concise paragraph describing the user's journey and benefits.
 
   - Bullet list of criteria.
 
+## 11. Evidence plan
+
+Every PRD must declare how the implementation will be verified at runtime
+in Phase 5b of the dev loop. List:
+
+- **Change type**: one of CLI / library / UI / perf / refactor / config-docs / bug fix.
+- **Artifact format**: markdown, markdown index + HTML + recording, perf table, attestation, etc.
+- **Capture command**: exact shell command(s) that produce the artifact.
+- **Entry-point file**: the single file the reviewer opens. Default `.evidence/<phase-id>/evidence.md`.
+
+The dev-loop's Phase 5b verifies the produced artifact matches this section.
+
 ---
 
 After generating the PRD, I will ask if you want to proceed with creating GitHub issues for the user stories. If you agree, I will create them and provide you with the links.
