@@ -39,8 +39,9 @@ You MUST complete these steps in order:
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to complexity, get user approval after each section
-5. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output)
-6. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
+5. **Declare the Evidence Plan** — every plan must name the change type, the artifact format, the exact capture command, and the entry-point file the reviewer will open (see "Evidence Plan" below). The dev-loop's Phase 5b verifies the produced artifact matches this declaration.
+6. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output)
+7. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
 
 ## The Process
 
@@ -88,6 +89,12 @@ So that [measurable outcome]
 ## Approved Design
 [Architecture, approach, key decisions from the design discussion]
 
+## Evidence Plan
+- **Change type**: [CLI / library / UI / perf / refactor / config-docs / bug fix]
+- **Artifact format**: [markdown / markdown index + HTML + recording / perf table / attestation]
+- **Capture command**: [exact shell command(s) that produce the artifact]
+- **Entry-point file**: `.evidence/<phase-id>/evidence.md`
+
 ## Acceptance Criteria
 - [ ] [Specific testable action]
 - [ ] [Specific behavior with expected outcome]
@@ -98,6 +105,30 @@ So that [measurable outcome]
 - [ ] [Task 2 — specific file/component]
 - [ ] [Tests for each task]
 ```
+
+## Evidence Plan
+
+Every plan **must** include an Evidence Plan section. This closes the
+"agent silently downgrades Phase 5b to no-behavior-change" escape hatch by
+forcing the planner to declare upfront what artifact will be produced. The
+Phase 5b inner loop then verifies the artifact matches the declaration.
+
+The four required fields:
+
+1. **Change type** -- one of: CLI / library / UI / perf / refactor /
+   config-docs / bug fix. Selects the row in the evidence-capture
+   capture-by-change-type table.
+2. **Artifact format** -- markdown, markdown index + HTML + recording,
+   perf table, attestation, etc. Must match the change type.
+3. **Capture command** -- the exact shell command that produces the
+   artifact (so the reviewer or a follow-up agent can re-run it).
+4. **Entry-point file** -- always a single anchor file, almost always
+   `.evidence/<phase-id>/evidence.md`. This is the file the reviewer opens
+   via the `file:///` URL printed by `Publish-Evidence.ps1`.
+
+For pure-internal refactors (no observable behavior change), the artifact
+format is `attestation` and the capture command is the test runner; the
+attestation markdown still serves as the entry-point file.
 
 ## After the Design
 
