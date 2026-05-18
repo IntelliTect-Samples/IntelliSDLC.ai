@@ -978,6 +978,14 @@ function Invoke-SelfRefresh {
     .SYNOPSIS
         Fetches the upstream Pull-SDLC.ai.ps1 and, if its SHA256 differs from
         the local copy, atomically replaces $ScriptPath with the new content.
+    .DESCRIPTION
+        The fetch is cache-busted on every call (per-invocation query parameter
+        plus Cache-Control / Pragma no-cache headers) to defeat Fastly stale
+        hits on raw.githubusercontent.com -- otherwise a refresh issued within
+        the CDN's TTL of a fresh upstream merge would silently no-op against
+        the previous body. Every outcome is logged on the Verbose stream so
+        '-Verbose' makes "did the refresh run, and what did it see?"
+        answerable from the output without grepping for a missing line.
     .OUTPUTS
         [bool] $true if the local file was updated (caller should re-exec).
         $false if hashes match, the fetch failed, or any error occurred.
@@ -989,11 +997,17 @@ function Invoke-SelfRefresh {
         [int]$TimeoutSec = 15
     )
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-sdlc-self-" + [guid]::NewGuid().ToString('N') + ".ps1")
+    # Cache-bust: query parameter forces a distinct cache key on most CDNs;
+    # no-cache headers force revalidation when the CDN honors them.
+    $separator = if ($Url.Contains('?')) { '&' } else { '?' }
+    $cbUrl = "${Url}${separator}cb=$([DateTime]::UtcNow.Ticks)"
+    $headers = @{ 'Cache-Control' = 'no-cache'; 'Pragma' = 'no-cache' }
     try {
-        Invoke-WebRequest -Uri $Url -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing | Out-Null
+        Invoke-WebRequest -Uri $cbUrl -OutFile $tmp -TimeoutSec $TimeoutSec -UseBasicParsing -Headers $headers | Out-Null
     }
     catch {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
+        Write-Verbose "Self-refresh: skipped (fetch failed: $($_.Exception.Message))"
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
         return $false
     }
@@ -1001,10 +1015,12 @@ function Invoke-SelfRefresh {
         $remoteHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
         $localHash = (Get-FileHash -LiteralPath $ScriptPath -Algorithm SHA256).Hash
         if ($remoteHash -eq $localHash) {
+            Write-Verbose "Self-refresh: up-to-date (sha256=$($localHash.Substring(0,7)))"
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
             return $false
         }
         Write-Host ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7)) -ForegroundColor Cyan
+        Write-Verbose "Self-refresh: updated $($localHash.Substring(0,7)) -> $($remoteHash.Substring(0,7))"
         Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force -WhatIf:$false -Confirm:$false
         return $true
     }

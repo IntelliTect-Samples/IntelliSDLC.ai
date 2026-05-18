@@ -925,6 +925,38 @@ Describe 'Invoke-SelfRefresh' {
         $captured = Get-Content -LiteralPath $transcriptPath -Raw
         $captured | Should -Not -Match 'What if:.*pull-sdlc-self-'
     }
+
+    It 'cache-busts the fetch with a query parameter to defeat Fastly stale hits' {
+        $script:capturedUri = $null
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
+            $script:capturedUri = $Uri
+            Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline -WhatIf:$false
+        }
+        Invoke-SelfRefresh -ScriptPath $script:scriptPath | Out-Null
+        $script:capturedUri | Should -Match '[?&]cb='
+    }
+
+    It 'emits a verbose line reporting up-to-date result with the SHA-256 short hash' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
+            Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline -WhatIf:$false
+        }
+        $verboseMsgs = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
+            Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+        ($verboseMsgs -join ' ') | Should -Match 'Self-refresh: up-to-date'
+        ($verboseMsgs -join ' ') | Should -Match '[0-9A-Fa-f]{7}'
+    }
+
+    It 'emits a verbose line reporting updated result with old and new SHA-256 short hashes' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
+            Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline -WhatIf:$false
+        }
+        $verboseMsgs = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
+            Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
+        ($verboseMsgs -join ' ') | Should -Match 'Self-refresh: updated'
+    }
 }
 
 Describe 'Invoke-PullSDLC self-refresh wiring' {
