@@ -83,6 +83,7 @@ $RemoteUrl = 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git'
 $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
+    '.gitattributes.template'                               = '.gitattributes'
 }
 
 # Paths (file or directory prefixes) that upstream owns. Anything under one
@@ -90,6 +91,7 @@ $script:TemplateScaffoldMap = [ordered]@{
 $script:UpstreamManagedPaths = @(
     'CLAUDE.md',
     '.github/copilot-instructions.md',
+    '.gitattributes.template',
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/'
@@ -102,6 +104,7 @@ $script:AlwaysLocalPaths = @(
     'README.md',
     '.github/instructions/project.instructions.md',
     'CLAUDE.project.md',
+    '.gitattributes',
     '.sdlc-ai-sync.json'
 )
 

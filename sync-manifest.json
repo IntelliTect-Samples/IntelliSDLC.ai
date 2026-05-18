@@ -1,8 +1,9 @@
 {
-  "$comment": "Canonical list of files and globs that Pull-SDLC.ai.ps1 will pull into a consumer project. Patterns are matched against the upstream tree via git ls-tree -r <ref>. Globs use wildmatch semantics (* matches a single path segment, ** matches any number of segments). Paths in .github/instructions/project.instructions.md (or anything listed under script:AlwaysLocalPaths) are NEVER overwritten regardless of whether they appear in this manifest. Paths listed under 'merge_paths' are neither overwritten (like 'paths') nor left alone (like 'consumer_owned'): upstream content is union-merged into the consumer's copy so the consumer keeps any local entries while gaining any new upstream ones. Today this is used only for .gitignore.",
+  "$comment": "Canonical list of files and globs that Pull-SDLC.ai.ps1 will pull into a consumer project. Patterns are matched against the upstream tree via git ls-tree -r <ref>. Globs use wildmatch semantics (* matches a single path segment, ** matches any number of segments). Paths in .github/instructions/project.instructions.md (or anything listed under script:AlwaysLocalPaths) are NEVER overwritten regardless of whether they appear in this manifest. Paths listed under 'merge_paths' are neither overwritten (like 'paths') nor left alone (like 'consumer_owned'): upstream content is union-merged into the consumer's copy so the consumer keeps any local entries while gaining any new upstream ones. The .gitignore merge supports an 'upstream-only' marker block (lines between '# >>> upstream-only >>>' and '# <<< upstream-only <<<', case-insensitive) that Merge-FileFromUpstream strips before propagation so entries in the block never reach consumers. Template files (suffix .template) are scaffolded to the bare name only on first sync via $script:TemplateScaffoldMap; the bare name is consumer-owned thereafter (see 'consumer_owned').",
   "paths": [
     "CLAUDE.md",
     ".github/copilot-instructions.md",
+    ".gitattributes.template",
     "Cleanup-Worktree.ps1",
     "Pull-SDLC.ai.ps1",
     "Pull-SDLC.ai.Tests.ps1",
@@ -29,6 +30,7 @@
   "consumer_owned": [
     "README.md",
     ".github/instructions/project.instructions.md",
-    "CLAUDE.project.md"
+    "CLAUDE.project.md",
+    ".gitattributes"
   ]
 }
