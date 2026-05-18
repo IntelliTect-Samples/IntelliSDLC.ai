@@ -35,7 +35,7 @@ MUST present it and get approval.
 
 You MUST complete these steps in order:
 
-1. **Explore project context** — check files, docs, recent commits
+1. **Explore project context** — check files, docs, recent commits; **scan `tasks/`** for prior PRDs or plans on the same feature slug (`tasks/<feature>-prd.md`, `tasks/<feature>-plan.md`). If found, surface them and offer to refine the existing design rather than propose a brand-new one.
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to complexity, get user approval after each section

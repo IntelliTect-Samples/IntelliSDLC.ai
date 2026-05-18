@@ -162,7 +162,19 @@ Break the approved design into bite-sized tasks (2-5 minutes each). Each task in
 - Exact test commands with expected output
 - Commit message
 
-Save plan to `docs/designs/YYYY-MM-DD-<feature-name>-plan.md`.
+Save plan to `tasks/<feature-name>-plan.md` at the repo root (same
+`<feature-name>` slug as the branch and PRD, so all artifacts for one feature
+share an identifier across the consumer's GitHub project). Create the
+`tasks/` directory first if it does not yet exist.
+
+**Before writing**, read any existing artifacts for this slug:
+
+- If `tasks/<feature-name>-prd.md` exists, ingest it as authoritative
+  requirements input alongside the GitHub issue.
+- If `tasks/<feature-name>-plan.md` already exists, **resume / update** it
+  rather than duplicate -- treat unchecked checklist items as the next tasks
+  to execute.
+
 After user approval, update the GitHub issue with a task checklist.
 
 **Exit criteria:** Plan saved, user approved, issue updated.
