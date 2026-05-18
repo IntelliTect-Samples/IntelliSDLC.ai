@@ -171,6 +171,11 @@ exists (omit any that don't apply, e.g., a Q&A turn with no PR):
 - **Branch** -- `` [`<branch>`](https://github.com/<owner>/<repo>/tree/<branch>) ``
 - **Test** -- exact local verification command (e.g., `dotnet test --no-build`,
   `Invoke-Pester -Path .\...`)
+- **Evidence (local)** -- clickable `file:///` URL to
+  `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
+  Phase 5b ran.
+- **Evidence (PR)** -- PR-comment URL (or CI-artifact URL for files > 25 MB).
+  Required when Phase 5b ran and the PR exists.
 
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
