@@ -151,4 +151,72 @@ Describe 'Publish-Evidence' {
                 Should -Throw
         }
     }
+
+    Context 'when -LocalOnly is passed' {
+        It 'does not invoke gh' {
+            $artifact = Join-Path $script:TempDir 'local-only.md'
+            Set-Content -LiteralPath $artifact -Value '# Local only' -NoNewline
+
+            $bag = @{ count = 0 }
+            $stub = { param([string[]]$GhArgs) $bag['count'] = $bag['count'] + 1 }.GetNewClosure()
+
+            & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly | Out-Null
+
+            $bag['count'] | Should -Be 0
+        }
+
+        It 'returns Mode = LocalOnly on the output object' {
+            $artifact = Join-Path $script:TempDir 'local-only-mode.md'
+            Set-Content -LiteralPath $artifact -Value '# Local only mode' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $result = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly
+
+            $result.Mode | Should -Be 'LocalOnly'
+        }
+
+        It 'still resolves and exposes the absolute ArtifactPath' {
+            $artifact = Join-Path $script:TempDir 'local-only-path.md'
+            Set-Content -LiteralPath $artifact -Value '# Path' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $result = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly
+
+            $result.ArtifactPath | Should -Be ((Resolve-Path -LiteralPath $artifact).ProviderPath)
+        }
+    }
+
+    Context 'file:// link emission' {
+        It 'writes a file:/// URL with forward slashes to host output' {
+            $artifact = Join-Path $script:TempDir 'link-emit.md'
+            Set-Content -LiteralPath $artifact -Value '# Link emit' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly -InformationAction Continue 6>&1
+
+            $joined = ($output | Out-String)
+            $joined | Should -Match 'file:///'
+            # Forward slashes only inside the URL portion (no backslashes between file:/// and the end of the line).
+            $joined | Should -Match 'file:///[^\\]+'
+        }
+
+        It 'emits the file:// URL even when posting to a PR (non-LocalOnly)' {
+            $artifact = Join-Path $script:TempDir 'link-emit-pr.md'
+            Set-Content -LiteralPath $artifact -Value '# Link emit pr' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 9 `
+                -GhInvoker $stub -InformationAction Continue 6>&1
+
+            ($output | Out-String) | Should -Match 'file:///'
+        }
+    }
 }
