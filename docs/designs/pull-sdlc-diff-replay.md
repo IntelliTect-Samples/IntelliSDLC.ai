@@ -45,6 +45,7 @@ $UpstreamManagedPaths = @(
 $AlwaysLocalPaths = @(
     'README.md',
     '.gitignore',
+    '.gitattributes',
     '.github/instructions/project.instructions.md',
     'CLAUDE.project.md',
     '.sdlc-ai-sync.json'
@@ -52,6 +53,13 @@ $AlwaysLocalPaths = @(
 ```
 
 Always-local trumps managed-paths.
+
+`.gitignore` is treated as a merge-path rather than always-local: upstream
+content is union-merged into the consumer's copy. A markered "upstream-only"
+block (lines between `# >>> upstream-only >>>` and `# <<< upstream-only <<<`,
+case-insensitive) is stripped from the upstream text before merging, so
+entries inside the markers are never propagated to consumers. An unterminated
+opener drops everything from the marker to end of file (defensive).
 
 ## State file `.sdlc-ai-sync.json`
 

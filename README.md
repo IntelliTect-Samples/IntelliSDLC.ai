@@ -13,8 +13,12 @@ Two ways to consume these instructions in your project:
   named `instructions` and merges updates. See `Pull-SDLC.ai.ps1 -?` for details.
 
 On first sync, `Pull-SDLC.ai.ps1` also scaffolds the consumer-owned files
-(`.github/instructions/project.instructions.md` and `CLAUDE.project.md`) from
-their `*.template` counterparts. They are never overwritten on subsequent syncs.
+(`.github/instructions/project.instructions.md`, `CLAUDE.project.md`, and
+`.gitattributes`) from their `*.template` counterparts. They are never
+overwritten on subsequent syncs. The `.gitattributes.template` ships a
+recommended baseline (LF for `*.sh`, CRLF for `*.ps1` and `*.bat`, binaries
+left alone) -- once placed it is fully consumer-owned, so projects can edit
+or replace it without upstream interference.
 
 ## File Ownership
 
@@ -23,7 +27,7 @@ Files belong to one of two tiers:
 | Tier | Files | Edit rule |
 |---|---|---|
 | **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), `.github/skills/*`, `.claude/*` | Never edit in a consumer project. Edits go upstream and pull down. |
-| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `product-spec.md`, project's own `README.md`, `.gitignore`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1`. |
+| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1`. |
 
 ## Init Protocol for Consuming Projects
 
