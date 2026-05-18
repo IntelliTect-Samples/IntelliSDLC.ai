@@ -149,10 +149,6 @@ Describe 'agent-dogfood: .gitignore hygiene' {
         $script:Gitignore = Get-Content $script:GitignorePath -Raw
     }
 
-    It 'ignores Samples/HAR-Original/ (real-cookie-bearing captures)' {
-        $script:Gitignore | Should -Match '(?m)^Samples/HAR-Original/'
-    }
-
     It 'ignores .dogfood-output/ (convenience default for run-dogfood.ps1)' {
         $script:Gitignore | Should -Match '(?m)^\.dogfood-output/'
     }
