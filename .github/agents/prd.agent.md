@@ -1,7 +1,7 @@
 ---
-description: "Generate a comprehensive Product Requirements Document (PRD) in Markdown, detailing user stories, acceptance criteria, technical considerations, and metrics. Optionally create GitHub issues upon user confirmation."
 name: "Create PRD Chat Mode"
-tools: ["codebase", "edit/editFiles", "fetch", "findTestFiles", "list_issues", "githubRepo", "search", "add_issue_comment", "create_issue", "update_issue", "get_issue", "search_issues"]
+description: "Generate a comprehensive Product Requirements Document (PRD) in Markdown, detailing user stories, acceptance criteria, technical considerations, and metrics. Optionally create GitHub issues upon user confirmation."
+tools: ["codebase", "filesystem", "edit/editFiles", "runCommands", "terminalLastCommand", "fetch", "findTestFiles", "search", "githubRepo", "list_issues", "get_issue", "search_issues", "create_issue", "update_issue", "add_issue_comment"]
 ---
 
 # Create PRD Chat Mode
@@ -12,11 +12,13 @@ This agent uses the default model. No specific model override is required.
 
 Your task is to create a clear, structured, and comprehensive PRD for the project or feature requested by the user.
 
-Save the PRD to `docs/prd/<feature-name>-prd.md`. If the user specifies a different location, use that instead.
+Save the PRD to `tasks/<feature-name>-prd.md` at the repo root. Create the `tasks/` directory first if it does not yet exist (`mkdir tasks` or `New-Item -ItemType Directory -Path tasks -Force`). If the user specifies a different location, use that instead.
 
 Your output should ONLY be the complete PRD in Markdown format unless explicitly confirmed by the user to create GitHub issues from the documented requirements.
 
 ## Instructions for Creating the PRD
+
+0. **Check for an existing PRD**: At the start of the workflow, look for `tasks/<feature-name>-prd.md` using the slug the user has chosen (or one derivable from the branch name `feat/<issue#>-<feature-name>`). If a PRD already exists for this feature, read it and offer to **update** it rather than overwrite. Surface the existing content to the user and ask whether to revise sections in place, append new sections, or start fresh.
 
 1. **Ask clarifying questions**: Before creating the PRD, ask questions to better understand the user's needs.
 
