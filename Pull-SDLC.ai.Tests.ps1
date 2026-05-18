@@ -56,6 +56,27 @@ Describe 'Test-IsAlwaysLocalPath' {
     It 'tolerates a leading .\ (backslash) on the path' {
         Test-IsAlwaysLocalPath -Path '.\README.md' | Should -BeTrue
     }
+
+    It 'returns $true for tasks/ directory itself' {
+        Test-IsAlwaysLocalPath -Path 'tasks/' | Should -BeTrue
+    }
+
+    It 'returns $true for any file under tasks/ (prefix match)' {
+        Test-IsAlwaysLocalPath -Path 'tasks/foo-prd.md' | Should -BeTrue
+    }
+
+    It 'returns $true for a nested path under tasks/' {
+        Test-IsAlwaysLocalPath -Path 'tasks/archive/2025/old-plan.md' | Should -BeTrue
+    }
+
+    It 'returns $true for tasks/README.md (the scaffolded consumer-owned file)' {
+        Test-IsAlwaysLocalPath -Path 'tasks/README.md' | Should -BeTrue
+    }
+
+    It 'does not match a path that merely starts with the letters "tasks" but is not the directory' {
+        Test-IsAlwaysLocalPath -Path 'tasksy.md' | Should -BeFalse
+        Test-IsAlwaysLocalPath -Path 'src/tasks-runner.cs' | Should -BeFalse
+    }
 }
 
 Describe 'Resolve-AlwaysLocalConflicts (removed)' {
