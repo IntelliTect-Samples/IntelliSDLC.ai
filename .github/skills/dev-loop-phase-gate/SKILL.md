@@ -50,15 +50,23 @@ npx tsc && npx vitest run
 ### After Phase 5b (Evidence and Verify)
 
 - [ ] `.evidence/<phase-id>/` directory exists with a captured artifact
+- [ ] The entry-point file is `evidence.md` per the Local-link contract
+- [ ] A clickable `file:///` URL to the entry-point file was printed in the
+      agent output (emitted by `Publish-Evidence.ps1`)
+- [ ] The plan's Evidence Plan section matches the produced artifact
+      (change type, artifact format, capture command, entry-point file)
 - [ ] `.evidence/<phase-id>/iteration.txt` records the loop iteration count
 - [ ] Either `.evidence/<phase-id>/PASSED` or `.evidence/<phase-id>/ESCALATED` exists
-- [ ] If `PASSED`: the artifact was uploaded to the PR (or earmarked for upload
-      when the PR is opened) via `Publish-Evidence.ps1`
+- [ ] If `PASSED`: the artifact is either uploaded to the PR (Phase 7 step)
+      or earmarked for that upload; the inner loop uses
+      `Publish-Evidence.ps1 -LocalOnly` so intermediate captures don't spam
+      the PR
 - [ ] The artifact's `HEAD_SHA` matches the current `git rev-parse HEAD` (no
       stale artifacts)
 - [ ] The artifact was produced from an actual runtime invocation, not
       hand-edited text
-- [ ] The Task Complete Summary will include an Evidence field
+- [ ] The Task Complete Summary will include both **Evidence (local)** and
+      **Evidence (PR)** fields
 
 ### After Phase 6 (Code Review)
 
