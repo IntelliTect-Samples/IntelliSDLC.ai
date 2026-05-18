@@ -800,11 +800,13 @@ function Invoke-AutoWorktreeSync {
     .SYNOPSIS
         Auto-worktree workflow: create or reuse .worktrees/sdlc-sync on
         branch chore/sdlc-sync, re-invoke the sync inside it, push, and
-        (unless -NoAutoPR) open a PR via gh.
+        (unless -NoAutoPR) open a PR via gh. The sdlc-sync worktree is
+        treated as pure scratch: any dirty state or stale unpushed commits
+        from a prior interrupted run are discarded by an unconditional
+        reset-hard + clean to ProtectedBranch before the sync replays.
     .DESCRIPTION
         Returns an integer status code:
             0 = success (PR opened OR push done with manual PR URL printed)
-            5 = existing .worktrees/sdlc-sync has uncommitted work; aborted
             6 = sync inside worktree returned non-zero (passed through)
     #>
     [CmdletBinding()]
@@ -819,7 +821,14 @@ function Invoke-AutoWorktreeSync {
     $absWorktree = Join-Path $RepoRoot $WorktreePath
     Push-Location $RepoRoot
     try {
-        # Reuse-if-clean, abort-if-dirty, otherwise create.
+        # The sdlc-sync worktree is pure scratch -- every file in it is
+        # regenerated from upstream on each run. So when reusing an existing
+        # worktree we unconditionally reset it to ProtectedBranch and clean
+        # untracked files. This makes Pull-SDLC.ai.ps1 self-healing across
+        # interrupted prior runs, stale unpushed commits, half-applied
+        # patches, etc. The branch HEAD will be rebuilt by the sync run that
+        # follows; if a PR is already open against origin/$SyncBranch, the
+        # subsequent push will simply update it.
         # A worktree directory always contains a .git FILE (not directory).
         $worktreeMarker = Join-Path $absWorktree '.git'
         $reusing = (Test-Path $worktreeMarker -PathType Leaf)
@@ -827,17 +836,15 @@ function Invoke-AutoWorktreeSync {
             Push-Location $absWorktree
             try {
                 $dirty = git status --porcelain
-                if ($dirty) {
-                    Pop-Location
-                    Write-Host ''
-                    Write-Host "ABORT: existing worktree '$WorktreePath' has uncommitted changes." -ForegroundColor Red
-                    Write-Host 'Resolve or remove the worktree before rerunning:' -ForegroundColor Yellow
-                    Write-Host "  cd $WorktreePath; git status" -ForegroundColor Yellow
-                    Write-Host "  cd $RepoRoot; git worktree remove $WorktreePath" -ForegroundColor Yellow
-                    return 5
+                $aheadOfMain = git log "$ProtectedBranch..HEAD" --oneline 2>$null
+                if ($dirty -or $aheadOfMain) {
+                    Write-Host "Resetting reused worktree '$WorktreePath' to '$ProtectedBranch' (scratch area; prior state discarded)." -ForegroundColor DarkGray
+                    git reset --hard $ProtectedBranch 2>&1 | Out-Null
+                    git clean -fdx 2>&1 | Out-Null
+                } else {
+                    Write-Host "Reusing existing worktree '$WorktreePath' (clean)." -ForegroundColor DarkGray
                 }
             } finally { if ((Get-Location).Path -eq $absWorktree) { Pop-Location } }
-            Write-Host "Reusing existing worktree '$WorktreePath' (clean)." -ForegroundColor DarkGray
         }
         else {
             Write-Host "Creating worktree '$WorktreePath' on '$SyncBranch' from '$ProtectedBranch' ..." -ForegroundColor DarkGray

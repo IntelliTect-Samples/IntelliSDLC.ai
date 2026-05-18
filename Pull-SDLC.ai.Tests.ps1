@@ -707,24 +707,62 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         } finally { Pop-Location }
     }
 
-    It 'aborts rc=5 when existing worktree has uncommitted changes' {
+    It 'auto-recovers when existing worktree has uncommitted changes' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
-        # Pre-create the worktree with a dirty file.
-        # Fixture leaves consumer on chore/sdlc-sync; switch to main, then check out branch into a worktree.
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        # Pre-create a dirty worktree mimicking a prior interrupted run:
+        # an untracked stray file AND a modified tracked file.
         $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
         Push-Location $fx.Consumer
         try {
             git checkout -q main
+            git push -q origin main
             git worktree add $wt chore/sdlc-sync | Out-Null
         } finally { Pop-Location }
-        'dirty work' | Out-File -Encoding utf8 (Join-Path $wt 'README.md') -NoNewline
+        'leftover from interrupted run' | Out-File -Encoding utf8 (Join-Path $wt 'STRAY.md') -NoNewline
+        'half-edited' | Out-File -Encoding utf8 (Join-Path $wt 'CLAUDE.md') -NoNewline
 
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
-        $rc | Should -Be 5
-        # Dirty file untouched.
-        (Get-Content (Join-Path $wt 'README.md') -Raw) | Should -Be 'dirty work'
+        $rc | Should -Be 0
+        # Stray untracked file scrubbed, tracked file reset to the sync commit's content.
+        Test-Path (Join-Path $wt 'STRAY.md') | Should -BeFalse
+        (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
+    It 'auto-recovers when existing worktree has stale unpushed commits' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git push -q origin main
+            git worktree add $wt chore/sdlc-sync | Out-Null
+        } finally { Pop-Location }
+        # Drop a stale commit into the worktree branch (the kind that a prior
+        # incomplete sync run would have left behind, never pushed).
+        Push-Location $wt
+        try {
+            'stale' | Out-File -Encoding utf8 STALE.md -NoNewline
+            git add STALE.md | Out-Null
+            git -c user.email=test@example.com -c user.name=Test commit -q -m 'stale commit from prior run'
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+        # Stale commit's file is gone; the worktree was reset before the sync ran.
+        Test-Path (Join-Path $wt 'STALE.md') | Should -BeFalse
+        (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 
     It 'reuses existing clean worktree' {
