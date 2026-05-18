@@ -22,4 +22,14 @@ testResults.xml
 # Upstream-only: scripts/run-dogfood.ps1 is not in sync-manifest.json so
 # this entry would be pure noise in consumer .gitignore files.
 .dogfood-output/
+
+# Upstream-only: this repo is the source of truth for the tasks/ convention
+# but should never contain consumer-style spec artifacts. The tasks/
+# directory is consumer-owned everywhere downstream (see
+# script:AlwaysLocalPaths in Pull-SDLC.ai.ps1); here we ship only the
+# template and a .gitkeep so the directory exists post-clone. Real PRDs
+# and plans should never land in this repo's tasks/ tree.
+tasks/*
+!tasks/README.md.template
+!tasks/.gitkeep
 # <<< upstream-only <<<
