@@ -39,9 +39,16 @@
     Test seam. A scriptblock that takes a string array of arguments and
     invokes gh. Default: real `gh` on PATH.
 
+.PARAMETER LocalOnly
+    Skip the PR comment entirely. The script still resolves the artifact,
+    formats the comment body (for caller preview), and emits the clickable
+    `file://` URL on stdout. Use during dev-loop iterations (Phase 5b) so the
+    PR isn't spammed with intermediate captures; the final artifact is posted
+    during Phase 7 with this switch omitted.
+
 .OUTPUTS
     [pscustomobject] with:
-      Mode       -- 'Inline' | 'ArtifactReference'
+      Mode       -- 'Inline' | 'ArtifactReference' | 'LocalOnly'
       Comment    -- the rendered comment body (string)
       ArtifactPath -- absolute path to the artifact
       Bytes      -- size in bytes
@@ -63,11 +70,28 @@ param(
 
     [int]$MaxInlineSizeBytes = 25 * 1024 * 1024,
 
-    [scriptblock]$GhInvoker = { param([string[]]$GhArgs) & gh @GhArgs }
+    [scriptblock]$GhInvoker = { param([string[]]$GhArgs) & gh @GhArgs },
+
+    [switch]$LocalOnly
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function ConvertTo-FileUri {
+    <#
+    .SYNOPSIS
+        Format an absolute path as a clickable file:/// URI with forward
+        slashes so modern terminals (Windows Terminal, VS Code) render it as
+        a hyperlink.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+    $forward = $Path -replace '\\', '/'
+    if ($forward.StartsWith('/')) {
+        return "file://$forward"
+    }
+    return "file:///$forward"
+}
 
 function Get-ArtifactMode {
     param(
@@ -114,6 +138,27 @@ See ``.github/skills/evidence-capture/SKILL.md`` for the full lifecycle.
 $resolvedPath = (Resolve-Path -LiteralPath $ArtifactPath).ProviderPath
 $fileInfo = Get-Item -LiteralPath $resolvedPath
 $sizeBytes = $fileInfo.Length
+
+# Surface a clickable file:/// URL on stdout regardless of post mode. This is
+# the local-link contract from .github/skills/evidence-capture/SKILL.md --
+# the reviewer's primary entry point is the local file, not the PR comment.
+$fileUri = ConvertTo-FileUri -Path $resolvedPath
+Write-Host "Evidence (local): $fileUri"
+
+if ($LocalOnly) {
+    $comment = if ([System.IO.Path]::GetExtension($resolvedPath).ToLowerInvariant() -eq '.md' `
+            -and $sizeBytes -le $MaxInlineSizeBytes) {
+        Format-InlineComment -MarkdownBody (Get-Content -LiteralPath $resolvedPath -Raw)
+    } else {
+        Format-ArtifactReferenceComment -ArtifactFileName $fileInfo.Name -SizeBytes $sizeBytes
+    }
+    return [pscustomobject]@{
+        Mode         = 'LocalOnly'
+        Comment      = $comment
+        ArtifactPath = $resolvedPath
+        Bytes        = $sizeBytes
+    }
+}
 
 $mode = Get-ArtifactMode -Path $resolvedPath -SizeBytes $sizeBytes -MaxInlineBytes $MaxInlineSizeBytes
 
