@@ -262,9 +262,13 @@ matches its issue intent (or until 3 iterations escalate to the human).
      (extra warnings, layout regression, slowdown, wording drift,
      accessibility break)?
 5. **Branch on the review:**
-   - A=yes, B=no -> write `.evidence/<phase-id>/PASSED`, run
-     `Publish-Evidence.ps1 -ArtifactPath <artifact> -PullRequest <num>` (or
-     stage it for after PR creation), proceed to Phase 6.
+   - A=yes, B=no -> write `.evidence/<phase-id>/PASSED`. Run
+     `Publish-Evidence.ps1 -ArtifactPath <artifact> -PullRequest <num> -LocalOnly`
+     to print the clickable `file:///` URL for the entry-point file
+     (typically `.evidence/<phase-id>/evidence.md`). **Defer the PR upload to
+     Phase 7** -- the same script runs again without `-LocalOnly` once the PR
+     exists. Record the local URL for the Task Complete Summary's
+     `Evidence (local)` field. Proceed to Phase 6.
    - Either fails -> append the diagnosis to `.evidence/<phase-id>/diagnosis.md`,
      increment `.evidence/<phase-id>/iteration.txt`. If iteration <= 3, apply
      the diagnosed fix (this is a fix-in-place within Phase 5b, *not* a route
@@ -272,9 +276,11 @@ matches its issue intent (or until 3 iterations escalate to the human).
      `.evidence/<phase-id>/ESCALATED`, post the diagnosis as a PR comment, and
      pause for the user.
 
-**Exit criteria:** `PASSED` marker exists in `.evidence/<phase-id>/`, artifact
-uploaded (or earmarked) to the PR, Task Complete Summary will include the
-Evidence field.
+**Exit criteria:** `PASSED` marker exists in `.evidence/<phase-id>/`, the
+clickable `file:///` URL for the entry-point file was printed in agent output,
+Task Complete Summary will include both **Evidence (local)** and (after
+Phase 7) **Evidence (PR)** fields. The PR upload itself is deferred to
+Phase 7.
 **-> On PASS, proceed to Phase 6. On ESCALATE, pause for user input. If a
 structural fix is required that affects other tests, return to Phase 3.**
 
@@ -310,6 +316,19 @@ Commit: `docs(spec): add <feature> specification`.
 - Include `Closes #<issue-number>` in the PR description.
 - **Always use `--body-file`** -- see `copilot-instructions.md` > PR & Issue Body Formatting.
 - Do NOT merge to `main` directly.
+
+#### Step 3.5: Post evidence artifact(s) to the PR
+
+For each `.evidence/<phase-id>/` directory that was marked `PASSED` in Phase
+5b, run `Publish-Evidence.ps1` against the entry-point file **without**
+`-LocalOnly` so the artifact is posted as a PR comment. Capture the resulting
+comment URL for the `Evidence (PR)` field of the Task Complete Summary. The
+`Evidence (local)` field retains the `file:///` URL printed in Phase 5b.
+
+```powershell
+pwsh -NoProfile -File .github/skills/evidence-capture/helpers/Publish-Evidence.ps1 `
+    -ArtifactPath .evidence/<phase-id>/evidence.md -PullRequest <pr-number>
+```
 
 #### Step 4: Verify CI workflows pass
 
