@@ -493,7 +493,13 @@ function Invoke-MainTreeCleanup {
 
             $upstreamSha = (& git rev-parse "${UpstreamRef}:${path}" 2>$null)
             if (-not $upstreamSha -or $LASTEXITCODE -ne 0) { continue }
-            $localSha = (& git hash-object -- $abs 2>$null)
+            # --no-filters compares raw bytes to raw bytes, bypassing
+            # core.autocrlf text conversion. Without it, on Windows with
+            # autocrlf=true and a CRLF-stored upstream blob, hash-object
+            # normalises CRLF -> LF before hashing and produces a hash that
+            # never matches the raw upstream blob, yielding a spurious
+            # "differs from upstream" warning even when bytes are identical.
+            $localSha = (& git hash-object --no-filters -- $abs 2>$null)
             if (-not $localSha) { continue }
 
             if ($localSha.Trim() -eq $upstreamSha.Trim()) {
@@ -506,12 +512,27 @@ function Invoke-MainTreeCleanup {
                     }
                 }
                 else {
-                    if ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified-to-identical file')) {
-                        & git checkout -- $path 2>$null | Out-Null
-                        $msg = "Cleanup: reverted '$path' to HEAD (working tree was modified but identical to upstream)."
-                        Write-Host $msg -ForegroundColor DarkGray
-                        $actions.Add($msg) | Out-Null
+                    # Only revert when HEAD also matches upstream -- i.e. the
+                    # working-tree edits are truly redundant. If HEAD differs
+                    # from upstream, the working tree may legitimately hold a
+                    # newer version (e.g. a self-refresh just rewrote
+                    # Pull-SDLC.ai.ps1 to upstream's newer bytes but the new
+                    # version has not yet been committed). Reverting in that
+                    # case would silently downgrade the file back to HEAD's
+                    # older content.
+                    $headSha = (& git rev-parse "HEAD:${path}" 2>$null)
+                    if ($headSha -and $LASTEXITCODE -eq 0 -and $headSha.Trim() -eq $upstreamSha.Trim()) {
+                        if ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified-to-identical file')) {
+                            & git checkout -- $path 2>$null | Out-Null
+                            $msg = "Cleanup: reverted '$path' to HEAD (working tree was modified but identical to upstream)."
+                            Write-Host $msg -ForegroundColor DarkGray
+                            $actions.Add($msg) | Out-Null
+                        }
                     }
+                    # else: HEAD differs from upstream; the working tree may
+                    # legitimately contain a newer self-refreshed version.
+                    # Leave it alone (no warning -- this is a normal pending
+                    # update awaiting commit).
                 }
             }
             else {
@@ -888,8 +909,21 @@ function Invoke-AutoWorktreeSync {
             Write-Host "Pushing '$SyncBranch' to origin ..." -ForegroundColor DarkGray
             git push -u origin $SyncBranch 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "WARNING: git push failed; PR step skipped." -ForegroundColor Yellow
-                return 0
+                # 'chore/sdlc-sync' is a pure scratch branch: every run
+                # regenerates it from ProtectedBranch, so prior remote state
+                # has no value (same scratch rationale as the worktree reset
+                # above). When the straight push is rejected (typically
+                # non-fast-forward, because a prior run advanced the remote
+                # ref past our local history), retry once with
+                # --force-with-lease. We use --force-with-lease (NOT plain
+                # --force) so we still abort if a *different* writer pushed
+                # to the remote since we last fetched.
+                Write-Host "Remote '$SyncBranch' diverged; force-pushing scratch branch ..." -ForegroundColor DarkGray
+                git push --force-with-lease -u origin $SyncBranch 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "WARNING: git push failed (including --force-with-lease retry); PR step skipped." -ForegroundColor Yellow
+                    return 0
+                }
             }
         }
 

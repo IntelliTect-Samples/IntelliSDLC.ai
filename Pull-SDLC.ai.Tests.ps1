@@ -786,6 +786,52 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
         (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
+
+    It 'auto-recovers a divergent push to chore/sdlc-sync via force-with-lease retry' {
+        # Reproduces the real-world divergent-scratch-branch case: a previous
+        # successful run pushed commit X to origin/chore/sdlc-sync. The
+        # current run resets the worktree to ProtectedBranch and replays the
+        # sync, producing a new commit Y whose history does not include X.
+        # The straight push is rejected non-fast-forward. Because the local
+        # remote-tracking ref still matches origin (we never fetched origin
+        # in between), --force-with-lease succeeds and the second run should
+        # return 0 (not the warning path).
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git push -q origin main
+        } finally { Pop-Location }
+
+        # First run: seeds origin/chore/sdlc-sync with commit X.
+        $rc1 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc1 | Should -Be 0
+        $shaAfterRun1 = (& git -c safe.bareRepository=all -C $origin rev-parse 'chore/sdlc-sync').Trim()
+        $shaAfterRun1 | Should -Not -BeNullOrEmpty
+
+        # Wait a moment so the second commit gets a distinct timestamp/SHA.
+        Start-Sleep -Seconds 1
+
+        # Second run: worktree resets to main, replays sync, produces commit
+        # Y. Y's parent is ProtectedBranch HEAD, NOT X. Straight push is
+        # non-fast-forward; auto-recovery must retry with force-with-lease.
+        $rc2 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc2 | Should -Be 0
+
+        $shaAfterRun2 = (& git -c safe.bareRepository=all -C $origin rev-parse 'chore/sdlc-sync').Trim()
+        # Force-push moved origin/chore/sdlc-sync to a new SHA that is NOT a
+        # descendant of run-1's SHA (different parents -> not fast-forward).
+        $shaAfterRun2 | Should -Not -Be $shaAfterRun1
+        # And it really isn't fast-forward: X is not an ancestor of Y.
+        & git -c safe.bareRepository=all -C $origin merge-base --is-ancestor $shaAfterRun1 $shaAfterRun2 2>$null
+        $LASTEXITCODE | Should -Not -Be 0
+    }
 }
 
 # --- Tests for issue #106: self-refresh + clearer Planned ops wording ---
@@ -1428,7 +1474,13 @@ Describe 'Invoke-MainTreeCleanup' {
         Test-Path -LiteralPath $target | Should -BeTrue
     }
 
-    It 'reverts a tracked-modified-to-upstream-identical file via git checkout' {
+    It 'does NOT revert tracked-modified file when HEAD differs from upstream (avoids silent self-refresh downgrade)' {
+        # Scenario: a prior self-refresh wrote the newer upstream version into
+        # the working tree, but the consumer has not yet committed it. HEAD
+        # still has the older content; upstream has the newer content; working
+        # tree matches upstream. The old revert path would silently downgrade
+        # the working tree back to HEAD's older content. The tightened path
+        # must leave the working tree alone whenever HEAD != upstream.
         $fx = New-CleanupFixture -Root $script:cleanupRoot
         Push-Location $fx.Consumer
         try {
@@ -1437,9 +1489,61 @@ Describe 'Invoke-MainTreeCleanup' {
             git commit -q -m "track stale script"
             Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
         } finally { Pop-Location }
-        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' | Out-Null
-        $reverted = Get-Content -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1') -Raw
-        $reverted | Should -Match 'old tracked content'
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+        $after = Get-Content -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1') -Raw
+        # Working tree preserved (matches upstream content), NOT reverted to old HEAD.
+        $after | Should -Not -Match 'old tracked content'
+        $after.TrimEnd("`r","`n") | Should -Be $fx.UpstreamScript.TrimEnd("`r","`n")
+        # And no false "differs" warning either (working tree byte-matches upstream).
+        ($warns | Out-String) | Should -Not -Match 'differ'
+    }
+
+    It 'does not warn "differs from upstream" when working file is byte-identical to a CRLF-stored upstream blob under autocrlf=true' {
+        # Reproduces the autocrlf false-negative: upstream blob is stored with
+        # raw CRLF bytes (because upstream was committed with autocrlf=false).
+        # Consumer has autocrlf=true. The working-tree file has CRLF bytes
+        # byte-identical to the stored blob. Without --no-filters, hash-object
+        # normalises CRLF -> LF before hashing and produces a different hash,
+        # causing a false "differs from upstream" warning.
+        $root = $script:cleanupRoot
+        $upstream = Join-Path $root 'upstream'
+        $consumer = Join-Path $root 'consumer'
+        New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+        New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+        $crlfBytes = [byte[]](([System.Text.Encoding]::ASCII.GetBytes("# crlf upstream content`r`nWrite-Host 'hi'`r`n")))
+
+        Push-Location $upstream
+        try {
+            git init -q -b main
+            git config core.autocrlf false
+            git config user.email u@u.u
+            git config user.name u
+            [System.IO.File]::WriteAllBytes((Join-Path $upstream 'Pull-SDLC.ai.ps1'), $crlfBytes)
+            git add -A | Out-Null
+            git commit -q -m "upstream crlf"
+        } finally { Pop-Location }
+
+        Push-Location $consumer
+        try {
+            git init -q -b main
+            git config core.autocrlf true
+            git config user.email c@c.c
+            git config user.name c
+            Set-Content -LiteralPath 'README.md' -Value 'r' -NoNewline
+            git add -A | Out-Null
+            git commit -q -m "seed"
+            git remote add sdlc.ai $upstream
+            git fetch sdlc.ai --quiet 2>$null | Out-Null
+            # Write the CRLF working file (untracked) byte-identical to upstream blob.
+            [System.IO.File]::WriteAllBytes((Join-Path $consumer 'Pull-SDLC.ai.ps1'), $crlfBytes)
+        } finally { Pop-Location }
+
+        Invoke-MainTreeCleanup -RepoRoot $consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+
+        # No "differs" warning, and the untracked-identical file was removed.
+        ($warns | Out-String) | Should -Not -Match 'differ'
+        Test-Path -LiteralPath (Join-Path $consumer 'Pull-SDLC.ai.ps1') | Should -BeFalse
     }
 }
 
