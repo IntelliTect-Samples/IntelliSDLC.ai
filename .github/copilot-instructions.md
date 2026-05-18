@@ -306,16 +306,20 @@ just performed (e.g., a Q&A turn with no PR).
 | **Issue** | Full link: `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)` |
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
-| **Evidence** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran (i.e. whenever the change has observable effects). |
+| **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
+| **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
 
 Place these near the top of the summary so they are immediately scannable.
 The command-to-test field is the project's actual verification command (e.g.,
 `dotnet test`, `npm test`, `Invoke-Pester -Path .\...`). When multiple commands
 are needed, list them in the order they should be run.
 
-The Evidence field links to the artifact produced by the evidence-capture skill
-(Phase 5b). See `.github/skills/evidence-capture/SKILL.md` for the artifact
-formats and `Publish-Evidence.ps1` for the upload helper.
+The Evidence fields link to the artifact produced by the evidence-capture skill
+(Phase 5b). The **local** link is the primary review path -- a clickable
+`file:///` URL the reviewer opens with one click from the terminal. The **PR**
+link is the durable copy for teammates. See
+`.github/skills/evidence-capture/SKILL.md` for the artifact formats and the
+local-link contract, and `Publish-Evidence.ps1` for the upload helper.
 
 Example:
 
@@ -324,7 +328,8 @@ Example:
 - **PR**: [#57](https://github.com/owner/repo/pull/57) (merged)
 - **Branch**: [`feat/42-user-auth`](https://github.com/owner/repo/tree/feat/42-user-auth)
 - **Test**: `dotnet test --no-build`
-- **Evidence**: [PR comment](https://github.com/owner/repo/pull/57#issuecomment-1234567)
+- **Evidence (local)**: file:///D:/Git/repo/.evidence/phase-5b-20260101T000000Z/evidence.md
+- **Evidence (PR)**: https://github.com/owner/repo/pull/57#issuecomment-1234567
 ```
 
 ##### PR Summary Formatting
