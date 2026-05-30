@@ -49,14 +49,14 @@ initialize git first.
 ```powershell
 mkdir my-new-project; cd my-new-project
 iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
-./Pull-SDLC.ai.ps1 -AllowDefaultBranch
+./Pull-SDLC.ai.ps1
 gh repo create --source=. --public --push
 ```
 
-`-AllowDefaultBranch` is required for the very first commit because a fresh
-repo has no pre-commit hook installed yet, so the auto-worktree path does
-not apply. Subsequent runs do not need it (the hook ships with the
-instruction set and is active after the first sync).
+The script detects that no `origin` remote exists yet and commits the
+sync directly on `main` (there is no PR workflow to protect when there
+is no remote). Once `gh repo create --push` adds origin, subsequent runs
+naturally route through the auto-worktree path.
 
 `-NoAutoInit` disables the auto-`git init` step if you prefer to set up the
 repo manually first.
@@ -69,7 +69,7 @@ point the sync at it explicitly via `-RemoteUrl`:
 ```powershell
 mkdir my-new-project; cd my-new-project
 iwr https://raw.githubusercontent.com/Acme/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
-./Pull-SDLC.ai.ps1 -RemoteUrl https://github.com/Acme/IntelliSDLC.ai.git -AllowDefaultBranch
+./Pull-SDLC.ai.ps1 -RemoteUrl https://github.com/Acme/IntelliSDLC.ai.git
 ```
 
 The default `-RemoteUrl` is the canonical IntelliTect-Samples copy.
