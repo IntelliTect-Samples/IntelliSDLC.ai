@@ -22,9 +22,12 @@ iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pu
 
 The script auto-detects the from-zero state (no `.sdlc-ai-sync.json`, no
 prior `chore(sdlc): sync` commit, no upstream-managed files) and proceeds
-without prompting. If your repo is on `main` with a pre-commit policy active,
-the script auto-creates a worktree (`.worktrees/sdlc-sync`), commits there,
-pushes, and opens a PR -- review and merge it like any other change.
+without prompting. **First-time sync commits directly on the current
+branch** -- tooling onboarding is not a reviewable change. **Subsequent
+syncs** detect the prior state file and route through an auto-worktree
+(`.worktrees/sdlc-sync`) + PR for review. Pass `-CommitOnMain` to force
+direct-on-`main` even on a steady-state sync, or `-CommitOnMain:$false`
+to force the auto-worktree path on the first sync.
 
 What the script does:
 
@@ -53,10 +56,10 @@ iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pu
 gh repo create --source=. --public --push
 ```
 
-The script detects that no `origin` remote exists yet and commits the
-sync directly on `main` (there is no PR workflow to protect when there
-is no remote). Once `gh repo create --push` adds origin, subsequent runs
-naturally route through the auto-worktree path.
+The script detects the bootstrap state (no `.sdlc-ai-sync.json`, no
+prior sync commit) and commits the first sync directly on `main`. Once
+the project has been synced once, subsequent runs route through the
+auto-worktree + PR path automatically.
 
 `-NoAutoInit` disables the auto-`git init` step if you prefer to set up the
 repo manually first.
