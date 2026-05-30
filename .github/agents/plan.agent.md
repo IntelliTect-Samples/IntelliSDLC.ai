@@ -93,7 +93,7 @@ So that [measurable outcome]
 ## Evidence Plan
 - **Change type**: [CLI / library / UI / perf / refactor / config-docs / bug fix]
 - **Artifact format**: [markdown / markdown index + HTML + recording / perf table / attestation]
-- **Capture command**: [exact shell command(s) that produce the artifact]
+- **Capture command**: [exact shell command(s) that produce the artifact -- normally `Publish-Evidence.ps1` with a stock template; do not invent a per-feature recording helper]
 - **Entry-point file**: `.evidence/<phase-id>/evidence.md`
 
 ## Acceptance Criteria
@@ -122,7 +122,13 @@ The four required fields:
 2. **Artifact format** -- markdown, markdown index + HTML + recording,
    perf table, attestation, etc. Must match the change type.
 3. **Capture command** -- the exact shell command that produces the
-   artifact (so the reviewer or a follow-up agent can re-run it).
+   artifact (so the reviewer or a follow-up agent can re-run it). This is
+   normally `Publish-Evidence.ps1` invoked with the appropriate template
+   (`cli-evidence.md.tmpl`, `ui-evidence.html.tmpl`, ...) -- the
+   `evidence-capture` skill already covers every change-type. Do **not**
+   plan to ship a per-feature recording helper script; if the existing
+   templates can't capture the change, file an issue against the
+   `evidence-capture` skill instead.
 4. **Entry-point file** -- always a single anchor file, almost always
    `.evidence/<phase-id>/evidence.md`. This is the file the reviewer opens
    via the `file:///` URL printed by `Publish-Evidence.ps1`.
