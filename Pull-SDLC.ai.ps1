@@ -175,6 +175,22 @@ $script:UpstreamManagedPaths = @(
     'Consolidate-Tasks.Tests.ps1'
 )
 
+# Subset of UpstreamManagedPaths whose mere presence in the consumer's working
+# tree does NOT indicate "consumer already has managed content." These are the
+# meta-scripts the user downloads (via `iwr`) to *perform* the bootstrap, so
+# they are guaranteed to exist at bootstrap time -- treating them as a signal
+# of prior managed content would mean every from-zero bootstrap that started
+# with `iwr Pull-SDLC.ai.ps1 ...` triggers the protective overwrite prompt,
+# defeating the unambiguous auto-bootstrap path (issue #152). They remain in
+# UpstreamManagedPaths so sync still reconciles them against upstream.
+$script:MetaScriptPaths = @(
+    'Pull-SDLC.ai.ps1',
+    'Pull-SDLC.ai.Tests.ps1',
+    'Cleanup-Worktree.ps1',
+    'Consolidate-Tasks.ps1',
+    'Consolidate-Tasks.Tests.ps1'
+)
+
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths
 # (e.g. .github/instructions/project.instructions.md sits under the managed
 # .github/instructions/ tree but is filtered out of the op list).
@@ -682,6 +698,11 @@ function Test-NoManagedFilesPresent {
         [string[]]$ManagedPaths = $script:UpstreamManagedPaths
     )
     foreach ($p in $ManagedPaths) {
+        # Skip meta-scripts: the bootstrap script and its siblings are
+        # guaranteed to be present when the user runs `iwr Pull-SDLC.ai.ps1`
+        # in an otherwise empty directory, so their presence is not a signal
+        # of pre-existing managed content (issue #152).
+        if ($script:MetaScriptPaths -contains $p) { continue }
         $rel = $p -replace '/', [System.IO.Path]::DirectorySeparatorChar
         $abs = Join-Path $RepoRoot $rel
         if ($p.EndsWith('/')) {

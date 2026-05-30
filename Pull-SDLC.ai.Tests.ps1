@@ -882,6 +882,30 @@ Describe 'Test-NoManagedFilesPresent (issue #136)' {
         'agent' | Out-File -Encoding utf8 (Join-Path $root '.github/agents/x.agent.md') -NoNewline
         Test-NoManagedFilesPresent -RepoRoot $root | Should -BeFalse
     }
+
+    It 'returns $true when only the bootstrap script (Pull-SDLC.ai.ps1) is present (issue #152)' {
+        $root = Join-Path $TestDrive ("nm-bootstrap-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        '# stub' | Out-File -Encoding utf8 (Join-Path $root 'Pull-SDLC.ai.ps1') -NoNewline
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
+    }
+
+    It 'returns $true when only meta-scripts (Pull-SDLC.ai + Cleanup-Worktree + Consolidate-Tasks) are present (issue #152)' {
+        $root = Join-Path $TestDrive ("nm-meta-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        foreach ($f in 'Pull-SDLC.ai.ps1','Pull-SDLC.ai.Tests.ps1','Cleanup-Worktree.ps1','Consolidate-Tasks.ps1','Consolidate-Tasks.Tests.ps1') {
+            '# stub' | Out-File -Encoding utf8 (Join-Path $root $f) -NoNewline
+        }
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
+    }
+
+    It 'still returns $false when a meta-script AND CLAUDE.md are present (prompt must still fire to protect hand-authored content)' {
+        $root = Join-Path $TestDrive ("nm-meta-plus-claude-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        '# stub' | Out-File -Encoding utf8 (Join-Path $root 'Pull-SDLC.ai.ps1') -NoNewline
+        'hand-authored' | Out-File -Encoding utf8 (Join-Path $root 'CLAUDE.md') -NoNewline
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeFalse
+    }
 }
 
 Describe 'Invoke-PullSDLC auto-worktree mode' {
