@@ -41,7 +41,8 @@ You MUST complete these steps in order:
 4. **Present design** — in sections scaled to complexity, get user approval after each section
 5. **Declare the Evidence Plan** — every plan must name the change type, the artifact format, the exact capture command, and the entry-point file the reviewer will open (see "Evidence Plan" below). The dev-loop's Phase 5b verifies the produced artifact matches this declaration.
 6. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output)
-7. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
+7. **Save the plan to `tasks/<feature>-plan.md`** — durable, in-repo artifact mirroring the issue body. Format defined in **Saving the Plan to `tasks/`** below. This is the single authoritative spec for the `tasks/<feature>-plan.md` file -- `@dev-loop` Phase 2 *resumes / expands* this file, it does not redefine the format.
+8. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
 
 ## The Process
 
@@ -129,6 +130,72 @@ The four required fields:
 For pure-internal refactors (no observable behavior change), the artifact
 format is `attestation` and the capture command is the test runner; the
 attestation markdown still serves as the entry-point file.
+
+## Saving the Plan to `tasks/`
+
+**This section is the authoritative spec for `tasks/<feature>-plan.md`.**
+`@dev-loop` Phase 2 references this section by name -- it does not redefine
+the file format.
+
+After the GitHub issue is created, save the same approved plan to a
+companion file in the consumer's `tasks/` directory. The file is durable,
+in-repo, and survives session/scratch loss; `@dev-loop` Phase 2 resumes
+and expands it.
+
+### Path and Slug Convention
+
+- Path: `tasks/<feature>-plan.md` at the repo root.
+- `<feature>` = `<issue#>-<short-description>` matching the GitHub issue
+  number and the eventual feature branch name (`feat/<issue#>-<short-description>`).
+- Create the `tasks/` directory if it does not yet exist.
+- See `tasks/README.md` (consumer-owned) for the project's local
+  conventions; do not contradict it.
+
+### Required File Structure
+
+```markdown
+# <Feature Title>
+
+- Issue: https://github.com/<owner>/<repo>/issues/<n>
+- PR:    (filled in once the PR exists)
+- Slug:  <feature>
+
+## Overview
+[1-2 sentence description -- mirrors the issue body]
+
+## Approved Design
+[Architecture, approach, key decisions from the design discussion]
+
+## Evidence Plan
+- **Change type**: ...
+- **Artifact format**: ...
+- **Capture command**: ...
+- **Entry-point file**: `.evidence/<phase-id>/evidence.md`
+
+## Acceptance Criteria
+- [ ] [Specific testable action]
+- [ ] [Specific behavior with expected outcome]
+- [ ] [Error case handling]
+
+## Implementation Checklist
+- [ ] [High-level task 1 -- @dev-loop Phase 2 expands this with file paths, code, test commands]
+- [ ] [High-level task 2]
+- [ ] [Tests for each task]
+```
+
+### Lifecycle
+
+| Stage | Owner | Action |
+|---|---|---|
+| Initial creation | `@plan` | Write the file with design + acceptance criteria + **skeleton** implementation checklist (high-level items, mirroring the GitHub issue body). |
+| Expansion | `@dev-loop` Phase 2 | **Resume / update** the existing file. For each skeleton item, expand into bite-sized tasks (2-5 minutes each) with exact file paths, complete code, exact test commands, and commit messages. Do NOT create a new file -- update in place. |
+| Maintenance | `@dev-loop` Phases 3-7 | Tick checklist items as they complete. Update `Approved Design` only when the user approves a deviation; otherwise the design is locked. |
+
+### Cross-Reference
+
+Both `@plan` and `@dev-loop` Phase 2 use this single spec. If the file
+format or slug convention changes, update **this section only**;
+`dev-loop.agent.md` defers to it.
 
 ## After the Design
 
