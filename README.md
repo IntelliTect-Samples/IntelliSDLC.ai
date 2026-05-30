@@ -4,21 +4,104 @@ Generic AI agentic coding instructions for C#/.NET projects on GitHub. These fil
 configure Copilot, Claude Code, Codex, and other AI coding assistants with a
 consistent development workflow (TDD, code review, dev loop orchestration, etc.).
 
-## Usage
+## Onboarding
 
-Two ways to consume these instructions in your project:
+Pick the recipe that matches your starting state. All three end at the same
+place: an `sdlc.ai` git remote pointing at this repo, all upstream-managed
+files in place, consumer-owned templates scaffolded with bare names, and a
+`chore(sdlc): sync` commit recording the anchor for future incremental syncs.
 
-- **Initial copy:** clone or download this repo and copy the files into your project.
-- **Ongoing sync:** use `Pull-SDLC.ai.ps1` -- it adds this repo as a git remote
-  named `instructions` and merges updates. See `Pull-SDLC.ai.ps1 -?` for details.
+### A. Existing repo (already has files, history, and `origin`)
 
-On first sync, `Pull-SDLC.ai.ps1` also scaffolds the consumer-owned files
-(`.github/instructions/project.instructions.md`, `CLAUDE.project.md`, and
-`.gitattributes`) from their `*.template` counterparts. They are never
-overwritten on subsequent syncs. The `.gitattributes.template` ships a
-recommended baseline (LF for `*.sh`, CRLF for `*.ps1` and `*.bat`, binaries
-left alone) -- once placed it is fully consumer-owned, so projects can edit
-or replace it without upstream interference.
+The most common case. From the repo root:
+
+```powershell
+iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
+./Pull-SDLC.ai.ps1
+```
+
+The script auto-detects the from-zero state (no `.sdlc-ai-sync.json`, no
+prior `chore(sdlc): sync` commit, no upstream-managed files) and proceeds
+without prompting. If your repo is on `main` with a pre-commit policy active,
+the script auto-creates a worktree (`.worktrees/sdlc-sync`), commits there,
+pushes, and opens a PR -- review and merge it like any other change.
+
+What the script does:
+
+- Adds an `sdlc.ai` git remote pointing at this repo and fetches `main`.
+- Lays down all upstream-managed files (`CLAUDE.md`,
+  `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
+  generic `.github/instructions/*`, `.claude/*`).
+- Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
+  `.github/instructions/project.instructions.md`, `.gitattributes`) from
+  their `*.template` counterparts. Existing copies are never overwritten.
+- Extends `.gitignore` with required entries; never replaces it.
+- Lands a `chore(sdlc): sync` commit and writes `.sdlc-ai-sync.json`
+  recording the anchor for future incremental syncs.
+- Leaves your `origin` remote untouched.
+
+### B. Brand-new project (no files, no repo, no `origin`)
+
+Create a directory, then run the same one-liner. The script auto-runs
+`git init -b main` if it detects no git repository, so you do not need to
+initialize git first.
+
+```powershell
+mkdir my-new-project; cd my-new-project
+iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
+./Pull-SDLC.ai.ps1 -AllowDefaultBranch
+gh repo create --source=. --public --push
+```
+
+`-AllowDefaultBranch` is required for the very first commit because a fresh
+repo has no pre-commit hook installed yet, so the auto-worktree path does
+not apply. Subsequent runs do not need it (the hook ships with the
+instruction set and is active after the first sync).
+
+`-NoAutoInit` disables the auto-`git init` step if you prefer to set up the
+repo manually first.
+
+### C. Brand-new project from a fork in another org
+
+If you maintain a fork of this repo in your own org (say `Acme/IntelliSDLC.ai`),
+point the sync at it explicitly via `-RemoteUrl`:
+
+```powershell
+mkdir my-new-project; cd my-new-project
+iwr https://raw.githubusercontent.com/Acme/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
+./Pull-SDLC.ai.ps1 -RemoteUrl https://github.com/Acme/IntelliSDLC.ai.git -AllowDefaultBranch
+```
+
+The default `-RemoteUrl` is the canonical IntelliTect-Samples copy.
+
+## Updating an Onboarded Repo
+
+Once `.sdlc-ai-sync.json` exists, simply re-run the script with no flags:
+
+```powershell
+./Pull-SDLC.ai.ps1
+```
+
+It pulls upstream changes, replays them as a diff against your recorded
+anchor, and lands a new `chore(sdlc): sync` commit. The pre-flight drift
+guard refuses to run if any upstream-managed file shows local edits since
+the last sync; pass `-Force` to override (and explain why in the commit
+message).
+
+## Template Scaffolding
+
+On first sync the script copies these `*.template` files to their bare
+names if the bare name is missing:
+
+| Template | Bare name | Purpose |
+|---|---|---|
+| `.github/instructions/project.instructions.md.template` | `.github/instructions/project.instructions.md` | Project-specific conventions read by all agents |
+| `CLAUDE.project.md.template` | `CLAUDE.project.md` | Claude-specific orientation overrides |
+| `.gitattributes.template` | `.gitattributes` | Recommended baseline (LF for `*.sh`, CRLF for `*.ps1` / `*.bat`) |
+| `tasks/README.md.template` | `tasks/README.md` | Onboarding for the `tasks/` plan directory |
+
+Existing bare-name files are never overwritten. Once placed, all four are
+fully consumer-owned -- edit them freely.
 
 ## File Ownership
 
