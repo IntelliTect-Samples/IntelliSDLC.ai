@@ -29,6 +29,11 @@
 .PARAMETER RemoteName
     Local name for the upstream git remote. Default: sdlc.ai.
 
+.PARAMETER RemoteUrl
+    URL of the upstream IntelliSDLC.ai git remote. Default: the canonical
+    IntelliTect-Samples copy. Override when running from a fork or mirror
+    (e.g. an org-portable bootstrap that points at a same-org sibling).
+
 .PARAMETER WhatIf
     Print the planned op list and exit without modifying the working tree.
 
@@ -36,11 +41,21 @@
     Bypass the pre-flight drift guard. A warning banner is printed.
 
 .PARAMETER Bootstrap
-    Accept the empty-tree anchor (full refresh from upstream HEAD) without
-    prompting when no .sdlc-ai-sync.json and no prior sync commit are found.
+    Explicitly accept the empty-tree anchor (full refresh from upstream
+    HEAD) without prompting. Usually unnecessary -- the script auto-detects
+    an unambiguous bootstrap state (no .sdlc-ai-sync.json, no prior sync
+    commit, AND no upstream-managed files present) and proceeds silently.
+    Use this flag to force a full refresh even when managed files are
+    already present (will overwrite them).
 
 .PARAMETER NoPrompt
-    Equivalent to -Bootstrap when no anchor is found; never prompts.
+    Suppress the bootstrap prompt in ambiguous cases. Equivalent to
+    -Bootstrap when no anchor is found; never prompts. Use in CI.
+
+.PARAMETER NoAutoInit
+    When the current directory is not a git repository, do NOT run
+    `git init` automatically. Default behavior is to initialize the repo
+    on the configured branch so the sync can proceed.
 
 .PARAMETER AllowDefaultBranch
     Bypass the pre-flight check that blocks running from the protected branch.
@@ -64,9 +79,11 @@
 param(
     [string]$Branch = 'main',
     [string]$RemoteName = 'sdlc.ai',
+    [string]$RemoteUrl = 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git',
     [switch]$Force,
     [switch]$Bootstrap,
     [switch]$NoPrompt,
+    [switch]$NoAutoInit,
     [switch]$AllowDefaultBranch,
     [switch]$NoAutoWorktree,
     [switch]$NoAutoPR,
@@ -75,8 +92,6 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-
-$RemoteUrl = 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git'
 
 # Map of <template path> -> <bare target path> used to scaffold consumer-owned
 # files on first sync.
@@ -586,12 +601,56 @@ function Set-SdlcSyncState {
     [System.IO.File]::WriteAllText($absPath, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
+function Test-NoManagedFilesPresent {
+    <#
+    .SYNOPSIS
+        Returns $true if the working tree contains NO files matching any
+        upstream-managed path or prefix. Used by Resolve-SyncAnchor to
+        detect an unambiguous bootstrap state (an empty repo, or a repo
+        with only consumer-owned content). Always-local and merge-paths
+        are excluded so e.g. a stray README.md or .gitignore does not
+        block auto-detect.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string[]]$ManagedPaths = $script:UpstreamManagedPaths
+    )
+    foreach ($p in $ManagedPaths) {
+        $rel = $p -replace '/', [System.IO.Path]::DirectorySeparatorChar
+        $abs = Join-Path $RepoRoot $rel
+        if ($p.EndsWith('/')) {
+            if (-not (Test-Path -LiteralPath $abs -PathType Container)) { continue }
+            $files = Get-ChildItem -LiteralPath $abs -Recurse -File -Force -ErrorAction SilentlyContinue
+            foreach ($f in $files) {
+                $r = $f.FullName.Substring($RepoRoot.Length).TrimStart('\','/') -replace '\\', '/'
+                if (Test-IsUpstreamManagedPath -Path $r) { return $false }
+            }
+        }
+        else {
+            if (Test-Path -LiteralPath $abs -PathType Leaf) {
+                if (Test-IsUpstreamManagedPath -Path $p) { return $false }
+            }
+        }
+    }
+    return $true
+}
+
 function Resolve-SyncAnchor {
     <#
     .SYNOPSIS
-        Determines the anchor SHA. Returns @{ Sha = <sha or empty>; Source = <state|grep|bootstrap> }.
-        Returns $null if no anchor could be determined and -Bootstrap / -NoPrompt
-        not set and user declines the prompt.
+        Determines the anchor SHA. Returns @{ Sha = <sha or empty>; Source = <state|grep|bootstrap|auto-bootstrap> }.
+        Returns $null if no anchor could be determined and the user
+        declines the prompt in the ambiguous case.
+    .DESCRIPTION
+        Resolution order:
+        1. -Bootstrap explicit override -> bootstrap.
+        2. .sdlc-ai-sync.json state file -> state anchor.
+        3. `chore.*sync.*IntelliSDLC` commit in git log -> grep anchor.
+        4. Auto-detect: no managed files in working tree -> silent
+           auto-bootstrap with banner (the unambiguous from-zero case).
+        5. -NoPrompt -> bootstrap (CI mode).
+        6. Otherwise prompt the user.
     #>
     [CmdletBinding()]
     param(
@@ -599,10 +658,10 @@ function Resolve-SyncAnchor {
         [switch]$Bootstrap,
         [switch]$NoPrompt
     )
-    $state = Get-SdlcSyncState -RepoRoot $RepoRoot
     if ($Bootstrap) {
         return @{ Sha = ''; Source = 'bootstrap' }
     }
+    $state = Get-SdlcSyncState -RepoRoot $RepoRoot
     if ($null -ne $state -and $state.PSObject.Properties.Name -contains 'lastSyncCommit' -and $state.lastSyncCommit) {
         return @{ Sha = $state.lastSyncCommit; Source = 'state' }
     }
@@ -615,11 +674,19 @@ function Resolve-SyncAnchor {
         Write-Host "Anchor: using commit $grep (matched 'chore: sync IntelliSDLC...' in git log)." -ForegroundColor DarkGray
         return @{ Sha = ($grep | Select-Object -First 1).Trim(); Source = 'grep' }
     }
-    if ($Bootstrap -or $NoPrompt) {
+    $absRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
+    if (Test-NoManagedFilesPresent -RepoRoot $absRepoRoot) {
+        Write-Host ''
+        Write-Host '[Bootstrap] No prior sync detected and no upstream-managed files present.' -ForegroundColor Cyan
+        Write-Host '[Bootstrap] Performing initial sync from upstream HEAD (empty-tree anchor).' -ForegroundColor Cyan
+        return @{ Sha = ''; Source = 'auto-bootstrap' }
+    }
+    if ($NoPrompt) {
         return @{ Sha = ''; Source = 'bootstrap' }
     }
     Write-Host ''
     Write-Host 'No .sdlc-ai-sync.json and no prior sync commit found.' -ForegroundColor Yellow
+    Write-Host 'Existing upstream-managed files were detected; bootstrap will overwrite them.' -ForegroundColor Yellow
     Write-Host 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).' -ForegroundColor Yellow
     $ans = Read-Host 'Proceed with bootstrap? [y/N]'
     if ($ans -match '^[Yy]') {
@@ -1138,6 +1205,7 @@ function Invoke-PullSDLC {
         [switch]$Bootstrap,
         [switch]$NoPrompt,
         [switch]$NoFetch,
+        [switch]$NoAutoInit,
         [switch]$AllowDefaultBranch,
         [switch]$NoAutoWorktree,
         [switch]$NoAutoPR,
@@ -1145,7 +1213,21 @@ function Invoke-PullSDLC {
     )
 
     if (-not $RepoRoot) {
-        $RepoRoot = (git rev-parse --show-toplevel).Trim()
+        $topLevel = git rev-parse --show-toplevel 2>$null
+        if (-not $topLevel) {
+            if ($NoAutoInit) {
+                Write-Host 'ERROR: not inside a git repository and -NoAutoInit specified. Run `git init` first or omit -NoAutoInit.' -ForegroundColor Red
+                return 5
+            }
+            Write-Host "[Bootstrap] No git repository detected. Running 'git init -b $Branch' in the current directory..." -ForegroundColor Cyan
+            git init -b $Branch | Out-Null
+            $topLevel = git rev-parse --show-toplevel 2>$null
+            if (-not $topLevel) {
+                Write-Host 'ERROR: git init failed; cannot continue.' -ForegroundColor Red
+                return 5
+            }
+        }
+        $RepoRoot = $topLevel.Trim()
     }
 
     if (-not $AllowDefaultBranch -and -not $WhatIfPreference) {
@@ -1364,6 +1446,7 @@ if (Invoke-SelfRefreshGate -ScriptPath $PSCommandPath -BoundParameters $PSBoundP
 }
 
 $exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
-    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -AllowDefaultBranch:$AllowDefaultBranch `
-    -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR -NoSelfUpdate:$NoSelfUpdate -WhatIf:$WhatIfPreference
+    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -NoAutoInit:$NoAutoInit `
+    -AllowDefaultBranch:$AllowDefaultBranch -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR `
+    -NoSelfUpdate:$NoSelfUpdate -WhatIf:$WhatIfPreference
 exit $exitCode
