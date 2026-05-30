@@ -661,6 +661,117 @@ Describe 'Resolve-SyncAnchor -Bootstrap regression' {
     }
 }
 
+Describe 'Resolve-SyncAnchor auto-detect (issue #136)' {
+
+    It 'auto-bootstraps silently when no state, no sync commit, and no managed files exist' {
+        $root = Join-Path $TestDrive ("auto-empty-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'hello' | Out-File -Encoding utf8 README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m initial
+        } finally { Pop-Location }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root
+        $anchor | Should -Not -BeNullOrEmpty
+        $anchor.Source | Should -Be 'auto-bootstrap'
+        $anchor.Sha | Should -Be ''
+    }
+
+    It 'auto-bootstraps when only consumer-owned files (e.g. README, .gitignore) are present' {
+        $root = Join-Path $TestDrive ("auto-consumer-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'project' | Out-File -Encoding utf8 README.md -NoNewline
+            'node_modules/' | Out-File -Encoding utf8 .gitignore -NoNewline
+            git add -A | Out-Null
+            git commit -q -m initial
+        } finally { Pop-Location }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root
+        $anchor.Source | Should -Be 'auto-bootstrap'
+    }
+
+    It 'returns null (not auto-bootstrap) when managed files are present and user declines prompt' {
+        $root = Join-Path $TestDrive ("auto-managed-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            New-Item -ItemType Directory -Path '.github' -Force | Out-Null
+            'managed' | Out-File -Encoding utf8 'CLAUDE.md' -NoNewline
+            'instr' | Out-File -Encoding utf8 '.github/copilot-instructions.md' -NoNewline
+            git add -A | Out-Null
+            git commit -q -m seed
+        } finally { Pop-Location }
+
+        # Without -NoPrompt and with managed files present, Read-Host would
+        # prompt -- mock it to simulate the user typing 'n'.
+        Mock -CommandName Read-Host -MockWith { 'n' }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root
+        $anchor | Should -BeNullOrEmpty
+    }
+
+    It 'falls through to -NoPrompt bootstrap when managed files exist' {
+        $root = Join-Path $TestDrive ("auto-managed-noprompt-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'managed' | Out-File -Encoding utf8 'CLAUDE.md' -NoNewline
+            git add -A | Out-Null
+            git commit -q -m seed
+        } finally { Pop-Location }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root -NoPrompt
+        $anchor.Source | Should -Be 'bootstrap'
+    }
+}
+
+Describe 'Test-NoManagedFilesPresent (issue #136)' {
+
+    It 'returns $true for an empty directory' {
+        $root = Join-Path $TestDrive ("nm-empty-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
+    }
+
+    It 'returns $true when only consumer-owned files exist' {
+        $root = Join-Path $TestDrive ("nm-consumer-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        'x' | Out-File -Encoding utf8 (Join-Path $root 'README.md') -NoNewline
+        'y' | Out-File -Encoding utf8 (Join-Path $root 'CLAUDE.project.md') -NoNewline
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
+    }
+
+    It 'returns $false when CLAUDE.md is present' {
+        $root = Join-Path $TestDrive ("nm-claude-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        'x' | Out-File -Encoding utf8 (Join-Path $root 'CLAUDE.md') -NoNewline
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeFalse
+    }
+
+    It 'returns $false when .github/agents/ contains files' {
+        $root = Join-Path $TestDrive ("nm-agents-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $root '.github/agents') -Force | Out-Null
+        'agent' | Out-File -Encoding utf8 (Join-Path $root '.github/agents/x.agent.md') -NoNewline
+        Test-NoManagedFilesPresent -RepoRoot $root | Should -BeFalse
+    }
+}
+
 Describe 'Invoke-PullSDLC auto-worktree mode' {
 
     BeforeEach {
@@ -1077,19 +1188,22 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
 }
 
 Describe 'Script top-level self-refresh (issue #110 end-to-end)' {
-    It 'the script has no RemoteUrl parameter, so re-exec with script PSBoundParameters cannot leak it' {
-        # The bug fired because Invoke-PullSDLC's $PSBoundParameters
-        # contained 'RemoteUrl' (a function-only param). Moving the
-        # gate to script top level means $PSBoundParameters there is
-        # bounded by the script's own param block, which by assertion
-        # does not declare RemoteUrl.
+    It 'exposes RemoteUrl as a script param (org-portability) and excludes function-only params' {
+        # Issue #110 originally asserted RemoteUrl was NOT a script param so
+        # PSBoundParameters at script top level couldn't leak it into the
+        # re-exec hashtable. As of issue #136 RemoteUrl is intentionally a
+        # top-level CLI param (so a fork in another org can override the
+        # canonical URL); the re-exec path then propagates it correctly,
+        # which is the desired behavior. Function-only params (RepoRoot,
+        # NoFetch) remain excluded.
         $scriptCmd = Get-Command "$PSScriptRoot\Pull-SDLC.ai.ps1"
-        $scriptCmd.Parameters.Keys | Should -Not -Contain 'RemoteUrl'
+        $scriptCmd.Parameters.Keys | Should -Contain 'RemoteUrl'
         $scriptCmd.Parameters.Keys | Should -Not -Contain 'RepoRoot'
         $scriptCmd.Parameters.Keys | Should -Not -Contain 'NoFetch'
         # Sanity: outer params we expect are present.
         $scriptCmd.Parameters.Keys | Should -Contain 'Branch'
         $scriptCmd.Parameters.Keys | Should -Contain 'NoSelfUpdate'
+        $scriptCmd.Parameters.Keys | Should -Contain 'NoAutoInit'
     }
 }
 
