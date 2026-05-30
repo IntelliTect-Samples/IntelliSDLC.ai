@@ -835,6 +835,29 @@ Describe 'Resolve-SyncAnchor auto-detect (issue #136)' {
         $anchor | Should -BeNullOrEmpty
     }
 
+    It 'auto-bootstraps when only the bootstrap script (Pull-SDLC.ai.ps1) is present (issue #152 regression)' {
+        # Reproduces the user-reported bug from issue #152: a brand-new
+        # directory containing only the just-downloaded bootstrap script
+        # used to fall through to the protective overwrite prompt because
+        # Pull-SDLC.ai.ps1 itself was a managed path. With MetaScriptPaths
+        # excluded from Test-NoManagedFilesPresent the silent auto-bootstrap
+        # path fires as expected.
+        $root = Join-Path $TestDrive ("auto-bootstrap-script-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Push-Location $root
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            '# stub bootstrap script' | Out-File -Encoding utf8 'Pull-SDLC.ai.ps1' -NoNewline
+            git add -A | Out-Null
+            git commit -q -m initial
+        } finally { Pop-Location }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $root
+        $anchor.Source | Should -Be 'auto-bootstrap'
+    }
+
     It 'falls through to -NoPrompt bootstrap when managed files exist' {
         $root = Join-Path $TestDrive ("auto-managed-noprompt-" + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -1980,13 +2003,6 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
     It 'F3: sync-manifest.json is not present in the upstream tree (deleted)' {
         $upstreamRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
         Test-Path -LiteralPath (Join-Path $upstreamRoot 'sync-manifest.json') | Should -BeFalse -Because 'sync-manifest.json was drift-prone documentation and has been deleted in favor of the script-level lists.'
-    }
-
-    It 'F4: post-bootstrap output suggests committing scaffolded files and adding an origin remote (carve-out case)' -Skip {
-        # F4 is now handled by Write-NextStepsBanner (issue #149), which
-        # has its own tests in 'Describe Write-NextStepsBanner'. Kept as a
-        # skipped placeholder so the issue #148 cluster stays discoverable.
-        $true | Should -BeTrue
     }
 }
 
