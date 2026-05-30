@@ -866,6 +866,13 @@ function Test-CommitContextAllowed {
         Only the protected-branch rule is enforced here. Worktree / repo-root
         policies are left to .githooks/pre-commit so we don't duplicate or
         diverge from local conventions.
+
+        Carve-out for fresh repos (issue #143): if there is no 'origin' remote
+        configured, there is no PR workflow to protect; allow the direct
+        commit on the protected branch. The pre-commit hook (if installed)
+        ships with the sync and becomes active afterward, so subsequent runs
+        will naturally route through the auto-worktree path once origin is
+        added.
     #>
     [CmdletBinding()]
     param(
@@ -876,6 +883,10 @@ function Test-CommitContextAllowed {
     try {
         $branch = (git symbolic-ref --short HEAD 2>$null)
         if ($branch -eq $ProtectedBranch) {
+            $originUrl = git remote get-url origin 2>$null
+            if (-not $originUrl) {
+                return @{ Allowed = $true; Reason = "fresh repo: no 'origin' remote configured, PR workflow does not apply"; Branch = $branch }
+            }
             return @{ Allowed = $false; Reason = "on protected branch '$ProtectedBranch'"; Branch = $branch }
         }
         return @{ Allowed = $true; Reason = $null; Branch = $branch }

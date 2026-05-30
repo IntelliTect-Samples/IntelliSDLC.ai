@@ -573,10 +573,12 @@ Describe 'Test-CommitContextAllowed' {
             'seed' | Out-File -Encoding utf8 README.md -NoNewline
             git add -A | Out-Null
             git commit -q -m 'seed'
+            # Default fixture: established repo with an origin remote.
+            git remote add origin https://example.invalid/owner/repo.git
         } finally { Pop-Location }
     }
 
-    It 'blocks when HEAD is on the protected branch' {
+    It 'blocks when HEAD is on the protected branch and origin is configured' {
         $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
         $r.Allowed | Should -BeFalse
         $r.Branch | Should -Be 'main'
@@ -589,6 +591,15 @@ Describe 'Test-CommitContextAllowed' {
         $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
         $r.Allowed | Should -BeTrue
         $r.Branch | Should -Be 'chore/sdlc-sync'
+    }
+
+    It 'allows when on protected branch but no origin remote (fresh repo, issue #143)' {
+        Push-Location $script:ctxRoot
+        try { git remote remove origin } finally { Pop-Location }
+        $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
+        $r.Allowed | Should -BeTrue
+        $r.Branch | Should -Be 'main'
+        $r.Reason | Should -Match 'no .origin. remote configured'
     }
 }
 
@@ -604,7 +615,10 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
         # Move the consumer back onto main so the guard fires.
         Push-Location $fx.Consumer
-        try { git checkout -q main } finally { Pop-Location }
+        try {
+            git checkout -q main
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
 
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoWorktree
         $rc | Should -Be 3
@@ -618,7 +632,10 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
         Push-Location $fx.Consumer
-        try { git checkout -q main } finally { Pop-Location }
+        try {
+            git checkout -q main
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
 
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -AllowDefaultBranch
         $rc | Should -Be 0
@@ -630,12 +647,28 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
         Push-Location $fx.Consumer
-        try { git checkout -q main } finally { Pop-Location }
+        try {
+            git checkout -q main
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
 
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -WhatIf
         $rc | Should -Be 0
         # Untouched.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
+    }
+
+    It 'allows direct commit on main when no origin is configured (issue #143, fresh repo)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Move to main; do NOT add origin -- this is the brand-new project case.
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 }
 
