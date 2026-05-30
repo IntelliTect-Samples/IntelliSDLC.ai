@@ -1184,6 +1184,52 @@ function Invoke-SelfReExec {
     exit $LASTEXITCODE
 }
 
+function Write-NextStepsBanner {
+    <#
+    .SYNOPSIS
+        Print "Next steps" guidance after a successful from-zero
+        bootstrap so the user is not left at a dirty working tree
+        wondering what to do next. Issue #149.
+    .DESCRIPTION
+        Only printed when the run was an actual bootstrap (anchor
+        Source = 'bootstrap' or 'auto-bootstrap'). Lists the most
+        valuable consumer file to edit first, the commit incantation,
+        and -- when no `origin` is configured -- the `gh repo create`
+        hint for brand-new projects.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$AnchorSource,
+        [string[]]$ScaffoldedFiles = @()
+    )
+    if ($AnchorSource -notin @('bootstrap', 'auto-bootstrap')) { return }
+
+    Push-Location $RepoRoot
+    try {
+        $originUrl = git remote get-url origin 2>$null
+    }
+    finally { Pop-Location }
+
+    Write-Host ''
+    Write-Host 'Next steps:' -ForegroundColor Cyan
+    $primary = '.github/instructions/project.instructions.md'
+    if ($ScaffoldedFiles -contains $primary) {
+        Write-Host "  1. Start with $primary -- fill in the project-specific" -ForegroundColor Cyan
+        Write-Host '     architecture, tech stack, and conventions sections.' -ForegroundColor Cyan
+    }
+    else {
+        Write-Host '  1. Review the scaffolded consumer-owned files listed above.' -ForegroundColor Cyan
+    }
+    Write-Host '  2. Commit the scaffolded files and the bootstrap script:' -ForegroundColor Cyan
+    Write-Host '       git add .' -ForegroundColor Cyan
+    Write-Host '       git commit -m "chore: scaffold IntelliSDLC.ai consumer files"' -ForegroundColor Cyan
+    if (-not $originUrl) {
+        Write-Host '  3. If this is a brand-new project with no remote yet, create it on GitHub:' -ForegroundColor Cyan
+        Write-Host '       gh repo create --source=. --public --push' -ForegroundColor Cyan
+    }
+}
+
 function Invoke-SelfRefreshGate {
     <#
     .SYNOPSIS
@@ -1461,6 +1507,7 @@ function Invoke-PullSDLC {
     finally { Pop-Location }
 
     # Scaffold consumer-owned files from templates (first sync only).
+    $scaffolded = @()
     if (Test-IsUpstreamRepo) {
         Write-Host ''
         Write-Host "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding." -ForegroundColor DarkGray
@@ -1474,6 +1521,8 @@ function Invoke-PullSDLC {
             Write-Host 'Open each file and fill in the sections, then commit them to your repo.' -ForegroundColor Green
         }
     }
+
+    Write-NextStepsBanner -RepoRoot $RepoRoot -AnchorSource $anchorInfo.Source -ScaffoldedFiles $scaffolded
 
     return 0
 }

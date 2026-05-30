@@ -1773,3 +1773,65 @@ Describe 'Invoke-MainTreeCleanup' {
     }
 }
 
+
+
+Describe 'Write-NextStepsBanner (issue #149)' {
+
+    BeforeEach {
+        $script:nbRoot = Join-Path $TestDrive ("nb-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:nbRoot -Force | Out-Null
+        Push-Location $script:nbRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+        } finally { Pop-Location }
+    }
+
+    It 'prints the banner on auto-bootstrap with a primary scaffolded file' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('.github/instructions/project.instructions.md', '.gitattributes') 6>&1 | Out-String
+        $out | Should -Match 'Next steps:'
+        $out | Should -Match 'project\.instructions\.md'
+        $out | Should -Match 'git add \.'
+        $out | Should -Match 'git commit'
+    }
+
+    It 'prints the banner on explicit -Bootstrap as well' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'bootstrap' -ScaffoldedFiles @() 6>&1 |
+            Out-String
+        $out | Should -Match 'Next steps:'
+    }
+
+    It 'is silent on steady-state sync (Source = state)' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'state' -ScaffoldedFiles @() 6>&1 |
+            Out-String
+        $out | Should -BeNullOrEmpty
+    }
+
+    It 'is silent on grep-anchor sync (Source = grep)' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'grep' -ScaffoldedFiles @() 6>&1 |
+            Out-String
+        $out | Should -BeNullOrEmpty
+    }
+
+    It 'shows the gh repo create hint when no origin is configured' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @() 6>&1 |
+            Out-String
+        $out | Should -Match 'gh repo create'
+    }
+
+    It 'hides the gh repo create hint when origin is configured' {
+        Push-Location $script:nbRoot
+        try { git remote add origin https://example.invalid/owner/repo.git } finally { Pop-Location }
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @() 6>&1 |
+            Out-String
+        $out | Should -Match 'Next steps:'
+        $out | Should -Not -Match 'gh repo create'
+    }
+
+    It 'falls back to generic wording when project.instructions.md was not scaffolded' {
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('.gitattributes') 6>&1 | Out-String
+        $out | Should -Match 'Review the scaffolded'
+        $out | Should -Not -Match 'project\.instructions\.md'
+    }
+}
