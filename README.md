@@ -4,13 +4,93 @@ Generic AI agentic coding instructions for C#/.NET projects on GitHub. These fil
 configure Copilot, Claude Code, Codex, and other AI coding assistants with a
 consistent development workflow (TDD, code review, dev loop orchestration, etc.).
 
-## Usage
+## Onboarding
 
-Two ways to consume these instructions in your project:
+Pick the recipe that matches your starting state:
+
+### A. Existing repo (already has files, history, and `origin`)
+
+Most common case. From the repo root:
+
+```powershell
+iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
+./Pull-SDLC.ai.ps1 -Bootstrap -NoSelfUpdate
+```
+
+What happens:
+
+- Adds `sdlc.ai` remote pointing at this repo and fetches `main`.
+- Lays down all upstream-managed files (`CLAUDE.md`, `.github/copilot-instructions.md`,
+  `.github/agents/*`, `.github/skills/*`, generic `.github/instructions/*`, `.claude/*`).
+- **Scaffolds consumer-owned files only if missing** (`CLAUDE.project.md`,
+  `.github/instructions/project.instructions.md`, `.gitattributes`) from their
+  `*.template` counterparts. Existing copies are never overwritten.
+- **Extends `.gitignore`** with required entries; does not replace it.
+- `origin` is untouched.
+- Lands a `chore(sdlc): sync` commit with `.sdlc-ai-sync.json` recording the
+  anchor for future incremental syncs.
+
+If you are on `main` and the repo has a pre-commit policy active, the script
+**auto-creates a worktree** (`.worktrees/sdlc-sync`), commits there, pushes,
+and opens a PR. Review and merge it like any other PR.
+
+For subsequent updates: re-run `./Pull-SDLC.ai.ps1` (no flags). Bootstrap is
+a one-time event; ongoing syncs are incremental.
+
+> **Why `-Bootstrap` and `-NoSelfUpdate`?** `-Bootstrap` accepts the empty-tree
+> anchor non-interactively (no prompt). `-NoSelfUpdate` works around an
+> upstream issue ([#135](https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/135))
+> where the script's self-refresh feature can leave the bootstrap script
+> showing as `modified`. Both flags will become unnecessary once
+> [#136](https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/136)
+> ships auto-detect.
+
+### B. Brand-new project (no files, no repo, no `origin`)
+
+Create a directory, initialize git, then run the same one-liner:
+
+```powershell
+mkdir my-new-project; cd my-new-project; git init
+iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1 -OutFile Pull-SDLC.ai.ps1
+./Pull-SDLC.ai.ps1 -Bootstrap -NoSelfUpdate -AllowDefaultBranch
+gh repo create --source=. --public --push
+```
+
+`-AllowDefaultBranch` is needed because a fresh repo has no pre-commit hook
+installed yet, so the auto-worktree path does not apply.
+
+### C. Brand-new project via GitHub template (planned)
+
+Once issue [#136](https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/136)
+ships, a thin-shell template repo at `IntelliTect-Samples/IntelliSDLC.ai-template`
+will provide a one-step path:
+
+```powershell
+gh repo create my-new-project --template IntelliTect-Samples/IntelliSDLC.ai-template --public --clone
+cd my-new-project
+./bootstrap.ps1
+```
+
+Until then, use recipe **B** above.
+
+## Updating an Onboarded Repo
+
+Once `.sdlc-ai-sync.json` exists, simply re-run the script with no flags:
+
+```powershell
+./Pull-SDLC.ai.ps1
+```
+
+It pulls upstream changes, replays them as a diff against your recorded
+anchor, and lands a new `chore(sdlc): sync` commit. The pre-flight drift
+guard refuses to run if any upstream-managed file shows local edits since
+the last sync; pass `-Force` to override (and explain why in the commit).
+
+## Usage Reference
 
 - **Initial copy:** clone or download this repo and copy the files into your project.
 - **Ongoing sync:** use `Pull-SDLC.ai.ps1` -- it adds this repo as a git remote
-  named `instructions` and merges updates. See `Pull-SDLC.ai.ps1 -?` for details.
+  named `sdlc.ai` and merges updates. See `Pull-SDLC.ai.ps1 -?` for details.
 
 On first sync, `Pull-SDLC.ai.ps1` also scaffolds the consumer-owned files
 (`.github/instructions/project.instructions.md`, `CLAUDE.project.md`, and
