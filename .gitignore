@@ -19,7 +19,8 @@ testResults.xml
 # Dogfood / dry-run artifacts (see scripts/run-dogfood.ps1 and
 # docs/dogfood/tripit-dry-run-report.md). The dogfood-output directory is
 # the default -Out location when -Out is not passed and TEMP is unsuitable.
-# Upstream-only: scripts/run-dogfood.ps1 is not in sync-manifest.json so
+# Upstream-only: scripts/run-dogfood.ps1 is not in the upstream-managed
+# paths list so
 # this entry would be pure noise in consumer .gitignore files.
 .dogfood-output/
 

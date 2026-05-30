@@ -1636,7 +1636,6 @@ Describe 'Invoke-MainTreeCleanup' {
             New-Item -ItemType Directory -Path $consumer -Force | Out-Null
 
             $upstreamScript = "# upstream Pull-SDLC.ai.ps1 content`nWrite-Host 'hi'`n"
-            $upstreamManifest = '{"paths":[]}'
 
             Push-Location $upstream
             try {
@@ -1644,7 +1643,6 @@ Describe 'Invoke-MainTreeCleanup' {
                 git config user.email u@u.u
                 git config user.name u
                 Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $upstreamScript -NoNewline
-                Set-Content -LiteralPath 'sync-manifest.json' -Value $upstreamManifest -NoNewline
                 git add -A | Out-Null
                 git commit -q -m "upstream"
             } finally { Pop-Location }
@@ -1665,7 +1663,6 @@ Describe 'Invoke-MainTreeCleanup' {
                 Upstream         = $upstream
                 Consumer         = $consumer
                 UpstreamScript   = $upstreamScript
-                UpstreamManifest = $upstreamManifest
             }
         }
     }
@@ -1773,8 +1770,6 @@ Describe 'Invoke-MainTreeCleanup' {
     }
 }
 
-
-
 Describe 'Write-NextStepsBanner (issue #149)' {
 
     BeforeEach {
@@ -1835,3 +1830,139 @@ Describe 'Write-NextStepsBanner (issue #149)' {
         $out | Should -Not -Match 'project\.instructions\.md'
     }
 }
+
+Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
+    # End-to-end regression tests for the four findings raised by a user
+    # who ran Pull-SDLC.ai.ps1 in a brand-new empty directory:
+    #   F1: `.sdlc-ai-sync.json` appeared `modified` immediately after the
+    #       sync commit (caused by .gitattributes scaffolded AFTER commit,
+    #       combined with CRLF newlines from ConvertTo-Json on Windows).
+    #   F2: `Pull-SDLC.ai.ps1` and other meta scripts were left untracked
+    #       (they were missing from $script:UpstreamManagedPaths).
+    #   F3: `sync-manifest.json` was drift-prone documentation pretending
+    #       to be the canonical source -- the script never read it.
+    #   F4: Post-bootstrap message ("Open each file and fill in the
+    #       sections, then commit them to your repo") was inaccurate and
+    #       missing follow-up guidance for the fresh-init case.
+
+    BeforeAll {
+        function New-BootstrapOnMainFixture {
+            <#
+            .SYNOPSIS
+                Builds a consumer in carve-out state (on main, no origin)
+                next to a minimal upstream that ships .gitattributes.template
+                + the meta scripts that should be upstream-managed. Returns
+                @{ Upstream; Consumer; UpstreamHead }.
+            #>
+            param([Parameter(Mandatory)][string]$Root)
+
+            $upstream = Join-Path $Root 'upstream'
+            $consumer = Join-Path $Root 'consumer'
+            New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+            New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+            # Build the upstream repo with the bare minimum the bootstrap
+            # exercises: CLAUDE.md, .gitattributes.template, the meta
+            # scripts. .gitattributes.template MUST declare *.json eol=lf
+            # for the F1 regression to be meaningful.
+            $gitattributesBody = "* text=auto`n*.json text eol=lf`n*.md text eol=lf`n*.ps1 text eol=crlf`n"
+
+            Push-Location $upstream
+            try {
+                git init -q -b main
+                git config user.email u@u.u
+                git config user.name u
+                git config core.autocrlf false
+                Set-Content -LiteralPath 'CLAUDE.md' -Value "upstream claude`n" -NoNewline
+                Set-Content -LiteralPath '.gitattributes.template' -Value $gitattributesBody -NoNewline
+                # Meta scripts -- mirror real repo contents minimally.
+                Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# upstream pull script`n" -NoNewline
+                Set-Content -LiteralPath 'Cleanup-Worktree.ps1' -Value "# upstream cleanup`n" -NoNewline
+                Set-Content -LiteralPath 'Consolidate-Tasks.ps1' -Value "# upstream consolidate`n" -NoNewline
+                Set-Content -LiteralPath 'Consolidate-Tasks.Tests.ps1' -Value "# upstream consolidate tests`n" -NoNewline
+                Set-Content -LiteralPath 'Pull-SDLC.ai.Tests.ps1' -Value "# upstream pull tests`n" -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "upstream seed"
+                $upstreamHead = (git rev-parse HEAD).Trim()
+            } finally { Pop-Location }
+
+            # Consumer: empty repo on main, no origin. The user's downloaded
+            # copy of Pull-SDLC.ai.ps1 sits in the working tree untracked.
+            Push-Location $consumer
+            try {
+                git init -q -b main
+                git config user.email c@c.c
+                git config user.name c
+                # Force the autocrlf mode that caused F1 on the original
+                # report so the regression repros cross-platform.
+                git config core.autocrlf true
+                Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# user-downloaded pull script`n" -NoNewline
+                git remote add sdlc.ai $upstream
+                git fetch sdlc.ai --quiet 2>$null | Out-Null
+            } finally { Pop-Location }
+
+            return @{
+                Upstream     = $upstream
+                Consumer     = $consumer
+                UpstreamHead = $upstreamHead
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:carveRoot = Join-Path $TestDrive ("carve-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'F1: .sdlc-ai-sync.json is written with LF-only line endings (no CR bytes, so `.gitattributes eol=lf` cannot mark it modified)' {
+        # The user-reported symptom (`modified: .sdlc-ai-sync.json` after
+        # commit) is autocrlf/env-dependent and not reliably reproducible in
+        # CI. The root-cause cure -- and the one we CAN test deterministically
+        # -- is: write the state file with LF-only endings to match the
+        # upstream `.gitattributes.template` rule `*.json text eol=lf`.
+        # On Windows, ConvertTo-Json emits CRLF, which combined with
+        # eol=lf produces a phantom "modified" status under some autocrlf
+        # settings. LF-only output avoids the mismatch entirely.
+        $probe = Join-Path $TestDrive ("f1-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $probe -Force | Out-Null
+        Set-SdlcSyncState -RepoRoot $probe -Remote 'sdlc.ai' -Ref 'main' -Commit 'deadbeefcafe'
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $probe '.sdlc-ai-sync.json'))
+        $crCount = @($bytes | Where-Object { $_ -eq 13 }).Count
+        $crCount | Should -Be 0 -Because "the state file must be LF-only to match the `.gitattributes` rule `*.json text eol=lf` that ships in the upstream template"
+    }
+
+    It 'F2: tracks all meta scripts (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, Consolidate-Tasks.ps1, *.Tests.ps1) after fresh bootstrap' {
+        $fx = New-BootstrapOnMainFixture -Root $script:carveRoot
+        Push-Location $fx.Consumer
+        try {
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -CommitOnMain
+            $rc | Should -Be 0
+            $tracked = git ls-files
+            $tracked | Should -Contain 'Pull-SDLC.ai.ps1' -Because 'the downloaded bootstrap script must end up tracked, not untracked'
+            $tracked | Should -Contain 'Pull-SDLC.ai.Tests.ps1'
+            $tracked | Should -Contain 'Cleanup-Worktree.ps1'
+            $tracked | Should -Contain 'Consolidate-Tasks.ps1'
+            $tracked | Should -Contain 'Consolidate-Tasks.Tests.ps1'
+        } finally { Pop-Location }
+    }
+
+    It 'F2: drift guard catches local edits to managed meta scripts (regression: ensures Pull-SDLC.ai.ps1 is a managed path)' {
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Cleanup-Worktree.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.Tests.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'F3: sync-manifest.json is not present in the upstream tree (deleted)' {
+        $upstreamRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
+        Test-Path -LiteralPath (Join-Path $upstreamRoot 'sync-manifest.json') | Should -BeFalse -Because 'sync-manifest.json was drift-prone documentation and has been deleted in favor of the script-level lists.'
+    }
+
+    It 'F4: post-bootstrap output suggests committing scaffolded files and adding an origin remote (carve-out case)' -Skip {
+        # F4 is now handled by Write-NextStepsBanner (issue #149), which
+        # has its own tests in 'Describe Write-NextStepsBanner'. Kept as a
+        # skipped placeholder so the issue #148 cluster stays discoverable.
+        $true | Should -BeTrue
+    }
+}
+
