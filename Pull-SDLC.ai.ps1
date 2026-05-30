@@ -106,6 +106,44 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# --- Sync semantics --------------------------------------------------------
+#
+# The four script-level lists below ($script:TemplateScaffoldMap,
+# $script:UpstreamManagedPaths, $script:AlwaysLocalPaths, $script:MergePaths)
+# are the single canonical source of truth for what this script syncs and
+# how. There is no separate manifest file -- everything the sync engine
+# needs to know lives here.
+#
+# Path matching:
+#   - Entries ending with '/' match any path under that directory prefix
+#     (case-insensitive, ./ and .\ prefixes tolerated). All other entries
+#     are exact filename matches against the repo-relative path.
+#   - Paths are matched against the upstream tree via
+#     `git diff --name-status -M -B <anchor> <ref> -- <paths>`.
+#
+# Precedence (high -> low):
+#   1. $script:AlwaysLocalPaths -- consumer-owned. NEVER overwritten,
+#      regardless of whether they also sit under a managed prefix.
+#      Example: .github/instructions/project.instructions.md lives under
+#      the managed .github/instructions/ tree but is filtered out of the
+#      op list.
+#   2. $script:MergePaths       -- union-merged. Upstream content is merged
+#      INTO the consumer's copy so the consumer keeps any local entries
+#      while gaining any new upstream ones. The .gitignore merge supports
+#      an "upstream-only" marker block (lines between
+#      '# >>> upstream-only >>>' and '# <<< upstream-only <<<',
+#      case-insensitive) that Merge-FileFromUpstream strips before
+#      propagation so entries in the block never reach consumers.
+#   3. $script:UpstreamManagedPaths -- diff-replayed from upstream/<Branch>.
+#      Local edits trigger the drift guard and abort the sync unless
+#      -Force is passed.
+#
+# Template scaffolding:
+#   $script:TemplateScaffoldMap maps <upstream template> -> <bare consumer
+#   target>. Templates are scaffolded to the bare name only on first sync
+#   (when the bare target does not yet exist); the bare name is
+#   consumer-owned thereafter (it appears on $script:AlwaysLocalPaths).
+
 # Map of <template path> -> <bare target path> used to scaffold consumer-owned
 # files on first sync.
 $script:TemplateScaffoldMap = [ordered]@{
@@ -124,7 +162,17 @@ $script:UpstreamManagedPaths = @(
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/',
-    'tasks/'
+    'tasks/',
+    # Meta-scripts: the bootstrap script the user downloads via `iwr` and
+    # its siblings. Sync-managed so the user's local copy is reconciled
+    # against upstream on every run (including the very first carve-out
+    # path), instead of being left untracked in the consumer's working
+    # tree (issue #148).
+    'Pull-SDLC.ai.ps1',
+    'Pull-SDLC.ai.Tests.ps1',
+    'Cleanup-Worktree.ps1',
+    'Consolidate-Tasks.ps1',
+    'Consolidate-Tasks.Tests.ps1'
 )
 
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths
@@ -493,8 +541,7 @@ function Invoke-MainTreeCleanup {
             'Pull-SDLC.ai.Tests.ps1',
             'Cleanup-Worktree.ps1',
             'Consolidate-Tasks.ps1',
-            'Consolidate-Tasks.Tests.ps1',
-            'sync-manifest.json'
+            'Consolidate-Tasks.Tests.ps1'
         )
     )
     $actions = New-Object System.Collections.Generic.List[string]
@@ -609,7 +656,12 @@ function Set-SdlcSyncState {
         lastSyncCommit = $Commit
         syncedAt       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
-    $json = ($obj | ConvertTo-Json) + "`n"
+    # Normalize to LF-only. ConvertTo-Json on Windows emits CRLF inside the
+    # JSON body which, combined with the upstream `.gitattributes` rule
+    # `*.json text eol=lf`, can cause `git status` to flag the file as
+    # modified immediately after the sync commit under some autocrlf
+    # settings (issue #148).
+    $json = (($obj | ConvertTo-Json) -replace "`r`n", "`n") + "`n"
     $absPath = Join-Path $RepoRoot $script:SdlcSyncStateFile
     [System.IO.File]::WriteAllText($absPath, $json, (New-Object System.Text.UTF8Encoding $false))
 }
