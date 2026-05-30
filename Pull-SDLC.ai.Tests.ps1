@@ -578,7 +578,7 @@ Describe 'Test-CommitContextAllowed' {
         } finally { Pop-Location }
     }
 
-    It 'blocks when HEAD is on the protected branch and origin is configured' {
+    It 'blocks when HEAD is on the protected branch' {
         $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
         $r.Allowed | Should -BeFalse
         $r.Branch | Should -Be 'main'
@@ -593,13 +593,50 @@ Describe 'Test-CommitContextAllowed' {
         $r.Branch | Should -Be 'chore/sdlc-sync'
     }
 
-    It 'allows when on protected branch but no origin remote (fresh repo, issue #143)' {
+    It 'still blocks on protected branch even with no origin remote (no carve-out -- handled by caller via Test-IsBootstrapSync)' {
         Push-Location $script:ctxRoot
         try { git remote remove origin } finally { Pop-Location }
         $r = Test-CommitContextAllowed -RepoRoot $script:ctxRoot -ProtectedBranch 'main'
-        $r.Allowed | Should -BeTrue
+        $r.Allowed | Should -BeFalse
         $r.Branch | Should -Be 'main'
-        $r.Reason | Should -Match 'no .origin. remote configured'
+    }
+}
+
+Describe 'Test-IsBootstrapSync' {
+
+    BeforeEach {
+        $script:bsRoot = Join-Path $TestDrive ("bs-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:bsRoot -Force | Out-Null
+        Push-Location $script:bsRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'seed' | Out-File -Encoding utf8 README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+        } finally { Pop-Location }
+    }
+
+    It 'returns $true when neither state file nor prior sync commit exist' {
+        Test-IsBootstrapSync -RepoRoot $script:bsRoot | Should -BeTrue
+    }
+
+    It 'returns $false when .sdlc-ai-sync.json exists' {
+        $statePath = Join-Path $script:bsRoot '.sdlc-ai-sync.json'
+        '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"abc","syncedAt":"2026-01-01T00:00:00Z"}' |
+            Out-File -Encoding utf8 -LiteralPath $statePath -NoNewline
+        Test-IsBootstrapSync -RepoRoot $script:bsRoot | Should -BeFalse
+    }
+
+    It 'returns $false when a prior chore sync commit is present in the log' {
+        Push-Location $script:bsRoot
+        try {
+            'x' | Out-File -Encoding utf8 -LiteralPath (Join-Path $script:bsRoot 'CLAUDE.md') -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+        } finally { Pop-Location }
+        Test-IsBootstrapSync -RepoRoot $script:bsRoot | Should -BeFalse
     }
 }
 
@@ -609,10 +646,13 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         $script:fixtureRoot = Join-Path $TestDrive ("guard-" + [guid]::NewGuid().ToString('N'))
     }
 
-    It 'aborts with rc=3 when invoked on main with -NoAutoWorktree (no -AllowDefaultBranch)' {
+    It 'aborts with rc=3 in steady state on main with -NoAutoWorktree (no -CommitOnMain)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Steady state: plant a state file so Test-IsBootstrapSync returns $false.
+        '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"abc","syncedAt":"2026-01-01T00:00:00Z"}' |
+            Out-File -Encoding utf8 -LiteralPath (Join-Path $fx.Consumer '.sdlc-ai-sync.json') -NoNewline
         # Move the consumer back onto main so the guard fires.
         Push-Location $fx.Consumer
         try {
@@ -624,20 +664,22 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         $rc | Should -Be 3
         # Working tree must be untouched.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
-        Test-Path (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
     }
 
-    It '-AllowDefaultBranch bypasses the guard on main' {
+    It '-CommitOnMain bypasses the guard on main in steady state' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Steady state: plant a state file so Test-IsBootstrapSync returns $false.
+        '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"abc","syncedAt":"2026-01-01T00:00:00Z"}' |
+            Out-File -Encoding utf8 -LiteralPath (Join-Path $fx.Consumer '.sdlc-ai-sync.json') -NoNewline
         Push-Location $fx.Consumer
         try {
             git checkout -q main
             git remote add origin https://example.invalid/owner/repo.git
         } finally { Pop-Location }
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -AllowDefaultBranch
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -CommitOnMain
         $rc | Should -Be 0
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
@@ -658,7 +700,26 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
     }
 
-    It 'allows direct commit on main when no origin is configured (issue #143, fresh repo)' {
+    It 'commits directly on main at bootstrap by default (no flag, no state file)' {
+        # Bootstrap state: no .sdlc-ai-sync.json, no prior sync commit.
+        # First-time onboarding should commit on main without any flag.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            # Origin is present -- bootstrap state alone is enough to enable
+            # commit-on-main; no empty-origin carve-out needed.
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
+    It 'allows direct commit on main when no origin is configured (brand-new project, bootstrap state)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
@@ -669,6 +730,24 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
         $rc | Should -Be 0
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
+    It '-CommitOnMain:$false forces auto-worktree-or-block even at bootstrap' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Bootstrap state (no state file, no prior sync commit) but user
+        # explicitly opts out of commit-on-main; with -NoAutoWorktree
+        # we should rc=3 instead of falling through to commit on main.
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoWorktree -CommitOnMain:$false
+        $rc | Should -Be 3
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
     }
 }
 
@@ -829,7 +908,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         } finally { Pop-Location }
 
         # Invoke from main (we *are* on main after checkout above).
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc | Should -Be 0
 
         # Worktree should exist at .worktrees/sdlc-sync.
@@ -871,7 +950,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         'leftover from interrupted run' | Out-File -Encoding utf8 (Join-Path $wt 'STRAY.md') -NoNewline
         'half-edited' | Out-File -Encoding utf8 (Join-Path $wt 'CLAUDE.md') -NoNewline
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc | Should -Be 0
         # Stray untracked file scrubbed, tracked file reset to the sync commit's content.
         Test-Path (Join-Path $wt 'STRAY.md') | Should -BeFalse
@@ -902,7 +981,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
             git -c user.email=test@example.com -c user.name=Test commit -q -m 'stale commit from prior run'
         } finally { Pop-Location }
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc | Should -Be 0
         # Stale commit's file is gone; the worktree was reset before the sync ran.
         Test-Path (Join-Path $wt 'STALE.md') | Should -BeFalse
@@ -925,7 +1004,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
             git worktree add $wt chore/sdlc-sync | Out-Null
         } finally { Pop-Location }
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc | Should -Be 0
         $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
         (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
@@ -954,7 +1033,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         } finally { Pop-Location }
 
         # First run: seeds origin/chore/sdlc-sync with commit X.
-        $rc1 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc1 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc1 | Should -Be 0
         $shaAfterRun1 = (& git -c safe.bareRepository=all -C $origin rev-parse 'chore/sdlc-sync').Trim()
         $shaAfterRun1 | Should -Not -BeNullOrEmpty
@@ -965,7 +1044,7 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         # Second run: worktree resets to main, replays sync, produces commit
         # Y. Y's parent is ProtectedBranch HEAD, NOT X. Straight push is
         # non-fast-forward; auto-recovery must retry with force-with-lease.
-        $rc2 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+        $rc2 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
         $rc2 | Should -Be 0
 
         $shaAfterRun2 = (& git -c safe.bareRepository=all -C $origin rev-parse 'chore/sdlc-sync').Trim()

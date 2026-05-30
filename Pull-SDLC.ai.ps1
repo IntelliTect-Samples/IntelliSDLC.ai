@@ -57,9 +57,22 @@
     `git init` automatically. Default behavior is to initialize the repo
     on the configured branch so the sync can proceed.
 
-.PARAMETER AllowDefaultBranch
-    Bypass the pre-flight check that blocks running from the protected branch.
-    Only needed in consumers without the .githooks/pre-commit policy active.
+.PARAMETER CommitOnMain
+    Commit the sync directly on the protected branch (typically `main`)
+    instead of routing through the auto-worktree + PR path.
+
+    Default is state-driven:
+    * Bootstrap (no `.sdlc-ai-sync.json` AND no prior sync commit in the
+      git log) -> on. The first sync of a repo is tooling onboarding,
+      not a reviewable change; commit it directly.
+    * Steady state (the consumer has been synced before) -> off. Route
+      through the auto-worktree workflow so `main` stays clean and each
+      sync is reviewed.
+
+    Pass `-CommitOnMain` to force commit-on-main even in steady state
+    (the rare "trusted maintenance commit" case). Pass
+    `-CommitOnMain:$false` to force the auto-worktree path even at
+    bootstrap.
 
 .PARAMETER NoAutoWorktree
     When on the protected branch with a gate, do NOT auto-create a worktree.
@@ -84,7 +97,7 @@ param(
     [switch]$Bootstrap,
     [switch]$NoPrompt,
     [switch]$NoAutoInit,
-    [switch]$AllowDefaultBranch,
+    [switch]$CommitOnMain,
     [switch]$NoAutoWorktree,
     [switch]$NoAutoPR,
     [switch]$NoSelfUpdate
@@ -863,16 +876,10 @@ function Test-CommitContextAllowed {
         cause the sync commit to fail (either via .githooks/pre-commit policy or
         a remote branch-protection rule on push).
     .DESCRIPTION
-        Only the protected-branch rule is enforced here. Worktree / repo-root
-        policies are left to .githooks/pre-commit so we don't duplicate or
-        diverge from local conventions.
-
-        Carve-out for fresh repos (issue #143): if there is no 'origin' remote
-        configured, there is no PR workflow to protect; allow the direct
-        commit on the protected branch. The pre-commit hook (if installed)
-        ships with the sync and becomes active afterward, so subsequent runs
-        will naturally route through the auto-worktree path once origin is
-        added.
+        This is a pure protected-branch check. The caller (Invoke-PullSDLC)
+        decides when to invoke it based on the effective -CommitOnMain
+        setting; this function does not know about sync state or origin
+        configuration.
     #>
     [CmdletBinding()]
     param(
@@ -883,15 +890,31 @@ function Test-CommitContextAllowed {
     try {
         $branch = (git symbolic-ref --short HEAD 2>$null)
         if ($branch -eq $ProtectedBranch) {
-            $originUrl = git remote get-url origin 2>$null
-            if (-not $originUrl) {
-                return @{ Allowed = $true; Reason = "fresh repo: no 'origin' remote configured, PR workflow does not apply"; Branch = $branch }
-            }
             return @{ Allowed = $false; Reason = "on protected branch '$ProtectedBranch'"; Branch = $branch }
         }
         return @{ Allowed = $true; Reason = $null; Branch = $branch }
     }
     finally { Pop-Location }
+}
+
+function Test-IsBootstrapSync {
+    <#
+    .SYNOPSIS
+        Returns $true when the consumer has not been synced from
+        IntelliSDLC.ai before -- i.e. there is no .sdlc-ai-sync.json
+        state file AND no prior `chore: sync IntelliSDLC...` commit in
+        the git log. This is the signal Invoke-PullSDLC uses to default
+        -CommitOnMain to $true (first-time tooling onboarding).
+    #>
+    [CmdletBinding()]
+    param([string]$RepoRoot = '.')
+    if (Get-SdlcSyncState -RepoRoot $RepoRoot) { return $false }
+    Push-Location $RepoRoot
+    try {
+        $grep = git log --grep '^chore.*sync.*IntelliSDLC' --pretty=format:%H -n 1 2>$null
+    }
+    finally { Pop-Location }
+    return [string]::IsNullOrWhiteSpace(($grep | Out-String))
 }
 
 function Invoke-AutoWorktreeSync {
@@ -1217,7 +1240,7 @@ function Invoke-PullSDLC {
         [switch]$NoPrompt,
         [switch]$NoFetch,
         [switch]$NoAutoInit,
-        [switch]$AllowDefaultBranch,
+        [switch]$CommitOnMain,
         [switch]$NoAutoWorktree,
         [switch]$NoAutoPR,
         [switch]$NoSelfUpdate
@@ -1241,7 +1264,17 @@ function Invoke-PullSDLC {
         $RepoRoot = $topLevel.Trim()
     }
 
-    if (-not $AllowDefaultBranch -and -not $WhatIfPreference) {
+    # Determine the effective -CommitOnMain setting.
+    # Explicit -CommitOnMain (or -CommitOnMain:$false) always wins.
+    # Otherwise default is on for first-time bootstrap, off in steady state.
+    if ($PSBoundParameters.ContainsKey('CommitOnMain')) {
+        $commitOnMainEffective = [bool]$CommitOnMain
+    }
+    else {
+        $commitOnMainEffective = Test-IsBootstrapSync -RepoRoot $RepoRoot
+    }
+
+    if (-not $commitOnMainEffective -and -not $WhatIfPreference) {
         $ctx = Test-CommitContextAllowed -RepoRoot $RepoRoot -ProtectedBranch $Branch
         if (-not $ctx.Allowed) {
             if ($NoAutoWorktree) {
@@ -1253,21 +1286,20 @@ function Invoke-PullSDLC {
                 Write-Host '  cd .worktrees/sdlc-sync' -ForegroundColor Yellow
                 Write-Host '  ../../Pull-SDLC.ai.ps1' -ForegroundColor Yellow
                 Write-Host ''
-                Write-Host 'Or rerun with -AllowDefaultBranch to bypass this check (consumers without a pre-commit hook policy).' -ForegroundColor DarkGray
+                Write-Host 'Or rerun with -CommitOnMain to commit the sync directly on the protected branch.' -ForegroundColor DarkGray
                 Write-Host 'Use -WhatIf to preview ops without committing.' -ForegroundColor DarkGray
                 return 3
             }
 
             Write-Host "On protected branch '$($ctx.Branch)'. Switching to auto-worktree workflow ..." -ForegroundColor Cyan
             $syncArgs = @{
-                Branch              = $Branch
-                RemoteName          = $RemoteName
-                Force               = [bool]$Force
-                Bootstrap           = [bool]$Bootstrap
-                NoPrompt            = [bool]$NoPrompt
-                NoFetch             = [bool]$NoFetch
-                AllowDefaultBranch  = $false
-                NoAutoWorktree      = $true
+                Branch         = $Branch
+                RemoteName     = $RemoteName
+                Force          = [bool]$Force
+                Bootstrap      = [bool]$Bootstrap
+                NoPrompt       = [bool]$NoPrompt
+                NoFetch        = [bool]$NoFetch
+                NoAutoWorktree = $true
             }
             $rc = Invoke-AutoWorktreeSync -RepoRoot $RepoRoot -ProtectedBranch $Branch -NoAutoPR:$NoAutoPR -SyncArgs $syncArgs
             if ($rc -eq 0) {
@@ -1456,8 +1488,24 @@ if (Invoke-SelfRefreshGate -ScriptPath $PSCommandPath -BoundParameters $PSBoundP
     exit $LASTEXITCODE
 }
 
-$exitCode = Invoke-PullSDLC -Branch $Branch -RemoteName $RemoteName -RemoteUrl $RemoteUrl `
-    -Force:$Force -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt -NoAutoInit:$NoAutoInit `
-    -AllowDefaultBranch:$AllowDefaultBranch -NoAutoWorktree:$NoAutoWorktree -NoAutoPR:$NoAutoPR `
-    -NoSelfUpdate:$NoSelfUpdate -WhatIf:$WhatIfPreference
+$invokeArgs = @{
+    Branch         = $Branch
+    RemoteName     = $RemoteName
+    RemoteUrl      = $RemoteUrl
+    Force          = [bool]$Force
+    Bootstrap      = [bool]$Bootstrap
+    NoPrompt       = [bool]$NoPrompt
+    NoAutoInit     = [bool]$NoAutoInit
+    NoAutoWorktree = [bool]$NoAutoWorktree
+    NoAutoPR       = [bool]$NoAutoPR
+    NoSelfUpdate   = [bool]$NoSelfUpdate
+    WhatIf         = [bool]$WhatIfPreference
+}
+# Only forward -CommitOnMain when the user explicitly passed it, so
+# Invoke-PullSDLC's $PSBoundParameters.ContainsKey check accurately
+# reflects user intent vs. state-driven default.
+if ($PSBoundParameters.ContainsKey('CommitOnMain')) {
+    $invokeArgs.CommitOnMain = [bool]$CommitOnMain
+}
+$exitCode = Invoke-PullSDLC @invokeArgs
 exit $exitCode
