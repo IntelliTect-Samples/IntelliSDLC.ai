@@ -2202,3 +2202,197 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
     }
 }
 
+
+
+# --- Issue #164: GitHub SSH-on-443 setup --------------------------------------
+
+Describe 'Test-IsCiEnvironment' {
+    BeforeEach {
+        Remove-Item Env:CI -ErrorAction SilentlyContinue
+        Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+        Remove-Item Env:TF_BUILD -ErrorAction SilentlyContinue
+    }
+    AfterEach {
+        Remove-Item Env:CI -ErrorAction SilentlyContinue
+        Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+        Remove-Item Env:TF_BUILD -ErrorAction SilentlyContinue
+    }
+    It 'returns $false when no CI variables set' {
+        Test-IsCiEnvironment | Should -BeFalse
+    }
+    It 'returns $true when $env:CI is set' {
+        $env:CI = '1'
+        Test-IsCiEnvironment | Should -BeTrue
+    }
+    It 'returns $true when $env:GITHUB_ACTIONS is set' {
+        $env:GITHUB_ACTIONS = 'true'
+        Test-IsCiEnvironment | Should -BeTrue
+    }
+}
+
+Describe 'Test-GitHubSshDrift' {
+    BeforeEach {
+        Remove-Item Env:CI -ErrorAction SilentlyContinue
+        Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
+        Remove-Item Env:TF_BUILD -ErrorAction SilentlyContinue
+        # Force Windows path through Test-GitHubSshDrift even on Linux CI by
+        # mocking $IsWindows via the helper functions it uses.
+        Mock -CommandName Test-IsCiEnvironment -MockWith { $false }
+    }
+
+    Context 'when fully configured' {
+        BeforeEach {
+            Mock -CommandName Get-GitHubSshKeyPath -MockWith { Join-Path $TestDrive 'id_ed25519' }
+            New-Item -ItemType File -Path (Join-Path $TestDrive 'id_ed25519') -Force | Out-Null
+            Mock -CommandName Test-GitHubSshAgentRunning -MockWith { $true }
+            Mock -CommandName Get-GitConfigAllValues -MockWith {
+                param($Key)
+                switch ($Key) {
+                    'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
+                    'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
+                    default { return @() }
+                }
+            }
+            Mock -CommandName Test-GhInstalled -MockWith { $true }
+            Mock -CommandName Get-GhGitProtocol -MockWith { 'ssh' }
+        }
+        It 'returns an empty array' -Skip:(-not $IsWindows) {
+            $result = Test-GitHubSshDrift
+            $result | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'when each component is missing' {
+        BeforeEach {
+            Mock -CommandName Get-GitHubSshKeyPath -MockWith { Join-Path $TestDrive 'nope_id_ed25519' }
+            Mock -CommandName Test-GitHubSshAgentRunning -MockWith { $false }
+            Mock -CommandName Get-GitConfigAllValues -MockWith { @() }
+            Mock -CommandName Test-GhInstalled -MockWith { $false }
+            Mock -CommandName Get-GhGitProtocol -MockWith { '' }
+        }
+        It 'reports every missing component' -Skip:(-not $IsWindows) {
+            $result = @(Test-GitHubSshDrift)
+            $result | Should -Contain 'ssh-keypair'
+            $result | Should -Contain 'ssh-agent'
+            $result | Should -Contain 'insteadof-https'
+            $result | Should -Contain 'insteadof-git'
+            $result | Should -Contain 'insteadof-port443'
+            $result | Should -Contain 'gh-protocol'
+        }
+    }
+
+    It 'returns @() when CI env var is set' {
+        Mock -CommandName Test-IsCiEnvironment -MockWith { $true }
+        $result = @(Test-GitHubSshDrift)
+        $result | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Write-GitHubSshNudge' {
+    It 'is silent when Missing is empty' {
+        $output = Write-GitHubSshNudge -Missing @() 6>&1
+        $output | Should -BeNullOrEmpty
+    }
+    It 'writes a single recommendation line listing the missing components' {
+        $captured = & { Write-GitHubSshNudge -Missing @('ssh-keypair','gh-protocol') } 6>&1
+        ($captured | Out-String) | Should -Match 'Recommendation: GitHub SSH-on-443'
+        ($captured | Out-String) | Should -Match 'ssh-keypair'
+        ($captured | Out-String) | Should -Match 'gh-protocol'
+        ($captured | Out-String) | Should -Match '-SetupGitHubSsh'
+    }
+}
+
+Describe 'Add-GitConfigValueIfMissing' {
+    It 'does not call git config --add when the value is already present' {
+        Mock -CommandName Get-GitConfigAllValues -MockWith { @('https://github.com/') }
+        Mock -CommandName git -MockWith { }
+        $result = Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'https://github.com/'
+        $result | Should -BeFalse
+        Should -Invoke -CommandName git -Times 0 -Exactly
+    }
+    It 'calls git config --add when the value is missing' {
+        Mock -CommandName Get-GitConfigAllValues -MockWith { @() }
+        Mock -CommandName git -MockWith { }
+        $result = Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'https://github.com/'
+        $result | Should -BeTrue
+        Should -Invoke -CommandName git -ParameterFilter {
+            ($args -contains 'config') -and ($args -contains '--add')
+        } -Times 1
+    }
+}
+
+Describe 'Invoke-SetupGitHubSsh' -Skip:(-not $IsWindows) {
+    BeforeEach {
+        $script:gitCalls = New-Object System.Collections.Generic.List[string]
+        $script:ghCalls = New-Object System.Collections.Generic.List[string]
+        $script:keyPath = Join-Path $TestDrive 'id_ed25519'
+        Mock -CommandName Get-GitHubSshKeyPath -MockWith { $script:keyPath }
+        # Pretend key already exists so ssh-keygen is not invoked.
+        New-Item -ItemType File -Path $script:keyPath -Force | Out-Null
+        Set-Content -LiteralPath "$script:keyPath.pub" -Value 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabcdefghijklmnopqrstuvwxyz0123456789 user@host'
+        Mock -CommandName Get-Service -MockWith {
+            [pscustomobject]@{ Status = 'Running'; StartType = 'Automatic'; Name = 'ssh-agent' }
+        } -ParameterFilter { $Name -eq 'ssh-agent' }
+        Mock -CommandName Set-Service -MockWith { }
+        Mock -CommandName Start-Service -MockWith { }
+        Mock -CommandName ssh-add -MockWith { } -ErrorAction SilentlyContinue
+        Mock -CommandName ssh-keygen -MockWith { } -ErrorAction SilentlyContinue
+        Mock -CommandName Test-GhInstalled -MockWith { $true }
+        Mock -CommandName Get-GhGitProtocol -MockWith { 'ssh' }
+        Mock -CommandName Get-GitConfigAllValues -MockWith {
+            param($Key)
+            switch ($Key) {
+                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
+                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
+                'url.git@ssh.github.com:.pushInsteadOf' { return @() }
+                default { return @() }
+            }
+        }
+        Mock -CommandName git -MockWith { $script:gitCalls.Add(($args -join ' ')) }
+        Mock -CommandName gh -MockWith { $script:ghCalls.Add(($args -join ' ')) }
+    }
+
+    It 'is idempotent: no git config --add or gh config set when everything is configured' {
+        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
+        ($script:gitCalls | Where-Object { $_ -match '--add' }) | Should -BeNullOrEmpty
+        ($script:ghCalls  | Where-Object { $_ -match 'config set' }) | Should -BeNullOrEmpty
+    }
+
+    It '-SkipKeyUpload does NOT call gh ssh-key add' {
+        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
+        ($script:ghCalls | Where-Object { $_ -match 'ssh-key add' }) | Should -BeNullOrEmpty
+    }
+
+    It 'removes legacy pushInsteadOf https://github.com/ when present' {
+        Mock -CommandName Get-GitConfigAllValues -MockWith {
+            param($Key)
+            switch ($Key) {
+                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
+                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
+                'url.git@ssh.github.com:.pushInsteadOf' { return @('https://github.com/') }
+                default { return @() }
+            }
+        }
+        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
+        ($script:gitCalls | Where-Object { $_ -match 'unset-all.*pushInsteadOf' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'adds missing url.insteadOf entries without duplicating existing ones' {
+        Mock -CommandName Get-GitConfigAllValues -MockWith {
+            param($Key)
+            switch ($Key) {
+                # Only the https value present; git@ value is missing
+                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/') }
+                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
+                default { return @() }
+            }
+        }
+        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
+        $addCalls = @($script:gitCalls | Where-Object { $_ -match '--add' })
+        # The missing 'git@github.com:' value MUST be added.
+        ($addCalls | Where-Object { $_ -match '\bgit@github\.com:$' }) | Should -Not -BeNullOrEmpty
+        # The already-present https value must NOT be re-added.
+        ($addCalls | Where-Object { $_ -match '\bhttps://github\.com/$' }) | Should -BeNullOrEmpty
+    }
+}
+
