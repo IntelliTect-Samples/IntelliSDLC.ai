@@ -2187,8 +2187,8 @@ Describe 'Initialize-GitDefaults migration (issue #160)' {
         $script:TemplateScaffoldMap.Values | Should -Not -Contain '.gitattributes'
     }
 
-    It 'no longer manages .gitattributes.template as upstream' {
-        $script:UpstreamManagedPaths | Should -Not -Contain '.gitattributes.template'
+    It 'retains .gitattributes.template as an UpstreamManagedPaths tombstone so existing consumers receive the deletion op (Copilot review #161 round 5)' {
+        $script:UpstreamManagedPaths | Should -Contain '.gitattributes.template'
     }
 
     It 'manages .github/templates/git-defaults/ as upstream' {

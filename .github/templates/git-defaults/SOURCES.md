@@ -43,8 +43,27 @@ From `github/gitignore`:
 
 ## Refresh procedure
 
-Run the bootstrap script with `-Refresh` (network fetch path; future
-work). Manual procedure today:
+There are two distinct refresh operations -- don't conflate them.
+
+### A. Runtime refresh (consumers, on every `Initialize-GitDefaults.ps1` run)
+
+`./Initialize-GitDefaults.ps1 -Language ... -Refresh -Force` fetches each
+required upstream file from `raw.githubusercontent.com/<repo>/<ref>/<file>`
+into the local cache at
+`$env:LOCALAPPDATA/IntelliSDLC.ai/git-defaults-cache/<repo>/<ref>/` and
+composes the consumer's `.gitattributes` / `.gitignore` from those instead
+of the bundled snapshots committed alongside this file. Generated-file
+headers include `Source mode: fetched from upstream` when `-Refresh` was
+used. Cache-miss + network failure throws clearly; cache-hit + network
+failure logs a warning and continues. `-Refresh -WhatIf` previews without
+mutating the cache. This path does **not** update the bundled snapshots
+in this directory -- it only affects what gets written into the
+consumer's repo for that run.
+
+### B. Bundled-snapshot refresh (maintainers of this repo only)
+
+To bump the pinned SHAs and refresh the committed snapshots so the
+default (non-`-Refresh`) path picks up upstream changes:
 
 ```powershell
 $gaSha = '<new-sha>'
@@ -62,7 +81,10 @@ Invoke-WebRequest "https://raw.githubusercontent.com/github/gitignore/$giSha/Glo
 ```
 
 Then update the pinned SHAs in `Initialize-GitDefaults.ps1` (the
-`$GitattributesRef` and `$GitignoreRef` defaults) and this file.
+`$GitattributesRef` / `$GitignoreRef` param defaults and the
+`$script:DefaultGitattributesRef` / `$script:DefaultGitignoreRef` mirrors)
+and this file.
+
 ## Why not `gibo`?
 
 [`gibo`](https://github.com/simonwhitaker/gibo) is a popular helper that

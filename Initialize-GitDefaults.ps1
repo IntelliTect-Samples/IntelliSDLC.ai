@@ -230,7 +230,7 @@ function Get-GitDefaultsRefreshedContent {
         ref, write it to the local cache, and return its content. Falls back
         to a previously-cached copy if the network fetch fails.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'Helper internal to this script.')]
     [OutputType([string])]
     param(
@@ -241,9 +241,6 @@ function Get-GitDefaultsRefreshedContent {
     $cacheDir  = Join-Path (Get-GitDefaultsCacheRoot) "$Repo/$Ref"
     $cachePath = Join-Path $cacheDir $FileName
     $cacheParent = Split-Path -Parent $cachePath
-    if (-not (Test-Path -LiteralPath $cacheParent)) {
-        New-Item -ItemType Directory -Force -Path $cacheParent | Out-Null
-    }
     $url = "https://raw.githubusercontent.com/$Repo/$Ref/$FileName"
     try {
         $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop
@@ -252,7 +249,15 @@ function Get-GitDefaultsRefreshedContent {
         } else {
             [string]$resp.Content
         }
-        [System.IO.File]::WriteAllText($cachePath, $content, [System.Text.UTF8Encoding]::new($false))
+        # Respect -WhatIf: do not mutate the on-disk cache during a dry
+        # run. The fetched content is still returned so the caller can
+        # compose the "would-write" preview. Copilot review #161 round 5.
+        if ($PSCmdlet.ShouldProcess($cachePath, "Cache fetched template")) {
+            if (-not (Test-Path -LiteralPath $cacheParent)) {
+                New-Item -ItemType Directory -Force -Path $cacheParent | Out-Null
+            }
+            [System.IO.File]::WriteAllText($cachePath, $content, [System.Text.UTF8Encoding]::new($false))
+        }
         return $content
     } catch {
         if (Test-Path -LiteralPath $cachePath) {
@@ -666,15 +671,23 @@ function Initialize-GitDefaults {
 
     $composeSplat = @{ GitattributesRef = $GitattributesRef; GitignoreRef = $GitignoreRef; Refresh = [bool]$Refresh }
 
+    # Compose ALL requested outputs before writing ANY, so a failure
+    # during the second compose (network/cache miss under -Refresh,
+    # template-snapshot-missing, etc.) leaves the repo unchanged rather
+    # than half-updated. Copilot review #161 round 5.
+    $pending = [ordered]@{}
     if ($IncludeGitattributes) {
-        $content = New-GitAttributesContent -Language $expanded @composeSplat
-        Write-GitDefaultsFile -Path '.gitattributes' -Content $content -Force:$Force
-        if (-not $WhatIfPreference) { Write-Host "Wrote .gitattributes ($($expanded -join ', '))" -ForegroundColor Green }
+        $pending['.gitattributes'] = New-GitAttributesContent -Language $expanded @composeSplat
     }
     if ($IncludeGitignore) {
-        $content = New-GitIgnoreContent -Language $expanded @composeSplat
-        Write-GitDefaultsFile -Path '.gitignore' -Content $content -Force:$Force
-        if (-not $WhatIfPreference) { Write-Host "Wrote .gitignore ($($expanded -join ', '))" -ForegroundColor Green }
+        $pending['.gitignore'] = New-GitIgnoreContent -Language $expanded @composeSplat
+    }
+
+    foreach ($path in $pending.Keys) {
+        Write-GitDefaultsFile -Path $path -Content $pending[$path] -Force:$Force
+        if (-not $WhatIfPreference) {
+            Write-Host "Wrote $path ($($expanded -join ', '))" -ForegroundColor Green
+        }
     }
 }
 

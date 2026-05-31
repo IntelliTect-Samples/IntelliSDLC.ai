@@ -498,3 +498,69 @@ Describe 'Copilot review #161 round 4: include-switch one-file invocations' {
         Test-Path '.gitignore' | Should -BeFalse
     }
 }
+
+Describe 'Copilot review #161 round 5: atomicity + -WhatIf cache safety' {
+    Context 'compose-then-write is atomic across both targets' {
+        BeforeEach {
+            $script:atRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("at-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:atRepo | Out-Null
+            & git -C $script:atRepo init --quiet 2>&1 | Out-Null
+            Push-Location $script:atRepo
+            # Mock Invoke-WebRequest to succeed for gitattributes URLs and
+            # fail for gitignore URLs, so the second compose throws AFTER
+            # the first compose succeeded. The atomic guard must prevent
+            # .gitattributes from being written.
+            Mock -CommandName 'Invoke-WebRequest' -MockWith {
+                if ($Uri -like '*github/gitignore*') {
+                    throw 'simulated gitignore-only fetch failure'
+                }
+                $name = Split-Path $Uri -Leaf
+                return [PSCustomObject]@{ Content = "# OK $name`n" }
+            }
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:atRepo -ErrorAction SilentlyContinue
+        }
+
+        It 'fails the whole operation without writing either file when the second compose throws' {
+            $uniq = 'atom-' + [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+            { Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitignoreRef $uniq -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*gitignore*'
+            Test-Path '.gitattributes' | Should -BeFalse
+            Test-Path '.gitignore'     | Should -BeFalse
+        }
+    }
+
+    Context '-WhatIf does not mutate the on-disk cache' {
+        BeforeEach {
+            $script:atRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("wi-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:atRepo | Out-Null
+            & git -C $script:atRepo init --quiet 2>&1 | Out-Null
+            Push-Location $script:atRepo
+            $script:whatIfRef = 'whatif-' + [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+            Mock -CommandName 'Invoke-WebRequest' -MockWith {
+                $name = Split-Path $Uri -Leaf
+                return [PSCustomObject]@{ Content = "# WHATIF $name`n" }
+            }
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:atRepo -ErrorAction SilentlyContinue
+            $a = Join-Path (Get-GitDefaultsCacheRoot) "alexkaratarakis/gitattributes/$script:whatIfRef"
+            $b = Join-Path (Get-GitDefaultsCacheRoot) "github/gitignore/$script:whatIfRef"
+            Remove-Item -Recurse -Force $a -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $b -ErrorAction SilentlyContinue
+        }
+
+        It 'leaves no cached file behind under -WhatIf with -Refresh' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:whatIfRef -GitignoreRef $script:whatIfRef -WhatIf
+            $a = Join-Path (Get-GitDefaultsCacheRoot) "alexkaratarakis/gitattributes/$script:whatIfRef"
+            $b = Join-Path (Get-GitDefaultsCacheRoot) "github/gitignore/$script:whatIfRef"
+            Test-Path $a | Should -BeFalse
+            Test-Path $b | Should -BeFalse
+            Test-Path '.gitattributes' | Should -BeFalse
+            Test-Path '.gitignore'     | Should -BeFalse
+        }
+    }
+}

@@ -178,7 +178,14 @@ $script:UpstreamManagedPaths = @(
     # post-sync hint points at. Without this entry the hint points at a
     # script that does not exist in fresh consumer worktrees.
     'Initialize-GitDefaults.ps1',
-    'Initialize-GitDefaults.Tests.ps1'
+    'Initialize-GitDefaults.Tests.ps1',
+    # Tombstone for the legacy first-sync template removed in issue #160.
+    # Keeping the path in UpstreamManagedPaths means the diff against
+    # upstream emits a `D` op for any consumer that had previously synced
+    # the file -- the upstream tree no longer contains it, so the op
+    # deletes the consumer's stale copy. Once consumers in the wild are
+    # past the transition (a few months), this entry can be removed.
+    '.gitattributes.template'
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working
