@@ -1081,6 +1081,15 @@ function Test-LocalDriftOnManagedPaths {
         For each upstream-managed path that currently exists at HEAD, compares
         its HEAD blob to the same path's blob at $Anchor. Returns an array of
         @{ Path = ...; Commit = '<sha> <subject>' } for drift entries.
+    .DESCRIPTION
+        A fast blob-SHA comparison is used as a pre-filter. Because blob SHAs are
+        end-of-line sensitive, a Windows consumer whose git committed the synced
+        files with CRLF will have HEAD blobs that differ from the upstream LF
+        blobs even though the content is identical. To avoid this false positive,
+        any path whose blobs differ is confirmed with an EOL-insensitive content
+        diff (git diff --ignore-cr-at-eol); only paths that still differ after
+        ignoring CR-at-EOL are reported as drift. Genuine divergence -- including
+        upstream-deleted files the consumer still has committed -- is preserved.
     #>
     [CmdletBinding()]
     param(
@@ -1101,6 +1110,10 @@ function Test-LocalDriftOnManagedPaths {
             $headSha = (& git rev-parse "HEAD:$p" 2>$null)
             $anchorSha = (& git rev-parse "${Anchor}:$p" 2>$null)
             if ($headSha -and $headSha -ne $anchorSha) {
+                # Blobs differ. Confirm this is a real content change and not just
+                # CRLF/LF normalization before flagging it as a policy violation.
+                & git diff --quiet --ignore-cr-at-eol $Anchor HEAD -- $p 2>$null
+                if ($LASTEXITCODE -eq 0) { continue }
                 $log = (& git log -1 --pretty='%h %s' -- $p 2>$null) -join ''
                 $drift.Add(@{ Path = $p; Commit = $log }) | Out-Null
             }
