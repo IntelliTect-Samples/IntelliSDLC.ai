@@ -254,8 +254,35 @@ Describe 'Get-GitDefaultsDetectedLanguages (Copilot review #161)' {
         Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Contain 'ASP.NET'
     }
 
-    It 'returns an empty result for a tree with no indicator files' {
-        $result = Get-GitDefaultsDetectedLanguages -Path $script:detRepo
-        @($result).Count | Should -Be 0
+    It 'always includes the cross-platform Global/Backup section (Copilot review #161 round 2)' {
+        $content = New-GitIgnoreContent -Language @('CSharp')
+        $content | Should -Match '(?m)^# === Global/Backup'
+    }
+
+    It 'includes Backup section even when only PowerShell (no upstream gitignore) is selected' {
+        $content = New-GitIgnoreContent -Language @('PowerShell')
+        $content | Should -Match '(?m)^# === Global/Backup'
+    }
+
+    It 'header mentions the curated PowerShell block as an intentional override (Copilot review #161 round 2)' {
+        $content = New-GitAttributesContent -Language @('PowerShell','CSharp')
+        $content | Should -Match 'intentional override'
+        $content | Should -Not -Match 'no upstream template'
+    }
+
+    It 'preflight aborts BEFORE writing any file when one of multiple targets exists (Copilot review #161 round 2)' {
+        $repo = Join-Path ([System.IO.Path]::GetTempPath()) ("pf-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $repo | Out-Null
+        & git -C $repo init --quiet 2>&1 | Out-Null
+        Push-Location $repo
+        try {
+            Set-Content -Path '.gitignore' -Value 'pre-existing' -NoNewline
+            { Initialize-GitDefaults -Language 'CSharp' -ErrorAction Stop } | Should -Throw -ExpectedMessage '*already exists*'
+            Test-Path '.gitattributes' | Should -BeFalse
+            (Get-Content '.gitignore' -Raw) | Should -Be 'pre-existing'
+        } finally {
+            Pop-Location
+            Remove-Item -Recurse -Force $repo -ErrorAction SilentlyContinue
+        }
     }
 }

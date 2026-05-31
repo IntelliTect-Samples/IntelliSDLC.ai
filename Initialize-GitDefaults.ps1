@@ -93,7 +93,9 @@ $script:GitDefaultsLanguages = [ordered]@{
 }
 
 $script:CuratedPowerShellGitattributes = @'
-# PowerShell (no upstream template; rules curated locally)
+# PowerShell (curated in-script; intentionally overrides upstream
+# PowerShell.gitattributes -- smaller surface, signing-aware, explicit
+# linguist hints. See .github/templates/git-defaults/SOURCES.md.)
 *.ps1    text eol=crlf
 *.psm1   text eol=crlf
 *.psd1   text eol=crlf
@@ -105,7 +107,8 @@ $script:CuratedPowerShellGitattributes = @'
 '@
 
 $script:CuratedPowerShellGitignore = @'
-# PowerShell (no upstream template; rules curated locally)
+# PowerShell (curated in-script; no upstream PowerShell.gitignore exists
+# in github/gitignore at the pinned SHA. See SOURCES.md.)
 PSReadLine/ConsoleHost_history.txt
 *.psproj.user
 '@
@@ -175,7 +178,7 @@ function Get-GitDefaultsTemplateContent {
     )
     $path = Join-Path (Get-GitDefaultsTemplateRoot) $FileName
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Bundled template snapshot not found: $path. Re-run with -Refresh to fetch from upstream."
+        throw "Bundled template snapshot not found: $path. Re-pull IntelliSDLC.ai (Pull-SDLC.ai.ps1) to restore the .github/templates/git-defaults/ snapshots."
     }
     return (Get-Content -LiteralPath $path -Raw)
 }
@@ -213,9 +216,9 @@ function New-GitDefaultsHeader {
         }
     }
     if ($hasPs) {
-        [void]$lines.Add('# Curated additions: PowerShell (no upstream template)')
+        [void]$lines.Add('# Curated additions: PowerShell (intentional override of upstream; see SOURCES.md)')
     }
-    [void]$lines.Add('# Re-run Initialize-GitDefaults.ps1 to refresh or add languages.')
+    [void]$lines.Add('# Re-run Initialize-GitDefaults.ps1 -Language ... -Force to regenerate or add languages.')
     [void]$lines.Add('')
     return ($lines -join "`n")
 }
@@ -300,6 +303,13 @@ function New-GitIgnoreContent {
             [void]$upstreamSections.Add($section)
         }
     }
+    # Always include the cross-platform Backup snapshot. It is bundled
+    # under .github/templates/git-defaults/Global/ for exactly this
+    # purpose, and is language-independent (editor backups, OS junk).
+    $backupFile = 'Global/Backup.gitignore'
+    if ($seenFiles.Add($backupFile)) {
+        [void]$upstreamSections.Add('Global/Backup')
+    }
 
     $header = New-GitDefaultsHeader -Kind 'gitignore' -Language $expanded -UpstreamSections $upstreamSections
 
@@ -317,6 +327,11 @@ function New-GitIgnoreContent {
             [void]$body.Add((New-GitDefaultsSectionDivider -Section 'PowerShell' -SourceLabel 'curated in-script'))
             [void]$body.Add($script:CuratedPowerShellGitignore)
         }
+    }
+    # Cross-platform editor/OS backup patterns, appended once.
+    if ($emitted.Add($backupFile)) {
+        [void]$body.Add((New-GitDefaultsSectionDivider -Section 'Global/Backup' -SourceLabel $backupFile))
+        [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $backupFile))
     }
     return ($body -join "`n")
 }
@@ -530,6 +545,17 @@ function Initialize-GitDefaults {
 
     $expanded = Resolve-GitDefaultsLanguages -Language $Language
     Write-Verbose ("Resolved languages: {0}" -f ($expanded -join ', '))
+
+    # Preflight: check existence of ALL requested targets before writing
+    # any file, so we never leave a partial result when -Force is omitted.
+    if (-not $Force) {
+        $existing = @()
+        if ($IncludeGitattributes -and (Test-Path -LiteralPath '.gitattributes')) { $existing += '.gitattributes' }
+        if ($IncludeGitignore     -and (Test-Path -LiteralPath '.gitignore'))     { $existing += '.gitignore' }
+        if ($existing.Count -gt 0) {
+            throw ("Aborting: {0} already exists. Re-run with -Force to back up and overwrite." -f ($existing -join ', '))
+        }
+    }
 
     if ($IncludeGitattributes) {
         $content = New-GitAttributesContent -Language $expanded

@@ -2209,13 +2209,28 @@ Describe 'Write-GitDefaultsHint (issue #160)' {
         Remove-Item -Recurse -Force $script:hintRepo -ErrorAction SilentlyContinue
     }
 
-    It 'prints the Initialize-GitDefaults hint exactly once when .gitattributes is missing' {
+    It 'prints the both-missing hint exactly once when neither file exists' {
         $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
         ([regex]::Matches($out, 'Initialize-GitDefaults\.ps1')).Count | Should -Be 1
-        $out | Should -Match 'No \.gitattributes found'
+        $out | Should -Match 'No \.gitattributes or \.gitignore found'
     }
 
-    It 'mentions both upstream sources in the hint' {
+    It 'prints the gitattributes-only hint with -IncludeGitignore:$false when only .gitattributes is missing (Copilot review #161 round 2)' {
+        New-Item -ItemType File -Path (Join-Path $script:hintRepo '.gitignore') | Out-Null
+        $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
+        $out | Should -Match 'No \.gitattributes found'
+        $out | Should -Match '-IncludeGitignore:\$false'
+        $out | Should -Match 'your existing \.gitignore is untouched'
+    }
+
+    It 'prints the gitignore-only hint with -IncludeGitattributes:$false when only .gitignore is missing (Copilot review #161 round 2)' {
+        New-Item -ItemType File -Path (Join-Path $script:hintRepo '.gitattributes') | Out-Null
+        $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
+        $out | Should -Match 'No \.gitignore found'
+        $out | Should -Match '-IncludeGitattributes:\$false'
+    }
+
+    It 'mentions both upstream sources in the both-missing hint' {
         $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
         $out | Should -Match 'alexkaratarakis/gitattributes'
         $out | Should -Match 'github/gitignore'

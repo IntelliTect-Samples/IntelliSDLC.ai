@@ -1357,11 +1357,14 @@ function Write-GitDefaultsHint {
     $missingAttrs  = -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.gitattributes'))
     $missingIgnore = -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.gitignore'))
     if (-not ($missingAttrs -or $missingIgnore)) { return }
-    if ($missingAttrs) {
-        Write-Host 'No .gitattributes found. Run ./Initialize-GitDefaults.ps1 to scaffold one (uses alexkaratarakis/gitattributes + github/gitignore).' -ForegroundColor Yellow
+    if ($missingAttrs -and $missingIgnore) {
+        Write-Host 'No .gitattributes or .gitignore found. Run ./Initialize-GitDefaults.ps1 -Language <stack> -Force to scaffold both (uses alexkaratarakis/gitattributes + github/gitignore at pinned SHAs).' -ForegroundColor Yellow
     }
-    elseif ($missingIgnore) {
-        Write-Host 'No .gitignore found. Run ./Initialize-GitDefaults.ps1 to scaffold one (uses alexkaratarakis/gitattributes + github/gitignore).' -ForegroundColor Yellow
+    elseif ($missingAttrs) {
+        Write-Host 'No .gitattributes found. Run ./Initialize-GitDefaults.ps1 -Language <stack> -IncludeGitignore:$false -Force (your existing .gitignore is untouched).' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host 'No .gitignore found. Run ./Initialize-GitDefaults.ps1 -Language <stack> -IncludeGitattributes:$false -Force (your existing .gitattributes is untouched).' -ForegroundColor Yellow
     }
 }
 
