@@ -1209,7 +1209,46 @@ function Invoke-AutoWorktreeSync {
         # subsequent push will simply update it.
         # A worktree directory always contains a .git FILE (not directory).
         $worktreeMarker = Join-Path $absWorktree '.git'
-        $reusing = (Test-Path $worktreeMarker -PathType Leaf)
+        $markerExists = (Test-Path $worktreeMarker -PathType Leaf)
+        $reusing = $false
+        if ($markerExists) {
+            # Validate that the marker actually belongs to THIS repo. A
+            # leftover .worktrees/sdlc-sync/ directory can carry a .git file
+            # whose `gitdir:` line points to a different repo's (or a
+            # deleted) gitdir -- e.g. a copied tree, or a worktree directory
+            # that survived after the owning repo was relocated/removed.
+            # Trusting the marker in that case yields "fatal: not a git
+            # repository: (NULL)" for every subsequent git call inside the
+            # worktree (issue #180). Probe with `git rev-parse
+            # --git-common-dir` and compare against this repo's common-dir.
+            $thisCommonDir = (git rev-parse --git-common-dir 2>$null)
+            $thisCommonDirResolved = if ($thisCommonDir) { try { (Resolve-Path -LiteralPath $thisCommonDir -ErrorAction Stop).Path } catch { $null } } else { $null }
+            $reusing = $false
+            Push-Location $absWorktree
+            try {
+                $wtCommonDir = (git rev-parse --git-common-dir 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $wtCommonDir) {
+                    $wtCommonDirResolved = try { (Resolve-Path -LiteralPath $wtCommonDir -ErrorAction Stop).Path } catch { $null }
+                    if ($wtCommonDirResolved -and $thisCommonDirResolved -and
+                        ([string]::Equals($wtCommonDirResolved, $thisCommonDirResolved, [System.StringComparison]::OrdinalIgnoreCase))) {
+                        $reusing = $true
+                    }
+                }
+            }
+            finally { if ((Get-Location).Path -eq $absWorktree) { Pop-Location } }
+
+            if (-not $reusing) {
+                Write-Host "Discarding stale worktree directory '$WorktreePath' (marker does not belong to this repo)." -ForegroundColor DarkGray
+                # Try a clean git-worktree removal first (works when this repo
+                # has a stale registration for the path). Fall back to a raw
+                # filesystem delete when the directory is orphaned.
+                git worktree remove --force $absWorktree 2>&1 | Out-Null
+                git worktree prune 2>&1 | Out-Null
+                if (Test-Path -LiteralPath $absWorktree) {
+                    Remove-Item -LiteralPath $absWorktree -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
         if ($reusing) {
             Push-Location $absWorktree
             try {
@@ -1400,20 +1439,34 @@ function Invoke-SelfRefresh {
     <#
     .SYNOPSIS
         Fetches the upstream Pull-SDLC.ai.ps1 and, if its SHA256 differs from
-        the local copy, atomically replaces $ScriptPath with the new content.
+        the local copy, returns the path to a temp file containing the new
+        content. The caller re-execs from that temp file; the on-disk
+        $ScriptPath is intentionally NOT overwritten.
     .DESCRIPTION
         The fetch is cache-busted on every call (per-invocation query parameter
         plus Cache-Control / Pragma no-cache headers) to defeat Fastly stale
         hits on raw.githubusercontent.com -- otherwise a refresh issued within
         the CDN's TTL of a fresh upstream merge would silently no-op against
-        the previous body. Every outcome is logged on the Verbose stream so
-        '-Verbose' makes "did the refresh run, and what did it see?"
-        answerable from the output without grepping for a missing line.
+        the previous body.
+
+        The on-disk script is left untouched (issue #180). Overwriting it on
+        `main` produced a dirty working tree on every upstream change and
+        silently destroyed any local edits. The upstream content is delivered
+        to the consumer through the worktree sync's PR; when the user merges
+        that PR and pulls, the on-disk script is updated through git like any
+        other managed file.
+
+        Every outcome is logged on the Verbose stream so '-Verbose' makes
+        "did the refresh run, and what did it see?" answerable from the
+        output without grepping for a missing line.
     .OUTPUTS
-        [bool] $true if the local file was updated (caller should re-exec).
-        $false if hashes match, the fetch failed, or any error occurred.
+        [string] Absolute path to a temp file with the new upstream content,
+        when an update is available (caller should re-exec from that path).
+        Empty string when hashes match, the fetch failed, or any error
+        occurred.
     #>
     [CmdletBinding()]
+    [OutputType([string])]
     param(
         [Parameter(Mandatory)][string]$ScriptPath,
         [string]$Url = 'https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pull-SDLC.ai.ps1',
@@ -1432,7 +1485,7 @@ function Invoke-SelfRefresh {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
         Write-Verbose "Self-refresh: skipped (fetch failed: $($_.Exception.Message))"
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
-        return $false
+        return ''
     }
     try {
         $remoteHash = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash
@@ -1440,26 +1493,30 @@ function Invoke-SelfRefresh {
         if ($remoteHash -eq $localHash) {
             Write-Verbose "Self-refresh: up-to-date (sha256=$($localHash.Substring(0,7)))"
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
-            return $false
+            return ''
         }
         Write-Host ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7)) -ForegroundColor Cyan
         Write-Verbose "Self-refresh: updated $($localHash.Substring(0,7)) -> $($remoteHash.Substring(0,7))"
-        Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force -WhatIf:$false -Confirm:$false
-        return $true
+        return $tmp
     }
     catch {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
         if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false }
-        return $false
+        return ''
     }
 }
 
 function Invoke-SelfReExec {
     <#
     .SYNOPSIS
-        Re-invokes the freshly self-updated Pull-SDLC.ai.ps1 with the caller's
-        original bound parameters, force-adding -NoSelfUpdate to prevent loops.
-        Exits the host process with the child script's exit code.
+        Re-invokes the freshly self-updated Pull-SDLC.ai.ps1 (typically a temp
+        file produced by Invoke-SelfRefresh) with the caller's original bound
+        parameters, force-adding -NoSelfUpdate to prevent loops. Exits the
+        host process with the child script's exit code.
+    .DESCRIPTION
+        $ScriptPath is the path to the script to run. With issue #180 this is
+        a temp file (the upstream-downloaded copy), not the consumer's on-disk
+        Pull-SDLC.ai.ps1. The temp file is removed after the child exits.
     #>
     [CmdletBinding()]
     param(
@@ -1468,8 +1525,21 @@ function Invoke-SelfReExec {
     )
     $reArgs = @{} + $BoundParameters
     $reArgs['NoSelfUpdate'] = $true
-    & $ScriptPath @reArgs
-    exit $LASTEXITCODE
+    try {
+        & $ScriptPath @reArgs
+        $childExit = $LASTEXITCODE
+    }
+    finally {
+        # Clean up the temp file produced by Invoke-SelfRefresh. Match the
+        # naming convention so we never delete an unrelated on-disk script.
+        $tempDir = [System.IO.Path]::GetTempPath()
+        $scriptDir = [System.IO.Path]::GetDirectoryName($ScriptPath)
+        $scriptName = [System.IO.Path]::GetFileName($ScriptPath)
+        if ($scriptDir -and ($scriptDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) -eq $tempDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) -and $scriptName -like 'pull-sdlc-self-*.ps1') {
+            Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
+        }
+    }
+    exit $childExit
 }
 
 function Write-NextStepsBanner {
@@ -1546,8 +1616,9 @@ function Invoke-SelfRefreshGate {
         [switch]$NoSelfUpdate
     )
     if (Test-SelfRefreshRequired -ScriptPath $ScriptPath -NoSelfUpdate:$NoSelfUpdate) {
-        if (Invoke-SelfRefresh -ScriptPath $ScriptPath) {
-            Invoke-SelfReExec -ScriptPath $ScriptPath -BoundParameters $BoundParameters
+        $newScriptPath = Invoke-SelfRefresh -ScriptPath $ScriptPath
+        if ($newScriptPath) {
+            Invoke-SelfReExec -ScriptPath $newScriptPath -BoundParameters $BoundParameters
             return $true
         }
     }

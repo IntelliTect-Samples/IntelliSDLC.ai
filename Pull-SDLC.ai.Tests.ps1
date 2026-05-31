@@ -1360,6 +1360,54 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 
+    It 'recovers from a stale worktree marker pointing to a foreign / deleted gitdir (issue #180)' {
+        # Reproduces the real PSBitWarden symptom: a leftover .worktrees/sdlc-sync/
+        # directory whose .git file says `gitdir: <some other repo>` (or a
+        # deleted path). The reuse check that only inspects the marker's
+        # existence is fooled, then every git command inside the directory
+        # fails with "fatal: not a git repository: (NULL)" and the auto-
+        # worktree flow blows up. The fix discards the stale directory and
+        # creates a fresh worktree.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git push -q origin main
+        } finally { Pop-Location }
+        # Manually fabricate a stale worktree directory: a directory with a
+        # .git FILE whose gitdir points somewhere this repo knows nothing about.
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        New-Item -ItemType Directory -Path $wt -Force | Out-Null
+        $foreignGitDir = Join-Path (Split-Path $fx.Consumer -Parent) 'foreign-repo/.git/worktrees/sdlc-sync'
+        Set-Content -LiteralPath (Join-Path $wt '.git') -Value ("gitdir: $foreignGitDir") -NoNewline
+        'leftover from a different repo' | Out-File -Encoding utf8 (Join-Path $wt 'STRAY.md') -NoNewline
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
+        $rc | Should -Be 0
+        # The worktree must now belong to this repo and carry the synced content.
+        Test-Path (Join-Path $wt '.git') | Should -BeTrue
+        Push-Location $wt
+        try {
+            $wtCommonDir = (git rev-parse --git-common-dir).Trim()
+            $wtAbs = (Resolve-Path -LiteralPath $wtCommonDir).Path
+        } finally { Pop-Location }
+        Push-Location $fx.Consumer
+        try {
+            $thisCommonDir = (git rev-parse --git-common-dir).Trim()
+            $thisAbs = (Resolve-Path -LiteralPath $thisCommonDir).Path
+        } finally { Pop-Location }
+        $wtAbs | Should -Be $thisAbs
+        # Stray content from the old foreign tree is gone; sync produced new content.
+        Test-Path (Join-Path $wt 'STRAY.md') | Should -BeFalse
+        (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
     It 'auto-recovers a divergent push to chore/sdlc-sync via force-with-lease retry' {
         # Reproduces the real-world divergent-scratch-branch case: a previous
         # successful run pushed commit X to origin/chore/sdlc-sync. The
@@ -1471,36 +1519,43 @@ Describe 'Invoke-SelfRefresh' {
         Set-Content -LiteralPath $script:scriptPath -Value 'original-body' -NoNewline
     }
 
-    It 'returns $false and leaves the file unchanged when remote hash matches local' {
+    It 'returns empty and leaves the file unchanged when remote hash matches local' {
         Mock -CommandName Invoke-WebRequest -MockWith {
             param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
             Set-Content -LiteralPath $OutFile -Value 'original-body' -NoNewline
         }
         $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
-        $result | Should -BeFalse
+        $result | Should -BeNullOrEmpty
         (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
     }
 
-    It 'returns $true and overwrites the local file when remote hash differs' {
+    It 'returns a temp file path and does NOT overwrite the local file when remote hash differs (issue #180)' {
         Mock -CommandName Invoke-WebRequest -MockWith {
             param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
             Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline
         }
         $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
-        $result | Should -BeTrue
-        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'NEW-upstream-body'
+        $result | Should -Not -BeNullOrEmpty
+        $result | Should -Match 'pull-sdlc-self-.*\.ps1$'
+        Test-Path -LiteralPath $result | Should -BeTrue
+        # The on-disk script must NOT be overwritten (regression for issue #180).
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
+        # The returned temp file holds the new upstream content.
+        (Get-Content -LiteralPath $result -Raw) | Should -Be 'NEW-upstream-body'
+        # Clean up the temp file the function intentionally leaves behind for the caller.
+        Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     }
 
-    It 'returns $false and emits a warning when Invoke-WebRequest throws' {
+    It 'returns empty and emits a warning when Invoke-WebRequest throws' {
         Mock -CommandName Invoke-WebRequest -MockWith { throw 'simulated network failure' }
         $warnings = @()
         $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath -WarningVariable warnings -WarningAction SilentlyContinue
-        $result | Should -BeFalse
+        $result | Should -BeNullOrEmpty
         (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
         ($warnings -join ' ') | Should -Match 'Self-update check skipped'
     }
 
-    It 'deletes its temp file even when $WhatIfPreference is true' {
+    It 'deletes its temp file even when $WhatIfPreference is true (no-update path)' {
         # Clean any stragglers from prior runs so this assertion is hermetic.
         Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
@@ -1517,7 +1572,7 @@ Describe 'Invoke-SelfRefresh' {
         finally {
             $WhatIfPreference = $false
         }
-        $result | Should -BeFalse
+        $result | Should -BeNullOrEmpty
         $leftover = Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue
         $leftover | Should -BeNullOrEmpty
     }
@@ -1572,9 +1627,14 @@ Describe 'Invoke-SelfRefresh' {
             param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
             Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline -WhatIf:$false
         }
+        $tempPath = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
+            Where-Object { $_ -is [string] } | Select-Object -First 1
         $verboseMsgs = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
             Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
         ($verboseMsgs -join ' ') | Should -Match 'Self-refresh: updated'
+        # Clean up temp files produced by both invocations.
+        Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -1587,7 +1647,7 @@ Describe 'Invoke-PullSDLC self-refresh wiring' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
-        Mock -CommandName Invoke-SelfRefresh -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh -MockWith { return 'C:\fake\tmp.ps1' }
         Mock -CommandName Invoke-SelfReExec -MockWith { return 0 }
         # Even when self-refresh would say "go", Invoke-PullSDLC must not
         # invoke the gate -- it is the script's top-level responsibility now.
@@ -1601,7 +1661,7 @@ Describe 'Invoke-PullSDLC self-refresh wiring' {
 Describe 'Invoke-SelfRefreshGate (issue #110)' {
     It 'short-circuits when Test-SelfRefreshRequired returns $false' {
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $false }
-        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\fake\tmp.ps1' }
         Mock -CommandName Invoke-SelfReExec    -MockWith { return 0 }
         $result = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters @{}
         $result | Should -BeFalse
@@ -1609,9 +1669,9 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
         Should -Invoke -CommandName Invoke-SelfReExec  -Times 0 -Exactly
     }
 
-    It 'short-circuits when Invoke-SelfRefresh returns $false (hashes match / fetch failed)' {
+    It 'short-circuits when Invoke-SelfRefresh returns empty (hashes match / fetch failed)' {
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
-        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $false }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return '' }
         Mock -CommandName Invoke-SelfReExec    -MockWith { return 0 }
         $result = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters @{}
         $result | Should -BeFalse
@@ -1620,7 +1680,7 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
 
     It 're-execs via Invoke-SelfReExec when an update was applied' {
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
-        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\fake\tmp.ps1' }
         $script:reExecCount = 0
         Mock -CommandName Invoke-SelfReExec -MockWith {
             $script:reExecCount++
@@ -1630,19 +1690,28 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
         $script:reExecCount | Should -Be 1
     }
 
-    It 'forwards exactly the supplied BoundParameters to Invoke-SelfReExec (regression for #110)' {
+    It 'passes the temp-file path (not the on-disk ScriptPath) to Invoke-SelfReExec (issue #180)' {
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
-        Mock -CommandName Invoke-SelfRefresh   -MockWith { return $true }
-        $script:capturedBound = $null
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-abc.ps1' }
         $script:capturedScriptPath = $null
         Mock -CommandName Invoke-SelfReExec -MockWith {
             param([string]$ScriptPath, [hashtable]$BoundParameters)
             $script:capturedScriptPath = $ScriptPath
+        }
+        $null = Invoke-SelfRefreshGate -ScriptPath 'C:\Consumer\Pull-SDLC.ai.ps1' -BoundParameters @{ Branch = 'main' }
+        $script:capturedScriptPath | Should -Be 'C:\Temp\pull-sdlc-self-abc.ps1'
+    }
+
+    It 'forwards exactly the supplied BoundParameters to Invoke-SelfReExec (regression for #110)' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\fake\tmp.ps1' }
+        $script:capturedBound = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters)
             $script:capturedBound = $BoundParameters
         }
         $inputBound = @{ Branch = 'main'; RemoteName = 'sdlc.ai'; NoAutoPR = $true }
         $null = Invoke-SelfRefreshGate -ScriptPath 'C:\fake\Pull-SDLC.ai.ps1' -BoundParameters $inputBound
-        $script:capturedScriptPath | Should -Be 'C:\fake\Pull-SDLC.ai.ps1'
         # Captured keys must match input exactly -- no function-only leak (e.g. RemoteUrl).
         ($script:capturedBound.Keys | Sort-Object) -join ',' | Should -Be (($inputBound.Keys | Sort-Object) -join ',')
         $script:capturedBound.Keys | Should -Not -Contain 'RemoteUrl'
