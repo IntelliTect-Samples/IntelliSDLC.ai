@@ -583,8 +583,10 @@ function Get-GitDefaultsDetectedLanguages {
     )
     $isOwnPs = { param($f)
         # Only filter at the repo root -- IntelliSDLC.ai tools never live
-        # in subdirectories of the consumer repo.
-        $rel = [System.IO.Path]::GetRelativePath($Path, $f.FullName)
+        # in subdirectories of the consumer repo. Normalize the path
+        # separator: GetRelativePath emits backslashes on Windows so the
+        # `.github/` match must accept both. Copilot review #161 round 8.
+        $rel = [System.IO.Path]::GetRelativePath($Path, $f.FullName) -replace '\\','/'
         ($ownPsFiles -contains $rel) -or ($rel -like '.github/*')
     }
 

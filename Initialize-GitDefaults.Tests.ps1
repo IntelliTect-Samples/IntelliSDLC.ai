@@ -660,4 +660,22 @@ Describe 'Copilot review #161 round 7: detection ignores IntelliSDLC.ai tooling'
             Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
         }
     }
+
+    It 'excludes .github\ tooling on Windows (path-separator normalization, Copilot review #161 round 8)' {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("gh-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        try {
+            # Plant a .ps1 ONLY under .github\ (subdirectory) -- this is
+            # IntelliSDLC.ai upstream-managed tooling and must NOT trigger
+            # PowerShell detection. GetRelativePath returns backslashes on
+            # Windows, so the like-match must accept both separators.
+            $gh = Join-Path $tmp '.github'
+            New-Item -ItemType Directory -Path $gh | Out-Null
+            Set-Content -Path (Join-Path $gh 'helper.ps1') -Value '# upstream helper' -NoNewline
+            $detected = Get-GitDefaultsDetectedLanguages -Path $tmp
+            $detected | Should -Not -Contain 'PowerShell'
+        } finally {
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        }
+    }
 }
