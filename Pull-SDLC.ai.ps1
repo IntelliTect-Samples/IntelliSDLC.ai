@@ -150,7 +150,7 @@ $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     '.gitattributes.template'                               = '.gitattributes'
-    'tasks/README.md.template'                              = 'tasks/README.md'
+    'tasks/README.md'                                       = 'tasks/README.md'
 }
 
 # Paths (file or directory prefixes) that upstream owns. Anything under one
@@ -315,19 +315,47 @@ function Invoke-TemplateScaffold {
     param(
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$TargetRoot,
-        [Parameter(Mandatory)][System.Collections.IDictionary]$ScaffoldMap
+        [Parameter(Mandatory)][System.Collections.IDictionary]$ScaffoldMap,
+        # When set, same-name scaffold entries (where the map key equals the
+        # value) read upstream content via `git -C $SourceRoot show $Ref:$key`
+        # instead of copying from the working tree. This is how
+        # `tasks/README.md` (issue #156) -- a committed-in-upstream consumer
+        # first-draft file that lives under the consumer-owned `tasks/`
+        # always-local prefix -- is delivered on first sync.
+        [string]$Ref
     )
     $scaffolded = New-Object System.Collections.Generic.List[string]
     foreach ($entry in $ScaffoldMap.GetEnumerator()) {
-        $template = Join-Path $SourceRoot $entry.Key
-        $target   = Join-Path $TargetRoot $entry.Value
-        if (-not (Test-Path -LiteralPath $template)) { continue }
+        $target = Join-Path $TargetRoot $entry.Value
         if (Test-Path -LiteralPath $target) { continue }
         $targetDir = Split-Path -Parent $target
         if ($targetDir -and -not (Test-Path -LiteralPath $targetDir)) {
             New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
         }
-        Copy-Item -LiteralPath $template -Destination $target -Force
+
+        $isSameName = [string]::Equals($entry.Key, $entry.Value, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($isSameName) {
+            # Same-name scaffold: the upstream content does NOT live in the
+            # consumer working tree (the bare path is on $AlwaysLocalPaths and
+            # therefore filtered out of diff-replay), so we must read it from
+            # the upstream ref via `git show`. Without -Ref this case is a
+            # silent no-op -- preserves the historical "missing source = skip"
+            # behavior and keeps unit tests that don't supply a ref simple.
+            if (-not $Ref) { continue }
+            $spec = $Ref + ':' + $entry.Key
+            $content = & git -C $SourceRoot show $spec 2>$null
+            if ($LASTEXITCODE -ne 0 -or $null -eq $content) { continue }
+            # `git show` emits an array of lines on PowerShell; rejoin with LF
+            # so the on-disk file matches the upstream blob byte-for-byte
+            # (modulo the trailing newline that Out-File would add).
+            $text = if ($content -is [array]) { ($content -join "`n") } else { [string]$content }
+            [System.IO.File]::WriteAllText($target, $text)
+        }
+        else {
+            $template = Join-Path $SourceRoot $entry.Key
+            if (-not (Test-Path -LiteralPath $template)) { continue }
+            Copy-Item -LiteralPath $template -Destination $target -Force
+        }
         $scaffolded.Add($entry.Value) | Out-Null
     }
     return $scaffolded.ToArray()
@@ -1581,12 +1609,17 @@ function Invoke-PullSDLC {
 
     # Scaffold consumer-owned files from templates (first sync only).
     $scaffolded = @()
-    if (Test-IsUpstreamRepo) {
+    # Scope the upstream-repo detection to $RepoRoot rather than the shell's
+    # CWD; otherwise tests (and any caller invoked from inside the upstream
+    # repo) misclassify a consumer fixture as the upstream repo and skip
+    # scaffolding.
+    $originUrl = (& git -C $RepoRoot remote get-url origin 2>$null)
+    if (Test-IsUpstreamRepo -RemoteUrl $originUrl) {
         Write-Host ''
         Write-Host "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding." -ForegroundColor DarkGray
     }
     else {
-        $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $RepoRoot -TargetRoot $RepoRoot -ScaffoldMap $script:TemplateScaffoldMap)
+        $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $RepoRoot -TargetRoot $RepoRoot -ScaffoldMap $script:TemplateScaffoldMap -Ref $mergeRef)
         if ($scaffolded.Count -gt 0) {
             Write-Host ''
             Write-Host 'Scaffolded consumer-owned files from templates:' -ForegroundColor Green

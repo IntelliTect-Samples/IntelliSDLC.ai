@@ -101,10 +101,15 @@ names if the bare name is missing:
 | `.github/instructions/project.instructions.md.template` | `.github/instructions/project.instructions.md` | Project-specific conventions read by all agents |
 | `CLAUDE.project.md.template` | `CLAUDE.project.md` | Claude-specific orientation overrides |
 | `.gitattributes.template` | `.gitattributes` | Recommended baseline (LF for `*.sh`, CRLF for `*.ps1` / `*.bat`) |
-| `tasks/README.md.template` | `tasks/README.md` | Onboarding for the `tasks/` plan directory |
 
-Existing bare-name files are never overwritten. Once placed, all four are
+Existing bare-name files are never overwritten. Once placed, all three are
 fully consumer-owned -- edit them freely.
+
+`tasks/README.md` is shipped directly (not via a `.template` indirection)
+because its content is the same for every consumer. On first sync the script
+copies the upstream `tasks/README.md` into the consumer working tree if no
+`tasks/README.md` is present; afterwards `tasks/` is consumer-owned and the
+file is never overwritten.
 
 ## File Ownership
 

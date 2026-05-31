@@ -73,8 +73,8 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path 'tasks/README.md' | Should -BeTrue
     }
 
-    It 'returns $false for tasks/README.md.template (template still flows from upstream)' {
-        Test-IsAlwaysLocalPath -Path 'tasks/README.md.template' | Should -BeFalse
+    It 'returns $false for any hypothetical *.template file under tasks/ (carve-out keeps templates upstream-managed)' {
+        Test-IsAlwaysLocalPath -Path 'tasks/some-future.template' | Should -BeFalse
     }
 
     It 'returns $false for tasks/.gitkeep (directory anchor flows from upstream)' {
@@ -156,6 +156,57 @@ Describe 'Invoke-TemplateScaffold' {
         $result = @(Invoke-TemplateScaffold -SourceRoot $script:src -TargetRoot $script:dst -ScaffoldMap $script:map)
         $result.Count | Should -Be 1
         $result[0] | Should -Be '.github/instructions/project.instructions.md'
+    }
+}
+
+Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' {
+    BeforeEach {
+        # Build a tiny upstream-style git repo containing tasks/README.md so we
+        # can verify the function pulls same-name scaffold content from a ref
+        # rather than from the working tree. SourceRoot doubles as the repo
+        # passed to `git -C` for the `git show` lookup.
+        $script:srcRepo = Join-Path $TestDrive ("samename-src-" + [guid]::NewGuid().ToString('N'))
+        $script:dstRoot = Join-Path $TestDrive ("samename-dst-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:srcRepo, $script:dstRoot -Force | Out-Null
+
+        Push-Location $script:srcRepo
+        try {
+            git init -q -b main
+            git config user.email t@t.t
+            git config user.name t
+            New-Item -ItemType Directory -Path tasks -Force | Out-Null
+            'UPSTREAM_TASKS_README_BODY' | Out-File -Encoding utf8 tasks/README.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+        } finally { Pop-Location }
+
+        $script:samenameMap = [ordered]@{ 'tasks/README.md' = 'tasks/README.md' }
+    }
+
+    It 'reads upstream content via git show Ref colon path when source equals target and target is missing' {
+        $result = @(Invoke-TemplateScaffold -SourceRoot $script:srcRepo -TargetRoot $script:dstRoot -ScaffoldMap $script:samenameMap -Ref HEAD)
+        $result | Should -Contain 'tasks/README.md'
+        $written = Join-Path $script:dstRoot 'tasks/README.md'
+        Test-Path $written | Should -BeTrue
+        (Get-Content $written -Raw).Trim() | Should -Be 'UPSTREAM_TASKS_README_BODY'
+    }
+
+    It 'leaves an existing consumer same-name target untouched (consumer edits preserved)' {
+        New-Item -ItemType Directory -Path (Join-Path $script:dstRoot 'tasks') -Force | Out-Null
+        Set-Content -Path (Join-Path $script:dstRoot 'tasks/README.md') -Value 'CONSUMER_EDITED_BODY'
+
+        $result = @(Invoke-TemplateScaffold -SourceRoot $script:srcRepo -TargetRoot $script:dstRoot -ScaffoldMap $script:samenameMap -Ref HEAD)
+        $result.Count | Should -Be 0
+        (Get-Content (Join-Path $script:dstRoot 'tasks/README.md') -Raw).Trim() | Should -Be 'CONSUMER_EDITED_BODY'
+    }
+
+    It 'skips silently when -Ref is omitted and the same-name source is absent from the working tree' {
+        # Mirrors the "no ref provided" call path used by unit tests of the
+        # other three template entries; same-name scaffold should be a no-op
+        # rather than throwing.
+        $result = @(Invoke-TemplateScaffold -SourceRoot $script:dstRoot -TargetRoot $script:dstRoot -ScaffoldMap $script:samenameMap)
+        $result.Count | Should -Be 0
+        Test-Path (Join-Path $script:dstRoot 'tasks/README.md') | Should -BeFalse
     }
 }
 
@@ -557,6 +608,47 @@ Describe 'Invoke-PullSDLC end-to-end' {
         (Get-Content (Join-Path $fx.Consumer 'README.md') -Raw) | Should -Be 'consumer-only readme content'
         # CLAUDE.md did get updated.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'new claude'
+    }
+
+    It 'scaffolds tasks/README.md from upstream content on first sync into an empty consumer (issue #156)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                New-Item -ItemType Directory -Path tasks -Force | Out-Null
+                'UPSTREAM_TASKS_README_BODY' | Out-File -Encoding utf8 tasks/README.md -NoNewline
+            }
+        # Consumer has no tasks/ at all -- this is the "first sync into empty consumer" case.
+        Remove-Item -Recurse -Force (Join-Path $fx.Consumer 'tasks') -ErrorAction SilentlyContinue
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        $scaffolded = Join-Path $fx.Consumer 'tasks/README.md'
+        Test-Path $scaffolded | Should -BeTrue
+        (Get-Content $scaffolded -Raw).Trim() | Should -Be 'UPSTREAM_TASKS_README_BODY'
+    }
+
+    It 'preserves consumer edits to tasks/README.md on subsequent sync (issue #156)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                New-Item -ItemType Directory -Path tasks -Force | Out-Null
+                'UPSTREAM_TASKS_README_BODY' | Out-File -Encoding utf8 tasks/README.md -NoNewline
+            } `
+            -Tweak {
+                'UPSTREAM_TASKS_README_BODY_V2' | Out-File -Encoding utf8 tasks/README.md -NoNewline
+            }
+        # Consumer has its own edited tasks/README.md tracked in git.
+        New-Item -ItemType Directory -Path (Join-Path $fx.Consumer 'tasks') -Force | Out-Null
+        'CONSUMER_EDITED_BODY' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'tasks/README.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add tasks/README.md; git commit -q -m 'consumer tasks readme' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'tasks/README.md') -Raw) | Should -Be 'CONSUMER_EDITED_BODY'
     }
 }
 

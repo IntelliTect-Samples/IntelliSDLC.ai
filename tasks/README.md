@@ -5,9 +5,9 @@ product requirements documents (PRDs) and implementation plans produced by the
 AI agents that ship with IntelliSDLC.ai. Hand this directory to a fresh AI
 session and the project can be reconstructed from these files alone.
 
-> This `README.md` is **consumer-owned**. It is created from a template on
-> first sync and is never overwritten by `Pull-SDLC.ai.ps1`. Customize it
-> freely for your project.
+> This `README.md` is **consumer-owned**. The upstream copy is scaffolded
+> into your project on first sync and is never overwritten by
+> `Pull-SDLC.ai.ps1` afterwards. Customize it freely for your project.
 
 ## Filename Convention
 
