@@ -36,7 +36,7 @@ What the script does:
   `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
   generic `.github/instructions/*`, `.claude/*`).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
-  `.github/instructions/project.instructions.md`, `.gitattributes`) from
+  `.github/instructions/project.instructions.md`, `.gitattributes`, `README.md`) from
   their `*.template` counterparts. Existing copies are never overwritten.
 - Extends `.gitignore` with required entries; never replaces it.
 - Lands a `chore(sdlc): sync` commit and writes `.sdlc-ai-sync.json`
@@ -101,9 +101,15 @@ names if the bare name is missing:
 | `.github/instructions/project.instructions.md.template` | `.github/instructions/project.instructions.md` | Project-specific conventions read by all agents |
 | `CLAUDE.project.md.template` | `CLAUDE.project.md` | Claude-specific orientation overrides |
 | `.gitattributes.template` | `.gitattributes` | Recommended baseline (LF for `*.sh`, CRLF for `*.ps1` / `*.bat`) |
+| `README.md.template` | `README.md` | GitHub landing-page skeleton answering the five canonical README questions (what / why / start / help / who) |
 
-Existing bare-name files are never overwritten. Once placed, all three are
+Existing bare-name files are never overwritten. Once placed, all four are
 fully consumer-owned -- edit them freely.
+
+`README.md` uses the indirect (`.template` -> bare) pattern -- not the
+same-name pattern used for `tasks/README.md` below -- because the
+upstream's own root `README.md` describes IntelliSDLC.ai itself and
+cannot double as the consumer skeleton.
 
 `tasks/README.md` is shipped directly (not via a `.template` indirection)
 because its content is the same for every consumer. On first sync the script
