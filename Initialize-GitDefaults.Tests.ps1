@@ -286,3 +286,89 @@ Describe 'Get-GitDefaultsDetectedLanguages (Copilot review #161)' {
         }
     }
 }
+
+Describe 'Copilot review #161 round 3: no-Language code path' {
+    Context 'when the picker declines (non-interactive host simulated via Mock)' {
+        BeforeEach {
+            Mock -CommandName 'Read-GitDefaultsLanguageSelection' -MockWith { return $null }
+            $script:nlRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("nl-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:nlRepo | Out-Null
+            & git -C $script:nlRepo init --quiet 2>&1 | Out-Null
+            Push-Location $script:nlRepo
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:nlRepo -ErrorAction SilentlyContinue
+        }
+
+        It 'throws a helpful error naming the supported languages when -Language is omitted' {
+            { Initialize-GitDefaults -ErrorAction Stop } | Should -Throw -ExpectedMessage '*No -Language supplied*'
+            Test-Path '.gitattributes' | Should -BeFalse
+            Test-Path '.gitignore'     | Should -BeFalse
+            Assert-MockCalled -CommandName 'Read-GitDefaultsLanguageSelection' -Times 1 -Scope It
+        }
+
+        It 'error message enumerates all supported languages so the user knows valid inputs' {
+            { Initialize-GitDefaults -ErrorAction Stop } | Should -Throw -ExpectedMessage '*CSharp*'
+            { Initialize-GitDefaults -ErrorAction Stop } | Should -Throw -ExpectedMessage '*PowerShell*'
+            { Initialize-GitDefaults -ErrorAction Stop } | Should -Throw -ExpectedMessage '*TypeScript*'
+            { Initialize-GitDefaults -ErrorAction Stop } | Should -Throw -ExpectedMessage '*ASP.NET*'
+        }
+    }
+
+    Context 'when the picker returns languages (interactive host simulated via Mock)' {
+        BeforeEach {
+            Mock -CommandName 'Read-GitDefaultsLanguageSelection' -MockWith { return @('CSharp','PowerShell') }
+            $script:nlRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("nl2-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:nlRepo | Out-Null
+            & git -C $script:nlRepo init --quiet 2>&1 | Out-Null
+            Push-Location $script:nlRepo
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:nlRepo -ErrorAction SilentlyContinue
+        }
+
+        It 'composes generated files from the picker result without -Language being passed' {
+            Initialize-GitDefaults -Force
+            Assert-MockCalled -CommandName 'Read-GitDefaultsLanguageSelection' -Times 1 -Scope It
+            (Get-Content '.gitattributes' -Raw) | Should -Match '(?m)^# === CSharp'
+            (Get-Content '.gitattributes' -Raw) | Should -Match '\*\.ps1\s+text eol=crlf'
+            (Get-Content '.gitignore'     -Raw) | Should -Match '(?m)^# === VisualStudio'
+            (Get-Content '.gitignore'     -Raw) | Should -Match '(?m)^# === Global/Backup'
+        }
+    }
+
+    Context 'detection heuristics feed the picker default' {
+        It 'pre-selects every supported language in a kitchen-sink tree' {
+            $repo = Join-Path ([System.IO.Path]::GetTempPath()) ("ks-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $repo | Out-Null
+            try {
+                Set-Content -Path (Join-Path $repo 'App.csproj')       -Value '<Project/>'
+                Set-Content -Path (Join-Path $repo 'appsettings.json') -Value '{}'
+                Set-Content -Path (Join-Path $repo 'tsconfig.json')    -Value '{}'
+                Set-Content -Path (Join-Path $repo 'tool.psm1')        -Value '# m'
+                $detected = Get-GitDefaultsDetectedLanguages -Path $repo
+                $detected | Should -Contain 'CSharp'
+                $detected | Should -Contain 'PowerShell'
+                $detected | Should -Contain 'TypeScript'
+                $detected | Should -Contain 'ASP.NET'
+            } finally {
+                Remove-Item -Recurse -Force $repo -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+Describe 'Copilot review #161 round 3: kind-aware curated PowerShell header' {
+    It 'gitattributes header attributes the PowerShell block as an intentional override of upstream' {
+        $content = New-GitAttributesContent -Language @('PowerShell','CSharp')
+        $content | Should -Match 'intentional override of upstream PowerShell\.gitattributes'
+    }
+
+    It 'gitignore header attributes the PowerShell block to absence of upstream PowerShell.gitignore' {
+        $content = New-GitIgnoreContent -Language @('PowerShell','CSharp')
+        $content | Should -Match 'no upstream PowerShell\.gitignore exists'
+        $content | Should -Not -Match 'intentional override'
+    }
+}

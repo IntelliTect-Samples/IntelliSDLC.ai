@@ -86,10 +86,10 @@ param(
 # Canonical language registry. Order of `Sections` controls divider naming.
 # `Deps` lists languages this one depends on (transitively expanded).
 $script:GitDefaultsLanguages = [ordered]@{
-    'CSharp'     = @{ Canonical = 'CSharp';     Deps = @();         GitattrFile = 'CSharp.gitattributes'; GitignoreFile = 'VisualStudio.gitignore'; GiboName = 'visualstudio' }
-    'PowerShell' = @{ Canonical = 'PowerShell'; Deps = @();         GitattrFile = $null;                  GitignoreFile = $null;                    GiboName = $null }
-    'TypeScript' = @{ Canonical = 'TypeScript'; Deps = @();         GitattrFile = 'Web.gitattributes';    GitignoreFile = 'Node.gitignore';         GiboName = 'node' }
-    'ASP.NET'    = @{ Canonical = 'ASP.NET';    Deps = @('CSharp'); GitattrFile = $null;                  GitignoreFile = $null;                    GiboName = 'visualstudio' }
+    'CSharp'     = @{ Canonical = 'CSharp';     Deps = @();         GitattrFile = 'CSharp.gitattributes'; GitignoreFile = 'VisualStudio.gitignore' }
+    'PowerShell' = @{ Canonical = 'PowerShell'; Deps = @();         GitattrFile = $null;                  GitignoreFile = $null }
+    'TypeScript' = @{ Canonical = 'TypeScript'; Deps = @();         GitattrFile = 'Web.gitattributes';    GitignoreFile = 'Node.gitignore' }
+    'ASP.NET'    = @{ Canonical = 'ASP.NET';    Deps = @('CSharp'); GitattrFile = $null;                  GitignoreFile = $null }
 }
 
 $script:CuratedPowerShellGitattributes = @'
@@ -216,7 +216,15 @@ function New-GitDefaultsHeader {
         }
     }
     if ($hasPs) {
-        [void]$lines.Add('# Curated additions: PowerShell (intentional override of upstream; see SOURCES.md)')
+        if ($Kind -eq 'gitattributes') {
+            # alexkaratarakis/gitattributes DOES ship PowerShell.gitattributes;
+            # we intentionally override it with a smaller curated block.
+            [void]$lines.Add('# Curated additions: PowerShell (intentional override of upstream PowerShell.gitattributes; see SOURCES.md)')
+        } else {
+            # github/gitignore does NOT ship a PowerShell.gitignore at the
+            # pinned SHA; the curated block fills that gap.
+            [void]$lines.Add('# Curated additions: PowerShell (no upstream PowerShell.gitignore exists in github/gitignore; see SOURCES.md)')
+        }
     }
     [void]$lines.Add('# Re-run Initialize-GitDefaults.ps1 -Language ... -Force to regenerate or add languages.')
     [void]$lines.Add('')
