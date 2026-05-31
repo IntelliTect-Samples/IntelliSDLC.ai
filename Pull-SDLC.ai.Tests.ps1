@@ -24,6 +24,139 @@ Describe 'Test-IsUpstreamRepo' {
     }
 }
 
+Describe 'ConvertTo-GitHubRepoSlug' {
+    It 'parses an HTTPS URL with .git suffix' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://github.com/MarkMichaelis/PSBitwarden.git' |
+            Should -Be 'MarkMichaelis/PSBitwarden'
+    }
+
+    It 'parses an HTTPS URL without .git suffix' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://github.com/Owner/Repo' |
+            Should -Be 'Owner/Repo'
+    }
+
+    It 'parses an SSH URL' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'git@github.com:Owner/Repo.git' |
+            Should -Be 'Owner/Repo'
+    }
+
+    It 'parses an SSH URL with ssh.github.com host alias' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'git@ssh.github.com:MarkMichaelis/PSBitwarden.git' |
+            Should -Be 'MarkMichaelis/PSBitwarden'
+    }
+
+    It 'parses an ssh:// URL' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'ssh://git@github.com/Owner/Repo.git' |
+            Should -Be 'Owner/Repo'
+    }
+
+    It 'returns $null for an empty URL' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl '' | Should -BeNullOrEmpty
+    }
+
+    It 'returns $null for a non-GitHub URL' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://gitlab.com/Owner/Repo.git' |
+            Should -BeNullOrEmpty
+    }
+
+    It 'matches the scheme and host case-insensitively while preserving owner/repo casing' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://GitHub.com/MarkMichaelis/PSBitwarden.git' |
+            Should -Be 'MarkMichaelis/PSBitwarden'
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'git@SSH.GitHub.com:MarkMichaelis/PSBitwarden.git' |
+            Should -Be 'MarkMichaelis/PSBitwarden'
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'SSH://git@GitHub.com/Owner/Repo.git' |
+            Should -Be 'Owner/Repo'
+    }
+}
+
+Describe 'Resolve-OpenSyncPRAction' {
+    It 'returns Skip with a push remediation when origin lacks the protected branch' {
+        $plan = Resolve-OpenSyncPRAction -RemoteHasProtectedBranch $false `
+            -ProtectedBranch 'main' `
+            -OriginUrl 'git@github.com:MarkMichaelis/PSBitwarden.git'
+        $plan.Action     | Should -Be 'Skip'
+        $plan.Reason     | Should -Match "no 'main' branch"
+        $plan.Reason     | Should -Match 'git push -u origin main'
+        $plan.GhRepoArgs | Should -BeNullOrEmpty
+    }
+
+    It 'returns Proceed with --repo args derived from a GitHub origin URL' {
+        $plan = Resolve-OpenSyncPRAction -RemoteHasProtectedBranch $true `
+            -ProtectedBranch 'main' `
+            -OriginUrl 'https://github.com/MarkMichaelis/PSBitwarden.git'
+        $plan.Action                   | Should -Be 'Proceed'
+        $plan.Reason                   | Should -BeNullOrEmpty
+        ($plan.GhRepoArgs -join ' ')   | Should -Be '--repo MarkMichaelis/PSBitwarden'
+    }
+
+    It 'returns Proceed with --repo derived from an ssh.github.com host alias' {
+        $plan = Resolve-OpenSyncPRAction -RemoteHasProtectedBranch $true `
+            -ProtectedBranch 'main' `
+            -OriginUrl 'git@ssh.github.com:MarkMichaelis/PSBitwarden.git'
+        $plan.Action                   | Should -Be 'Proceed'
+        ($plan.GhRepoArgs -join ' ')   | Should -Be '--repo MarkMichaelis/PSBitwarden'
+    }
+
+    It 'returns Proceed with empty GhRepoArgs when origin URL is not a GitHub URL' {
+        $plan = Resolve-OpenSyncPRAction -RemoteHasProtectedBranch $true `
+            -ProtectedBranch 'main' `
+            -OriginUrl 'https://gitlab.com/Owner/Repo.git'
+        $plan.Action     | Should -Be 'Proceed'
+        $plan.GhRepoArgs | Should -BeNullOrEmpty
+    }
+
+    It 'returns Proceed with empty GhRepoArgs when origin URL is empty' {
+        $plan = Resolve-OpenSyncPRAction -RemoteHasProtectedBranch $true `
+            -ProtectedBranch 'main' `
+            -OriginUrl ''
+        $plan.Action     | Should -Be 'Proceed'
+        $plan.GhRepoArgs | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-LsRemoteOutputHasExactBranch' {
+    It 'returns $true when the output contains the exact refs/heads/<branch>' {
+        $out = "abc123`trefs/heads/main`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeTrue
+    }
+
+    It 'returns $false when the output is empty' {
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput '' -BranchName 'main' | Should -BeFalse
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $null -BranchName 'main' | Should -BeFalse
+    }
+
+    It 'returns $false for a glob-spoof refs/heads/release/main when asked for main' {
+        # Regression guard: a naive [bool]$lsRemoteOutput check would let
+        # `git ls-remote --heads origin main` matching refs/heads/release/main
+        # bypass the missing-base-branch preflight.
+        $out = "abc123`trefs/heads/release/main`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeFalse
+    }
+
+    It 'returns $false for refs/heads/main-old when asked for main' {
+        $out = "abc123`trefs/heads/main-old`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeFalse
+    }
+
+    It 'returns $true for an exact match even when other near-misses are also present' {
+        $out = "deadbeef`trefs/heads/release/main`nabc123`trefs/heads/main`ncafef00d`trefs/heads/main-old`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeTrue
+    }
+
+    It 'handles CRLF line endings from Windows git output' {
+        $out = "abc123`trefs/heads/main`r`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeTrue
+    }
+
+    It 'is case-sensitive: refs/heads/Main is not a match for branch main' {
+        # Git ref names are case-sensitive but PowerShell -eq is case-insensitive
+        # by default; the helper must use -ceq so refs/heads/Main does not bypass
+        # the missing-base-branch guard for protected branch "main".
+        $out = "abc123`trefs/heads/Main`n"
+        Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $out -BranchName 'main' | Should -BeFalse
+    }
+}
+
 Describe 'Test-IsAlwaysLocalPath' {
     It 'returns $true for README.md' {
         Test-IsAlwaysLocalPath -Path 'README.md' | Should -BeTrue
