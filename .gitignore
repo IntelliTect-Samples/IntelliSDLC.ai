@@ -31,6 +31,6 @@ testResults.xml
 # template and a .gitkeep so the directory exists post-clone. Real PRDs
 # and plans should never land in this repo's tasks/ tree.
 tasks/*
-!tasks/README.md.template
+!tasks/README.md
 !tasks/.gitkeep
 # <<< upstream-only <<<
