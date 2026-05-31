@@ -343,57 +343,31 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
     }
 }
 
-Describe '.gitattributes.template bootstrap (issue #119)' {
+Describe '.gitattributes.template removal (issue #167)' {
     BeforeAll {
-        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
+        $script:upstreamRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
     }
 
-    It '$script:TemplateScaffoldMap maps .gitattributes.template -> .gitattributes' {
-        $script:TemplateScaffoldMap.Keys | Should -Contain '.gitattributes.template'
-        $script:TemplateScaffoldMap['.gitattributes.template'] | Should -Be '.gitattributes'
+    It '$script:TemplateScaffoldMap no longer maps .gitattributes.template' {
+        $script:TemplateScaffoldMap.Keys | Should -Not -Contain '.gitattributes.template'
     }
 
-    It '.gitattributes.template exists at upstream repo root' {
-        Test-Path -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') | Should -BeTrue
+    It '.gitattributes is no longer scaffolded by Pull-SDLC (owned by Initialize-GitDefaults.ps1)' {
+        $script:TemplateScaffoldMap.Values | Should -Not -Contain '.gitattributes'
     }
 
-    It '.gitattributes is on the always-local list (consumer-owned once placed)' {
+    It '.gitattributes.template file is absent from the upstream repo root' {
+        Test-Path -LiteralPath (Join-Path $script:upstreamRoot '.gitattributes.template') | Should -BeFalse
+    }
+
+    It '.gitattributes.template is not in the upstream-managed path list' {
+        Test-IsUpstreamManagedPath -Path '.gitattributes.template' | Should -BeFalse
+    }
+
+    It '.gitattributes remains on the always-local list (consumer-owned, never touched by sync)' {
         Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
     }
-
-    It 'creates consumer .gitattributes on first scaffold when none exists' {
-        $src = Join-Path $TestDrive 'gabt-src'
-        $dst = Join-Path $TestDrive 'gabt-dst1'
-        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
-        Set-Content -Path (Join-Path $src '.gitattributes.template') -Value '* text=auto'
-        $map = [ordered]@{ '.gitattributes.template' = '.gitattributes' }
-        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
-        $result | Should -Contain '.gitattributes'
-        Test-Path (Join-Path $dst '.gitattributes') | Should -BeTrue
-    }
-
-    It 'leaves an existing consumer .gitattributes untouched' {
-        $src = Join-Path $TestDrive 'gabt-src2'
-        $dst = Join-Path $TestDrive 'gabt-dst2'
-        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
-        Set-Content -Path (Join-Path $src '.gitattributes.template') -Value '* text=auto'
-        Set-Content -Path (Join-Path $dst '.gitattributes')          -Value 'CONSUMER_OWNED'
-        $map = [ordered]@{ '.gitattributes.template' = '.gitattributes' }
-        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
-        $result.Count | Should -Be 0
-        (Get-Content (Join-Path $dst '.gitattributes') -Raw).Trim() | Should -Be 'CONSUMER_OWNED'
-    }
-
-    It 'template content includes the baseline rules (LF for .sh, CRLF for .ps1, .png binary)' {
-        $body = Get-Content -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') -Raw
-        $body | Should -Match '(?m)^\*\.sh\s+text\s+eol=lf'
-        $body | Should -Match '(?m)^\*\.ps1\s+text\s+eol=crlf'
-        $body | Should -Match '(?m)^\*\.bat\s+text\s+eol=crlf'
-        $body | Should -Match '(?m)^\*\.png\s+binary'
-        $body | Should -Match '(?m)^\*\s+text=auto'
-    }
 }
-
 Describe 'README.md.template bootstrap (issue #158)' {
     BeforeAll {
         $script:rmRepoRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
@@ -2160,7 +2134,7 @@ Describe 'Write-NextStepsBanner (issue #149)' {
     }
 
     It 'prints the banner on auto-bootstrap with a primary scaffolded file' {
-        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('.github/instructions/project.instructions.md', '.gitattributes') 6>&1 | Out-String
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('.github/instructions/project.instructions.md', 'README.md') 6>&1 | Out-String
         $out | Should -Match 'Next steps:'
         $out | Should -Match 'project\.instructions\.md'
         $out | Should -Match 'git add \.'
@@ -2201,7 +2175,7 @@ Describe 'Write-NextStepsBanner (issue #149)' {
     }
 
     It 'falls back to generic wording when project.instructions.md was not scaffolded' {
-        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('.gitattributes') 6>&1 | Out-String
+        $out = Write-NextStepsBanner -RepoRoot $script:nbRoot -AnchorSource 'auto-bootstrap' -ScaffoldedFiles @('README.md') 6>&1 | Out-String
         $out | Should -Match 'Review the scaffolded'
         $out | Should -Not -Match 'project\.instructions\.md'
     }
@@ -2210,9 +2184,9 @@ Describe 'Write-NextStepsBanner (issue #149)' {
 Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
     # End-to-end regression tests for the four findings raised by a user
     # who ran Pull-SDLC.ai.ps1 in a brand-new empty directory:
-    #   F1: `.sdlc-ai-sync.json` appeared `modified` immediately after the
-    #       sync commit (caused by .gitattributes scaffolded AFTER commit,
-    #       combined with CRLF newlines from ConvertTo-Json on Windows).
+    #   F1: `.sdlc-ai-sync.json` could appear `modified` immediately after
+    #       the sync commit (caused by CRLF newlines from ConvertTo-Json on
+    #       Windows combined with a consumer `*.json text eol=lf` rule).
     #   F2: `Pull-SDLC.ai.ps1` and other meta scripts were left untracked
     #       (they were missing from $script:UpstreamManagedPaths).
     #   F3: `sync-manifest.json` was drift-prone documentation pretending
@@ -2226,8 +2200,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             <#
             .SYNOPSIS
                 Builds a consumer in carve-out state (on main, no origin)
-                next to a minimal upstream that ships .gitattributes.template
-                + the meta scripts that should be upstream-managed. Returns
+                next to a minimal upstream that ships the meta scripts that
+                should be upstream-managed. Returns
                 @{ Upstream; Consumer; UpstreamHead }.
             #>
             param([Parameter(Mandatory)][string]$Root)
@@ -2238,10 +2212,7 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             New-Item -ItemType Directory -Path $consumer -Force | Out-Null
 
             # Build the upstream repo with the bare minimum the bootstrap
-            # exercises: CLAUDE.md, .gitattributes.template, the meta
-            # scripts. .gitattributes.template MUST declare *.json eol=lf
-            # for the F1 regression to be meaningful.
-            $gitattributesBody = "* text=auto`n*.json text eol=lf`n*.md text eol=lf`n*.ps1 text eol=crlf`n"
+            # exercises: CLAUDE.md plus the meta scripts.
 
             Push-Location $upstream
             try {
@@ -2250,7 +2221,6 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
                 git config user.name u
                 git config core.autocrlf false
                 Set-Content -LiteralPath 'CLAUDE.md' -Value "upstream claude`n" -NoNewline
-                Set-Content -LiteralPath '.gitattributes.template' -Value $gitattributesBody -NoNewline
                 # Meta scripts -- mirror real repo contents minimally.
                 Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# upstream pull script`n" -NoNewline
                 Set-Content -LiteralPath 'Cleanup-Worktree.ps1' -Value "# upstream cleanup`n" -NoNewline
@@ -2289,12 +2259,13 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         $script:carveRoot = Join-Path $TestDrive ("carve-" + [guid]::NewGuid().ToString('N'))
     }
 
-    It 'F1: .sdlc-ai-sync.json is written with LF-only line endings (no CR bytes, so `.gitattributes eol=lf` cannot mark it modified)' {
+    It 'F1: .sdlc-ai-sync.json is written with LF-only line endings (avoids phantom `modified` status under autocrlf=true + any downstream `*.json eol=lf` rule)' {
         # The user-reported symptom (`modified: .sdlc-ai-sync.json` after
         # commit) is autocrlf/env-dependent and not reliably reproducible in
         # CI. The root-cause cure -- and the one we CAN test deterministically
-        # -- is: write the state file with LF-only endings to match the
-        # upstream `.gitattributes.template` rule `*.json text eol=lf`.
+        # -- is: write the state file with LF-only endings so it matches any
+        # `*.json text eol=lf` rule a consumer's `.gitattributes` may declare
+        # (typically generated by `Initialize-GitDefaults.ps1`).
         # On Windows, ConvertTo-Json emits CRLF, which combined with
         # eol=lf produces a phantom "modified" status under some autocrlf
         # settings. LF-only output avoids the mismatch entirely.
@@ -2303,7 +2274,7 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Set-SdlcSyncState -RepoRoot $probe -Remote 'sdlc.ai' -Ref 'main' -Commit 'deadbeefcafe'
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $probe '.sdlc-ai-sync.json'))
         $crCount = @($bytes | Where-Object { $_ -eq 13 }).Count
-        $crCount | Should -Be 0 -Because "the state file must be LF-only to match the `.gitattributes` rule `*.json text eol=lf` that ships in the upstream template"
+        $crCount | Should -Be 0 -Because "the state file must be LF-only so consumer `.gitattributes` rules like `*.json text eol=lf` cannot mark it modified"
     }
 
     It 'F2: tracks all meta scripts (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, Consolidate-Tasks.ps1, *.Tests.ps1) after fresh bootstrap' {

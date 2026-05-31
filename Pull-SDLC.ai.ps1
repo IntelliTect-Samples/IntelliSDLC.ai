@@ -166,7 +166,6 @@ $ErrorActionPreference = 'Stop'
 $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
-    '.gitattributes.template'                               = '.gitattributes'
     'README.md.template'                                    = 'README.md'
     'tasks/README.md'                                       = 'tasks/README.md'
 }
@@ -176,7 +175,6 @@ $script:TemplateScaffoldMap = [ordered]@{
 $script:UpstreamManagedPaths = @(
     'CLAUDE.md',
     '.github/copilot-instructions.md',
-    '.gitattributes.template',
     'README.md.template',
     '.github/agents/',
     '.github/skills/',
@@ -845,7 +843,7 @@ function Set-SdlcSyncState {
         syncedAt       = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
     # Normalize to LF-only. ConvertTo-Json on Windows emits CRLF inside the
-    # JSON body which, combined with the upstream `.gitattributes` rule
+    # JSON body which, combined with a consumer `.gitattributes` rule like
     # `*.json text eol=lf`, can cause `git status` to flag the file as
     # modified immediately after the sync commit under some autocrlf
     # settings (issue #148).
