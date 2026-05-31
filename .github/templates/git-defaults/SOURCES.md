@@ -63,3 +63,25 @@ Invoke-WebRequest "https://raw.githubusercontent.com/github/gitignore/$giSha/Glo
 
 Then update the pinned SHAs in `Initialize-GitDefaults.ps1` (the
 `$GitattributesRef` and `$GitignoreRef` defaults) and this file.
+## Why not `gibo`?
+
+[`gibo`](https://github.com/simonwhitaker/gibo) is a popular helper that
+`curl`s files from `github/gitignore` on demand. `Initialize-GitDefaults.ps1`
+intentionally **does not** shell out to gibo:
+
+1. **Same upstream, fewer dependencies.** gibo serves the exact same files
+   `Initialize-GitDefaults.ps1` consumes (raw URLs under `github/gitignore`).
+   Calling gibo would add a runtime dependency that consumers might not have
+   installed, in exchange for zero new behavior.
+2. **SHA pinning.** gibo always hits `master`. `Initialize-GitDefaults.ps1`
+   pins specific SHAs (above), so a future upstream regression cannot silently
+   alter generated files until the SHA pin is bumped here and the bundled
+   snapshots refreshed.
+3. **Cache + offline mode.** `-Refresh` writes fetched copies into
+   `$env:LOCALAPPDATA/IntelliSDLC.ai/git-defaults-cache/` and falls back to
+   that cache when the network is unavailable; bundled snapshots cover the
+   no-fetch path. gibo offers no equivalent fallback.
+
+If you already have a workflow built around `gibo`, you can run it yourself
+and supply the resulting files to your repo; this script will not overwrite
+them unless you pass `-Force`.

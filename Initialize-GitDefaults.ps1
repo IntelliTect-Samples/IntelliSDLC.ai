@@ -17,8 +17,9 @@
                         commits/main` returns 404).
 
     Snapshots are bundled under `.github/templates/git-defaults/` at the pinned
-    SHAs and used by default. The `-Refresh` switch is reserved for a future
-    network-fetch path and currently hard-errors (see .PARAMETER Refresh).
+    SHAs and used by default. Pass `-Refresh` to fetch fresh copies from
+    GitHub raw at the requested refs into a local cache and use those
+    instead (with cache fallback if the network is unavailable).
 
 .PARAMETER Language
     Languages to include. Validated against the supported set. ASP.NET implies
@@ -34,20 +35,24 @@
     Compose `.gitattributes`. Default: $true.
 
 .PARAMETER GitattributesRef
-    Git SHA in alexkaratarakis/gitattributes the bundled snapshots are pinned to.
-    Overriding this only makes sense alongside -Refresh (network fetch), which
-    is not yet implemented; passing a non-default value without -Refresh hard-
-    errors to prevent header drift.
+    Git SHA in alexkaratarakis/gitattributes used when fetching with
+    `-Refresh`. The bundled snapshot is pinned to this same SHA by default;
+    overriding it without `-Refresh` is allowed (the header still names this
+    ref) but the on-disk bytes come from the bundled snapshot.
 
 .PARAMETER GitignoreRef
-    Git SHA in github/gitignore the bundled snapshots are pinned to. Same
-    override semantics as -GitattributesRef.
+    Git SHA in github/gitignore used when fetching with `-Refresh`. Same
+    bundled-vs-fetched semantics as `-GitattributesRef`.
 
 .PARAMETER Refresh
-    RESERVED. Intended to bypass bundled snapshots and fetch fresh copies from
-    GitHub over HTTPS at the requested refs. NOT YET IMPLEMENTED in this
-    release; passing -Refresh hard-errors. Omit -Refresh to compose from the
-    bundled snapshots at the pinned SHAs.
+    Fetch fresh copies of each upstream template file from
+    `raw.githubusercontent.com/<repo>/<ref>/<file>` into the local cache
+    (`$env:LOCALAPPDATA/IntelliSDLC.ai/git-defaults-cache/`) and compose
+    from those instead of the bundled snapshots. Falls back to the cached
+    copy if a fetch fails. Generated-file headers say "fetched from
+    upstream" when this is set, "bundled snapshot" otherwise. Note: the
+    curated PowerShell block is always emitted in-script and is unaffected
+    by `-Refresh`.
 
 .PARAMETER Force
     Overwrite existing `.gitattributes` / `.gitignore` after backing the
@@ -66,6 +71,12 @@
     ./Initialize-GitDefaults.ps1
     # Interactive picker: prompts with heuristically-detected languages as
     # the default. Non-interactive hosts must pass -Language explicitly.
+
+.EXAMPLE
+    ./Initialize-GitDefaults.ps1 -Language CSharp,PowerShell -Refresh -Force
+    # Fetch upstream templates fresh from raw.githubusercontent.com at the
+    # pinned SHAs into the local cache, then compose .gitattributes and
+    # .gitignore from them.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'User-facing CLI output matching the project-wide convention.')]
@@ -80,6 +91,9 @@ param(
     [switch]   $Refresh,
     [switch]   $Force
 )
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
 # ----- Constants -----------------------------------------------------------
 
@@ -116,6 +130,11 @@ PSReadLine/ConsoleHost_history.txt
 # Authority labels surfaced in file headers and SOURCES.md.
 $script:GitattributesAuthority = 'community de facto; no GitHub-org source exists'
 $script:GitignoreAuthority     = 'GitHub-org authoritative'
+
+# Pinned SHA defaults. Mirror the top-level param defaults so internal
+# composers can be called without explicit refs (tests, library use).
+$script:DefaultGitattributesRef = 'fddc586cf0f10ec4485028d0d2dd6f73197a4258'
+$script:DefaultGitignoreRef     = 'dcc0fc7bc2b5ba480cf117ad1be31bafceeaff46'
 
 # ----- Helpers -------------------------------------------------------------
 
@@ -166,19 +185,105 @@ function Resolve-GitDefaultsLanguages {
     return @($resolved | Sort-Object)
 }
 
+function Get-GitDefaultsCacheRoot {
+    <#
+    .SYNOPSIS
+        Local on-disk cache for fetched upstream snapshots.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param()
+    $base = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA }
+            elseif ($env:XDG_CACHE_HOME) { $env:XDG_CACHE_HOME }
+            elseif ($env:HOME) { Join-Path $env:HOME '.cache' }
+            else { [System.IO.Path]::GetTempPath() }
+    return (Join-Path $base 'IntelliSDLC.ai/git-defaults-cache')
+}
+
+function Resolve-GitDefaultsSourceRepo {
+    <#
+    .SYNOPSIS
+        Map a template file name to (Repo, Ref) using the supplied defaults.
+        '.gitattributes' files come from alexkaratarakis/gitattributes;
+        '.gitignore' files come from github/gitignore.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)] [string] $FileName,
+        [Parameter(Mandatory)] [string] $GitattributesRef,
+        [Parameter(Mandatory)] [string] $GitignoreRef
+    )
+    if ($FileName -like '*.gitattributes') {
+        return @{ Repo = 'alexkaratarakis/gitattributes'; Ref = $GitattributesRef }
+    }
+    if ($FileName -like '*.gitignore') {
+        return @{ Repo = 'github/gitignore'; Ref = $GitignoreRef }
+    }
+    throw "Cannot infer source repo for template file '$FileName' (expected *.gitattributes or *.gitignore)."
+}
+
+function Get-GitDefaultsRefreshedContent {
+    <#
+    .SYNOPSIS
+        Fetch a template file from raw.githubusercontent.com at the requested
+        ref, write it to the local cache, and return its content. Falls back
+        to a previously-cached copy if the network fetch fails.
+    #>
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification = 'Helper internal to this script.')]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)] [string] $FileName,
+        [Parameter(Mandatory)] [string] $Repo,
+        [Parameter(Mandatory)] [string] $Ref
+    )
+    $cacheDir  = Join-Path (Get-GitDefaultsCacheRoot) "$Repo/$Ref"
+    $cachePath = Join-Path $cacheDir $FileName
+    $cacheParent = Split-Path -Parent $cachePath
+    if (-not (Test-Path -LiteralPath $cacheParent)) {
+        New-Item -ItemType Directory -Force -Path $cacheParent | Out-Null
+    }
+    $url = "https://raw.githubusercontent.com/$Repo/$Ref/$FileName"
+    try {
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop
+        $content = if ($resp.Content -is [byte[]]) {
+            [System.Text.Encoding]::UTF8.GetString($resp.Content)
+        } else {
+            [string]$resp.Content
+        }
+        [System.IO.File]::WriteAllText($cachePath, $content, [System.Text.UTF8Encoding]::new($false))
+        return $content
+    } catch {
+        if (Test-Path -LiteralPath $cachePath) {
+            Write-Warning "Refresh fetch failed ($($_.Exception.Message)); using cached copy at $cachePath."
+            return (Get-Content -LiteralPath $cachePath -Raw)
+        }
+        throw "Refresh of '$FileName' from $url failed and no cached copy exists at $cachePath. Original error: $($_.Exception.Message)"
+    }
+}
+
 function Get-GitDefaultsTemplateContent {
     <#
     .SYNOPSIS
-        Read a bundled template snapshot from .github/templates/git-defaults/.
+        Return the body of a template file -- either the bundled snapshot
+        (default) or a fresh copy fetched from upstream when -Refresh is set.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)] [string] $FileName
+        [Parameter(Mandatory)] [string] $FileName,
+        [string] $GitattributesRef,
+        [string] $GitignoreRef,
+        [switch] $Refresh
     )
+    if ($Refresh) {
+        $src = Resolve-GitDefaultsSourceRepo -FileName $FileName -GitattributesRef $GitattributesRef -GitignoreRef $GitignoreRef
+        return (Get-GitDefaultsRefreshedContent -FileName $FileName -Repo $src.Repo -Ref $src.Ref)
+    }
     $path = Join-Path (Get-GitDefaultsTemplateRoot) $FileName
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Bundled template snapshot not found: $path. Re-pull IntelliSDLC.ai (Pull-SDLC.ai.ps1) to restore the .github/templates/git-defaults/ snapshots."
+        throw "Bundled template snapshot not found: $path. Re-pull IntelliSDLC.ai (Pull-SDLC.ai.ps1) to restore the .github/templates/git-defaults/ snapshots, or pass -Refresh to fetch from upstream."
     }
     return (Get-Content -LiteralPath $path -Raw)
 }
@@ -194,15 +299,18 @@ function New-GitDefaultsHeader {
         [Parameter(Mandatory)] [ValidateSet('gitattributes','gitignore')] [string] $Kind,
         [Parameter(Mandatory)] [string[]] $Language,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $UpstreamSections,
-        [string] $GibootstrapNote
+        [string] $GibootstrapNote,
+        [ValidateSet('bundled','fetched')] [string] $SourceMode = 'bundled'
     )
     $iso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $langList = ($Language -join ', ')
     $hasPs = $Language -contains 'PowerShell'
+    $modeLabel = if ($SourceMode -eq 'fetched') { 'fetched from upstream' } else { 'bundled snapshot' }
 
     $lines = [System.Collections.Generic.List[string]]::new()
     [void]$lines.Add("# Generated by Initialize-GitDefaults.ps1 on $iso")
     [void]$lines.Add("# Languages: $langList")
+    [void]$lines.Add("# Source mode: $modeLabel")
     [void]$lines.Add('# Sources:')
     if ($Kind -eq 'gitattributes') {
         $sectionList = if ($UpstreamSections.Count -gt 0) { ($UpstreamSections -join ', ') } else { '(none)' }
@@ -253,9 +361,13 @@ function New-GitAttributesContent {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)] [string[]] $Language
+        [Parameter(Mandatory)] [string[]] $Language,
+        [string] $GitattributesRef = $script:DefaultGitattributesRef,
+        [string] $GitignoreRef = $script:DefaultGitignoreRef,
+        [switch] $Refresh
     )
     $expanded = Resolve-GitDefaultsLanguages -Language $Language
+    $fetchSplat = @{ GitattributesRef = $GitattributesRef; GitignoreRef = $GitignoreRef; Refresh = [bool]$Refresh }
 
     $upstreamSections = [System.Collections.Generic.List[string]]::new()
     [void]$upstreamSections.Add('Common')
@@ -268,12 +380,12 @@ function New-GitAttributesContent {
         }
     }
 
-    $header = New-GitDefaultsHeader -Kind 'gitattributes' -Language $expanded -UpstreamSections $upstreamSections
+    $header = New-GitDefaultsHeader -Kind 'gitattributes' -Language $expanded -UpstreamSections $upstreamSections -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
 
     $body = [System.Collections.Generic.List[string]]::new()
     [void]$body.Add($header)
     [void]$body.Add((New-GitDefaultsSectionDivider -Section 'Common' -SourceLabel 'Common.gitattributes'))
-    [void]$body.Add((Get-GitDefaultsTemplateContent -FileName 'Common.gitattributes'))
+    [void]$body.Add((Get-GitDefaultsTemplateContent -FileName 'Common.gitattributes' @fetchSplat))
 
     $emitted = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($lang in $expanded) {
@@ -281,7 +393,7 @@ function New-GitAttributesContent {
         if ($entry.GitattrFile -and $emitted.Add($entry.GitattrFile)) {
             $section = [System.IO.Path]::GetFileNameWithoutExtension($entry.GitattrFile)
             [void]$body.Add((New-GitDefaultsSectionDivider -Section $section -SourceLabel $entry.GitattrFile))
-            [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $entry.GitattrFile))
+            [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $entry.GitattrFile @fetchSplat))
         } elseif ($lang -eq 'PowerShell') {
             [void]$body.Add((New-GitDefaultsSectionDivider -Section 'PowerShell' -SourceLabel 'curated in-script'))
             [void]$body.Add($script:CuratedPowerShellGitattributes)
@@ -298,9 +410,13 @@ function New-GitIgnoreContent {
     [CmdletBinding()]
     [OutputType([string])]
     param(
-        [Parameter(Mandatory)] [string[]] $Language
+        [Parameter(Mandatory)] [string[]] $Language,
+        [string] $GitattributesRef = $script:DefaultGitattributesRef,
+        [string] $GitignoreRef = $script:DefaultGitignoreRef,
+        [switch] $Refresh
     )
     $expanded = Resolve-GitDefaultsLanguages -Language $Language
+    $fetchSplat = @{ GitattributesRef = $GitattributesRef; GitignoreRef = $GitignoreRef; Refresh = [bool]$Refresh }
 
     $upstreamSections = [System.Collections.Generic.List[string]]::new()
     $seenFiles = [System.Collections.Generic.HashSet[string]]::new()
@@ -319,7 +435,7 @@ function New-GitIgnoreContent {
         [void]$upstreamSections.Add('Global/Backup')
     }
 
-    $header = New-GitDefaultsHeader -Kind 'gitignore' -Language $expanded -UpstreamSections $upstreamSections
+    $header = New-GitDefaultsHeader -Kind 'gitignore' -Language $expanded -UpstreamSections $upstreamSections -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
 
     $body = [System.Collections.Generic.List[string]]::new()
     [void]$body.Add($header)
@@ -330,7 +446,7 @@ function New-GitIgnoreContent {
         if ($entry.GitignoreFile -and $emitted.Add($entry.GitignoreFile)) {
             $section = [System.IO.Path]::GetFileNameWithoutExtension($entry.GitignoreFile)
             [void]$body.Add((New-GitDefaultsSectionDivider -Section $section -SourceLabel $entry.GitignoreFile))
-            [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $entry.GitignoreFile))
+            [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $entry.GitignoreFile @fetchSplat))
         } elseif ($lang -eq 'PowerShell') {
             [void]$body.Add((New-GitDefaultsSectionDivider -Section 'PowerShell' -SourceLabel 'curated in-script'))
             [void]$body.Add($script:CuratedPowerShellGitignore)
@@ -339,7 +455,7 @@ function New-GitIgnoreContent {
     # Cross-platform editor/OS backup patterns, appended once.
     if ($emitted.Add($backupFile)) {
         [void]$body.Add((New-GitDefaultsSectionDivider -Section 'Global/Backup' -SourceLabel $backupFile))
-        [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $backupFile))
+        [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $backupFile @fetchSplat))
     }
     return ($body -join "`n")
 }
@@ -526,23 +642,6 @@ function Initialize-GitDefaults {
         throw "Current directory is not a git repository. Run 'git init' first or cd into a repo."
     }
 
-    if ($Refresh) {
-        # Honest stance: -Refresh is reserved for the network-fetch path,
-        # which is not implemented in this release. Hard-fail rather than
-        # silently emitting bundled content under a "refreshed" header
-        # (which would mislead consumers about the actual source).
-        throw '-Refresh (network fetch from upstream at -GitattributesRef/-GitignoreRef) is not yet implemented. Omit -Refresh to compose from the bundled snapshots, or open an issue to prioritise the fetch path.'
-    }
-
-    # Guard against header drift when consumers override the pinned refs:
-    # the bundled snapshots are pinned to specific SHAs, so we cannot
-    # honestly claim a different ref in the header without fetching.
-    $defaultGitattrRef = 'fddc586cf0f10ec4485028d0d2dd6f73197a4258'
-    $defaultGitignoreRef = 'dcc0fc7bc2b5ba480cf117ad1be31bafceeaff46'
-    if ($GitattributesRef -ne $defaultGitattrRef -or $GitignoreRef -ne $defaultGitignoreRef) {
-        throw "Overriding -GitattributesRef or -GitignoreRef requires -Refresh to actually fetch that ref, and -Refresh is not yet implemented. Use the pinned defaults ($defaultGitattrRef / $defaultGitignoreRef)."
-    }
-
     if (-not $Language -or $Language.Count -eq 0) {
         $Language = Read-GitDefaultsLanguageSelection
         if (-not $Language -or $Language.Count -eq 0) {
@@ -565,13 +664,15 @@ function Initialize-GitDefaults {
         }
     }
 
+    $composeSplat = @{ GitattributesRef = $GitattributesRef; GitignoreRef = $GitignoreRef; Refresh = [bool]$Refresh }
+
     if ($IncludeGitattributes) {
-        $content = New-GitAttributesContent -Language $expanded
+        $content = New-GitAttributesContent -Language $expanded @composeSplat
         Write-GitDefaultsFile -Path '.gitattributes' -Content $content -Force:$Force
         if (-not $WhatIfPreference) { Write-Host "Wrote .gitattributes ($($expanded -join ', '))" -ForegroundColor Green }
     }
     if ($IncludeGitignore) {
-        $content = New-GitIgnoreContent -Language $expanded
+        $content = New-GitIgnoreContent -Language $expanded @composeSplat
         Write-GitDefaultsFile -Path '.gitignore' -Content $content -Force:$Force
         if (-not $WhatIfPreference) { Write-Host "Wrote .gitignore ($($expanded -join ', '))" -ForegroundColor Green }
     }

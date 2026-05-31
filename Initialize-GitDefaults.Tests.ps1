@@ -198,17 +198,6 @@ Describe 'Initialize-GitDefaults (integration)' {
         $gi | Should -Match 'PSReadLine/ConsoleHost_history\.txt'
     }
 
-    It '-Refresh hard-fails with a message naming the unimplemented fetch path (Copilot review #161)' {
-        { Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -ErrorAction Stop } |
-            Should -Throw -ExpectedMessage '*Refresh*not yet implemented*'
-        Test-Path '.gitattributes' | Should -BeFalse
-    }
-
-    It 'overriding pinned refs without -Refresh hard-fails to prevent header drift (Copilot review #161)' {
-        { Initialize-GitDefaults -Language 'CSharp' -GitattributesRef 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' -Force -ErrorAction Stop } |
-            Should -Throw -ExpectedMessage '*Refresh*'
-    }
-
     It 'tick-suffixed backups never collide on rapid successive runs (Copilot review #161)' {
         Set-Content -Path '.gitattributes' -Value 'V1' -NoNewline
         Initialize-GitDefaults -Language 'CSharp' -Force         # .gitattributes.bak
@@ -370,5 +359,142 @@ Describe 'Copilot review #161 round 3: kind-aware curated PowerShell header' {
         $content = New-GitIgnoreContent -Language @('PowerShell','CSharp')
         $content | Should -Match 'no upstream PowerShell\.gitignore exists'
         $content | Should -Not -Match 'intentional override'
+    }
+}
+
+Describe 'Copilot review #161 round 4: -Refresh implementation' {
+    Context 'fetches from upstream and writes through to disk' {
+        BeforeEach {
+            $script:r4Repo = Join-Path ([System.IO.Path]::GetTempPath()) ("r4-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:r4Repo | Out-Null
+            & git -C $script:r4Repo init --quiet 2>&1 | Out-Null
+            Push-Location $script:r4Repo
+            $script:fetchedUrls = [System.Collections.Generic.List[string]]::new()
+            Mock -CommandName 'Invoke-WebRequest' -MockWith {
+                $script:fetchedUrls.Add($Uri)
+                # Return distinctive sentinel content per file so we can
+                # detect that it landed in the generated output.
+                $name = Split-Path $Uri -Leaf
+                return [PSCustomObject]@{ Content = "# SENTINEL FOR $name`n" }
+            }
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:r4Repo -ErrorAction SilentlyContinue
+        }
+
+        It '-Refresh fetches every required template from raw.githubusercontent.com' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*alexkaratarakis/gitattributes*Common.gitattributes' }
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*alexkaratarakis/gitattributes*CSharp.gitattributes' }
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*github/gitignore*VisualStudio.gitignore' }
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*github/gitignore*Global/Backup.gitignore' }
+        }
+
+        It 'composes generated files from the fetched sentinel content (-Refresh writes through)' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'SENTINEL FOR Common.gitattributes'
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'SENTINEL FOR CSharp.gitattributes'
+            (Get-Content '.gitignore'     -Raw) | Should -Match 'SENTINEL FOR VisualStudio.gitignore'
+            (Get-Content '.gitignore'     -Raw) | Should -Match 'SENTINEL FOR Backup.gitignore'
+        }
+
+        It 'header records "fetched from upstream" when -Refresh is used' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'Source mode: fetched from upstream'
+            (Get-Content '.gitignore'     -Raw) | Should -Match 'Source mode: fetched from upstream'
+        }
+
+        It 'header records "bundled snapshot" when -Refresh is omitted' {
+            Initialize-GitDefaults -Language 'CSharp' -Force
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'Source mode: bundled snapshot'
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 0
+        }
+
+        It 'overriding -GitattributesRef changes the URL the fetcher hits' {
+            Initialize-GitDefaults -Language 'CSharp' -GitattributesRef 'cafebabe1234567890abcdef0987654321fedcba' -Refresh -Force
+            Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter {
+                $Uri -like '*alexkaratarakis/gitattributes/cafebabe1234567890abcdef0987654321fedcba/*'
+            }
+        }
+    }
+
+    Context 'falls back to the on-disk cache when the network fetch fails' {
+        BeforeEach {
+            $script:r4Repo = Join-Path ([System.IO.Path]::GetTempPath()) ("r4f-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:r4Repo | Out-Null
+            & git -C $script:r4Repo init --quiet 2>&1 | Out-Null
+            Push-Location $script:r4Repo
+
+            # Seed the cache for one specific file at a synthetic ref so we
+            # can prove "fetch fails -> cache hit -> compose continues".
+            $fakeRef = 'unit-test-ref-' + [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+            $script:fakeRef = $fakeRef
+            $cacheDir = Join-Path (Get-GitDefaultsCacheRoot) "alexkaratarakis/gitattributes/$fakeRef"
+            New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+            Set-Content -Path (Join-Path $cacheDir 'Common.gitattributes') -Value "# CACHED COMMON`n" -NoNewline
+            Set-Content -Path (Join-Path $cacheDir 'CSharp.gitattributes') -Value "# CACHED CSHARP`n" -NoNewline
+            $giCacheDir = Join-Path (Get-GitDefaultsCacheRoot) "github/gitignore/$fakeRef"
+            New-Item -ItemType Directory -Force -Path $giCacheDir | Out-Null
+            New-Item -ItemType Directory -Force -Path (Join-Path $giCacheDir 'Global') | Out-Null
+            Set-Content -Path (Join-Path $giCacheDir 'VisualStudio.gitignore') -Value "# CACHED VS`n" -NoNewline
+            Set-Content -Path (Join-Path $giCacheDir 'Global/Backup.gitignore') -Value "# CACHED BACKUP`n" -NoNewline
+
+            Mock -CommandName 'Invoke-WebRequest' -MockWith { throw 'simulated network failure' }
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:r4Repo -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path (Get-GitDefaultsCacheRoot) "alexkaratarakis/gitattributes/$script:fakeRef") -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force (Join-Path (Get-GitDefaultsCacheRoot) "github/gitignore/$script:fakeRef") -ErrorAction SilentlyContinue
+        }
+
+        It 'uses cached content when network fetch fails AND cache hit exists' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:fakeRef -GitignoreRef $script:fakeRef -WarningAction SilentlyContinue
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'CACHED COMMON'
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'CACHED CSHARP'
+            (Get-Content '.gitignore'     -Raw) | Should -Match 'CACHED BACKUP'
+        }
+
+        It 'throws clearly when network fails AND no cache exists' {
+            $unseededRef = 'never-cached-' + [System.Guid]::NewGuid().ToString('N').Substring(0,8)
+            { Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $unseededRef -GitignoreRef $unseededRef -ErrorAction Stop } |
+                Should -Throw -ExpectedMessage '*no cached copy*'
+        }
+    }
+}
+
+Describe 'Copilot review #161 round 4: include-switch one-file invocations' {
+    BeforeEach {
+        $script:swRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("sw-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:swRepo | Out-Null
+        & git -C $script:swRepo init --quiet 2>&1 | Out-Null
+        Push-Location $script:swRepo
+    }
+    AfterEach {
+        Pop-Location
+        Remove-Item -Recurse -Force $script:swRepo -ErrorAction SilentlyContinue
+    }
+
+    It '-IncludeGitignore:$false writes .gitattributes only and leaves an existing .gitignore untouched' {
+        Set-Content -Path '.gitignore' -Value 'consumer-owned' -NoNewline
+        Initialize-GitDefaults -Language 'CSharp' -IncludeGitignore:$false -Force
+        Test-Path '.gitattributes' | Should -BeTrue
+        (Get-Content '.gitignore' -Raw) | Should -Be 'consumer-owned'
+        # No .bak should have been created for .gitignore
+        Test-Path '.gitignore.bak' | Should -BeFalse
+    }
+
+    It '-IncludeGitattributes:$false writes .gitignore only and leaves an existing .gitattributes untouched' {
+        Set-Content -Path '.gitattributes' -Value '* text=auto' -NoNewline
+        Initialize-GitDefaults -Language 'CSharp' -IncludeGitattributes:$false -Force
+        Test-Path '.gitignore' | Should -BeTrue
+        (Get-Content '.gitattributes' -Raw) | Should -Be '* text=auto'
+        Test-Path '.gitattributes.bak' | Should -BeFalse
+    }
+
+    It '-IncludeGitignore:$false with no existing .gitignore does not create one' {
+        Initialize-GitDefaults -Language 'CSharp' -IncludeGitignore:$false -Force
+        Test-Path '.gitignore' | Should -BeFalse
     }
 }
