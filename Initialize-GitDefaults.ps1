@@ -569,8 +569,28 @@ function Get-GitDefaultsDetectedLanguages {
     param([string] $Path = (Get-Location).Path)
 
     $detected = [System.Collections.Generic.HashSet[string]]::new()
+
+    # Files installed by IntelliSDLC.ai itself that must NOT signal
+    # consumer language usage (Copilot review #161 round 7). A consumer
+    # who has only synced this tooling but writes no PowerShell of their
+    # own should not have PowerShell pre-selected.
+    $ownPsFiles = @(
+        'Pull-SDLC.ai.ps1', 'Pull-SDLC.ai.Tests.ps1',
+        'Initialize-GitDefaults.ps1', 'Initialize-GitDefaults.Tests.ps1',
+        'Cleanup-Worktree.ps1',
+        'Consolidate-Tasks.ps1', 'Consolidate-Tasks.Tests.ps1',
+        'run.ps1', 'run.Tests.ps1'
+    )
+    $isOwnPs = { param($f)
+        # Only filter at the repo root -- IntelliSDLC.ai tools never live
+        # in subdirectories of the consumer repo.
+        $rel = [System.IO.Path]::GetRelativePath($Path, $f.FullName)
+        ($ownPsFiles -contains $rel) -or ($rel -like '.github/*')
+    }
+
     $hasCsproj   = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.csproj','*.sln','*.slnx' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
-    $hasPs       = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.ps1','*.psm1','*.psd1' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+    $psFiles     = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.ps1','*.psm1','*.psd1' -ErrorAction SilentlyContinue -Depth 3 | Where-Object { -not (& $isOwnPs $_) })
+    $hasPs       = $psFiles.Count -gt 0
     $hasTs       = @(Get-ChildItem -Path $Path -Recurse -File -Include 'tsconfig.json','package.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
     $hasAppSets  = @(Get-ChildItem -Path $Path -Recurse -File -Filter 'appsettings*.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
 

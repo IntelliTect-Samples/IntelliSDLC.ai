@@ -627,3 +627,37 @@ Describe 'Copilot review #161 round 6: hardening' {
         }
     }
 }
+
+Describe 'Copilot review #161 round 7: detection ignores IntelliSDLC.ai tooling' {
+    It 'does NOT pre-select PowerShell when the only .ps1 files are IntelliSDLC.ai-installed tooling' {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tool-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        try {
+            # Plant a .csproj so detection succeeds for something (proving
+            # detection itself runs); only IntelliSDLC.ai tooling files
+            # are present for PowerShell.
+            Set-Content -Path (Join-Path $tmp 'App.csproj') -Value '<Project />' -NoNewline
+            Set-Content -Path (Join-Path $tmp 'Pull-SDLC.ai.ps1')           -Value '# tooling' -NoNewline
+            Set-Content -Path (Join-Path $tmp 'Initialize-GitDefaults.ps1') -Value '# tooling' -NoNewline
+            Set-Content -Path (Join-Path $tmp 'Cleanup-Worktree.ps1')       -Value '# tooling' -NoNewline
+            $detected = Get-GitDefaultsDetectedLanguages -Path $tmp
+            $detected | Should -Contain 'CSharp'
+            $detected | Should -Not -Contain 'PowerShell'
+        } finally {
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'DOES pre-select PowerShell when the consumer adds their own .ps1 alongside the tooling' {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("tool-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $tmp | Out-Null
+        try {
+            Set-Content -Path (Join-Path $tmp 'Pull-SDLC.ai.ps1') -Value '# tooling' -NoNewline
+            Set-Content -Path (Join-Path $tmp 'Build.ps1')        -Value '# consumer build' -NoNewline
+            $detected = Get-GitDefaultsDetectedLanguages -Path $tmp
+            $detected | Should -Contain 'PowerShell'
+        } finally {
+            Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        }
+    }
+}
