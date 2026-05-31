@@ -2442,3 +2442,68 @@ Describe 'Invoke-SetupGitHubSsh' -Skip:(-not $IsWindows) {
     }
 }
 
+Describe 'Test-LocalDriftOnManagedPaths (issue #178: EOL false positive)' {
+    BeforeEach {
+        $script:driftRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("drift-eol-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:driftRepo | Out-Null
+        Push-Location $script:driftRepo
+        git init -q -b main
+        git config user.email 't@t.t'
+        git config user.name 't'
+        # Disable autocrlf so the test controls blob bytes deterministically.
+        git config core.autocrlf false
+    }
+
+    AfterEach {
+        Pop-Location
+        Remove-Item -Recurse -Force -LiteralPath $script:driftRepo -ErrorAction SilentlyContinue
+    }
+
+    It 'does NOT report drift when HEAD differs from the anchor only by CRLF/LF line endings' {
+        # Anchor commit: managed file stored with LF (the upstream form).
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'CLAUDE.md'), "line one`nline two`n")
+        git add -A | Out-Null
+        git commit -q -m 'anchor (LF)'
+        $anchor = (git rev-parse HEAD).Trim()
+        # HEAD commit: identical content re-committed with CRLF (a Windows consumer).
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'CLAUDE.md'), "line one`r`nline two`r`n")
+        git add -A | Out-Null
+        git commit -q -m 'consumer sync (CRLF)'
+
+        # Sanity: the raw blob SHAs really do differ (otherwise the test is vacuous).
+        (git rev-parse "HEAD:CLAUDE.md").Trim() | Should -Not -Be (git rev-parse "${anchor}:CLAUDE.md").Trim()
+
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'CLAUDE.md' -RepoRoot $script:driftRepo)
+        $drift.Count | Should -Be 0
+    }
+
+    It 'reports drift when HEAD has a genuine content change beyond line endings' {
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'CLAUDE.md'), "line one`nline two`n")
+        git add -A | Out-Null
+        git commit -q -m 'anchor'
+        $anchor = (git rev-parse HEAD).Trim()
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'CLAUDE.md'), "line one`nEDITED line two`n")
+        git add -A | Out-Null
+        git commit -q -m 'real local edit'
+
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'CLAUDE.md' -RepoRoot $script:driftRepo)
+        $drift.Count | Should -Be 1
+        $drift[0].Path | Should -Be 'CLAUDE.md'
+    }
+
+    It 'reports drift for an upstream-deleted file the consumer still has committed' {
+        # Anchor does NOT contain CLAUDE.md (simulates a file deleted upstream).
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'README.txt'), "seed`n")
+        git add -A | Out-Null
+        git commit -q -m 'anchor without managed file'
+        $anchor = (git rev-parse HEAD).Trim()
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'CLAUDE.md'), "orphaned content`n")
+        git add -A | Out-Null
+        git commit -q -m 'consumer still carries deleted file'
+
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'CLAUDE.md' -RepoRoot $script:driftRepo)
+        $drift.Count | Should -Be 1
+        $drift[0].Path | Should -Be 'CLAUDE.md'
+    }
+}
+
