@@ -261,6 +261,72 @@ Describe '.gitattributes.template bootstrap (issue #119)' {
     }
 }
 
+Describe 'README.md.template bootstrap (issue #158)' {
+    BeforeAll {
+        $script:rmRepoRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
+    }
+
+    It '$script:TemplateScaffoldMap maps README.md.template -> README.md' {
+        $script:TemplateScaffoldMap.Keys | Should -Contain 'README.md.template'
+        $script:TemplateScaffoldMap['README.md.template'] | Should -Be 'README.md'
+    }
+
+    It 'README.md.template exists at upstream repo root' {
+        Test-Path -LiteralPath (Join-Path $script:rmRepoRoot 'README.md.template') | Should -BeTrue
+    }
+
+    It 'README.md is on the always-local list (consumer-owned once placed)' {
+        Test-IsAlwaysLocalPath -Path 'README.md' | Should -BeTrue
+    }
+
+    It 'README.md.template is upstream-managed (so first-time scaffold flows from upstream)' {
+        Test-IsUpstreamManagedPath -Path 'README.md.template' | Should -BeTrue
+    }
+
+    It 'creates consumer README.md on first scaffold when none exists' {
+        $src = Join-Path $TestDrive 'rmt-src'
+        $dst = Join-Path $TestDrive 'rmt-dst1'
+        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
+        Set-Content -Path (Join-Path $src 'README.md.template') -Value 'README_TEMPLATE_BODY'
+        $map = [ordered]@{ 'README.md.template' = 'README.md' }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
+        $result | Should -Contain 'README.md'
+        Test-Path (Join-Path $dst 'README.md') | Should -BeTrue
+        (Get-Content (Join-Path $dst 'README.md') -Raw).Trim() | Should -Be 'README_TEMPLATE_BODY'
+    }
+
+    It 'leaves an existing consumer README.md untouched' {
+        $src = Join-Path $TestDrive 'rmt-src2'
+        $dst = Join-Path $TestDrive 'rmt-dst2'
+        New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
+        Set-Content -Path (Join-Path $src 'README.md.template') -Value 'README_TEMPLATE_BODY'
+        Set-Content -Path (Join-Path $dst 'README.md')          -Value 'CONSUMER_OWNED_README'
+        $map = [ordered]@{ 'README.md.template' = 'README.md' }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $dst -ScaffoldMap $map)
+        $result.Count | Should -Be 0
+        (Get-Content (Join-Path $dst 'README.md') -Raw).Trim() | Should -Be 'CONSUMER_OWNED_README'
+    }
+
+    It 'template body carries the scaffolded-by-Pull-SDLC.ai marker comment' {
+        $body = Get-Content -LiteralPath (Join-Path $script:rmRepoRoot 'README.md.template') -Raw
+        $body | Should -Match 'scaffolded by Pull-SDLC\.ai on first sync'
+    }
+
+    It 'template uses H2 (not H1) for top-level sections so GitHubs auto-TOC works' {
+        $body = Get-Content -LiteralPath (Join-Path $script:rmRepoRoot 'README.md.template') -Raw
+        # Strip fenced code blocks before counting H1s -- a `# comment` inside a
+        # ```bash fence is shell syntax, not a markdown heading.
+        $stripped = [regex]::Replace($body, '(?s)```.*?```', '')
+        $h1Count = ([regex]::Matches($stripped, '(?m)^#\s+')).Count
+        $h1Count | Should -Be 1
+        $body | Should -Match '(?m)^##\s+Overview'
+        $body | Should -Match '(?m)^##\s+Quick Start'
+        $body | Should -Match '(?m)^##\s+Support'
+        $body | Should -Match '(?m)^##\s+License'
+        $body | Should -Match '(?m)^##\s+Contributing'
+    }
+}
+
 Describe 'Pull-SDLC.ai.ps1 end-to-end (regression for #26)' {
     BeforeEach {
         $script:repo = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-e2e-" + [guid]::NewGuid().ToString('N'))
@@ -649,6 +715,44 @@ Describe 'Invoke-PullSDLC end-to-end' {
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
         $rc | Should -Be 0
         (Get-Content (Join-Path $fx.Consumer 'tasks/README.md') -Raw) | Should -Be 'CONSUMER_EDITED_BODY'
+    }
+
+    It 'scaffolds README.md from README.md.template on first sync into an empty consumer (issue #158)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'UPSTREAM_README_TEMPLATE_BODY' | Out-File -Encoding utf8 README.md.template -NoNewline
+            }
+        # Consumer starts with no README.md at all.
+        Remove-Item (Join-Path $fx.Consumer 'README.md') -ErrorAction SilentlyContinue
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        $scaffolded = Join-Path $fx.Consumer 'README.md'
+        Test-Path $scaffolded | Should -BeTrue
+        (Get-Content $scaffolded -Raw).Trim() | Should -Be 'UPSTREAM_README_TEMPLATE_BODY'
+    }
+
+    It 'preserves consumer-owned README.md on subsequent sync even when upstream template changes (issue #158)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'UPSTREAM_README_TEMPLATE_BODY' | Out-File -Encoding utf8 README.md.template -NoNewline
+            } `
+            -Tweak {
+                'UPSTREAM_README_TEMPLATE_BODY_V2' | Out-File -Encoding utf8 README.md.template -NoNewline
+            }
+        # Consumer has its own README.md tracked in git, plus the synced state file.
+        'CONSUMER_OWNED_README' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'README.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add README.md; git commit -q -m 'consumer readme' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'README.md') -Raw) | Should -Be 'CONSUMER_OWNED_README'
     }
 }
 
