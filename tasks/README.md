@@ -49,11 +49,24 @@ so its contents are **never** touched by upstream sync. Edit freely; the next
 The repo-root script `Consolidate-Tasks.ps1` imports historical spec
 artifacts into this directory:
 
-- `docs/designs/*.md`  -> moved (`git mv`) and renamed to `<feature>-plan.md`
-- `docs/prd/*.md`      -> moved (`git mv`) and renamed to `<feature>-prd.md`
+- `docs/designs/*.md`  -> moved (`git mv`) and renamed to `<date>-<feature>-plan.md`
+- `docs/prd/*.md`      -> moved (`git mv`) and renamed to `<date>-<feature>-prd.md`
 - Root `PRD.md`, `plan.md`, `IMPLEMENTATION_PLAN.md` -> moved
 - `~/.copilot/session-state/*/plan.md` -> copied (repo-scoped via the session-store DB), default ON
 - `~/.claude/...` session notes -> copied, opt-in (`-IncludeClaudeSessions`)
+
+Every imported destination is **date-prefixed** so the `tasks/` listing sorts
+chronologically. The date is resolved in order: a leading `YYYY-MM-DD-` prefix
+already present in the source name; else the date of the most recent git commit
+that modified the file; else the file's last-write time. Pass
+`-InsertDatePrefix:$false` to suppress synthesized prefixes (an embedded prefix
+in the source name is always preserved). The resolved date is also recorded in
+the `Source Date` column of `tasks/MIGRATION.md`.
+
+> This date convention applies only to **migrated legacy artifacts**, whose
+> original ordering would otherwise be lost. Newly created `@prd` / `@plan`
+> files keep the bare `<feature>-prd.md` / `<feature>-plan.md` slug so the
+> agents can resolve them by exact path.
 
 It uses the standard PowerShell `SupportsShouldProcess` pattern:
 

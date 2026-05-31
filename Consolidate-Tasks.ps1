@@ -12,15 +12,23 @@
     Source policies (configurable via switches):
 
       In-repo legacy sources -- MOVED via "git mv" to preserve history:
-        - docs/designs/*.md                -> tasks/<feature>-plan.md
-        - docs/prd/*.md                    -> tasks/<feature>-prd.md
+        - docs/designs/*.md                -> tasks/<date>-<feature>-plan.md
+        - docs/prd/*.md                    -> tasks/<date>-<feature>-prd.md
         - root PRD.md / plan.md /
-          IMPLEMENTATION_PLAN.md           -> tasks/legacy-<kind>.md
+          IMPLEMENTATION_PLAN.md           -> tasks/<date>-legacy-<kind>.md
+
+      Every imported destination is date-prefixed so the tasks/ listing sorts
+      chronologically. The date is resolved (in order): a leading YYYY-MM-DD-
+      prefix already in the source name; else the date of the most recent git
+      commit that modified the file; else the file's last-write time. Pass
+      -InsertDatePrefix:$false to suppress synthesized prefixes (an embedded
+      prefix in the source name is always preserved). The resolved date is also
+      recorded in the Source Date column of tasks/MIGRATION.md.
 
       Out-of-repo session sources -- COPIED (originals stay in place):
         - ~/.copilot/session-state/<id>/plan.md
-                                           -> tasks/session-<short>-plan.md
-        - ~/.claude/... (opt-in)           -> tasks/claude-<short>-plan.md
+                                           -> tasks/<date>-session-<short>-plan.md
+        - ~/.claude/... (opt-in)           -> tasks/<date>-claude-<short>-plan.md
 
     Collision policy: if the destination exists with DIFFERENT content,
     a -<sha1-first-8> suffix is appended. If it already exists with
@@ -39,6 +47,7 @@ param(
     [switch]$IncludeCopilotSessions = $true,
     [switch]$IncludeClaudeSessions,
     [switch]$LinkIssues = $true,
+    [switch]$InsertDatePrefix = $true,
     [string]$RepoRoot,
     [string]$CopilotSessionRoot,
     [string]$ClaudeSessionRoot
@@ -55,6 +64,62 @@ function Get-FeatureSlug {
     $stem = $stem -replace "-(prd|plan)$", ""
     if ([string]::IsNullOrWhiteSpace($stem)) { return "untitled" }
     return $stem
+}
+
+function Get-DatePrefix {
+    <#
+    .SYNOPSIS
+        Returns the leading YYYY-MM-DD date embedded in a filename, or "" when
+        none is present. The date prefix is preserved on the destination name so
+        the tasks/ listing sorts chronologically.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FileName)
+    if ($FileName -match "^(\d{4}-\d{2}-\d{2})-") { return $Matches[1] }
+    return ""
+}
+
+function Get-GitDate {
+    <#
+    .SYNOPSIS
+        Returns the date (yyyy-MM-dd) of the most recent commit that modified a
+        file, or "" when the file is untracked, outside a repo, or git is
+        unavailable. The git committer date survives copies and is more reliable
+        provenance than the filesystem mtime, which is reset on clone/checkout.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $dir = Split-Path -Parent $Path
+    if (-not $dir) { $dir = "." }
+    try {
+        $out = & git -C $dir log -1 --format=%cs -- $Path 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return ($out | Select-Object -First 1).Trim() }
+    }
+    catch { }
+    return ""
+}
+
+function Get-SourceDate {
+    <#
+    .SYNOPSIS
+        Returns the provenance date (yyyy-MM-dd) of a source file. Resolution
+        order: (1) an embedded YYYY-MM-DD filename prefix, (2) the date of the
+        most recent git commit that modified the file, (3) the file's last-write
+        time (UTC). Returns "" only when none of these is available.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    $prefix = Get-DatePrefix -FileName (Split-Path -Leaf $Path)
+    if ($prefix) { return $prefix }
+    $gitDate = Get-GitDate -Path $Path
+    if ($gitDate) { return $gitDate }
+    try {
+        $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+        return $item.LastWriteTimeUtc.ToString("yyyy-MM-dd")
+    }
+    catch {
+        return ""
+    }
 }
 
 function Get-ShortHash {
@@ -147,6 +212,7 @@ function New-MigrationRecord {
         [Parameter(Mandatory)][string]$Destination,
         [Parameter(Mandatory)][ValidateSet("move", "copy", "skip")] [string]$Action,
         [Parameter(Mandatory)][string]$SourceType,
+        [string]$SourceDate = "",
         [int[]]$LinkedIssues = @(),
         [string]$Note = ""
     )
@@ -155,6 +221,7 @@ function New-MigrationRecord {
         Destination  = $Destination
         Action       = $Action
         SourceType   = $SourceType
+        SourceDate   = $SourceDate
         TimestampUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
         LinkedIssues = $LinkedIssues
         Note         = $Note
@@ -172,15 +239,18 @@ function Write-MigrationManifest {
     $lines.Add("") | Out-Null
     $lines.Add("Generated by ``Consolidate-Tasks.ps1``. Each row records one import.") | Out-Null
     $lines.Add("") | Out-Null
-    $lines.Add("| Timestamp (UTC) | Action | Source Type | Source | Destination | Linked Issues | Note |") | Out-Null
-    $lines.Add("|---|---|---|---|---|---|---|") | Out-Null
-    foreach ($r in $Records) {
+    $lines.Add("| Timestamp (UTC) | Source Date | Action | Source Type | Source | Destination | Linked Issues | Note |") | Out-Null
+    $lines.Add("|---|---|---|---|---|---|---|---|") | Out-Null
+    $ordered = $Records | Sort-Object -Stable -Property `
+    @{ Expression = { if ($_.SourceDate) { $_.SourceDate } else { "9999-99-99" } } }, `
+    @{ Expression = { $_.Source } }
+    foreach ($r in $ordered) {
         $issues = ""
         if ($r.LinkedIssues -and $r.LinkedIssues.Count -gt 0) {
             $issues = ($r.LinkedIssues | ForEach-Object { "#$_" }) -join " "
         }
-        $lines.Add(("| {0} | {1} | {2} | ``{3}`` | ``{4}`` | {5} | {6} |" -f `
-                $r.TimestampUtc, $r.Action, $r.SourceType, $r.Source, $r.Destination, $issues, $r.Note)) | Out-Null
+        $lines.Add(("| {0} | {1} | {2} | {3} | ``{4}`` | ``{5}`` | {6} | {7} |" -f `
+                $r.TimestampUtc, $r.SourceDate, $r.Action, $r.SourceType, $r.Source, $r.Destination, $issues, $r.Note)) | Out-Null
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     $dir = Split-Path -Parent $Path
@@ -200,18 +270,22 @@ function Import-InRepoFile {
         [Parameter(Mandatory)][string]$SourceType,
         [string]$ForcedBaseName,
         [switch]$LinkIssues,
+        [switch]$InsertDatePrefix,
         $ShouldProcessHandler
     )
     $content = Get-Content -LiteralPath $Source -Raw -ErrorAction Stop
+    $sourceDate = Get-SourceDate -Path $Source
     $slug = if ($ForcedBaseName) { $ForcedBaseName } else { Get-FeatureSlug -FileName (Split-Path -Leaf $Source) }
-    $base = "$slug$KindSuffix"
+    $embedded = Get-DatePrefix -FileName (Split-Path -Leaf $Source)
+    $datePrefix = if ($embedded) { $embedded } elseif ($InsertDatePrefix -and $sourceDate) { $sourceDate } else { "" }
+    $base = if ($datePrefix) { "$datePrefix-$slug$KindSuffix" } else { "$slug$KindSuffix" }
     $dest = Resolve-Destination -DestinationDir $TasksDir -BaseName $base -Extension ".md" -SourceContent $content
     $relSource = [System.IO.Path]::GetRelativePath($RepoRoot, $Source) -replace "\\", "/"
     if ($null -eq $dest) {
         $existingDest = Join-Path $TasksDir "$base.md"
         $relDest = [System.IO.Path]::GetRelativePath($RepoRoot, $existingDest) -replace "\\", "/"
         return New-MigrationRecord -Source $relSource -Destination $relDest `
-            -Action "skip" -SourceType $SourceType `
+            -Action "skip" -SourceType $SourceType -SourceDate $sourceDate `
             -Note "destination already exists with identical content"
     }
     $relDest = [System.IO.Path]::GetRelativePath($RepoRoot, $dest) -replace "\\", "/"
@@ -219,7 +293,7 @@ function Import-InRepoFile {
     if ($LinkIssues) { $issues = Find-LinkedIssues -Text $content }
     if ($ShouldProcessHandler -and -not $ShouldProcessHandler.ShouldProcess($relSource, "git mv -> $relDest")) {
         return New-MigrationRecord -Source $relSource -Destination $relDest -Action "move" `
-            -SourceType $SourceType -LinkedIssues $issues -Note "planned (WhatIf)"
+            -SourceType $SourceType -SourceDate $sourceDate -LinkedIssues $issues -Note "planned (WhatIf)"
     }
     Push-Location $RepoRoot
     try {
@@ -240,7 +314,7 @@ function Import-InRepoFile {
     }
     finally { Pop-Location }
     return New-MigrationRecord -Source $relSource -Destination $relDest -Action "move" `
-        -SourceType $SourceType -LinkedIssues $issues
+        -SourceType $SourceType -SourceDate $sourceDate -LinkedIssues $issues
 }
 
 function Import-SessionFile {
@@ -252,22 +326,25 @@ function Import-SessionFile {
         [Parameter(Mandatory)][string]$KindSuffix,
         [Parameter(Mandatory)][string]$SourceType,
         [switch]$LinkIssues,
+        [switch]$InsertDatePrefix,
         $ShouldProcessHandler
     )
     $content = Get-Content -LiteralPath $Source -Raw -ErrorAction Stop
-    $base = "$BaseName$KindSuffix"
+    $sourceDate = Get-SourceDate -Path $Source
+    $datePrefix = if ($InsertDatePrefix -and $sourceDate) { $sourceDate } else { "" }
+    $base = if ($datePrefix) { "$datePrefix-$BaseName$KindSuffix" } else { "$BaseName$KindSuffix" }
     $dest = Resolve-Destination -DestinationDir $TasksDir -BaseName $base -Extension ".md" -SourceContent $content
     if ($null -eq $dest) {
         $existingDest = Join-Path $TasksDir "$base.md"
         return New-MigrationRecord -Source $Source -Destination $existingDest `
-            -Action "skip" -SourceType $SourceType `
+            -Action "skip" -SourceType $SourceType -SourceDate $sourceDate `
             -Note "destination already exists with identical content"
     }
     $issues = @()
     if ($LinkIssues) { $issues = Find-LinkedIssues -Text $content }
     if ($ShouldProcessHandler -and -not $ShouldProcessHandler.ShouldProcess($Source, "Copy -> $dest")) {
         return New-MigrationRecord -Source $Source -Destination $dest -Action "copy" `
-            -SourceType $SourceType -LinkedIssues $issues -Note "planned (WhatIf)"
+            -SourceType $SourceType -SourceDate $sourceDate -LinkedIssues $issues -Note "planned (WhatIf)"
     }
     $destDir = Split-Path -Parent $dest
     if ($destDir -and -not (Test-Path -LiteralPath $destDir)) {
@@ -275,7 +352,7 @@ function Import-SessionFile {
     }
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     return New-MigrationRecord -Source $Source -Destination $dest -Action "copy" `
-        -SourceType $SourceType -LinkedIssues $issues
+        -SourceType $SourceType -SourceDate $sourceDate -LinkedIssues $issues
 }
 
 function Invoke-ConsolidateTasks {
@@ -288,6 +365,7 @@ function Invoke-ConsolidateTasks {
         [switch]$IncludeCopilotSessions,
         [switch]$IncludeClaudeSessions,
         [switch]$LinkIssues,
+        [switch]$InsertDatePrefix,
         [string]$CopilotSessionRoot,
         [string]$ClaudeSessionRoot,
         [string]$OriginUrl
@@ -314,7 +392,7 @@ function Invoke-ConsolidateTasks {
                 $r = Import-InRepoFile -Source $_.FullName `
                     -RepoRoot $rootFull -TasksDir $tasksDir `
                     -KindSuffix "-plan" -SourceType "docs/designs" `
-                    -LinkIssues:$LinkIssues -ShouldProcessHandler $PSCmdlet
+                    -LinkIssues:$LinkIssues -InsertDatePrefix:$InsertDatePrefix -ShouldProcessHandler $PSCmdlet
                 if ($r) { $records.Add($r) | Out-Null }
             }
         }
@@ -327,7 +405,7 @@ function Invoke-ConsolidateTasks {
                 $r = Import-InRepoFile -Source $_.FullName `
                     -RepoRoot $rootFull -TasksDir $tasksDir `
                     -KindSuffix "-prd" -SourceType "docs/prd" `
-                    -LinkIssues:$LinkIssues -ShouldProcessHandler $PSCmdlet
+                    -LinkIssues:$LinkIssues -InsertDatePrefix:$InsertDatePrefix -ShouldProcessHandler $PSCmdlet
                 if ($r) { $records.Add($r) | Out-Null }
             }
         }
@@ -346,7 +424,7 @@ function Invoke-ConsolidateTasks {
                     -RepoRoot $rootFull -TasksDir $tasksDir `
                     -KindSuffix $rootMap[$name] -SourceType "root-doc" `
                     -ForcedBaseName "legacy" `
-                    -LinkIssues:$LinkIssues -ShouldProcessHandler $PSCmdlet
+                    -LinkIssues:$LinkIssues -InsertDatePrefix:$InsertDatePrefix -ShouldProcessHandler $PSCmdlet
                 if ($r) { $records.Add($r) | Out-Null }
             }
         }
@@ -366,7 +444,7 @@ function Invoke-ConsolidateTasks {
                 $r = Import-SessionFile -Source $plan `
                     -TasksDir $tasksDir -BaseName $base -KindSuffix "-plan" `
                     -SourceType "copilot-session" `
-                    -LinkIssues:$LinkIssues -ShouldProcessHandler $PSCmdlet
+                    -LinkIssues:$LinkIssues -InsertDatePrefix:$InsertDatePrefix -ShouldProcessHandler $PSCmdlet
                 if ($r) { $records.Add($r) | Out-Null }
             }
         }
@@ -381,7 +459,7 @@ function Invoke-ConsolidateTasks {
                 $r = Import-SessionFile -Source $_.FullName `
                     -TasksDir $tasksDir -BaseName $base -KindSuffix "-plan" `
                     -SourceType "claude-session" `
-                    -LinkIssues:$LinkIssues -ShouldProcessHandler $PSCmdlet
+                    -LinkIssues:$LinkIssues -InsertDatePrefix:$InsertDatePrefix -ShouldProcessHandler $PSCmdlet
                 if ($r) { $records.Add($r) | Out-Null }
             }
         }
@@ -422,6 +500,7 @@ if ($MyInvocation.InvocationName -ne ".") {
         -IncludeCopilotSessions:$IncludeCopilotSessions `
         -IncludeClaudeSessions:$IncludeClaudeSessions `
         -LinkIssues:$LinkIssues `
+        -InsertDatePrefix:$InsertDatePrefix `
         -CopilotSessionRoot $CopilotSessionRoot `
         -ClaudeSessionRoot $ClaudeSessionRoot `
         -OriginUrl $originUrl `

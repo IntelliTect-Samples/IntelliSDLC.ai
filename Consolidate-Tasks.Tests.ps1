@@ -39,6 +39,64 @@ Describe "Get-FeatureSlug" {
     }
 }
 
+Describe "Get-SourceDate" {
+    It "extracts an embedded YYYY-MM-DD filename prefix" {
+        $p = Join-Path $TestDrive "2026-05-12-alpha-plan.md"
+        Set-Content -LiteralPath $p -Value "x"
+        Get-SourceDate -Path $p | Should -Be "2026-05-12"
+    }
+    It "falls back to the file's last-write date when no prefix is present" {
+        $p = Join-Path $TestDrive "no-date-plan.md"
+        Set-Content -LiteralPath $p -Value "x"
+        $expected = (Get-Item -LiteralPath $p).LastWriteTimeUtc.ToString("yyyy-MM-dd")
+        Get-SourceDate -Path $p | Should -Be $expected
+    }
+    It "prefers the git last-commit date over the filesystem mtime for a tracked file" {
+        $repo = Join-Path $TestDrive "gitdate-repo"
+        New-Item -ItemType Directory -Path $repo -Force | Out-Null
+        Push-Location $repo
+        try {
+            & git init --quiet
+            & git config user.email "t@e.com"; & git config user.name "T"
+            & git config commit.gpgsign false
+            Set-Content -LiteralPath (Join-Path $repo "notes.md") -Value "hi"
+            & git add notes.md
+            $env:GIT_COMMITTER_DATE = "2024-03-04T10:00:00"
+            try { & git commit --quiet --date "2024-03-04T10:00:00" -m "add notes" }
+            finally { Remove-Item Env:\GIT_COMMITTER_DATE }
+            # Reset the filesystem mtime to a different day to prove git wins.
+            (Get-Item -LiteralPath (Join-Path $repo "notes.md")).LastWriteTimeUtc = [datetime]::Parse("2025-09-09T00:00:00Z")
+        }
+        finally { Pop-Location }
+        Get-SourceDate -Path (Join-Path $repo "notes.md") | Should -Be "2024-03-04"
+    }
+}
+
+Describe "Get-GitDate" {
+    It "returns the most-recent commit date for a tracked file" {
+        $repo = Join-Path $TestDrive "gd-repo"
+        New-Item -ItemType Directory -Path $repo -Force | Out-Null
+        Push-Location $repo
+        try {
+            & git init --quiet
+            & git config user.email "t@e.com"; & git config user.name "T"
+            & git config commit.gpgsign false
+            Set-Content -LiteralPath (Join-Path $repo "f.md") -Value "x"
+            & git add f.md
+            $env:GIT_COMMITTER_DATE = "2023-07-08T12:00:00"
+            try { & git commit --quiet --date "2023-07-08T12:00:00" -m "c" }
+            finally { Remove-Item Env:\GIT_COMMITTER_DATE }
+        }
+        finally { Pop-Location }
+        Get-GitDate -Path (Join-Path $repo "f.md") | Should -Be "2023-07-08"
+    }
+    It "returns empty for an untracked file" {
+        $p = Join-Path $TestDrive "untracked.md"
+        Set-Content -LiteralPath $p -Value "x"
+        Get-GitDate -Path $p | Should -Be ""
+    }
+}
+
 Describe "Get-ShortHash" {
     It "returns 8 hex chars" {
         $h = Get-ShortHash -Text "hello"
@@ -153,7 +211,7 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
     It "with -Confirm:false, moves files via git mv (history preserved)" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
         $records.Count | Should -BeGreaterOrEqual 3
-        Test-Path (Join-Path $script:repo "tasks/alpha-plan.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "tasks/beta-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "tasks/legacy-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeFalse
@@ -169,11 +227,33 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
         $manifest = Get-Content -LiteralPath $manifestPath -Raw
         $manifest | Should -Match "# tasks/ Migration Manifest"
         $manifest | Should -Match "alpha-plan.md"
+        $manifest | Should -Match "Source Date"
+        $manifest | Should -Match "2026-05-12"
+    }
+
+    It "preserves the YYYY-MM-DD date prefix on the destination name" {
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false
+        $alpha = $records | Where-Object { $_.Destination -match "alpha-plan" }
+        $alpha.Destination | Should -Be "tasks/2026-05-12-alpha-plan.md"
+    }
+
+    It "with -InsertDatePrefix, synthesizes a date prefix for an undated source from its git commit date" {
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsPrd -IncludeRootDocs -InsertDatePrefix -Confirm:$false
+        $beta = $records | Where-Object { $_.Destination -match "beta-prd" }
+        $beta.Destination | Should -Match "^tasks/\d{4}-\d{2}-\d{2}-beta-prd\.md$"
+        $legacy = $records | Where-Object { $_.Destination -match "legacy-prd" }
+        $legacy.Destination | Should -Match "^tasks/\d{4}-\d{2}-\d{2}-legacy-prd\.md$"
+    }
+
+    It "with -InsertDatePrefix, an embedded date in the source name still wins" {
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -InsertDatePrefix -Confirm:$false
+        $alpha = $records | Where-Object { $_.Destination -match "alpha-plan" }
+        $alpha.Destination | Should -Be "tasks/2026-05-12-alpha-plan.md"
     }
 
     It "normalizes docs/designs date prefixes and docs/prd suffix conventions" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
-        $records.Destination -join "`n" | Should -Match "tasks/alpha-plan.md"
+        $records.Destination -join "`n" | Should -Match "tasks/2026-05-12-alpha-plan.md"
         $records.Destination -join "`n" | Should -Match "tasks/beta-prd.md"
         $records.Destination -join "`n" | Should -Match "tasks/legacy-prd.md"
     }
@@ -187,7 +267,7 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
     It "is idempotent: a second run with identical source content reports skip" {
         Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/designs") -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $script:repo "tasks/alpha-plan.md") -Destination (Join-Path $script:repo "docs/designs/alpha-plan.md")
+        Copy-Item -LiteralPath (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") -Destination (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md")
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false
         $skips = $records | Where-Object { $_.Action -eq "skip" }
         @($skips).Count | Should -BeGreaterOrEqual 1
@@ -196,9 +276,9 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
     It "appends a sha1 suffix when destination exists with different content" {
         Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/designs") -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $script:repo "docs/designs/alpha-plan.md") -Value "DIFFERENT-CONTENT"
+        Set-Content -LiteralPath (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") -Value "DIFFERENT-CONTENT"
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false
-        ($records | Where-Object { $_.Destination -match "alpha-plan-[0-9a-f]{8}\.md" }).Count | Should -BeGreaterOrEqual 1
+        ($records | Where-Object { $_.Destination -match "2026-05-12-alpha-plan-[0-9a-f]{8}\.md" }).Count | Should -BeGreaterOrEqual 1
     }
 }
 
@@ -231,6 +311,12 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
         Test-Path (Join-Path $script:repo "tasks/session-abcdef12-plan.md") | Should -BeTrue
     }
 
+    It "with -InsertDatePrefix, date-prefixes an undated session plan from its mtime" {
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -InsertDatePrefix -Confirm:$false
+        @($records).Count | Should -Be 1
+        $records[0].Destination | Should -Match "[/\\]\d{4}-\d{2}-\d{2}-session-abcdef12-plan\.md$"
+    }
+
     It "leaves the original session plan in place (copy not move)" {
         Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -Confirm:$false | Out-Null
         Test-Path (Join-Path $script:matchDir "plan.md") | Should -BeTrue
@@ -258,16 +344,27 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
 Describe "Write-MigrationManifest" {
     It "writes a well-formed markdown table" {
         $records = @(
-            (New-MigrationRecord -Source "docs/designs/foo.md" -Destination "tasks/foo-plan.md" -Action "move" -SourceType "docs/designs" -LinkedIssues @(1, 2)),
-            (New-MigrationRecord -Source "~/.copilot/x/plan.md" -Destination "tasks/session-x-plan.md" -Action "copy" -SourceType "copilot-session")
+            (New-MigrationRecord -Source "docs/designs/foo.md" -Destination "tasks/foo-plan.md" -Action "move" -SourceType "docs/designs" -SourceDate "2024-01-01" -LinkedIssues @(1, 2)),
+            (New-MigrationRecord -Source "~/.copilot/x/plan.md" -Destination "tasks/session-x-plan.md" -Action "copy" -SourceType "copilot-session" -SourceDate "2024-02-02")
         )
         $path = Join-Path $TestDrive "MIGRATION.md"
         Write-MigrationManifest -Path $path -Records $records
         $text = Get-Content -LiteralPath $path -Raw
         $text | Should -Match "# tasks/ Migration Manifest"
         $text | Should -Match "Timestamp \(UTC\)"
+        $text | Should -Match "Source Date"
         $text | Should -Match "#1 #2"
         $text | Should -Match "foo-plan.md"
         $text | Should -Match "session-x-plan.md"
+    }
+    It "orders rows chronologically by source date" {
+        $records = @(
+            (New-MigrationRecord -Source "b.md" -Destination "tasks/b-plan.md" -Action "move" -SourceType "docs/designs" -SourceDate "2025-12-31"),
+            (New-MigrationRecord -Source "a.md" -Destination "tasks/a-plan.md" -Action "move" -SourceType "docs/designs" -SourceDate "2024-01-01")
+        )
+        $path = Join-Path $TestDrive "MIGRATION-order.md"
+        Write-MigrationManifest -Path $path -Records $records
+        $text = Get-Content -LiteralPath $path -Raw
+        $text.IndexOf("a-plan.md") | Should -BeLessThan $text.IndexOf("b-plan.md")
     }
 }
