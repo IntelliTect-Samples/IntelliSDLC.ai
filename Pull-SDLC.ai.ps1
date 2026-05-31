@@ -329,6 +329,131 @@ function Test-IsUpstreamRepo {
     return $RemoteUrl -match 'IntelliSDLC\.ai(\.git)?/?$'
 }
 
+function ConvertTo-GitHubRepoSlug {
+    <#
+    .SYNOPSIS
+        Parses a git remote URL and returns the GitHub <owner>/<repo> slug.
+
+    .DESCRIPTION
+        Accepts the URL forms git remote get-url normally emits:
+          https://github.com/Owner/Repo.git
+          https://github.com/Owner/Repo
+          git@github.com:Owner/Repo.git
+          ssh://git@github.com/Owner/Repo.git
+          git@ssh.github.com:Owner/Repo.git
+        Returns the canonical "Owner/Repo" string (no .git suffix). Returns
+        $null for empty input or URLs that are not GitHub.
+
+        Used to pass --repo explicitly to gh so it does not depend on
+        `gh repo set-default`, which is unset on fresh consumer clones with
+        multiple remotes (origin + sdlc.ai).
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$RemoteUrl)
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) { return $null }
+    $u = $RemoteUrl.Trim()
+    # Normalize SSH forms (with or without the ssh:// prefix and with or
+    # without an ssh.* host alias) and HTTPS forms into a single regex match
+    # on the trailing "<owner>/<repo>" pair.
+    $patterns = @(
+        '^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$',
+        '^ssh://git@(?:[^/]*\.)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$',
+        '^git@(?:[^:]*\.)?github\.com:([^/]+)/([^/]+?)(?:\.git)?/?$'
+    )
+    foreach ($p in $patterns) {
+        $m = [regex]::Match($u, $p, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($m.Success) { return "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+    }
+    return $null
+}
+
+function Test-LsRemoteOutputHasExactBranch {
+    <#
+    .SYNOPSIS
+        Returns $true iff the given `git ls-remote` output contains an exact
+        match for refs/heads/<BranchName>.
+
+    .DESCRIPTION
+        `git ls-remote --heads <remote> <pattern>` matches <pattern> as a
+        shell-style glob against the tail of each ref. That means passing
+        a bare name like "main" can spuriously match "refs/heads/release/main"
+        (or "refs/heads/main-old", depending on glob behavior across git
+        versions), bypassing the missing-base-branch guard in
+        Invoke-AutoWorktreeSync.
+
+        Callers should pass `refs/heads/<BranchName>` to ls-remote (which
+        avoids the tail glob entirely) AND verify the captured output via
+        this helper so the check stays exact even if upstream git changes
+        its globbing rules.
+
+        Accepts the raw multi-line ls-remote output (string or string[]).
+        Each ls-remote line is "<sha>\t<refname>". Trailing whitespace and
+        empty lines are ignored.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [string]$LsRemoteOutput,
+        [Parameter(Mandatory)][string]$BranchName
+    )
+    if ([string]::IsNullOrWhiteSpace($LsRemoteOutput)) { return $false }
+    $target = "refs/heads/$BranchName"
+    foreach ($line in ($LsRemoteOutput -split "`r?`n")) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed) { continue }
+        # Format: "<sha>\t<refname>"; split on TAB. Use -ceq because git ref
+        # names are case-sensitive but PowerShell's -eq is case-insensitive
+        # by default, which would treat refs/heads/Main as a match for "main".
+        $parts = $trimmed -split "`t", 2
+        if ($parts.Count -eq 2 -and $parts[1].Trim() -ceq $target) { return $true }
+    }
+    return $false
+}
+
+function Resolve-OpenSyncPRAction {
+    <#
+    .SYNOPSIS
+        Decides whether (and how) Invoke-AutoWorktreeSync should call gh to open the sync PR.
+
+    .DESCRIPTION
+        Pure decision helper extracted from Invoke-AutoWorktreeSync so the
+        two failure modes that originally broke `gh pr create` on consumer
+        repos are unit-testable without mocking git or gh:
+
+          1. origin lacks the protected base branch entirely (first-time
+             consumer clones that never `git push -u origin main`) ->
+             return Action='Skip' with a remediation Reason.
+          2. origin URL parses to a GitHub owner/repo slug -> return
+             GhRepoArgs=@('--repo', '<slug>') so gh does not depend on
+             `gh repo set-default` (often unset with two remotes).
+
+        Returns a hashtable: @{ Action='Skip'|'Proceed'; Reason=<string>; GhRepoArgs=<string[]> }.
+    #>
+    [CmdletBinding()]
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)][bool]$RemoteHasProtectedBranch,
+        [Parameter(Mandatory)][string]$ProtectedBranch,
+        [string]$OriginUrl
+    )
+    if (-not $RemoteHasProtectedBranch) {
+        return @{
+            Action     = 'Skip'
+            Reason     = "origin has no '$ProtectedBranch' branch yet; push it first: git push -u origin $ProtectedBranch"
+            GhRepoArgs = @()
+        }
+    }
+    $slug = ConvertTo-GitHubRepoSlug -RemoteUrl $OriginUrl
+    $args = @()
+    if ($slug) { $args = @('--repo', $slug) }
+    return @{
+        Action     = 'Proceed'
+        Reason     = $null
+        GhRepoArgs = $args
+    }
+}
+
 function Invoke-TemplateScaffold {
     [CmdletBinding()]
     param(
@@ -1163,8 +1288,40 @@ function Invoke-AutoWorktreeSync {
             return 0
         }
 
+        # Decide whether to call gh, and with what --repo args, via the
+        # pure helper Resolve-OpenSyncPRAction (unit-tested separately).
+        # Handles two failure modes that originally broke `gh pr create` on
+        # consumer repos:
+        #   (1) origin lacks the protected base branch entirely -> Skip
+        #       with a remediation, instead of letting gh return the cryptic
+        #       "Base ref must be a branch" error.
+        #   (2) When the origin URL parses to a GitHub owner/repo slug,
+        #       pass it as --repo so gh does not depend on
+        #       `gh repo set-default` (frequently unset on consumer clones
+        #       with two GitHub remotes, which yielded blank head/base
+        #       shas). If the URL is not a GitHub URL or is unparseable,
+        #       Resolve-OpenSyncPRAction returns empty GhRepoArgs and we
+        #       fall back to gh's own default-repo behavior.
+        # Pass the fully-qualified ref to ls-remote so the pattern is matched
+        # exactly (a bare branch name like "main" is treated as a shell glob
+        # by ls-remote and can spuriously match e.g. "refs/heads/release/main"),
+        # then verify the output contains the exact ref via the unit-tested
+        # helper Test-LsRemoteOutputHasExactBranch.
+        $lsRemoteOut = (git ls-remote --heads origin "refs/heads/$ProtectedBranch" 2>$null | Out-String)
+        $hasProtected = Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $lsRemoteOut -BranchName $ProtectedBranch
+        $originUrlForGh = (git remote get-url origin 2>$null)
+        $prPlan = Resolve-OpenSyncPRAction `
+            -RemoteHasProtectedBranch $hasProtected `
+            -ProtectedBranch $ProtectedBranch `
+            -OriginUrl $originUrlForGh
+        if ($prPlan.Action -eq 'Skip') {
+            Write-Host "Cannot open PR: $($prPlan.Reason)" -ForegroundColor Yellow
+            return 0
+        }
+        $ghRepoArgs = $prPlan.GhRepoArgs
+
         # Is there already an open PR for this branch?
-        $existingPr = gh pr list --head $SyncBranch --base $ProtectedBranch --state open --json url 2>$null | ConvertFrom-Json
+        $existingPr = gh @ghRepoArgs pr list --head $SyncBranch --base $ProtectedBranch --state open --json url 2>$null | ConvertFrom-Json
         if ($existingPr -and $existingPr.Count -gt 0) {
             Write-Host "Existing PR updated: $($existingPr[0].url)" -ForegroundColor Green
             return 0
@@ -1176,7 +1333,7 @@ function Invoke-AutoWorktreeSync {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($bodyFile, $bodyText, $utf8NoBom)
         try {
-            $prUrl = gh pr create --base $ProtectedBranch --head $SyncBranch --title $title --body-file $bodyFile 2>&1 | Select-Object -Last 1
+            $prUrl = gh @ghRepoArgs pr create --base $ProtectedBranch --head $SyncBranch --title $title --body-file $bodyFile 2>&1 | Select-Object -Last 1
             if ($LASTEXITCODE -eq 0 -and $prUrl) {
                 Write-Host "Opened PR: $prUrl" -ForegroundColor Green
             } else {
