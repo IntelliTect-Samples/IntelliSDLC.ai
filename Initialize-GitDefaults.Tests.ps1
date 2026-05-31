@@ -369,6 +369,10 @@ Describe 'Copilot review #161 round 4: -Refresh implementation' {
             New-Item -ItemType Directory -Path $script:r4Repo | Out-Null
             & git -C $script:r4Repo init --quiet 2>&1 | Out-Null
             Push-Location $script:r4Repo
+            # Use a synthetic per-test ref so the mocked Invoke-WebRequest
+            # responses never pollute the real cache for production pinned
+            # SHAs. Copilot review #161 round 6.
+            $script:r4Ref = 'r4-' + [System.Guid]::NewGuid().ToString('N').Substring(0,12)
             $script:fetchedUrls = [System.Collections.Generic.List[string]]::new()
             Mock -CommandName 'Invoke-WebRequest' -MockWith {
                 $script:fetchedUrls.Add($Uri)
@@ -381,10 +385,18 @@ Describe 'Copilot review #161 round 4: -Refresh implementation' {
         AfterEach {
             Pop-Location
             Remove-Item -Recurse -Force $script:r4Repo -ErrorAction SilentlyContinue
+            if ($script:r4Ref) {
+                $a = Join-Path (Get-GitDefaultsCacheRoot) "alexkaratarakis/gitattributes/$script:r4Ref"
+                $b = Join-Path (Get-GitDefaultsCacheRoot) "github/gitignore/$script:r4Ref"
+                Remove-Item -Recurse -Force $a -ErrorAction SilentlyContinue
+                Remove-Item -Recurse -Force $b -ErrorAction SilentlyContinue
+            }
+            $custom = Join-Path (Get-GitDefaultsCacheRoot) 'alexkaratarakis/gitattributes/cafebabe1234567890abcdef0987654321fedcba'
+            Remove-Item -Recurse -Force $custom -ErrorAction SilentlyContinue
         }
 
         It '-Refresh fetches every required template from raw.githubusercontent.com' {
-            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:r4Ref -GitignoreRef $script:r4Ref
             Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*alexkaratarakis/gitattributes*Common.gitattributes' }
             Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*alexkaratarakis/gitattributes*CSharp.gitattributes' }
             Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter { $Uri -like '*github/gitignore*VisualStudio.gitignore' }
@@ -392,7 +404,7 @@ Describe 'Copilot review #161 round 4: -Refresh implementation' {
         }
 
         It 'composes generated files from the fetched sentinel content (-Refresh writes through)' {
-            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:r4Ref -GitignoreRef $script:r4Ref
             (Get-Content '.gitattributes' -Raw) | Should -Match 'SENTINEL FOR Common.gitattributes'
             (Get-Content '.gitattributes' -Raw) | Should -Match 'SENTINEL FOR CSharp.gitattributes'
             (Get-Content '.gitignore'     -Raw) | Should -Match 'SENTINEL FOR VisualStudio.gitignore'
@@ -400,7 +412,7 @@ Describe 'Copilot review #161 round 4: -Refresh implementation' {
         }
 
         It 'header records "fetched from upstream" when -Refresh is used' {
-            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:r4Ref -GitignoreRef $script:r4Ref
             (Get-Content '.gitattributes' -Raw) | Should -Match 'Source mode: fetched from upstream'
             (Get-Content '.gitignore'     -Raw) | Should -Match 'Source mode: fetched from upstream'
         }
@@ -412,7 +424,7 @@ Describe 'Copilot review #161 round 4: -Refresh implementation' {
         }
 
         It 'overriding -GitattributesRef changes the URL the fetcher hits' {
-            Initialize-GitDefaults -Language 'CSharp' -GitattributesRef 'cafebabe1234567890abcdef0987654321fedcba' -Refresh -Force
+            Initialize-GitDefaults -Language 'CSharp' -GitattributesRef 'cafebabe1234567890abcdef0987654321fedcba' -GitignoreRef $script:r4Ref -Refresh -Force
             Assert-MockCalled -CommandName 'Invoke-WebRequest' -Scope It -Times 1 -ParameterFilter {
                 $Uri -like '*alexkaratarakis/gitattributes/cafebabe1234567890abcdef0987654321fedcba/*'
             }
@@ -561,6 +573,57 @@ Describe 'Copilot review #161 round 5: atomicity + -WhatIf cache safety' {
             Test-Path $b | Should -BeFalse
             Test-Path '.gitattributes' | Should -BeFalse
             Test-Path '.gitignore'     | Should -BeFalse
+        }
+    }
+}
+
+Describe 'Copilot review #161 round 6: hardening' {
+    Context 'CSharp detection includes modern .slnx solution files' {
+        It 'detects CSharp when only a .slnx file exists' {
+            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("slnx-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $tmp | Out-Null
+            Set-Content -Path (Join-Path $tmp 'MyApp.slnx') -Value '<Solution />' -NoNewline
+            try {
+                $detected = Get-GitDefaultsDetectedLanguages -Path $tmp
+                $detected | Should -Contain 'CSharp'
+            } finally {
+                Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Context 'Refresh: cache-write failure warns but returns fetched content' {
+        BeforeEach {
+            $script:r6Repo = Join-Path ([System.IO.Path]::GetTempPath()) ("r6-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $script:r6Repo | Out-Null
+            & git -C $script:r6Repo init --quiet 2>&1 | Out-Null
+            Push-Location $script:r6Repo
+            $script:r6Ref = 'r6-' + [System.Guid]::NewGuid().ToString('N').Substring(0,12)
+            Mock -CommandName 'Invoke-WebRequest' -MockWith {
+                $name = Split-Path $Uri -Leaf
+                return [PSCustomObject]@{ Content = "# FRESH $name`n" }
+            }
+            # Force cache writes to throw by mocking the dir creation helper
+            # the function uses on first miss. Easiest: mock New-Item to throw
+            # when the path is under the cache root.
+            $script:cacheRoot = Get-GitDefaultsCacheRoot
+            Mock -CommandName 'New-Item' -ParameterFilter {
+                $Path -and ([string]$Path).StartsWith($script:cacheRoot)
+            } -MockWith { throw 'simulated unwritable cache' }
+        }
+        AfterEach {
+            Pop-Location
+            Remove-Item -Recurse -Force $script:r6Repo -ErrorAction SilentlyContinue
+            $a = Join-Path $script:cacheRoot "alexkaratarakis/gitattributes/$script:r6Ref"
+            $b = Join-Path $script:cacheRoot "github/gitignore/$script:r6Ref"
+            Remove-Item -Recurse -Force $a -ErrorAction SilentlyContinue
+            Remove-Item -Recurse -Force $b -ErrorAction SilentlyContinue
+        }
+
+        It 'returns the freshly fetched content even when the cache cannot be updated' {
+            Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -GitattributesRef $script:r6Ref -GitignoreRef $script:r6Ref -WarningAction SilentlyContinue
+            (Get-Content '.gitattributes' -Raw) | Should -Match 'FRESH Common.gitattributes'
+            (Get-Content '.gitignore'     -Raw) | Should -Match 'FRESH VisualStudio.gitignore'
         }
     }
 }

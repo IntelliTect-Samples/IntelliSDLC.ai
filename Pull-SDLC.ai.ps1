@@ -1621,12 +1621,21 @@ function Invoke-PullSDLC {
 
     Push-Location $RepoRoot
     try {
-        # Only include pathspecs that actually exist in the working tree --
-        # `git add` aborts the entire operation on a missing pathspec. We add
-        # both upstream-managed paths and any merge-managed file we touched.
+        # Only include pathspecs that exist in the working tree OR are
+        # tracked in the index. `git add -A -- <path>` correctly stages
+        # deletions for tracked-but-now-missing paths (the tombstone
+        # migration relies on this), but aborts on a pathspec that has
+        # never been tracked and is also missing. Copilot review #161
+        # round 6.
         $addPaths = @()
         foreach ($p in @($script:UpstreamManagedPaths + $script:SdlcSyncStateFile + $mergedPaths.ToArray())) {
-            if (Test-Path -LiteralPath $p) { $addPaths += $p }
+            if (Test-Path -LiteralPath $p) {
+                $addPaths += $p
+                continue
+            }
+            # Tracked-but-deleted: stage the deletion.
+            & git ls-files --error-unmatch -- $p *>$null
+            if ($LASTEXITCODE -eq 0) { $addPaths += $p }
         }
         if ($addPaths.Count -gt 0) {
             $addArgs = @('add', '-A', '--') + $addPaths

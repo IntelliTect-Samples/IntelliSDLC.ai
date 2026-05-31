@@ -2243,3 +2243,44 @@ Describe 'Write-GitDefaultsHint (issue #160)' {
         $out.Trim() | Should -BeNullOrEmpty
     }
 }
+
+Describe 'Tombstone deletion staging (issue #160, Copilot review #161 round 6)' {
+    BeforeEach {
+        $script:tombRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("tomb-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:tombRepo | Out-Null
+        & git -C $script:tombRepo init --quiet 2>&1 | Out-Null
+        & git -C $script:tombRepo config user.email 'test@example.com'
+        & git -C $script:tombRepo config user.name  'Test'
+        Set-Content -Path (Join-Path $script:tombRepo '.gitattributes.template') -Value "# legacy template`n" -NoNewline
+        & git -C $script:tombRepo add '.gitattributes.template' | Out-Null
+        & git -C $script:tombRepo commit -q -m 'seed legacy template' | Out-Null
+        # Simulate what Apply-UpstreamOp does for a D op: remove from
+        # the working tree.
+        Remove-Item -LiteralPath (Join-Path $script:tombRepo '.gitattributes.template') -Force
+    }
+    AfterEach {
+        Remove-Item -Recurse -Force $script:tombRepo -ErrorAction SilentlyContinue
+    }
+
+    It 'stages a tracked-but-deleted tombstone path so the sync commit contains the deletion' {
+        Push-Location $script:tombRepo
+        try {
+            $p = '.gitattributes.template'
+            # Replicate the production staging logic exactly:
+            $addPaths = @()
+            if (Test-Path -LiteralPath $p) {
+                $addPaths += $p
+            } else {
+                & git ls-files --error-unmatch -- $p *>$null
+                if ($LASTEXITCODE -eq 0) { $addPaths += $p }
+            }
+            $addPaths | Should -Contain $p
+            $addArgs = @('add', '-A', '--') + $addPaths
+            & git @addArgs | Out-Null
+            # Now `git status --porcelain` must show the deletion as STAGED
+            # (uppercase D in the first column).
+            $status = & git status --porcelain
+            ($status -join "`n") | Should -Match '^D\s+\.gitattributes\.template'
+        } finally { Pop-Location }
+    }
+}

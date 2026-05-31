@@ -244,28 +244,34 @@ function Get-GitDefaultsRefreshedContent {
     $url = "https://raw.githubusercontent.com/$Repo/$Ref/$FileName"
     try {
         $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -ErrorAction Stop
-        $content = if ($resp.Content -is [byte[]]) {
-            [System.Text.Encoding]::UTF8.GetString($resp.Content)
-        } else {
-            [string]$resp.Content
-        }
-        # Respect -WhatIf: do not mutate the on-disk cache during a dry
-        # run. The fetched content is still returned so the caller can
-        # compose the "would-write" preview. Copilot review #161 round 5.
-        if ($PSCmdlet.ShouldProcess($cachePath, "Cache fetched template")) {
-            if (-not (Test-Path -LiteralPath $cacheParent)) {
-                New-Item -ItemType Directory -Force -Path $cacheParent | Out-Null
-            }
-            [System.IO.File]::WriteAllText($cachePath, $content, [System.Text.UTF8Encoding]::new($false))
-        }
-        return $content
     } catch {
+        # Fetch failed -- fall back to a previously-cached copy if any.
         if (Test-Path -LiteralPath $cachePath) {
             Write-Warning "Refresh fetch failed ($($_.Exception.Message)); using cached copy at $cachePath."
             return (Get-Content -LiteralPath $cachePath -Raw)
         }
         throw "Refresh of '$FileName' from $url failed and no cached copy exists at $cachePath. Original error: $($_.Exception.Message)"
     }
+    $content = if ($resp.Content -is [byte[]]) {
+        [System.Text.Encoding]::UTF8.GetString($resp.Content)
+    } else {
+        [string]$resp.Content
+    }
+    # The fetch succeeded -- always return the fresh content even if we
+    # cannot persist it. Cache update failures must NOT discard a good
+    # download or be silently replaced with a stale cached copy. Copilot
+    # review #161 round 6.
+    if ($PSCmdlet.ShouldProcess($cachePath, "Cache fetched template")) {
+        try {
+            if (-not (Test-Path -LiteralPath $cacheParent)) {
+                New-Item -ItemType Directory -Force -Path $cacheParent -ErrorAction Stop | Out-Null
+            }
+            [System.IO.File]::WriteAllText($cachePath, $content, [System.Text.UTF8Encoding]::new($false))
+        } catch {
+            Write-Warning "Refresh fetched '$FileName' but failed to update the cache at $cachePath ($($_.Exception.Message)); returning the freshly fetched content."
+        }
+    }
+    return $content
 }
 
 function Get-GitDefaultsTemplateContent {
@@ -304,6 +310,8 @@ function New-GitDefaultsHeader {
         [Parameter(Mandatory)] [ValidateSet('gitattributes','gitignore')] [string] $Kind,
         [Parameter(Mandatory)] [string[]] $Language,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $UpstreamSections,
+        [string] $GitattributesRef = $script:DefaultGitattributesRef,
+        [string] $GitignoreRef     = $script:DefaultGitignoreRef,
         [string] $GibootstrapNote,
         [ValidateSet('bundled','fetched')] [string] $SourceMode = 'bundled'
     )
@@ -385,7 +393,7 @@ function New-GitAttributesContent {
         }
     }
 
-    $header = New-GitDefaultsHeader -Kind 'gitattributes' -Language $expanded -UpstreamSections $upstreamSections -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
+    $header = New-GitDefaultsHeader -Kind 'gitattributes' -Language $expanded -UpstreamSections $upstreamSections -GitattributesRef $GitattributesRef -GitignoreRef $GitignoreRef -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
 
     $body = [System.Collections.Generic.List[string]]::new()
     [void]$body.Add($header)
@@ -440,7 +448,7 @@ function New-GitIgnoreContent {
         [void]$upstreamSections.Add('Global/Backup')
     }
 
-    $header = New-GitDefaultsHeader -Kind 'gitignore' -Language $expanded -UpstreamSections $upstreamSections -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
+    $header = New-GitDefaultsHeader -Kind 'gitignore' -Language $expanded -UpstreamSections $upstreamSections -GitattributesRef $GitattributesRef -GitignoreRef $GitignoreRef -SourceMode $(if ($Refresh) { 'fetched' } else { 'bundled' })
 
     $body = [System.Collections.Generic.List[string]]::new()
     [void]$body.Add($header)
@@ -561,7 +569,7 @@ function Get-GitDefaultsDetectedLanguages {
     param([string] $Path = (Get-Location).Path)
 
     $detected = [System.Collections.Generic.HashSet[string]]::new()
-    $hasCsproj   = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.csproj','*.sln' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+    $hasCsproj   = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.csproj','*.sln','*.slnx' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
     $hasPs       = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.ps1','*.psm1','*.psd1' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
     $hasTs       = @(Get-ChildItem -Path $Path -Recurse -File -Include 'tsconfig.json','package.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
     $hasAppSets  = @(Get-ChildItem -Path $Path -Recurse -File -Filter 'appsettings*.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
