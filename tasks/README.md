@@ -11,15 +11,22 @@ session and the project can be reconstructed from these files alone.
 
 ## Filename Convention
 
-One feature per slug. Each slug matches its branch name
-(`feat/<issue#>-<feature>`), so the PRD, plan, GitHub issue, branch, and PR
-all share an identifier.
+One feature per `<issue#>-<slug>` identifier, shared by the PRD, plan, GitHub
+issue, branch (`feat/<issue#>-<slug>`), and PR:
+
+- `<issue#>` -- the GitHub issue number; the leading token is identical to the
+  branch name, so `tasks/` sorts naturally by issue number.
+- `<slug>` -- a short kebab-case description.
 
 | File                          | Written by               | Purpose                                              |
 |-------------------------------|--------------------------|------------------------------------------------------|
-| `<feature>-prd.md`            | `@prd` agent             | Product requirements: user stories, acceptance criteria, metrics. |
-| `<feature>-plan.md`           | `@dev-loop` Phase 2      | Implementation plan: ordered tasks with file paths, code snippets, commit messages. |
+| `<issue#>-<slug>-prd.md`      | `@prd` agent             | Product requirements: user stories, acceptance criteria, metrics. |
+| `<issue#>-<slug>-plan.md`     | `@dev-loop` Phase 2      | Implementation plan: ordered tasks with file paths, code snippets, commit messages. |
 | `MIGRATION.md`                | `Consolidate-Tasks.ps1`  | Audit trail of files imported from legacy locations. |
+
+A PRD spike filed before an issue exists may use the bare `<slug>-prd.md` and
+get renamed to add the `<issue#>-` prefix once the issue is created. Legacy
+files predating this convention may also appear as a bare `<slug>-{prd,plan}.md`.
 
 ## Cross-Referencing
 
@@ -31,11 +38,11 @@ top-of-file header:
 
 - Issue: https://github.com/<owner>/<repo>/issues/<n>
 - PR:    https://github.com/<owner>/<repo>/pull/<m>
-- Slug:  <feature>
+- Slug:  <issue#>-<slug>
 ```
 
 When a PRD or plan references stories or tasks by identifier, prefer the
-GitHub issue number once it exists; use a local `<feature>-NN` form only
+GitHub issue number once it exists; use a local `<issue#>-<slug>-NN` form only
 until the issues are filed.
 
 ## Sync Immunity
@@ -49,8 +56,8 @@ so its contents are **never** touched by upstream sync. Edit freely; the next
 The repo-root script `Consolidate-Tasks.ps1` imports historical spec
 artifacts into this directory:
 
-- `docs/designs/*.md`  -> moved (`git mv`) and renamed to `<feature>-plan.md`
-- `docs/prd/*.md`      -> moved (`git mv`) and renamed to `<feature>-prd.md`
+- `docs/designs/*.md`  -> moved (`git mv`) and renamed to `<slug>-plan.md`
+- `docs/prd/*.md`      -> moved (`git mv`) and renamed to `<slug>-prd.md`
 - Root `PRD.md`, `plan.md`, `IMPLEMENTATION_PLAN.md` -> moved
 - `~/.copilot/session-state/*/plan.md` -> copied (repo-scoped via the session-store DB), default ON
 - `~/.claude/...` session notes -> copied, opt-in (`-IncludeClaudeSessions`)

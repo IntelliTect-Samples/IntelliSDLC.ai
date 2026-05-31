@@ -35,13 +35,13 @@ MUST present it and get approval.
 
 You MUST complete these steps in order:
 
-1. **Explore project context** — check files, docs, recent commits; **scan `tasks/`** for prior PRDs or plans on the same feature slug (`tasks/<feature>-prd.md`, `tasks/<feature>-plan.md`). If found, surface them and offer to refine the existing design rather than propose a brand-new one.
+1. **Explore project context** — check files, docs, recent commits; **scan `tasks/`** for prior PRDs or plans on the same feature (`tasks/<issue#>-<slug>-prd.md`, `tasks/<issue#>-<slug>-plan.md`; fall back to a glob `tasks/*-<slug>-*.md` when the issue number is unknown). If found, surface them and offer to refine the existing design rather than propose a brand-new one.
 2. **Ask clarifying questions** — one at a time, understand purpose/constraints/success criteria
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to complexity, get user approval after each section
 5. **Declare the Evidence Plan** — every plan must name the change type, the artifact format, the exact capture command, and the entry-point file the reviewer will open (see "Evidence Plan" below). The dev-loop's Phase 5b verifies the produced artifact matches this declaration.
 6. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output)
-7. **Save the plan to `tasks/<feature>-plan.md`** — durable, in-repo artifact mirroring the issue body. Format defined in **Saving the Plan to `tasks/`** below. This is the single authoritative spec for the `tasks/<feature>-plan.md` file -- `@dev-loop` Phase 2 *resumes / expands* this file, it does not redefine the format.
+7. **Save the plan to `tasks/<issue#>-<slug>-plan.md`** — durable, in-repo artifact mirroring the issue body. Format defined in **Saving the Plan to `tasks/`** below. This is the single authoritative spec for the `tasks/<issue#>-<slug>-plan.md` file -- `@dev-loop` Phase 2 *resumes / expands* this file, it does not redefine the format.
 8. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
 
 ## The Process
@@ -139,7 +139,7 @@ attestation markdown still serves as the entry-point file.
 
 ## Saving the Plan to `tasks/`
 
-**This section is the authoritative spec for `tasks/<feature>-plan.md`.**
+**This section is the authoritative spec for `tasks/<issue#>-<slug>-plan.md`.**
 `@dev-loop` Phase 2 references this section by name -- it does not redefine
 the file format.
 
@@ -150,9 +150,14 @@ and expands it.
 
 ### Path and Slug Convention
 
-- Path: `tasks/<feature>-plan.md` at the repo root.
-- `<feature>` = `<issue#>-<short-description>` matching the GitHub issue
-  number and the eventual feature branch name (`feat/<issue#>-<short-description>`).
+- Path: `tasks/<issue#>-<slug>-plan.md` at the repo root.
+- `<issue#>` = the GitHub issue number; `<slug>` = a short kebab-case
+  description. Together `<issue#>-<slug>` is the shared identifier carried by
+  the GitHub issue, the feature branch (`feat/<issue#>-<slug>`), and the PR.
+  Derive both from the current branch name.
+- Look up an existing plan by the exact `tasks/<issue#>-<slug>-plan.md` first,
+  then fall back to a glob `tasks/*-<slug>-plan.md`, then to a bare
+  `tasks/<slug>-plan.md` for legacy files predating the issue-number prefix.
 - Create the `tasks/` directory if it does not yet exist.
 - See `tasks/README.md` (consumer-owned) for the project's local
   conventions; do not contradict it.
@@ -164,7 +169,7 @@ and expands it.
 
 - Issue: https://github.com/<owner>/<repo>/issues/<n>
 - PR:    (filled in once the PR exists)
-- Slug:  <feature>
+- Slug:  <issue#>-<slug>
 
 ## Overview
 [1-2 sentence description -- mirrors the issue body]

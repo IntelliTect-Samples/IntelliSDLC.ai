@@ -162,7 +162,7 @@ Break the approved design into bite-sized tasks (2-5 minutes each). Each task in
 - Exact test commands with expected output
 - Commit message
 
-The file format, slug convention, and lifecycle for `tasks/<feature>-plan.md`
+The file format, slug convention, and lifecycle for `tasks/<issue#>-<slug>-plan.md`
 are defined authoritatively in **`plan.agent.md` § Saving the Plan to
 `tasks/`**. Do not duplicate that spec here.
 
@@ -172,17 +172,17 @@ updates the existing file in place** -- expand each skeleton checklist
 item into the bite-sized tasks described above. Treat unchecked items as
 the next tasks to execute.
 
-If `tasks/<feature-name>-prd.md` exists (written by `@prd`), ingest it as
+If `tasks/<issue#>-<slug>-prd.md` exists (written by `@prd`), ingest it as
 authoritative requirements input alongside the GitHub issue.
 
-If `tasks/<feature-name>-plan.md` does not exist (e.g., the issue was
+If `tasks/<issue#>-<slug>-plan.md` does not exist (e.g., the issue was
 filed manually, bypassing `@plan`), create it now using the format from
 `plan.agent.md` § Saving the Plan to `tasks/`.
 
 After expansion, get user approval and update the GitHub issue with the
 expanded task checklist.
 
-**Exit criteria:** Plan saved/updated in `tasks/<feature-name>-plan.md`,
+**Exit criteria:** Plan saved/updated in `tasks/<issue#>-<slug>-plan.md`,
 user approved, issue updated.
 
 ### Phase 3 -- TDD (Red -> Green)
