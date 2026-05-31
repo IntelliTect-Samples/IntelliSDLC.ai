@@ -88,20 +88,12 @@
     via the PULL_SDLC_NO_SELF_UPDATE environment variable. The re-exec path
     always passes this flag to prevent an infinite refresh loop.
 
-.PARAMETER SetupGitHubSsh
-    Run the GitHub-over-SSH-on-port-443 workstation setup and exit. Generates
-    an ed25519 keypair, ensures the Windows ssh-agent service is running and
-    set to Automatic startup, installs the three `url.insteadOf` rewrites that
-    transparently route GitHub HTTPS clones through SSH on port 443 (works
-    behind corporate firewalls that block port 22), sets `gh config
-    git_protocol ssh`, and uploads the public key to GitHub via `gh ssh-key
-    add`. Idempotent and safe to re-run; every step prints `[skip]` when
-    already configured. Windows only -- issue #164.
-
-.PARAMETER SkipKeyUpload
-    With `-SetupGitHubSsh`, do NOT call `gh ssh-key add`. Useful when the key
-    has already been registered out-of-band, or for unattended runs without
-    `gh auth`. All other setup steps still run.
+.PARAMETER SetupGit
+    Run repo-level git scaffolding and exit. Creates `.gitattributes` with a
+    minimal line-ending normalization baseline when missing, and union-merges
+    the upstream `.gitignore` into the consumer copy. Idempotent and safe to
+    re-run. Does NOT touch SSH keys, global git config, or `gh` config --
+    protocol choices stay with the user (issue #171).
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -116,8 +108,7 @@ param(
     [switch]$NoAutoWorktree,
     [switch]$NoAutoPR,
     [switch]$NoSelfUpdate,
-    [switch]$SetupGitHubSsh,
-    [switch]$SkipKeyUpload
+    [switch]$SetupGit
 )
 
 Set-StrictMode -Version Latest
@@ -1552,249 +1543,68 @@ function Test-IsCiEnvironment {
     return [bool]($env:CI -or $env:GITHUB_ACTIONS -or $env:TF_BUILD)
 }
 
-function Get-GitHubSshKeyPath {
+function Invoke-SetupGit {
     <#
     .SYNOPSIS
-        Returns the canonical path to the user's GitHub ed25519 private key.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param()
-    return (Join-Path $HOME '.ssh/id_ed25519')
-}
+        Repo-level git scaffolding (issue #171). Creates `.gitattributes`
+        with a minimal line-ending normalization baseline when missing, and
+        union-merges the upstream `.gitignore` into the consumer copy.
+    .DESCRIPTION
+        Idempotent. Every step prints `[skip]` when already configured and
+        `[add]` when it changed something. Does NOT touch SSH keys, the
+        `ssh-agent` service, machine-wide git settings, the `gh` CLI
+        configuration, or any URL rewrites -- protocol choices stay with
+        the user.
 
-function Test-GitHubSshAgentRunning {
-    <#
-    .SYNOPSIS
-        Returns $true when the Windows ssh-agent service is in the Running state.
+        `.gitignore` is union-merged via the same code path as the normal
+        sync (`Merge-FileFromUpstream`), which requires the upstream remote
+        to already exist (created by a prior sync run or by passing
+        `-Bootstrap`).
+    .PARAMETER RepoRoot
+        Repository root. Defaults to the current location.
+    .PARAMETER Ref
+        Upstream ref to merge `.gitignore` from. Defaults to
+        `<RemoteName>/<Branch>` from the outer script parameters.
     #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param()
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [string]$RepoRoot,
+        [string]$Ref
+    )
+
+    if (-not $RepoRoot) { $RepoRoot = (Get-Location).Path }
+    if (-not $Ref) { $Ref = "$RemoteName/$Branch" }
+
+    Write-Host 'Git scaffold setup:' -ForegroundColor Cyan
+
+    # 1. .gitattributes -- create with a minimal line-ending normalization
+    #    baseline when missing. Never overwrite an existing file.
+    $gaPath = Join-Path $RepoRoot '.gitattributes'
+    if (Test-Path -LiteralPath $gaPath) {
+        Write-Host "  [skip] .gitattributes already exists at $gaPath" -ForegroundColor DarkGray
+    }
+    else {
+        if ($PSCmdlet.ShouldProcess($gaPath, 'Create .gitattributes')) {
+            $content = "# Auto-normalize line endings on commit. Working-tree EOL is LF on every`n# platform; git converts to the OS native EOL on checkout per core.autocrlf.`n* text=auto eol=lf`n"
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            [System.IO.File]::WriteAllText($gaPath, $content, $utf8NoBom)
+            Write-Host "  [add]  Created .gitattributes at $gaPath" -ForegroundColor Green
+        }
+    }
+
+    # 2. .gitignore -- union-merge upstream entries into the consumer copy.
     try {
-        $svc = Get-Service -Name ssh-agent -ErrorAction Stop
-        return ($svc.Status -eq 'Running')
+        $merged = Merge-FileFromUpstream -Path '.gitignore' -Ref $Ref -RepoRoot $RepoRoot
+        if ($merged) {
+            Write-Host "  [add]  Union-merged upstream entries into .gitignore (ref: $Ref)" -ForegroundColor Green
+        }
+        else {
+            Write-Host "  [skip] .gitignore already in sync with upstream (ref: $Ref)" -ForegroundColor DarkGray
+        }
     }
     catch {
-        return $false
-    }
-}
-
-function Test-GhInstalled {
-    <#
-    .SYNOPSIS
-        Returns $true when the gh CLI is available on PATH.
-    #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param()
-    return [bool](Get-Command gh -ErrorAction SilentlyContinue)
-}
-
-function Get-GitConfigAllValues {
-    <#
-    .SYNOPSIS
-        Returns all values for a multi-valued global git config key. Empty
-        array when the key is unset. Wrapped as a helper so tests can mock it.
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param([Parameter(Mandatory)][string]$Key)
-    $vals = & git config --global --get-all $Key 2>$null
-    if ($null -eq $vals) { return @() }
-    return @($vals | ForEach-Object { "$_".Trim() } | Where-Object { $_ })
-}
-
-function Get-GhGitProtocol {
-    <#
-    .SYNOPSIS
-        Returns the value of `gh config get git_protocol`, or '' on failure.
-    #>
-    [CmdletBinding()]
-    [OutputType([string])]
-    param()
-    try {
-        $val = (& gh config get git_protocol 2>$null)
-        if ($null -eq $val) { return '' }
-        return "$val".Trim()
-    }
-    catch { return '' }
-}
-
-function Add-GitConfigValueIfMissing {
-    <#
-    .SYNOPSIS
-        Idempotently `git config --global --add $Key $Value` -- only adds when
-        the value is not already present. Returns $true when an add happened,
-        $false when the value already existed.
-    #>
-    [CmdletBinding(SupportsShouldProcess)]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory)][string]$Key,
-        [Parameter(Mandatory)][string]$Value
-    )
-    $current = @(Get-GitConfigAllValues -Key $Key)
-    if ($current -contains $Value) {
-        Write-Host "  [skip] $Key already contains '$Value'" -ForegroundColor DarkGray
-        return $false
-    }
-    if ($PSCmdlet.ShouldProcess("$Key += '$Value'", 'git config --global --add')) {
-        & git config --global --add $Key $Value
-        Write-Host "  [add]  $Key += '$Value'" -ForegroundColor Green
-    }
-    return $true
-}
-
-function Invoke-SetupGitHubSsh {
-    <#
-    .SYNOPSIS
-        Idempotently configures the local Windows workstation for
-        GitHub-over-SSH-on-443: ed25519 keypair, ssh-agent service,
-        three url.insteadOf rewrites, gh git_protocol = ssh, and (unless
-        -SkipKeyUpload) uploads the public key to GitHub via gh.
-
-        Safe to re-run. Every step prints `[skip]` when already configured
-        and `[add]` / `[del]` when it changed something. Removes the legacy
-        `url.git@ssh.github.com:.pushInsteadOf=https://github.com/` entry
-        if present (superseded by the symmetric insteadOf pair).
-
-        Non-admin shells cannot set ssh-agent startup to Automatic; the
-        function warns and continues. Linux/macOS hosts print a notice
-        and exit early (out of scope; issue #164).
-    .PARAMETER SkipKeyUpload
-        Do not call `gh ssh-key add`. Useful when the key is already
-        registered out-of-band, or for CI/test scenarios.
-    #>
-    [CmdletBinding(SupportsShouldProcess)]
-    param([switch]$SkipKeyUpload)
-
-    if (-not $IsWindows) {
-        Write-Host 'Invoke-SetupGitHubSsh: non-Windows host -- out of scope (issue #164). Skipping.' -ForegroundColor Yellow
-        return
-    }
-
-    Write-Host 'GitHub SSH-on-443 setup:' -ForegroundColor Cyan
-
-    # 1. SSH keypair
-    $keyPath = Get-GitHubSshKeyPath
-    if (Test-Path -LiteralPath $keyPath) {
-        Write-Host "  [skip] SSH keypair already exists at $keyPath" -ForegroundColor DarkGray
-    }
-    else {
-        $sshDir = Split-Path -Parent $keyPath
-        if (-not (Test-Path -LiteralPath $sshDir)) {
-            New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
-        }
-        if ($PSCmdlet.ShouldProcess($keyPath, 'ssh-keygen -t ed25519')) {
-            & ssh-keygen -t ed25519 -f $keyPath -N '' -C "$env:USERNAME@$env:COMPUTERNAME" -q
-            Write-Host "  [add]  Generated ed25519 keypair at $keyPath" -ForegroundColor Green
-        }
-    }
-
-    # 2. ssh-agent service
-    $svc = Get-Service -Name ssh-agent -ErrorAction SilentlyContinue
-    if (-not $svc) {
-        Write-Host '  [warn] ssh-agent service not found. Install the OpenSSH Client optional feature and re-run.' -ForegroundColor Yellow
-    }
-    else {
-        if ($svc.StartType -ne 'Automatic') {
-            try {
-                if ($PSCmdlet.ShouldProcess('ssh-agent', 'Set-Service -StartupType Automatic')) {
-                    Set-Service -Name ssh-agent -StartupType Automatic -ErrorAction Stop
-                    Write-Host '  [add]  Set ssh-agent startup to Automatic' -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Host '  [warn] Could not set ssh-agent startup to Automatic (requires admin shell). Continuing.' -ForegroundColor Yellow
-            }
-        }
-        else {
-            Write-Host '  [skip] ssh-agent startup already Automatic' -ForegroundColor DarkGray
-        }
-        if ($svc.Status -ne 'Running') {
-            try {
-                if ($PSCmdlet.ShouldProcess('ssh-agent', 'Start-Service')) {
-                    Start-Service -Name ssh-agent -ErrorAction Stop
-                    Write-Host '  [add]  Started ssh-agent service' -ForegroundColor Green
-                }
-            }
-            catch {
-                Write-Host '  [warn] Could not start ssh-agent service. Continuing.' -ForegroundColor Yellow
-            }
-        }
-        else {
-            Write-Host '  [skip] ssh-agent service already Running' -ForegroundColor DarkGray
-        }
-        if ((Test-Path -LiteralPath $keyPath) -and (Get-Command ssh-add -ErrorAction SilentlyContinue)) {
-            & ssh-add $keyPath 2>&1 | Out-Null
-        }
-    }
-
-    # 3. Git insteadOf rewrites (multi-valued, idempotent)
-    Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'https://github.com/' | Out-Null
-    Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'git@github.com:' | Out-Null
-    Add-GitConfigValueIfMissing -Key 'url.ssh://git@ssh.github.com:443/.insteadOf' -Value 'ssh://git@github.com/' | Out-Null
-
-    # 4. Remove legacy pushInsteadOf (superseded by symmetric insteadOf pair)
-    $legacyKey = 'url.git@ssh.github.com:.pushInsteadOf'
-    $legacy = @(Get-GitConfigAllValues -Key $legacyKey)
-    if ($legacy -contains 'https://github.com/') {
-        if ($PSCmdlet.ShouldProcess($legacyKey, 'git config --global --unset-all')) {
-            & git config --global --unset-all $legacyKey 2>$null
-            Write-Host "  [del]  Removed legacy $legacyKey" -ForegroundColor Green
-        }
-    }
-
-    # 5. gh git_protocol
-    if (-not (Test-GhInstalled)) {
-        Write-Host '  [warn] gh CLI not installed. Install from https://cli.github.com/ then re-run -SetupGitHubSsh.' -ForegroundColor Yellow
-        return
-    }
-    if ((Get-GhGitProtocol) -ne 'ssh') {
-        if ($PSCmdlet.ShouldProcess('gh git_protocol', 'gh config set git_protocol ssh')) {
-            & gh config set git_protocol ssh
-            Write-Host '  [add]  Set gh git_protocol to ssh' -ForegroundColor Green
-        }
-    }
-    else {
-        Write-Host '  [skip] gh git_protocol already ssh' -ForegroundColor DarkGray
-    }
-
-    # 6. Upload public key to GitHub
-    if ($SkipKeyUpload) {
-        Write-Host '  [skip] gh ssh-key add (--SkipKeyUpload)' -ForegroundColor DarkGray
-        return
-    }
-    $pubPath = "$keyPath.pub"
-    if (-not (Test-Path -LiteralPath $pubPath)) {
-        Write-Host "  [warn] Public key $pubPath not found; cannot upload to GitHub." -ForegroundColor Yellow
-        return
-    }
-    $pubText = (Get-Content -LiteralPath $pubPath -Raw).Trim()
-    $remoteKeys = & gh ssh-key list 2>$null
-    $alreadyUploaded = $false
-    if ($remoteKeys) {
-        # gh ssh-key list output contains the base64 body of each key.
-        $body = ($pubText -split '\s+')[1]
-        if ($body -and ("$remoteKeys" -match [regex]::Escape($body.Substring(0, [Math]::Min(40, $body.Length))))) {
-            $alreadyUploaded = $true
-        }
-    }
-    if ($alreadyUploaded) {
-        Write-Host '  [skip] SSH public key already registered on GitHub' -ForegroundColor DarkGray
-    }
-    else {
-        $title = "$env:COMPUTERNAME ($env:USERNAME)"
-        if ($PSCmdlet.ShouldProcess($pubPath, "gh ssh-key add --title '$title'")) {
-            & gh ssh-key add $pubPath --title $title
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "  [add]  Uploaded SSH public key to GitHub (title: $title)" -ForegroundColor Green
-            }
-            else {
-                Write-Host '  [warn] gh ssh-key add failed (auth?). Upload manually if needed.' -ForegroundColor Yellow
-            }
-        }
+        Write-Host "  [warn] Could not merge .gitignore from upstream ($Ref): $_" -ForegroundColor Yellow
+        Write-Host '         Run Pull-SDLC.ai.ps1 (without -SetupGit) first to ensure the upstream remote exists.' -ForegroundColor Yellow
     }
 }
 
@@ -2067,9 +1877,9 @@ function Invoke-PullSDLC {
 # Skip the rest of the script when dot-sourced (e.g. by tests).
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-# Setup mode: configure GitHub SSH-on-443 and exit (issue #164).
-if ($SetupGitHubSsh) {
-    Invoke-SetupGitHubSsh -SkipKeyUpload:$SkipKeyUpload
+# Setup mode: scaffold repo-level git files and exit (issue #171).
+if ($SetupGit) {
+    Invoke-SetupGit
     exit 0
 }
 

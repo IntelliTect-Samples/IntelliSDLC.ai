@@ -2314,7 +2314,7 @@ Describe 'Pull-SDLC.ai.ps1 post-sync output' {
     It 'does not invoke the SSH-on-443 drift nudge at the end of the script' {
         # Issue #169: a per-repo sync script must not lobby users to mutate
         # machine-wide SSH/git/gh configuration on every run. The opt-in
-        # -SetupGitHubSsh switch remains for users who want it.
+        # -SetupGit switch handles repo-level scaffolding only.
         $scriptPath = Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1'
         $scriptText = Get-Content -LiteralPath $scriptPath -Raw
         $scriptText | Should -Not -Match 'Write-GitHubSshNudge'
@@ -2322,7 +2322,84 @@ Describe 'Pull-SDLC.ai.ps1 post-sync output' {
     }
 }
 
-# --- Issue #164: GitHub SSH-on-443 setup --------------------------------------
+# --- Issue #171: -SetupGit replaces -SetupGitHubSsh ---------------------------
+
+Describe 'Pull-SDLC.ai.ps1 -SetupGitHubSsh removed' {
+    BeforeAll {
+        $script:scriptPath = Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1'
+        $script:scriptText = Get-Content -LiteralPath $script:scriptPath -Raw
+    }
+    It 'no longer declares the -SetupGitHubSsh parameter' {
+        $script:scriptText | Should -Not -Match '\$SetupGitHubSsh'
+    }
+    It 'no longer declares the -SkipKeyUpload parameter' {
+        $script:scriptText | Should -Not -Match '\$SkipKeyUpload'
+    }
+    It 'no longer defines Invoke-SetupGitHubSsh' {
+        $script:scriptText | Should -Not -Match 'function\s+Invoke-SetupGitHubSsh'
+    }
+    It 'no longer references global git config or gh config mutations' {
+        # Issue #171 contract guard: -SetupGit must not touch protocol.
+        $script:scriptText | Should -Not -Match 'git\s+config\s+--global'
+        $script:scriptText | Should -Not -Match 'gh\s+config\s+set'
+        $script:scriptText | Should -Not -Match 'ssh-keygen'
+        $script:scriptText | Should -Not -Match 'url\.insteadOf'
+    }
+}
+
+Describe 'Invoke-SetupGit' {
+    BeforeEach {
+        $script:repoRoot = Join-Path $TestDrive ('repo-' + [System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:repoRoot -Force | Out-Null
+        # Stub the union-merge so the test does not need a real upstream remote.
+        Mock -CommandName Merge-FileFromUpstream -MockWith { $true }
+    }
+
+    It 'creates .gitattributes with a text-auto/eol-lf baseline when missing' {
+        Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' | Out-Null
+        $gaPath = Join-Path $script:repoRoot '.gitattributes'
+        Test-Path -LiteralPath $gaPath | Should -BeTrue
+        $content = Get-Content -LiteralPath $gaPath -Raw
+        $content | Should -Match '\*\s+text=auto\s+eol=lf'
+    }
+
+    It 'leaves an existing .gitattributes alone' {
+        $gaPath = Join-Path $script:repoRoot '.gitattributes'
+        $customContent = "# user customization`n*.bin binary`n"
+        Set-Content -LiteralPath $gaPath -Value $customContent -NoNewline
+        Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' | Out-Null
+        Get-Content -LiteralPath $gaPath -Raw | Should -Be $customContent
+    }
+
+    It 'invokes Merge-FileFromUpstream for .gitignore against the supplied ref' {
+        Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' | Out-Null
+        Should -Invoke -CommandName Merge-FileFromUpstream -Times 1 -ParameterFilter {
+            $Path -eq '.gitignore' -and $Ref -eq 'sdlc.ai/main' -and $RepoRoot -eq $script:repoRoot
+        }
+    }
+
+    It 'does not invoke ssh-keygen, gh, or git config --global (contract guard)' {
+        Mock -CommandName git -MockWith { }
+        Mock -CommandName gh -MockWith { }
+        Mock -CommandName ssh-keygen -MockWith { } -ErrorAction SilentlyContinue
+        Mock -CommandName ssh-add -MockWith { } -ErrorAction SilentlyContinue
+        Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' | Out-Null
+        Should -Invoke -CommandName git -ParameterFilter { $args -contains '--global' } -Times 0
+        Should -Invoke -CommandName gh -Times 0
+        Should -Invoke -CommandName ssh-keygen -Times 0 -ErrorAction SilentlyContinue
+    }
+
+    It 'is idempotent: second run prints only [skip] for .gitattributes' {
+        Mock -CommandName Merge-FileFromUpstream -MockWith { $false }
+        Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' | Out-Null
+        $output = & { Invoke-SetupGit -RepoRoot $script:repoRoot -Ref 'sdlc.ai/main' } 6>&1 | Out-String
+        $output | Should -Match '\[skip\].*\.gitattributes'
+        $output | Should -Not -Match '\[add\]'
+    }
+}
+
+# --- Issue #164: GitHub SSH-on-443 setup -- helpers removed in #171 -----------
+# Test-IsCiEnvironment is the only survivor (still useful for future code paths).
 
 Describe 'Test-IsCiEnvironment' {
     BeforeEach {
@@ -2345,100 +2422,6 @@ Describe 'Test-IsCiEnvironment' {
     It 'returns $true when $env:GITHUB_ACTIONS is set' {
         $env:GITHUB_ACTIONS = 'true'
         Test-IsCiEnvironment | Should -BeTrue
-    }
-}
-
-Describe 'Add-GitConfigValueIfMissing' {
-    It 'does not call git config --add when the value is already present' {
-        Mock -CommandName Get-GitConfigAllValues -MockWith { @('https://github.com/') }
-        Mock -CommandName git -MockWith { }
-        $result = Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'https://github.com/'
-        $result | Should -BeFalse
-        Should -Invoke -CommandName git -Times 0 -Exactly
-    }
-    It 'calls git config --add when the value is missing' {
-        Mock -CommandName Get-GitConfigAllValues -MockWith { @() }
-        Mock -CommandName git -MockWith { }
-        $result = Add-GitConfigValueIfMissing -Key 'url.git@ssh.github.com:.insteadOf' -Value 'https://github.com/'
-        $result | Should -BeTrue
-        Should -Invoke -CommandName git -ParameterFilter {
-            ($args -contains 'config') -and ($args -contains '--add')
-        } -Times 1
-    }
-}
-
-Describe 'Invoke-SetupGitHubSsh' -Skip:(-not $IsWindows) {
-    BeforeEach {
-        $script:gitCalls = New-Object System.Collections.Generic.List[string]
-        $script:ghCalls = New-Object System.Collections.Generic.List[string]
-        $script:keyPath = Join-Path $TestDrive 'id_ed25519'
-        Mock -CommandName Get-GitHubSshKeyPath -MockWith { $script:keyPath }
-        # Pretend key already exists so ssh-keygen is not invoked.
-        New-Item -ItemType File -Path $script:keyPath -Force | Out-Null
-        Set-Content -LiteralPath "$script:keyPath.pub" -Value 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIabcdefghijklmnopqrstuvwxyz0123456789 user@host'
-        Mock -CommandName Get-Service -MockWith {
-            [pscustomobject]@{ Status = 'Running'; StartType = 'Automatic'; Name = 'ssh-agent' }
-        } -ParameterFilter { $Name -eq 'ssh-agent' }
-        Mock -CommandName Set-Service -MockWith { }
-        Mock -CommandName Start-Service -MockWith { }
-        Mock -CommandName ssh-add -MockWith { } -ErrorAction SilentlyContinue
-        Mock -CommandName ssh-keygen -MockWith { } -ErrorAction SilentlyContinue
-        Mock -CommandName Test-GhInstalled -MockWith { $true }
-        Mock -CommandName Get-GhGitProtocol -MockWith { 'ssh' }
-        Mock -CommandName Get-GitConfigAllValues -MockWith {
-            param($Key)
-            switch ($Key) {
-                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
-                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
-                'url.git@ssh.github.com:.pushInsteadOf' { return @() }
-                default { return @() }
-            }
-        }
-        Mock -CommandName git -MockWith { $script:gitCalls.Add(($args -join ' ')) }
-        Mock -CommandName gh -MockWith { $script:ghCalls.Add(($args -join ' ')) }
-    }
-
-    It 'is idempotent: no git config --add or gh config set when everything is configured' {
-        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
-        ($script:gitCalls | Where-Object { $_ -match '--add' }) | Should -BeNullOrEmpty
-        ($script:ghCalls  | Where-Object { $_ -match 'config set' }) | Should -BeNullOrEmpty
-    }
-
-    It '-SkipKeyUpload does NOT call gh ssh-key add' {
-        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
-        ($script:ghCalls | Where-Object { $_ -match 'ssh-key add' }) | Should -BeNullOrEmpty
-    }
-
-    It 'removes legacy pushInsteadOf https://github.com/ when present' {
-        Mock -CommandName Get-GitConfigAllValues -MockWith {
-            param($Key)
-            switch ($Key) {
-                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
-                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
-                'url.git@ssh.github.com:.pushInsteadOf' { return @('https://github.com/') }
-                default { return @() }
-            }
-        }
-        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
-        ($script:gitCalls | Where-Object { $_ -match 'unset-all.*pushInsteadOf' }) | Should -Not -BeNullOrEmpty
-    }
-
-    It 'adds missing url.insteadOf entries without duplicating existing ones' {
-        Mock -CommandName Get-GitConfigAllValues -MockWith {
-            param($Key)
-            switch ($Key) {
-                # Only the https value present; git@ value is missing
-                'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/') }
-                'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
-                default { return @() }
-            }
-        }
-        Invoke-SetupGitHubSsh -SkipKeyUpload | Out-Null
-        $addCalls = @($script:gitCalls | Where-Object { $_ -match '--add' })
-        # The missing 'git@github.com:' value MUST be added.
-        ($addCalls | Where-Object { $_ -match '\bgit@github\.com:$' }) | Should -Not -BeNullOrEmpty
-        # The already-present https value must NOT be re-added.
-        ($addCalls | Where-Object { $_ -match '\bhttps://github\.com/$' }) | Should -BeNullOrEmpty
     }
 }
 
