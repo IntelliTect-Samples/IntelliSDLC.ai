@@ -1646,65 +1646,6 @@ function Add-GitConfigValueIfMissing {
     return $true
 }
 
-function Test-GitHubSshDrift {
-    <#
-    .SYNOPSIS
-        Returns the list of GitHub-SSH-on-443 setup components that are
-        missing or misconfigured on this workstation. Empty array means
-        "fully configured; no nudge". Always returns @() on CI hosts and
-        non-Windows hosts.
-    .DESCRIPTION
-        Component names returned (issue #164):
-            ssh-keypair       -- ~/.ssh/id_ed25519 missing
-            ssh-agent         -- Windows ssh-agent service not Running
-            insteadof-https   -- url.git@ssh.github.com:.insteadOf lacks https://github.com/
-            insteadof-git     -- url.git@ssh.github.com:.insteadOf lacks git@github.com:
-            insteadof-port443 -- url.ssh://git@ssh.github.com:443/.insteadOf lacks ssh://git@github.com/
-            gh-protocol       -- gh config get git_protocol != 'ssh' (or gh not installed)
-    #>
-    [CmdletBinding()]
-    [OutputType([string[]])]
-    param()
-
-    if (Test-IsCiEnvironment) { return @() }
-    if (-not $IsWindows) { return @() }
-
-    $missing = New-Object System.Collections.Generic.List[string]
-
-    if (-not (Test-Path -LiteralPath (Get-GitHubSshKeyPath))) {
-        $missing.Add('ssh-keypair') | Out-Null
-    }
-    if (-not (Test-GitHubSshAgentRunning)) {
-        $missing.Add('ssh-agent') | Out-Null
-    }
-
-    $insteadOfA = @(Get-GitConfigAllValues -Key 'url.git@ssh.github.com:.insteadOf')
-    if ($insteadOfA -notcontains 'https://github.com/') { $missing.Add('insteadof-https') | Out-Null }
-    if ($insteadOfA -notcontains 'git@github.com:') { $missing.Add('insteadof-git') | Out-Null }
-
-    $insteadOfB = @(Get-GitConfigAllValues -Key 'url.ssh://git@ssh.github.com:443/.insteadOf')
-    if ($insteadOfB -notcontains 'ssh://git@github.com/') { $missing.Add('insteadof-port443') | Out-Null }
-
-    if (-not (Test-GhInstalled) -or (Get-GhGitProtocol) -ne 'ssh') {
-        $missing.Add('gh-protocol') | Out-Null
-    }
-
-    return @($missing.ToArray())
-}
-
-function Write-GitHubSshNudge {
-    <#
-    .SYNOPSIS
-        Prints a single-line yellow recommendation when GitHub SSH-on-443
-        setup is incomplete. Silent when $Missing is empty.
-    #>
-    [CmdletBinding()]
-    param([string[]]$Missing = @())
-    if (-not $Missing -or $Missing.Count -eq 0) { return }
-    Write-Host ''
-    Write-Host ("Recommendation: GitHub SSH-on-443 setup is incomplete ({0}). Run: .\Pull-SDLC.ai.ps1 -SetupGitHubSsh" -f ($Missing -join ', ')) -ForegroundColor Yellow
-}
-
 function Invoke-SetupGitHubSsh {
     <#
     .SYNOPSIS
@@ -2159,21 +2100,5 @@ if ($PSBoundParameters.ContainsKey('CommitOnMain')) {
     $invokeArgs.CommitOnMain = [bool]$CommitOnMain
 }
 $exitCode = Invoke-PullSDLC @invokeArgs
-
-# Drift nudge (issue #164): single-line yellow recommendation when GitHub
-# SSH-on-443 setup is incomplete. Silent when fully configured. Suppressed
-# on CI hosts (Test-IsCiEnvironment) and non-Windows hosts.
-if ($exitCode -eq 0) {
-    try {
-        $sshDrift = @(Test-GitHubSshDrift)
-        if ($sshDrift.Count -gt 0) {
-            Write-GitHubSshNudge -Missing $sshDrift
-        }
-    }
-    catch {
-        # Drift check is purely advisory; never block the sync result on it.
-        Write-Verbose "Test-GitHubSshDrift threw: $_"
-    }
-}
 
 exit $exitCode

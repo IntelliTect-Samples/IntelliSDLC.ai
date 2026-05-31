@@ -2308,6 +2308,20 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
 
 
 
+# --- Issue #169: SSH-on-443 drift nudge removed -------------------------------
+
+Describe 'Pull-SDLC.ai.ps1 post-sync output' {
+    It 'does not invoke the SSH-on-443 drift nudge at the end of the script' {
+        # Issue #169: a per-repo sync script must not lobby users to mutate
+        # machine-wide SSH/git/gh configuration on every run. The opt-in
+        # -SetupGitHubSsh switch remains for users who want it.
+        $scriptPath = Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1'
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+        $scriptText | Should -Not -Match 'Write-GitHubSshNudge'
+        $scriptText | Should -Not -Match 'Test-GitHubSshDrift'
+    }
+}
+
 # --- Issue #164: GitHub SSH-on-443 setup --------------------------------------
 
 Describe 'Test-IsCiEnvironment' {
@@ -2331,78 +2345,6 @@ Describe 'Test-IsCiEnvironment' {
     It 'returns $true when $env:GITHUB_ACTIONS is set' {
         $env:GITHUB_ACTIONS = 'true'
         Test-IsCiEnvironment | Should -BeTrue
-    }
-}
-
-Describe 'Test-GitHubSshDrift' {
-    BeforeEach {
-        Remove-Item Env:CI -ErrorAction SilentlyContinue
-        Remove-Item Env:GITHUB_ACTIONS -ErrorAction SilentlyContinue
-        Remove-Item Env:TF_BUILD -ErrorAction SilentlyContinue
-        # Force Windows path through Test-GitHubSshDrift even on Linux CI by
-        # mocking $IsWindows via the helper functions it uses.
-        Mock -CommandName Test-IsCiEnvironment -MockWith { $false }
-    }
-
-    Context 'when fully configured' {
-        BeforeEach {
-            Mock -CommandName Get-GitHubSshKeyPath -MockWith { Join-Path $TestDrive 'id_ed25519' }
-            New-Item -ItemType File -Path (Join-Path $TestDrive 'id_ed25519') -Force | Out-Null
-            Mock -CommandName Test-GitHubSshAgentRunning -MockWith { $true }
-            Mock -CommandName Get-GitConfigAllValues -MockWith {
-                param($Key)
-                switch ($Key) {
-                    'url.git@ssh.github.com:.insteadOf' { return @('https://github.com/', 'git@github.com:') }
-                    'url.ssh://git@ssh.github.com:443/.insteadOf' { return @('ssh://git@github.com/') }
-                    default { return @() }
-                }
-            }
-            Mock -CommandName Test-GhInstalled -MockWith { $true }
-            Mock -CommandName Get-GhGitProtocol -MockWith { 'ssh' }
-        }
-        It 'returns an empty array' -Skip:(-not $IsWindows) {
-            $result = Test-GitHubSshDrift
-            $result | Should -BeNullOrEmpty
-        }
-    }
-
-    Context 'when each component is missing' {
-        BeforeEach {
-            Mock -CommandName Get-GitHubSshKeyPath -MockWith { Join-Path $TestDrive 'nope_id_ed25519' }
-            Mock -CommandName Test-GitHubSshAgentRunning -MockWith { $false }
-            Mock -CommandName Get-GitConfigAllValues -MockWith { @() }
-            Mock -CommandName Test-GhInstalled -MockWith { $false }
-            Mock -CommandName Get-GhGitProtocol -MockWith { '' }
-        }
-        It 'reports every missing component' -Skip:(-not $IsWindows) {
-            $result = @(Test-GitHubSshDrift)
-            $result | Should -Contain 'ssh-keypair'
-            $result | Should -Contain 'ssh-agent'
-            $result | Should -Contain 'insteadof-https'
-            $result | Should -Contain 'insteadof-git'
-            $result | Should -Contain 'insteadof-port443'
-            $result | Should -Contain 'gh-protocol'
-        }
-    }
-
-    It 'returns @() when CI env var is set' {
-        Mock -CommandName Test-IsCiEnvironment -MockWith { $true }
-        $result = @(Test-GitHubSshDrift)
-        $result | Should -BeNullOrEmpty
-    }
-}
-
-Describe 'Write-GitHubSshNudge' {
-    It 'is silent when Missing is empty' {
-        $output = Write-GitHubSshNudge -Missing @() 6>&1
-        $output | Should -BeNullOrEmpty
-    }
-    It 'writes a single recommendation line listing the missing components' {
-        $captured = & { Write-GitHubSshNudge -Missing @('ssh-keypair','gh-protocol') } 6>&1
-        ($captured | Out-String) | Should -Match 'Recommendation: GitHub SSH-on-443'
-        ($captured | Out-String) | Should -Match 'ssh-keypair'
-        ($captured | Out-String) | Should -Match 'gh-protocol'
-        ($captured | Out-String) | Should -Match '-SetupGitHubSsh'
     }
 }
 
