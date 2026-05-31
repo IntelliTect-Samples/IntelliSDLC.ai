@@ -150,6 +150,7 @@ $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     '.gitattributes.template'                               = '.gitattributes'
+    'README.md.template'                                    = 'README.md'
     'tasks/README.md'                                       = 'tasks/README.md'
 }
 
@@ -159,6 +160,7 @@ $script:UpstreamManagedPaths = @(
     'CLAUDE.md',
     '.github/copilot-instructions.md',
     '.gitattributes.template',
+    'README.md.template',
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/',

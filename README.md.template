@@ -1,0 +1,102 @@
+<!--
+README.md skeleton scaffolded by Pull-SDLC.ai on first sync.
+Sections cover GitHub's five README questions:
+  1. What the project does       -> Title + one-line description + Overview + Features
+  2. Why the project is useful   -> Overview
+  3. How users get started       -> Quick Start + Prerequisites + Installation + Usage
+  4. Where to get help           -> Support
+  5. Who maintains / contributes -> Contributing
+Top-level sections use `##` so GitHub's auto-generated Outline / TOC works.
+Edit freely; this file is consumer-owned and is never overwritten on subsequent syncs.
+Delete sections you do not need rather than leaving empty placeholders.
+-->
+
+# <Project Name>
+
+<!-- TODO: Replace badges with real ones (build status, license, version, coverage). -->
+[![Build](https://img.shields.io/badge/build-pending-lightgrey)](#) [![License](https://img.shields.io/badge/license-TBD-lightgrey)](#)
+
+<!-- TODO: One-line description (the "what"). -->
+One-line description of what this project is.
+
+<!-- TODO: Optional demo screenshot or GIF. Place asset under docs/. -->
+<!-- ![Demo](docs/demo.gif) -->
+
+## Overview
+
+<!-- TODO: Why this project exists, who it's for, the problem it solves. -->
+
+## Features
+
+<!-- TODO: Bullet list of headline capabilities. -->
+- Feature one
+- Feature two
+
+## Quick Start
+
+<!-- TODO: Fastest path: clone + 1-2 commands to see something working. -->
+
+```bash
+git clone <repo-url>
+cd <project>
+# build & run command(s)
+```
+
+## Prerequisites
+
+<!-- TODO: Runtimes, SDKs, OS, accounts, tools. -->
+-
+
+## Installation
+
+<!-- TODO: Full step-by-step setup. List alternative installers (package manager, Docker, from source) if applicable. -->
+
+## Usage
+
+<!-- TODO: Minimal copy-paste example. Link to docs for advanced cases. -->
+
+## Configuration
+
+<!-- TODO: Table of env vars / config keys with type, default, description. -->
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+|  |  |  |  |
+
+## Project Structure
+
+<!-- TODO: High-level tree showing the main directories. -->
+
+```text
+.
+|-- src/
+|-- tests/
+`-- docs/
+```
+
+## Development
+
+<!-- TODO: Build, test, lint, format commands. How to run locally. -->
+
+## Testing
+
+<!-- TODO: Where tests live, how to run them, coverage expectations. -->
+
+## Contributing
+
+<!-- TODO: Link to CONTRIBUTING.md or short inline policy. Mention code of conduct if present. -->
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Support
+
+<!-- TODO: Where to get help: issues, discussions, chat, email. -->
+- File an [issue](../../issues)
+
+## License
+
+<!-- TODO: One-line license name + link to LICENSE. -->
+See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+<!-- TODO: Optional -- libraries, inspiration, contributors. -->

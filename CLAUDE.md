@@ -37,6 +37,9 @@ on the next sync. The Validate Instructions workflow may also flag leaks.
 - `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
   Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the
   bottom of this file. Use for Claude-specific orientation overrides.
+- `README.md` -- copy from `README.md.template` if missing. The default
+  skeleton covers GitHub's five README questions (what / why / start /
+  help / who) using `##` headings so GitHub auto-generates the Outline.
 
 If a `*.template` file is present but the corresponding consumer-owned file
 is not, copy the template (drop the `.template` suffix) and fill in the
