@@ -149,7 +149,6 @@ $ErrorActionPreference = 'Stop'
 $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
-    '.gitattributes.template'                               = '.gitattributes'
     'README.md.template'                                    = 'README.md'
     'tasks/README.md'                                       = 'tasks/README.md'
 }
@@ -159,11 +158,11 @@ $script:TemplateScaffoldMap = [ordered]@{
 $script:UpstreamManagedPaths = @(
     'CLAUDE.md',
     '.github/copilot-instructions.md',
-    '.gitattributes.template',
     'README.md.template',
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/',
+    '.github/templates/git-defaults/',
     'tasks/',
     # Meta-scripts: the bootstrap script the user downloads via `iwr` and
     # its siblings. Sync-managed so the user's local copy is reconciled
@@ -1298,7 +1297,9 @@ function Write-NextStepsBanner {
         Source = 'bootstrap' or 'auto-bootstrap'). Lists the most
         valuable consumer file to edit first, the commit incantation,
         and -- when no `origin` is configured -- the `gh repo create`
-        hint for brand-new projects.
+        hint for brand-new projects. Also surfaces the one-line
+        Initialize-GitDefaults.ps1 hint when `.gitattributes` or
+        `.gitignore` is missing (issue #160).
     #>
     [CmdletBinding()]
     param(
@@ -1330,6 +1331,32 @@ function Write-NextStepsBanner {
     if (-not $originUrl) {
         Write-Host '  3. If this is a brand-new project with no remote yet, create it on GitHub:' -ForegroundColor Cyan
         Write-Host '       gh repo create --source=. --public --push' -ForegroundColor Cyan
+    }
+
+    Write-GitDefaultsHint -RepoRoot $RepoRoot
+}
+
+function Write-GitDefaultsHint {
+    <#
+    .SYNOPSIS
+        Print a one-line hint when the consumer is missing `.gitattributes`
+        and/or `.gitignore`, pointing them at Initialize-GitDefaults.ps1.
+    .DESCRIPTION
+        Issue #160. Replaces the legacy `.gitattributes.template`
+        first-sync scaffold with an explicit composable assembler. We do
+        NOT auto-invoke -- the consumer chooses languages.
+    #>
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'User-facing CLI hint matching the surrounding banner convention.')]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    $missingAttrs  = -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.gitattributes'))
+    $missingIgnore = -not (Test-Path -LiteralPath (Join-Path $RepoRoot '.gitignore'))
+    if (-not ($missingAttrs -or $missingIgnore)) { return }
+    if ($missingAttrs) {
+        Write-Host 'No .gitattributes found. Run ./Initialize-GitDefaults.ps1 to scaffold one (uses alexkaratarakis/gitattributes + github/gitignore).' -ForegroundColor Yellow
+    }
+    elseif ($missingIgnore) {
+        Write-Host 'No .gitignore found. Run ./Initialize-GitDefaults.ps1 to scaffold one (uses alexkaratarakis/gitattributes + github/gitignore).' -ForegroundColor Yellow
     }
 }
 

@@ -36,9 +36,12 @@ What the script does:
   `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
   generic `.github/instructions/*`, `.claude/*`).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
-  `.github/instructions/project.instructions.md`, `.gitattributes`, `README.md`) from
+  `.github/instructions/project.instructions.md`, `README.md`) from
   their `*.template` counterparts. Existing copies are never overwritten.
 - Extends `.gitignore` with required entries; never replaces it.
+- Prints a one-line hint pointing at `./Initialize-GitDefaults.ps1` when
+  `.gitattributes` or `.gitignore` is missing (does not auto-run -- the
+  consumer picks the languages).
 - Lands a `chore(sdlc): sync` commit and writes `.sdlc-ai-sync.json`
   recording the anchor for future incremental syncs.
 - Leaves your `origin` remote untouched.
@@ -100,11 +103,21 @@ names if the bare name is missing:
 |---|---|---|
 | `.github/instructions/project.instructions.md.template` | `.github/instructions/project.instructions.md` | Project-specific conventions read by all agents |
 | `CLAUDE.project.md.template` | `CLAUDE.project.md` | Claude-specific orientation overrides |
-| `.gitattributes.template` | `.gitattributes` | Recommended baseline (LF for `*.sh`, CRLF for `*.ps1` / `*.bat`) |
 | `README.md.template` | `README.md` | GitHub landing-page skeleton answering the five canonical README questions (what / why / start / help / who) |
 
-Existing bare-name files are never overwritten. Once placed, all four are
+Existing bare-name files are never overwritten. Once placed, all three are
 fully consumer-owned -- edit them freely.
+
+`.gitattributes` and `.gitignore` are **not** scaffolded from a static
+upstream template. Composing them is the job of the repo-root script
+`Initialize-GitDefaults.ps1`, which combines per-language community
+templates (`alexkaratarakis/gitattributes` + `github/gitignore`, both
+pinned to specific SHAs) plus a curated PowerShell block. After a fresh
+sync the next-steps banner prints a one-liner pointing you at the
+script -- it never auto-runs because language selection is project-
+specific. See the script's `Get-Help` and
+`.github/templates/git-defaults/SOURCES.md` for the authority chain and
+refresh procedure.
 
 `README.md` uses the indirect (`.template` -> bare) pattern -- not the
 same-name pattern used for `tasks/README.md` below -- because the

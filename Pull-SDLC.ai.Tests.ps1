@@ -210,25 +210,8 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
     }
 }
 
-Describe '.gitattributes.template bootstrap (issue #119)' {
-    BeforeAll {
-        $script:repoRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
-    }
-
-    It '$script:TemplateScaffoldMap maps .gitattributes.template -> .gitattributes' {
-        $script:TemplateScaffoldMap.Keys | Should -Contain '.gitattributes.template'
-        $script:TemplateScaffoldMap['.gitattributes.template'] | Should -Be '.gitattributes'
-    }
-
-    It '.gitattributes.template exists at upstream repo root' {
-        Test-Path -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') | Should -BeTrue
-    }
-
-    It '.gitattributes is on the always-local list (consumer-owned once placed)' {
-        Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
-    }
-
-    It 'creates consumer .gitattributes on first scaffold when none exists' {
+Describe 'Invoke-TemplateScaffold (generic, issue #119 origin)' {
+    It 'creates the target file on first scaffold when none exists' {
         $src = Join-Path $TestDrive 'gabt-src'
         $dst = Join-Path $TestDrive 'gabt-dst1'
         New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
@@ -239,7 +222,7 @@ Describe '.gitattributes.template bootstrap (issue #119)' {
         Test-Path (Join-Path $dst '.gitattributes') | Should -BeTrue
     }
 
-    It 'leaves an existing consumer .gitattributes untouched' {
+    It 'leaves an existing consumer target file untouched' {
         $src = Join-Path $TestDrive 'gabt-src2'
         $dst = Join-Path $TestDrive 'gabt-dst2'
         New-Item -ItemType Directory -Path $src, $dst -Force | Out-Null
@@ -251,13 +234,8 @@ Describe '.gitattributes.template bootstrap (issue #119)' {
         (Get-Content (Join-Path $dst '.gitattributes') -Raw).Trim() | Should -Be 'CONSUMER_OWNED'
     }
 
-    It 'template content includes the baseline rules (LF for .sh, CRLF for .ps1, .png binary)' {
-        $body = Get-Content -LiteralPath (Join-Path $script:repoRoot '.gitattributes.template') -Raw
-        $body | Should -Match '(?m)^\*\.sh\s+text\s+eol=lf'
-        $body | Should -Match '(?m)^\*\.ps1\s+text\s+eol=crlf'
-        $body | Should -Match '(?m)^\*\.bat\s+text\s+eol=crlf'
-        $body | Should -Match '(?m)^\*\.png\s+binary'
-        $body | Should -Match '(?m)^\*\s+text=auto'
+    It '.gitattributes is on the always-local list (consumer-owned once placed)' {
+        Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
     }
 }
 
@@ -2202,3 +2180,51 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
     }
 }
 
+
+Describe 'Initialize-GitDefaults migration (issue #160)' {
+    It 'no longer scaffolds .gitattributes from a template' {
+        $script:TemplateScaffoldMap.Keys | Should -Not -Contain '.gitattributes.template'
+        $script:TemplateScaffoldMap.Values | Should -Not -Contain '.gitattributes'
+    }
+
+    It 'no longer manages .gitattributes.template as upstream' {
+        $script:UpstreamManagedPaths | Should -Not -Contain '.gitattributes.template'
+    }
+
+    It 'manages .github/templates/git-defaults/ as upstream' {
+        $script:UpstreamManagedPaths | Should -Contain '.github/templates/git-defaults/'
+    }
+
+    It '.gitattributes remains consumer-owned (always-local)' {
+        $script:AlwaysLocalPaths | Should -Contain '.gitattributes'
+    }
+}
+
+Describe 'Write-GitDefaultsHint (issue #160)' {
+    BeforeEach {
+        $script:hintRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("hint-test-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:hintRepo | Out-Null
+    }
+    AfterEach {
+        Remove-Item -Recurse -Force $script:hintRepo -ErrorAction SilentlyContinue
+    }
+
+    It 'prints the Initialize-GitDefaults hint exactly once when .gitattributes is missing' {
+        $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
+        ([regex]::Matches($out, 'Initialize-GitDefaults\.ps1')).Count | Should -Be 1
+        $out | Should -Match 'No \.gitattributes found'
+    }
+
+    It 'mentions both upstream sources in the hint' {
+        $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
+        $out | Should -Match 'alexkaratarakis/gitattributes'
+        $out | Should -Match 'github/gitignore'
+    }
+
+    It 'prints nothing when both files already exist' {
+        New-Item -ItemType File -Path (Join-Path $script:hintRepo '.gitattributes') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:hintRepo '.gitignore') | Out-Null
+        $out = Write-GitDefaultsHint -RepoRoot $script:hintRepo 6>&1 | Out-String
+        $out.Trim() | Should -BeNullOrEmpty
+    }
+}

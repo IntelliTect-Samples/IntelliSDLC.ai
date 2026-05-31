@@ -61,6 +61,9 @@
     # Re-fetch upstream templates at the pinned SHAs.
 #>
 [CmdletBinding(SupportsShouldProcess)]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'User-facing CLI output matching the project-wide convention.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Internal New-*Content / New-*Header helpers are pure string builders despite the New- verb.')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Initialize-GitDefaults and Resolve-GitDefaultsLanguages operate on a set; plural noun matches the conceptual data shape.')]
 param(
     [string[]] $Language,
     [switch]   $IncludeGitignore,

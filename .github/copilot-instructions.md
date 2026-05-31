@@ -43,6 +43,12 @@ If a `*.template` file is present but the corresponding consumer-owned file
 is not, copy the template (drop the `.template` suffix) and fill in the
 sections. `Pull-SDLC.ai.ps1` does this automatically on first sync.
 
+For `.gitattributes` and `.gitignore`, run the repo-root script
+`Initialize-GitDefaults.ps1` (alongside `Pull-SDLC.ai.ps1`) to compose
+both files from per-language community templates plus a curated
+PowerShell block. `Pull-SDLC.ai.ps1` prints a one-line hint pointing at
+this script when either file is missing.
+
 ## Project Overview
 
 This is a **C#/.NET** project. Discover the project's purpose, architecture, and full
