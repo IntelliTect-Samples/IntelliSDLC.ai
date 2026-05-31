@@ -17,14 +17,15 @@
                         commits/main` returns 404).
 
     Snapshots are bundled under `.github/templates/git-defaults/` at the pinned
-    SHAs and used by default. With -Refresh the script fetches fresh copies
-    over HTTPS and updates the local cache.
+    SHAs and used by default. The `-Refresh` switch is reserved for a future
+    network-fetch path and currently hard-errors (see .PARAMETER Refresh).
 
 .PARAMETER Language
     Languages to include. Validated against the supported set. ASP.NET implies
-    CSharp. When omitted in an interactive host a multi-select picker runs with
-    languages detected from the working tree pre-selected. Non-interactive +
-    omitted = abort with instructions.
+    CSharp. When omitted in an interactive host a simple comma-separated picker
+    runs with languages detected from the working tree (via
+    Get-GitDefaultsDetectedLanguages) offered as the default. Non-interactive
+    hosts and an omitted value abort with the list of supported languages.
 
 .PARAMETER IncludeGitignore
     Compose `.gitignore`. Default: $true.
@@ -33,21 +34,26 @@
     Compose `.gitattributes`. Default: $true.
 
 .PARAMETER GitattributesRef
-    Git SHA in alexkaratarakis/gitattributes to fetch templates from when
-    -Refresh is supplied. Pinned default.
+    Git SHA in alexkaratarakis/gitattributes the bundled snapshots are pinned to.
+    Overriding this only makes sense alongside -Refresh (network fetch), which
+    is not yet implemented; passing a non-default value without -Refresh hard-
+    errors to prevent header drift.
 
 .PARAMETER GitignoreRef
-    Git SHA in github/gitignore to fetch templates from when -Refresh is
-    supplied. Pinned default.
+    Git SHA in github/gitignore the bundled snapshots are pinned to. Same
+    override semantics as -GitattributesRef.
 
 .PARAMETER Refresh
-    Bypass bundled snapshots; fetch fresh copies from GitHub over HTTPS and
-    update the local cache. Use to validate against latest upstream.
+    RESERVED. Intended to bypass bundled snapshots and fetch fresh copies from
+    GitHub over HTTPS at the requested refs. NOT YET IMPLEMENTED in this
+    release; passing -Refresh hard-errors. Omit -Refresh to compose from the
+    bundled snapshots at the pinned SHAs.
 
 .PARAMETER Force
     Overwrite existing `.gitattributes` / `.gitignore` after backing the
-    original up to `<file>.bak` (with timestamp suffix if `.bak` already
-    exists). Without -Force the script aborts if the target exists.
+    original up to `<file>.bak` (with a unique tick-resolution suffix if
+    `.bak` already exists). Without -Force the script aborts if the target
+    exists.
 
 .EXAMPLE
     ./Initialize-GitDefaults.ps1 -Language CSharp,PowerShell -Force
@@ -57,8 +63,9 @@
     # ASP.NET expands to {ASP.NET, CSharp}.
 
 .EXAMPLE
-    ./Initialize-GitDefaults.ps1 -Language CSharp -Refresh -Force
-    # Re-fetch upstream templates at the pinned SHAs.
+    ./Initialize-GitDefaults.ps1
+    # Interactive picker: prompts with heuristically-detected languages as
+    # the default. Non-interactive hosts must pass -Language explicitly.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'User-facing CLI output matching the project-wide convention.')]
@@ -335,7 +342,9 @@ function Test-GitDefaultsRepo {
 function Backup-GitDefaultsFile {
     <#
     .SYNOPSIS
-        Copy an existing file to `<file>.bak`, suffixing a timestamp on collision.
+        Copy an existing file to `<file>.bak`, falling back to a
+        ticks-suffixed name on collision so re-runs within the same
+        second never overwrite an earlier backup.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([string])]
@@ -345,8 +354,13 @@ function Backup-GitDefaultsFile {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
     $bak = "$Path.bak"
     if (Test-Path -LiteralPath $bak) {
-        $ts = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
-        $bak = "$Path.bak.$ts"
+        # Tick-resolution (100 ns) instead of seconds so two backups in
+        # the same second still get unique names. Loop guards against an
+        # absurdly fast clock or filesystem timestamp collision.
+        do {
+            $ticks = [DateTime]::UtcNow.Ticks
+            $bak = "$Path.bak.$ticks"
+        } while (Test-Path -LiteralPath $bak)
     }
     if ($PSCmdlet.ShouldProcess($Path, "Backup to $bak")) {
         Copy-Item -LiteralPath $Path -Destination $bak -Force
@@ -387,6 +401,73 @@ function Write-GitDefaultsFile {
     }
 }
 
+function Get-GitDefaultsDetectedLanguages {
+    <#
+    .SYNOPSIS
+        Heuristically detect candidate languages by scanning the current
+        working tree for indicator files.
+    .DESCRIPTION
+        Conservative: only matches things we have explicit templates for.
+        ASP.NET requires both a .csproj and an appsettings.json (otherwise
+        the consumer is a plain console / library project and CSharp alone
+        is the right pre-selection).
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([string] $Path = (Get-Location).Path)
+
+    $detected = [System.Collections.Generic.HashSet[string]]::new()
+    $hasCsproj   = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.csproj','*.sln' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+    $hasPs       = @(Get-ChildItem -Path $Path -Recurse -File -Include '*.ps1','*.psm1','*.psd1' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+    $hasTs       = @(Get-ChildItem -Path $Path -Recurse -File -Include 'tsconfig.json','package.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+    $hasAppSets  = @(Get-ChildItem -Path $Path -Recurse -File -Filter 'appsettings*.json' -ErrorAction SilentlyContinue -Depth 3).Count -gt 0
+
+    if ($hasCsproj)              { [void]$detected.Add('CSharp') }
+    if ($hasPs)                  { [void]$detected.Add('PowerShell') }
+    if ($hasTs)                  { [void]$detected.Add('TypeScript') }
+    if ($hasCsproj -and $hasAppSets) { [void]$detected.Add('ASP.NET') }
+
+    return @($detected | Sort-Object)
+}
+
+function Read-GitDefaultsLanguageSelection {
+    <#
+    .SYNOPSIS
+        Prompt the user to pick languages when -Language was not supplied.
+    .DESCRIPTION
+        Used only when the host is interactive (Read-Host available). Pre-
+        selects languages detected via Get-GitDefaultsDetectedLanguages.
+        Non-interactive hosts return $null so the caller can throw with the
+        explicit-parameter guidance.
+    #>
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification = 'Interactive picker output.')]
+    [OutputType([string[]])]
+    param()
+
+    if (-not [Environment]::UserInteractive -or $Host.Name -eq 'Default Host') {
+        return $null
+    }
+
+    $detected = Get-GitDefaultsDetectedLanguages
+    $supported = @($script:GitDefaultsLanguages.Keys | Sort-Object)
+
+    Write-Host ''
+    Write-Host 'Select languages to include (press Enter to accept the detected default):' -ForegroundColor Cyan
+    if ($detected.Count -gt 0) {
+        Write-Host ("  Detected: {0}" -f ($detected -join ', ')) -ForegroundColor Cyan
+    } else {
+        Write-Host '  Detected: (none -- nothing in this tree matches the heuristics)' -ForegroundColor DarkYellow
+    }
+    Write-Host ("  Supported: {0}" -f ($supported -join ', ')) -ForegroundColor DarkGray
+    $defaultCsv = if ($detected.Count -gt 0) { $detected -join ',' } else { '' }
+    $reply = Read-Host -Prompt "Languages (comma-separated) [$defaultCsv]"
+    if ([string]::IsNullOrWhiteSpace($reply)) {
+        return $detected
+    }
+    return @(($reply -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
 function Initialize-GitDefaults {
     <#
     .SYNOPSIS
@@ -422,13 +503,29 @@ function Initialize-GitDefaults {
         throw "Current directory is not a git repository. Run 'git init' first or cd into a repo."
     }
 
-    if (-not $Language -or $Language.Count -eq 0) {
-        throw 'No -Language supplied. Pass -Language with one or more of: ' +
-              (($script:GitDefaultsLanguages.Keys | Sort-Object) -join ', ') + '.'
+    if ($Refresh) {
+        # Honest stance: -Refresh is reserved for the network-fetch path,
+        # which is not implemented in this release. Hard-fail rather than
+        # silently emitting bundled content under a "refreshed" header
+        # (which would mislead consumers about the actual source).
+        throw '-Refresh (network fetch from upstream at -GitattributesRef/-GitignoreRef) is not yet implemented. Omit -Refresh to compose from the bundled snapshots, or open an issue to prioritise the fetch path.'
     }
 
-    if ($Refresh) {
-        Write-Warning '-Refresh fetch path not implemented in this release; using bundled snapshots.'
+    # Guard against header drift when consumers override the pinned refs:
+    # the bundled snapshots are pinned to specific SHAs, so we cannot
+    # honestly claim a different ref in the header without fetching.
+    $defaultGitattrRef = 'fddc586cf0f10ec4485028d0d2dd6f73197a4258'
+    $defaultGitignoreRef = 'dcc0fc7bc2b5ba480cf117ad1be31bafceeaff46'
+    if ($GitattributesRef -ne $defaultGitattrRef -or $GitignoreRef -ne $defaultGitignoreRef) {
+        throw "Overriding -GitattributesRef or -GitignoreRef requires -Refresh to actually fetch that ref, and -Refresh is not yet implemented. Use the pinned defaults ($defaultGitattrRef / $defaultGitignoreRef)."
+    }
+
+    if (-not $Language -or $Language.Count -eq 0) {
+        $Language = Read-GitDefaultsLanguageSelection
+        if (-not $Language -or $Language.Count -eq 0) {
+            throw 'No -Language supplied. Pass -Language with one or more of: ' +
+                  (($script:GitDefaultsLanguages.Keys | Sort-Object) -join ', ') + '.'
+        }
     }
 
     $expanded = Resolve-GitDefaultsLanguages -Language $Language

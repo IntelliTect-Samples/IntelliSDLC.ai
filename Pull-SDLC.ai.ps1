@@ -173,7 +173,12 @@ $script:UpstreamManagedPaths = @(
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
     'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1'
+    'Consolidate-Tasks.Tests.ps1',
+    # Issue #160: the composable .gitattributes/.gitignore assembler the
+    # post-sync hint points at. Without this entry the hint points at a
+    # script that does not exist in fresh consumer worktrees.
+    'Initialize-GitDefaults.ps1',
+    'Initialize-GitDefaults.Tests.ps1'
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working

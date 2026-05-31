@@ -197,4 +197,65 @@ Describe 'Initialize-GitDefaults (integration)' {
         $gi | Should -Match '(?m)^# === Node'
         $gi | Should -Match 'PSReadLine/ConsoleHost_history\.txt'
     }
+
+    It '-Refresh hard-fails with a message naming the unimplemented fetch path (Copilot review #161)' {
+        { Initialize-GitDefaults -Language 'CSharp' -Refresh -Force -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Refresh*not yet implemented*'
+        Test-Path '.gitattributes' | Should -BeFalse
+    }
+
+    It 'overriding pinned refs without -Refresh hard-fails to prevent header drift (Copilot review #161)' {
+        { Initialize-GitDefaults -Language 'CSharp' -GitattributesRef 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' -Force -ErrorAction Stop } |
+            Should -Throw -ExpectedMessage '*Refresh*'
+    }
+
+    It 'tick-suffixed backups never collide on rapid successive runs (Copilot review #161)' {
+        Set-Content -Path '.gitattributes' -Value 'V1' -NoNewline
+        Initialize-GitDefaults -Language 'CSharp' -Force         # .gitattributes.bak
+        Set-Content -Path '.gitattributes' -Value 'V2' -NoNewline
+        Initialize-GitDefaults -Language 'CSharp' -Force         # .gitattributes.bak.<ticks>
+        Set-Content -Path '.gitattributes' -Value 'V3' -NoNewline
+        Initialize-GitDefaults -Language 'CSharp' -Force         # second .gitattributes.bak.<ticks>
+        $baks = Get-ChildItem -Filter '.gitattributes.bak*' -Force
+        $baks.Count | Should -BeGreaterOrEqual 3
+        # Each .bak* must have a distinct name
+        ($baks | Select-Object -ExpandProperty Name | Sort-Object -Unique).Count | Should -Be $baks.Count
+    }
+}
+
+Describe 'Get-GitDefaultsDetectedLanguages (Copilot review #161)' {
+    BeforeEach {
+        $script:detRepo = Join-Path ([System.IO.Path]::GetTempPath()) ("detect-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+        New-Item -ItemType Directory -Path $script:detRepo | Out-Null
+    }
+    AfterEach {
+        Remove-Item -Recurse -Force $script:detRepo -ErrorAction SilentlyContinue
+    }
+
+    It 'detects CSharp from a .csproj file' {
+        Set-Content -Path (Join-Path $script:detRepo 'App.csproj') -Value '<Project/>'
+        Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Contain 'CSharp'
+    }
+
+    It 'detects PowerShell from a .psm1 file' {
+        Set-Content -Path (Join-Path $script:detRepo 'tool.psm1') -Value '# m'
+        Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Contain 'PowerShell'
+    }
+
+    It 'detects TypeScript from a tsconfig.json' {
+        Set-Content -Path (Join-Path $script:detRepo 'tsconfig.json') -Value '{}'
+        Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Contain 'TypeScript'
+    }
+
+    It 'detects ASP.NET only when both .csproj AND appsettings*.json are present' {
+        Set-Content -Path (Join-Path $script:detRepo 'App.csproj') -Value '<Project/>'
+        Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Not -Contain 'ASP.NET'
+        Set-Content -Path (Join-Path $script:detRepo 'appsettings.json') -Value '{}'
+        Get-GitDefaultsDetectedLanguages -Path $script:detRepo | Should -Contain 'ASP.NET'
+    }
+
+    It 'returns an empty result for a tree with no indicator files' {
+        $result = Get-GitDefaultsDetectedLanguages -Path $script:detRepo
+        @($result).Count | Should -Be 0
+    }
 }
