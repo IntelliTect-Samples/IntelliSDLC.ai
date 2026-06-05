@@ -126,10 +126,14 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
         $script:repo = Join-Path $TestDrive "consumer"
         if (Test-Path $script:repo) { Remove-Item -Recurse -Force $script:repo }
         New-FakeConsumerRepo -Root $script:repo
-        New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/designs") -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:repo "tasks") -Force | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/prd") -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") -Value "PLAN-ALPHA Closes #7"
+        # Legacy tasks/ sources: split by -prd / -plan suffix into the new docs structure.
+        Set-Content -LiteralPath (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") -Value "PLAN-ALPHA Closes #7"
+        Set-Content -LiteralPath (Join-Path $script:repo "tasks/gamma-prd.md") -Value "PRD-GAMMA"
+        # Legacy docs/prd source.
         Set-Content -LiteralPath (Join-Path $script:repo "docs/prd/beta-prd.md") -Value "PRD-BETA"
+        # Root doc source.
         Set-Content -LiteralPath (Join-Path $script:repo "PRD.md") -Value "ROOT-PRD"
         Push-Location $script:repo
         try {
@@ -140,64 +144,66 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
     }
 
     It "with -WhatIf, plans actions and writes nothing to disk" {
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -IncludeDocsPrd -IncludeRootDocs -LinkIssues -WhatIf
-        $records.Count | Should -BeGreaterOrEqual 3
-        ($records | Where-Object { $_.Note -eq "planned (WhatIf)" }).Count | Should -BeGreaterOrEqual 3
-        Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeTrue
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -IncludeDocsPrd -IncludeRootDocs -LinkIssues -WhatIf
+        $records.Count | Should -BeGreaterOrEqual 4
+        ($records | Where-Object { $_.Note -eq "planned (WhatIf)" }).Count | Should -BeGreaterOrEqual 4
+        Test-Path (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/prd/beta-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "PRD.md") | Should -BeTrue
-        Test-Path (Join-Path $script:repo "tasks/alpha-plan.md") | Should -BeFalse
-        Test-Path (Join-Path $script:repo "tasks/MIGRATION.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/designs/alpha-plan.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/MIGRATION.md") | Should -BeFalse
     }
 
     It "with -Confirm:false, moves files via git mv (history preserved)" {
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
-        $records.Count | Should -BeGreaterOrEqual 3
-        Test-Path (Join-Path $script:repo "tasks/alpha-plan.md") | Should -BeTrue
-        Test-Path (Join-Path $script:repo "tasks/beta-prd.md") | Should -BeTrue
-        Test-Path (Join-Path $script:repo "tasks/legacy-prd.md") | Should -BeTrue
-        Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeFalse
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
+        $records.Count | Should -BeGreaterOrEqual 4
+        Test-Path (Join-Path $script:repo "docs/designs/alpha-plan.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/specs/gamma-prd.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/specs/beta-prd.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/specs/legacy-prd.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") | Should -BeFalse
         Test-Path (Join-Path $script:repo "PRD.md") | Should -BeFalse
         Push-Location $script:repo
         try {
             $diff = & git diff --cached --name-status -M
-            ($diff | Where-Object { $_ -match "^R" }).Count | Should -BeGreaterOrEqual 3
+            ($diff | Where-Object { $_ -match "^R" }).Count | Should -BeGreaterOrEqual 4
         }
         finally { Pop-Location }
-        $manifestPath = Join-Path $script:repo "tasks/MIGRATION.md"
+        $manifestPath = Join-Path $script:repo "docs/MIGRATION.md"
         Test-Path $manifestPath | Should -BeTrue
         $manifest = Get-Content -LiteralPath $manifestPath -Raw
-        $manifest | Should -Match "# tasks/ Migration Manifest"
+        $manifest | Should -Match "# docs/ Migration Manifest"
         $manifest | Should -Match "alpha-plan.md"
     }
 
-    It "normalizes docs/designs date prefixes and docs/prd suffix conventions" {
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
-        $records.Destination -join "`n" | Should -Match "tasks/alpha-plan.md"
-        $records.Destination -join "`n" | Should -Match "tasks/beta-prd.md"
-        $records.Destination -join "`n" | Should -Match "tasks/legacy-prd.md"
+    It "routes prd sources to docs/specs and plan sources to docs/designs" {
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
+        $records.Destination -join "`n" | Should -Match "docs/designs/alpha-plan.md"
+        $records.Destination -join "`n" | Should -Match "docs/specs/gamma-prd.md"
+        $records.Destination -join "`n" | Should -Match "docs/specs/beta-prd.md"
+        $records.Destination -join "`n" | Should -Match "docs/specs/legacy-prd.md"
     }
 
     It "captures linked issue numbers (Closes #7) in records" {
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -LinkIssues -Confirm:$false
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -LinkIssues -Confirm:$false
         $alpha = $records | Where-Object { $_.Destination -match "alpha-plan" }
         $alpha.LinkedIssues | Should -Contain 7
     }
 
     It "is idempotent: a second run with identical source content reports skip" {
-        Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/designs") -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $script:repo "tasks/alpha-plan.md") -Destination (Join-Path $script:repo "docs/designs/alpha-plan.md")
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false
+        Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:repo "tasks") -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $script:repo "docs/designs/alpha-plan.md") -Destination (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md")
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false
         $skips = $records | Where-Object { $_.Action -eq "skip" }
         @($skips).Count | Should -BeGreaterOrEqual 1
     }
 
     It "appends a sha1 suffix when destination exists with different content" {
-        Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false | Out-Null
-        New-Item -ItemType Directory -Path (Join-Path $script:repo "docs/designs") -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $script:repo "docs/designs/alpha-plan.md") -Value "DIFFERENT-CONTENT"
-        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeDocsDesigns -Confirm:$false
+        Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:repo "tasks") -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") -Value "DIFFERENT-CONTENT"
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false
         ($records | Where-Object { $_.Destination -match "alpha-plan-[0-9a-f]{8}\.md" }).Count | Should -BeGreaterOrEqual 1
     }
 }
@@ -223,12 +229,12 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
         Set-Content -LiteralPath (Join-Path $script:otherDir "cwd.txt") -Value "C:\some\other\repo" -NoNewline
     }
 
-    It "copies the matching session plan into tasks/" {
+    It "copies the matching session plan into docs/designs/" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -Confirm:$false
         @($records).Count | Should -Be 1
         $records[0].Action | Should -Be "copy"
         $records[0].SourceType | Should -Be "copilot-session"
-        Test-Path (Join-Path $script:repo "tasks/session-abcdef12-plan.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/designs/session-abcdef12-plan.md") | Should -BeTrue
     }
 
     It "leaves the original session plan in place (copy not move)" {
@@ -238,14 +244,14 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
 
     It "filters out sessions whose recorded repo does not match the target" {
         Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -Confirm:$false | Out-Null
-        Test-Path (Join-Path $script:repo "tasks/session-deadbeef-plan.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/designs/session-deadbeef-plan.md") | Should -BeFalse
     }
 
     It "with -WhatIf, plans copy actions and writes nothing" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -WhatIf
         @($records).Count | Should -Be 1
         $records[0].Note | Should -Be "planned (WhatIf)"
-        Test-Path (Join-Path $script:repo "tasks/session-abcdef12-plan.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/designs/session-abcdef12-plan.md") | Should -BeFalse
     }
 
     It "second run is idempotent (skip on identical content)" {
@@ -258,13 +264,13 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
 Describe "Write-MigrationManifest" {
     It "writes a well-formed markdown table" {
         $records = @(
-            (New-MigrationRecord -Source "docs/designs/foo.md" -Destination "tasks/foo-plan.md" -Action "move" -SourceType "docs/designs" -LinkedIssues @(1, 2)),
-            (New-MigrationRecord -Source "~/.copilot/x/plan.md" -Destination "tasks/session-x-plan.md" -Action "copy" -SourceType "copilot-session")
+            (New-MigrationRecord -Source "tasks/foo-plan.md" -Destination "docs/designs/foo-plan.md" -Action "move" -SourceType "legacy-tasks" -LinkedIssues @(1, 2)),
+            (New-MigrationRecord -Source "~/.copilot/x/plan.md" -Destination "docs/designs/session-x-plan.md" -Action "copy" -SourceType "copilot-session")
         )
         $path = Join-Path $TestDrive "MIGRATION.md"
         Write-MigrationManifest -Path $path -Records $records
         $text = Get-Content -LiteralPath $path -Raw
-        $text | Should -Match "# tasks/ Migration Manifest"
+        $text | Should -Match "# docs/ Migration Manifest"
         $text | Should -Match "Timestamp \(UTC\)"
         $text | Should -Match "#1 #2"
         $text | Should -Match "foo-plan.md"
