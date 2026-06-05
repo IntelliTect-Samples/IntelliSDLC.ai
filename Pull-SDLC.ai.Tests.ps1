@@ -589,6 +589,25 @@ Describe 'Get-UpstreamOps' {
         $r.Path    | Should -Be '.github/agents/new.md'
     }
 
+    It 'replays the Consolidate-Tasks -> Consolidate-Specs rename as an orphan-removing op when both names are managed (issue #184)' {
+        # Guards the orphan-cleanup contract: the retired filename must stay in
+        # ManagedPaths so the diff-replay pathspec sees both sides and removes
+        # the stale Consolidate-Tasks.ps1 from consumer trees. If the old name
+        # were dropped from the pathspec, git would emit an add-only op and the
+        # orphan would survive -- this test would then fail.
+        $body = ("aaaaaaaa`nbbbbbbbb`ncccccccc`ndddddddd`neeeeeeee`n" * 4)
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { $body | Out-File -Encoding utf8 Consolidate-Tasks.ps1 -NoNewline } `
+            -Tweak { git mv Consolidate-Tasks.ps1 Consolidate-Specs.ps1 }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('Consolidate-Tasks.ps1','Consolidate-Specs.ps1') -RepoRoot $fx.Consumer
+        # The old path must be removed (either as the OldPath of a rename op or
+        # as a standalone delete) and the new path must be written.
+        $removesOld = $ops | Where-Object { ($_.Op -eq 'R' -and $_.OldPath -eq 'Consolidate-Tasks.ps1') -or ($_.Op -eq 'D' -and $_.Path -eq 'Consolidate-Tasks.ps1') }
+        $removesOld | Should -Not -BeNullOrEmpty -Because 'the stale Consolidate-Tasks.ps1 must be removed from consumer trees'
+        $writesNew = $ops | Where-Object { $_.Path -eq 'Consolidate-Specs.ps1' }
+        $writesNew | Should -Not -BeNullOrEmpty -Because 'the renamed Consolidate-Specs.ps1 must be delivered'
+    }
+
     It 'returns every managed file when called with empty anchor (bootstrap)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed {
@@ -1228,10 +1247,10 @@ Describe 'Test-NoManagedFilesPresent (issue #136)' {
         Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
     }
 
-    It 'returns $true when only meta-scripts (Pull-SDLC.ai + Cleanup-Worktree + Consolidate-Tasks) are present (issue #152)' {
+    It 'returns $true when only meta-scripts (Pull-SDLC.ai + Cleanup-Worktree + Consolidate-Specs) are present (issue #152)' {
         $root = Join-Path $TestDrive ("nm-meta-" + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $root -Force | Out-Null
-        foreach ($f in 'Pull-SDLC.ai.ps1','Pull-SDLC.ai.Tests.ps1','Cleanup-Worktree.ps1','Consolidate-Tasks.ps1','Consolidate-Tasks.Tests.ps1') {
+        foreach ($f in 'Pull-SDLC.ai.ps1','Pull-SDLC.ai.Tests.ps1','Cleanup-Worktree.ps1','Consolidate-Specs.ps1','Consolidate-Specs.Tests.ps1') {
             '# stub' | Out-File -Encoding utf8 (Join-Path $root $f) -NoNewline
         }
         Test-NoManagedFilesPresent -RepoRoot $root | Should -BeTrue
@@ -2305,8 +2324,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
                 # Meta scripts -- mirror real repo contents minimally.
                 Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# upstream pull script`n" -NoNewline
                 Set-Content -LiteralPath 'Cleanup-Worktree.ps1' -Value "# upstream cleanup`n" -NoNewline
-                Set-Content -LiteralPath 'Consolidate-Tasks.ps1' -Value "# upstream consolidate`n" -NoNewline
-                Set-Content -LiteralPath 'Consolidate-Tasks.Tests.ps1' -Value "# upstream consolidate tests`n" -NoNewline
+                Set-Content -LiteralPath 'Consolidate-Specs.ps1' -Value "# upstream consolidate`n" -NoNewline
+                Set-Content -LiteralPath 'Consolidate-Specs.Tests.ps1' -Value "# upstream consolidate tests`n" -NoNewline
                 Set-Content -LiteralPath 'Pull-SDLC.ai.Tests.ps1' -Value "# upstream pull tests`n" -NoNewline
                 git add -A | Out-Null
                 git commit -q -m "upstream seed"
@@ -2358,7 +2377,7 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         $crCount | Should -Be 0 -Because "the state file must be LF-only so consumer `.gitattributes` rules like `*.json text eol=lf` cannot mark it modified"
     }
 
-    It 'F2: tracks all meta scripts (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, Consolidate-Tasks.ps1, *.Tests.ps1) after fresh bootstrap' {
+    It 'F2: tracks all meta scripts (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, Consolidate-Specs.ps1, *.Tests.ps1) after fresh bootstrap' {
         $fx = New-BootstrapOnMainFixture -Root $script:carveRoot
         Push-Location $fx.Consumer
         try {
@@ -2368,17 +2387,24 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             $tracked | Should -Contain 'Pull-SDLC.ai.ps1' -Because 'the downloaded bootstrap script must end up tracked, not untracked'
             $tracked | Should -Contain 'Pull-SDLC.ai.Tests.ps1'
             $tracked | Should -Contain 'Cleanup-Worktree.ps1'
-            $tracked | Should -Contain 'Consolidate-Tasks.ps1'
-            $tracked | Should -Contain 'Consolidate-Tasks.Tests.ps1'
+            $tracked | Should -Contain 'Consolidate-Specs.ps1'
+            $tracked | Should -Contain 'Consolidate-Specs.Tests.ps1'
+            $tracked | Should -Not -Contain 'Consolidate-Tasks.ps1' -Because 'the legacy script name was renamed and must not be re-introduced'
+            $tracked | Should -Not -Contain 'Consolidate-Tasks.Tests.ps1'
         } finally { Pop-Location }
     }
 
     It 'F2: drift guard catches local edits to managed meta scripts (regression: ensures Pull-SDLC.ai.ps1 is a managed path)' {
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Cleanup-Worktree.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
+        # The retired filename stays managed so the rename/delete replays into
+        # consumer trees on their next sync (orphan cleanup). Dropping it would
+        # leave every consumer with a stale Consolidate-Tasks.ps1.
         Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.Tests.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
     }
 
     It 'F3: sync-manifest.json is not present in the upstream tree (deleted)' {

@@ -192,6 +192,12 @@ $script:UpstreamManagedPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
+    'Consolidate-Specs.ps1',
+    'Consolidate-Specs.Tests.ps1',
+    # Retired filename (renamed to Consolidate-Specs.ps1 in issue #184). Kept on
+    # the managed-path list so the rename/delete replays into consumer trees on
+    # their next sync -- Get-UpstreamOps filters the diff by this pathspec, so
+    # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
     'Consolidate-Tasks.Tests.ps1'
 )
@@ -208,8 +214,8 @@ $script:MetaScriptPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
-    'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1'
+    'Consolidate-Specs.ps1',
+    'Consolidate-Specs.Tests.ps1'
 )
 
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths
@@ -736,8 +742,8 @@ function Invoke-MainTreeCleanup {
             'Pull-SDLC.ai.ps1',
             'Pull-SDLC.ai.Tests.ps1',
             'Cleanup-Worktree.ps1',
-            'Consolidate-Tasks.ps1',
-            'Consolidate-Tasks.Tests.ps1'
+            'Consolidate-Specs.ps1',
+            'Consolidate-Specs.Tests.ps1'
         )
     )
     $actions = New-Object System.Collections.Generic.List[string]
