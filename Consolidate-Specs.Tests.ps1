@@ -1,5 +1,5 @@
 BeforeAll {
-    . $PSScriptRoot/Consolidate-Tasks.ps1
+    . $PSScriptRoot/Consolidate-Specs.ps1
 
     function New-FakeConsumerRepo {
         param([string]$Root)

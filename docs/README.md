@@ -31,7 +31,7 @@ issue, branch (`feat/<issue#>-<slug>`), and PR:
 |---------------------------------------|--------------------------|------------------------------------------------------|
 | `docs/specs/<issue#>-<slug>-prd.md`   | `@prd` agent             | Product requirements: user stories, acceptance criteria, metrics. |
 | `docs/designs/<issue#>-<slug>-plan.md`| `@dev-loop` Phase 2      | Implementation plan: ordered tasks with file paths, code snippets, commit messages. |
-| `docs/MIGRATION.md`                   | `Consolidate-Tasks.ps1`  | Audit trail of files imported from legacy locations. |
+| `docs/MIGRATION.md`                   | `Consolidate-Specs.ps1`  | Audit trail of files imported from legacy locations. |
 
 A PRD spike filed before an issue exists may use the bare `<slug>-prd.md` and
 get renamed to add the `<issue#>-` prefix once the issue is created. Legacy
@@ -63,7 +63,7 @@ run will leave your requirements corpus alone.
 
 ## Migrating Legacy Spec Files
 
-The repo-root script `Consolidate-Tasks.ps1` imports historical spec
+The repo-root script `Consolidate-Specs.ps1` imports historical spec
 artifacts into this archive:
 
 - `tasks/*-prd.md`  -> moved (`git mv`) into `docs/specs/<slug>-prd.md`
@@ -77,14 +77,14 @@ It uses the standard PowerShell `SupportsShouldProcess` pattern:
 
 ```powershell
 # Dry run -- prints planned actions, writes nothing:
-./Consolidate-Tasks.ps1 -WhatIf
+./Consolidate-Specs.ps1 -WhatIf
 
 # Actually perform the migration without per-action prompts:
-./Consolidate-Tasks.ps1 -Confirm:$false
+./Consolidate-Specs.ps1 -Confirm:$false
 ```
 
 The script is idempotent (re-runs are no-ops) and writes a manifest to
 `docs/MIGRATION.md` recording each action.
 
-See the inline comment-based help (`Get-Help ./Consolidate-Tasks.ps1 -Full`)
+See the inline comment-based help (`Get-Help ./Consolidate-Specs.ps1 -Full`)
 for the full switch list.
