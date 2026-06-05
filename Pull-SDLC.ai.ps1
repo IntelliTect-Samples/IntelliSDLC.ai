@@ -167,7 +167,7 @@ $script:TemplateScaffoldMap = [ordered]@{
     '.github/instructions/project.instructions.md.template' = '.github/instructions/project.instructions.md'
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     'README.md.template'                                    = 'README.md'
-    'tasks/README.md'                                       = 'tasks/README.md'
+    'docs/README.md'                                        = 'docs/README.md'
 }
 
 # Paths (file or directory prefixes) that upstream owns. Anything under one
@@ -179,7 +179,11 @@ $script:UpstreamManagedPaths = @(
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/',
-    'tasks/',
+    # The consumer-owned spec-archive guide. Sync-managed so the same-name
+    # scaffold delivers `docs/README.md` on first sync and the file is
+    # reconciled against upstream until the consumer takes ownership (it is
+    # also on $script:AlwaysLocalPaths, which trumps once it exists locally).
+    'docs/README.md',
     # Meta-scripts: the bootstrap script the user downloads via `iwr` and
     # its siblings. Sync-managed so the user's local copy is reconciled
     # against upstream on every run (including the very first carve-out
@@ -217,7 +221,13 @@ $script:AlwaysLocalPaths = @(
     'CLAUDE.project.md',
     '.gitattributes',
     '.sdlc-ai-sync.json',
-    'tasks/'
+    # The standard spec archive: PRDs (the *what*) under docs/specs/,
+    # implementation plans (the *how*) under docs/designs/, and the
+    # consumer-owned archive guide docs/README.md. All consumer-owned so
+    # sync never overwrites a project's requirements corpus.
+    'docs/specs/',
+    'docs/designs/',
+    'docs/README.md'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather
@@ -461,9 +471,9 @@ function Invoke-TemplateScaffold {
         # When set, same-name scaffold entries (where the map key equals the
         # value) read upstream content via `git -C $SourceRoot show $Ref:$key`
         # instead of copying from the working tree. This is how
-        # `tasks/README.md` (issue #156) -- a committed-in-upstream consumer
-        # first-draft file that lives under the consumer-owned `tasks/`
-        # always-local prefix -- is delivered on first sync.
+        # `docs/README.md` (issue #156) -- a committed-in-upstream consumer
+        # first-draft file that lives under the consumer-owned `docs/`
+        # always-local prefixes -- is delivered on first sync.
         [string]$Ref
     )
     $scaffolded = New-Object System.Collections.Generic.List[string]

@@ -114,15 +114,15 @@ fully consumer-owned -- edit them freely.
 > so the sync never touches it once you have one.
 
 `README.md` uses the indirect (`.template` -> bare) pattern -- not the
-same-name pattern used for `tasks/README.md` below -- because the
+same-name pattern used for `docs/README.md` below -- because the
 upstream's own root `README.md` describes IntelliSDLC.ai itself and
 cannot double as the consumer skeleton.
 
-`tasks/README.md` is shipped directly (not via a `.template` indirection)
+`docs/README.md` is shipped directly (not via a `.template` indirection)
 because its content is the same for every consumer. On first sync the script
-copies the upstream `tasks/README.md` into the consumer working tree if no
-`tasks/README.md` is present; afterwards `tasks/` is consumer-owned and the
-file is never overwritten.
+copies the upstream `docs/README.md` into the consumer working tree if no
+`docs/README.md` is present; afterwards `docs/specs/`, `docs/designs/`, and
+`docs/README.md` are consumer-owned and the file is never overwritten.
 
 ## File Ownership
 
