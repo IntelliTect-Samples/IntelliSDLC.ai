@@ -22,6 +22,22 @@ applyTo: '**/*.ps1,**/*.psm1,**/*.psd1'
   where appropriate.
 - Use `[OutputType()]` on functions that return typed objects.
 
+## State-Changing Functions
+
+- For functions or scripts that modify state (create / change / delete files,
+  registry, services, remote resources, etc.), implement the standard
+  `SupportsShouldProcess` pattern -- declare
+  `[CmdletBinding(SupportsShouldProcess)]` and guard each mutating action with
+  `if ($PSCmdlet.ShouldProcess($target, $action)) { ... }`.
+- This gives callers the built-in `-WhatIf` (dry run) and `-Confirm` (prompt)
+  switches for free. **Prefer this over a hand-rolled `-DryRun` / `-Preview`
+  switch or any other bespoke dry-run flag** -- `-WhatIf` is the idiomatic
+  PowerShell dry run and integrates with `$WhatIfPreference` and the rest of
+  the engine.
+- Set `[CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]` for
+  destructive operations so they prompt by default; unattended callers opt out
+  with `-Confirm:$false`.
+
 ## Error Handling
 
 - Use `-ErrorAction Stop` on critical calls within `try/catch` blocks.
