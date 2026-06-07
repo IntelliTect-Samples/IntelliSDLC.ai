@@ -22,6 +22,28 @@ applyTo: '**/*.ps1,**/*.psm1,**/*.psd1'
   where appropriate.
 - Use `[OutputType()]` on functions that return typed objects.
 
+## Output & Streams
+
+- Pick the output cmdlet by **intent**. Avoid `Write-Host` (PSScriptAnalyzer
+  `PSAvoidUsingWriteHost`) -- it writes straight to the host and cannot be
+  captured, redirected, or suppressed.
+  - `Write-Output` (or just emit the object) -- pipeline data / return values.
+  - `Write-Information` -- human-facing status / progress messages (stream 6;
+    controllable via `-InformationAction`, redirectable with `6>`).
+  - `Write-Verbose` / `Write-Debug` -- opt-in diagnostics, gated by `-Verbose` /
+    `-Debug`.
+  - `Write-Warning` -- warnings. `Write-Error` (or `throw`) -- errors.
+- **Color is a host concern -- do not hand-roll it.** The host renders
+  `Write-Warning` in yellow and `Write-Error` in red automatically, so choosing
+  the right stream gives you the color for free. In PowerShell 7.2+ these are
+  configurable via `$PSStyle.Formatting.Warning`, `$PSStyle.Formatting.Error`,
+  etc.; `Write-Information` is intentionally uncolored.
+- Keep human-facing chatter out of a function's pipeline output so callers get
+  clean return values.
+- `Write-Host` is acceptable only for intentional, decorative interactive console
+  UX that is never captured (e.g. colorized dry-run previews). Even then, prefer
+  `$PSStyle`-composed ANSI over `-ForegroundColor` on PowerShell 7.2+.
+
 ## State-Changing Functions
 
 - For functions or scripts that modify state (create / change / delete files,
