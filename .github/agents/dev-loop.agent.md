@@ -233,7 +233,10 @@ any spike code deleted or retro-fitted.
 
 **Invoke the `evidence-capture` skill.** This phase is a **hard gate**: it does not
 exit until an AI review of a captured runtime artifact confirms the change visibly
-matches its issue intent (or until 3 iterations escalate to the human).
+matches its issue intent (or until 3 iterations escalate to the human). **The agent
+must never silently skip this phase or collapse it away during the continuous
+Phase 3-7 flow.** Displaying the result is a required output of every dev-loop run
+(see step 6); the only way it is omitted is an explicit user opt-out.
 
 1. **Identify the change type** from the table in
    `.github/skills/evidence-capture/SKILL.md` (CLI, library, bug fix, refactor,
@@ -274,19 +277,37 @@ matches its issue intent (or until 3 iterations escalate to the human).
      (typically `.evidence/<phase-id>/evidence.md`). **Defer the PR upload to
      Phase 7** -- the same script runs again without `-LocalOnly` once the PR
      exists. Record the local URL for the Task Complete Summary's
-     `Evidence (local)` field. Proceed to Phase 6.
+     `Evidence (local)` field. Proceed to step 6.
    - Either fails -> append the diagnosis to `.evidence/<phase-id>/diagnosis.md`,
      increment `.evidence/<phase-id>/iteration.txt`. If iteration <= 3, apply
      the diagnosed fix (this is a fix-in-place within Phase 5b, *not* a route
      back to Phase 3) and re-capture. If iteration == 3, write
      `.evidence/<phase-id>/ESCALATED`, post the diagnosis as a PR comment, and
      pause for the user.
+6. **Display the result (mandatory).** The result must be visible to the user
+   in the agent's response without re-running the command:
+   - **Inline (CLI / PowerShell / command / markdown / text, and the refactor
+     "no behavior change" attestation):** render the actual result **inline** --
+     the command plus its real captured output, with ANSI escape sequences
+     stripped. `Publish-Evidence.ps1` echoes this for Inline artifacts; reflect
+     it in the final response.
+   - **ArtifactReference (UI HTML+video, large/binary captures):** a `file:///`
+     link (plus the PR link) is sufficient; no inline rendering required.
+
+   This step runs on every change and is **never an agent default to skip**. The
+   user may opt out with a natural-language request ("skip evidence display" /
+   "skip the output"), which maps to `Publish-Evidence.ps1 -SkipDisplay`: the
+   inline echo is suppressed but the `Evidence (local):` `file:///` link line
+   still prints, and the loop summary records that the display was skipped by
+   user request.
 
 **Exit criteria:** `PASSED` marker exists in `.evidence/<phase-id>/`, the
 clickable `file:///` URL for the entry-point file was printed in agent output,
-Task Complete Summary will include both **Evidence (local)** and (after
-Phase 7) **Evidence (PR)** fields. The PR upload itself is deferred to
-Phase 7.
+**the result was displayed** (inline ANSI-stripped output for CLI/markdown
+artifacts, a `file:///` link for UI/binary artifacts) and was not skipped unless
+the user explicitly opted out, and the Task Complete Summary will include both
+**Evidence (local)** and (after Phase 7) **Evidence (PR)** fields. The PR upload
+itself is deferred to Phase 7.
 **-> On PASS, proceed to Phase 6. On ESCALATE, pause for user input. If a
 structural fix is required that affects other tests, return to Phase 3.**
 
@@ -489,10 +510,15 @@ Once Phase 7 passes with zero unresolved threads and a successful dry run:
 
 1. Run the full test suite one final time. Present the evidence.
 2. Present the dry run results.
-3. Summarize: branch name, what was implemented, what was refactored,
+3. **Display the result** in the final summary on every run: for CLI/markdown
+   changes render the actual output inline (ANSI-stripped); for UI/binary
+   changes include the `file:///` link (plus PR link). Omit the inline display
+   only when the user explicitly opted out (`-SkipDisplay`), in which case note
+   that the display was skipped by user request.
+4. Summarize: branch name, what was implemented, what was refactored,
    functional tests added, loop iterations, dry run result, PR number,
    linked issue number, Copilot review status.
-4. **Execute Phase 8 (Merge)** -- rebase-merge the PR with
+5. **Execute Phase 8 (Merge)** -- rebase-merge the PR with
    ``gh pr merge <pr-number> --rebase --delete-branch``. Never merge while CI
    is red or with unresolved review threads.
-5. Execute Phase 9 (Cleanup) commands with actual values (no placeholders).
+6. Execute Phase 9 (Cleanup) commands with actual values (no placeholders).

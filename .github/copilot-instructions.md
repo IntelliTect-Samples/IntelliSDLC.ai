@@ -341,7 +341,9 @@ and branch names -- never plain-text references like `#131`.
 
 Every `task_complete` summary must include the following fields whenever the
 underlying data exists. Omit a field only when it does not apply to the work
-just performed (e.g., a Q&A turn with no PR).
+just performed (e.g., a Q&A turn with no PR). **Exception:** on every dev-loop
+run the **Result display** is mandatory and must not be omitted -- only the PR
+link may be dropped when no PR exists.
 
 | Field | Required format |
 |---|---|
@@ -349,6 +351,7 @@ just performed (e.g., a Q&A turn with no PR).
 | **Issue** | Full link: `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)` |
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
+| **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
 | **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
 | **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
 
@@ -371,6 +374,11 @@ Example:
 - **PR**: [#57](https://github.com/owner/repo/pull/57) (merged)
 - **Branch**: [`feat/42-user-auth`](https://github.com/owner/repo/tree/feat/42-user-auth)
 - **Test**: `dotnet test --no-build`
+- **Result**:
+  ```text
+  > app auth --user alice
+  Authenticated alice (token expires in 3600s)
+  ```
 - **Evidence (local)**: file:///D:/Git/repo/.evidence/phase-5b-20260101T000000Z/evidence.md
 - **Evidence (PR)**: https://github.com/owner/repo/pull/57#issuecomment-1234567
 ```
