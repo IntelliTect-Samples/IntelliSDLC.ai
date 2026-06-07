@@ -2614,3 +2614,107 @@ Describe 'Test-LocalDriftOnManagedPaths (issue #178: EOL false positive)' {
     }
 }
 
+
+Describe 'Output stream assignment (issue #194)' {
+
+    BeforeEach {
+        $script:streamRoot = Join-Path $TestDrive ("stream-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    # --- Category 1: fatal messages land on the error stream (rc preserved) ---
+
+    It 'POLICY VIOLATION lands on the error stream and still returns rc=2' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'anchor body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'upstream new body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'consumer override' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'CLAUDE.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add CLAUDE.md; git commit -q -m 'local edit to managed file' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -ErrorVariable streamErr 2>$null
+        $rc | Should -Be 2
+        ($streamErr -join "`n") | Should -Match 'POLICY VIOLATION'
+    }
+
+    It 'ABORT commit-context lands on the error stream and still returns rc=3' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"abc","syncedAt":"2026-01-01T00:00:00Z"}' |
+            Out-File -Encoding utf8 -LiteralPath (Join-Path $fx.Consumer '.sdlc-ai-sync.json') -NoNewline
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git remote add origin https://example.invalid/owner/repo.git
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoWorktree -ErrorVariable streamErr 2>$null
+        $rc | Should -Be 3
+        ($streamErr -join "`n") | Should -Match 'ABORT: cannot create sync commit'
+    }
+
+    It 'no git repo with -NoAutoInit lands on the error stream and still returns rc=5' {
+        $empty = Join-Path $TestDrive ("nogit-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $empty -Force | Out-Null
+        Push-Location $empty
+        try {
+            $rc = Invoke-PullSDLC -NoAutoInit -NoFetch -ErrorVariable streamErr 2>$null
+        } finally { Pop-Location }
+        $rc | Should -Be 5
+        ($streamErr -join "`n") | Should -Match 'not inside a git repository'
+    }
+
+    # --- Category 2: non-fatal advisories land on the warning stream ---
+
+    It 'the -Force overwrite advisory lands on the warning stream' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'anchor body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'upstream new body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'consumer override' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'CLAUDE.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add CLAUDE.md; git commit -q -m 'local edit to managed file' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -Force -WarningVariable streamWarn -WarningAction SilentlyContinue
+        $rc | Should -Be 0
+        ($streamWarn -join "`n") | Should -Match '-Force in effect'
+    }
+
+    It 'Bootstrap declined lands on the warning stream and returns rc=1' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Mock -CommandName Resolve-SyncAnchor -MockWith { $null }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -WarningVariable streamWarn -WarningAction SilentlyContinue
+        $rc | Should -Be 1
+        ($streamWarn -join "`n") | Should -Match 'Bootstrap declined'
+    }
+
+    # --- Category 3: status/progress flow through Write-Information (not Write-Host) ---
+
+    It 'sync status messages flow through Write-Information, not Write-Host' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -InformationVariable streamInfo 6>$null
+        $rc | Should -Be 0
+
+        $commitRec = $streamInfo | Where-Object { "$($_.MessageData)" -match 'Created sync commit' } | Select-Object -First 1
+        $commitRec | Should -Not -BeNullOrEmpty
+        # Must be a genuine Write-Information record, NOT Write-Host (which tags PSHOST).
+        $commitRec.Tags | Should -Not -Contain 'PSHOST'
+
+        $appliedRec = $streamInfo | Where-Object { "$($_.MessageData)" -match 'Applied 2 ops' } | Select-Object -First 1
+        $appliedRec | Should -Not -BeNullOrEmpty
+        $appliedRec.Tags | Should -Not -Contain 'PSHOST'
+    }
+}
