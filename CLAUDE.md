@@ -167,13 +167,20 @@ See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete re
 ## Task Complete Summaries
 
 When calling `task_complete`, include the following fields whenever the data
-exists (omit any that don't apply, e.g., a Q&A turn with no PR):
+exists (omit any that don't apply, e.g., a Q&A turn with no PR). The **Result
+display** is the exception: it is mandatory on every dev-loop run and must not be
+omitted -- only the PR link may be dropped when no PR exists.
 
 - **Issue** -- `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)`
 - **PR** -- `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)`
 - **Branch** -- `` [`<branch>`](https://github.com/<owner>/<repo>/tree/<branch>) ``
 - **Test** -- exact local verification command (e.g., `dotnet test --no-build`,
   `Invoke-Pester -Path .\...`)
+- **Result display** -- the actual result so the user sees the change worked
+  without re-running it. **Required on every dev-loop run.** Inline (ANSI-stripped,
+  fenced) captured output for CLI/markdown changes; a `file:///` link for
+  UI/binary changes. Omit the inline output only when the user opted out
+  (`-SkipDisplay`), and note it was skipped by user request.
 - **Evidence (local)** -- clickable `file:///` URL to
   `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
   Phase 5b ran.

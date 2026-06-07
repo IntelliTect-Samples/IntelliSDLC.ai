@@ -53,6 +53,11 @@ npx tsc && npx vitest run
 - [ ] The entry-point file is `evidence.md` per the Local-link contract
 - [ ] A clickable `file:///` URL to the entry-point file was printed in the
       agent output (emitted by `Publish-Evidence.ps1`)
+- [ ] The result was displayed in agent output -- **inline** (ANSI-stripped)
+      for CLI/markdown artifacts, a `file:///` link for UI/binary artifacts --
+      and the step was not skipped (unless the user explicitly requested
+      `-SkipDisplay`, in which case the link line still printed and the skip was
+      recorded)
 - [ ] The plan's Evidence Plan section matches the produced artifact
       (change type, artifact format, capture command, entry-point file)
 - [ ] `.evidence/<phase-id>/iteration.txt` records the loop iteration count

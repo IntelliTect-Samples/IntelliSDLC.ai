@@ -112,6 +112,30 @@ upload is for durability and team visibility, not the primary review path.
 entirely and only prints the local link; the final non-`-LocalOnly` run during
 Phase 7 posts the artifact to the PR.
 
+## Result display contract
+
+Displaying the result is **mandatory on every change** so the user can confirm
+the change worked **without re-running the command themselves**. The form of the
+display depends on the artifact classification:
+
+| Classification | Artifact kinds | Display |
+|---|---|---|
+| **Inline** | `.md` / CLI / PowerShell / command / text (and the refactor "no behavior change" attestation) | The actual result is rendered **inline** in the agent's final response: the command plus its real captured output (ANSI escape sequences stripped so the fenced block is clean plain text). |
+| **ArtifactReference** | UI HTML+video, large/binary captures | A `file:///` link (plus the PR link) is sufficient; **no inline rendering required**. |
+
+`Publish-Evidence.ps1` performs the inline echo for Inline artifacts in both
+`-LocalOnly` and normal modes, stripping ANSI in its echo path. ArtifactReference
+artifacts stay link-only. The `file:///` link and PR link remain durable
+secondary pointers in all cases.
+
+**Opt-out.** The display defaults ON and must never be silently skipped by the
+agent. The user may opt out with a natural-language request to the dev loop
+("skip evidence display" / "skip the output"), which maps to the
+`-SkipDisplay` switch on `Publish-Evidence.ps1`. When skipped, the inline echo
+is suppressed but the `Evidence (local):` `file:///` link line still prints, and
+the dev-loop summary records that the display was skipped by user request.
+Skipping is a deliberate user choice, never an agent default.
+
 ## Storage and lifecycle
 
 Evidence is **ephemeral by default**. Committed evidence rots as the app evolves
@@ -242,6 +266,11 @@ After invoking this skill, the following must all be true:
       so the reviewer has a single anchor.
 - [ ] A clickable `file:///` URL to the entry-point file was printed in the
       agent's output (emitted by `Publish-Evidence.ps1`).
+- [ ] The result was displayed: for an Inline (markdown/CLI/text) artifact the
+      actual result is rendered inline (ANSI-stripped) in the agent's response;
+      for an ArtifactReference (UI/binary) artifact a `file:///` link is
+      sufficient. The display was not skipped unless the user explicitly
+      requested `-SkipDisplay`.
 - [ ] If `PASSED`, the artifact was uploaded to the PR (or earmarked for upload
       when the PR is opened).
 - [ ] The artifact was produced from a fresh run against the current HEAD SHA.
