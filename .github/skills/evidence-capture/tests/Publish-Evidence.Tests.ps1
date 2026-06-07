@@ -219,4 +219,77 @@ Describe 'Publish-Evidence' {
             ($output | Out-String) | Should -Match 'file:///'
         }
     }
+
+    Context 'inline result display' {
+        It 'echoes the inline markdown content to output, not just the URL' {
+            $artifact = Join-Path $script:TempDir 'echo-content.md'
+            $content = "# Evidence`r`n`r`nThe widget now returns 42."
+            Set-Content -LiteralPath $artifact -Value $content -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly -InformationAction Continue 6>&1
+
+            ($output | Out-String) | Should -Match 'The widget now returns 42\.'
+        }
+
+        It 'echoes the inline content when posting to a PR (non-LocalOnly)' {
+            $artifact = Join-Path $script:TempDir 'echo-content-pr.md'
+            $content = "# Evidence`r`n`r`nResponse body equals OK-MARKER."
+            Set-Content -LiteralPath $artifact -Value $content -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 9 `
+                -GhInvoker $stub -InformationAction Continue 6>&1
+
+            ($output | Out-String) | Should -Match 'OK-MARKER'
+        }
+
+        It 'strips ANSI escape sequences from the echoed inline content' {
+            $artifact = Join-Path $script:TempDir 'ansi.md'
+            $esc = [char]27
+            $content = "# Out`r`n`r`n${esc}[31mERROR${esc}[0m red text"
+            Set-Content -LiteralPath $artifact -Value $content -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly -InformationAction Continue 6>&1
+
+            $joined = ($output | Out-String)
+            $joined | Should -Match 'ERROR red text'
+            $joined | Should -Not -Match ([regex]::Escape("$esc["))
+        }
+
+        It 'does not echo raw content for an ArtifactReference artifact' {
+            $artifact = Join-Path $script:TempDir 'ui-noecho.html'
+            Set-Content -LiteralPath $artifact -Value '<html>UNIQUEMARKERXYZ</html>' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly -InformationAction Continue 6>&1
+
+            $joined = ($output | Out-String)
+            $joined | Should -Not -Match 'UNIQUEMARKERXYZ'
+            $joined | Should -Match 'file:///'
+        }
+
+        It 'suppresses the inline echo under -SkipDisplay but still prints the file:/// link' {
+            $artifact = Join-Path $script:TempDir 'skip.md'
+            $content = "# Skip`r`n`r`nSECRETMARKER123 should not appear."
+            Set-Content -LiteralPath $artifact -Value $content -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly -SkipDisplay -InformationAction Continue 6>&1
+
+            $joined = ($output | Out-String)
+            $joined | Should -Not -Match 'SECRETMARKER123'
+            $joined | Should -Match 'file:///'
+        }
+    }
 }
