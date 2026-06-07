@@ -194,6 +194,7 @@ Write-Host "Evidence (local): $fileUri"
 # -SkipDisplay switch suppresses this echo while keeping the link line above.
 if ($classifiedMode -eq 'Inline' -and -not $SkipDisplay) {
     $rawContent = Get-Content -LiteralPath $resolvedPath -Raw
+    if ($null -eq $rawContent) { $rawContent = '' }
     $displayContent = Remove-AnsiEscape -Text $rawContent
     Write-Host '----- Evidence (inline result) -----'
     Write-Host $displayContent
