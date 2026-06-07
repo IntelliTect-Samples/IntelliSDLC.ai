@@ -122,6 +122,12 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# Status/progress is emitted via Write-Information (stream 6) per the
+# "Output & Streams" guidance. The Information stream defaults to
+# SilentlyContinue, so opt it into visible-by-default here to preserve the
+# script's historical console output. Callers can still silence or capture it
+# with -InformationAction / 6>.
+$InformationPreference = 'Continue'
 
 # --- Sync semantics --------------------------------------------------------
 #
@@ -784,7 +790,7 @@ function Invoke-MainTreeCleanup {
                     if ($PSCmdlet.ShouldProcess($path, 'Remove untracked-and-identical file')) {
                         Remove-Item -LiteralPath $abs -Force
                         $msg = "Cleanup: removed untracked '$path' (byte-identical to upstream; PR merge will restore tracked)."
-                        Write-Host $msg -ForegroundColor DarkGray
+                        Write-Information $msg
                         $actions.Add($msg) | Out-Null
                     }
                 }
@@ -802,7 +808,7 @@ function Invoke-MainTreeCleanup {
                         if ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified-to-identical file')) {
                             & git checkout -- $path 2>$null | Out-Null
                             $msg = "Cleanup: reverted '$path' to HEAD (working tree was modified but identical to upstream)."
-                            Write-Host $msg -ForegroundColor DarkGray
+                            Write-Information $msg
                             $actions.Add($msg) | Out-Null
                         }
                     }
@@ -943,23 +949,22 @@ function Resolve-SyncAnchor {
     }
     finally { Pop-Location }
     if ($grep) {
-        Write-Host "Anchor: using commit $grep (matched 'chore: sync IntelliSDLC...' in git log)." -ForegroundColor DarkGray
+        Write-Information "Anchor: using commit $grep (matched 'chore: sync IntelliSDLC...' in git log)."
         return @{ Sha = ($grep | Select-Object -First 1).Trim(); Source = 'grep' }
     }
     $absRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
     if (Test-NoManagedFilesPresent -RepoRoot $absRepoRoot) {
-        Write-Host ''
-        Write-Host '[Bootstrap] No prior sync detected and no upstream-managed files present.' -ForegroundColor Cyan
-        Write-Host '[Bootstrap] Performing initial sync from upstream HEAD (empty-tree anchor).' -ForegroundColor Cyan
+        Write-Information ''
+        Write-Information '[Bootstrap] No prior sync detected and no upstream-managed files present.'
+        Write-Information '[Bootstrap] Performing initial sync from upstream HEAD (empty-tree anchor).'
         return @{ Sha = ''; Source = 'auto-bootstrap' }
     }
     if ($NoPrompt) {
         return @{ Sha = ''; Source = 'bootstrap' }
     }
-    Write-Host ''
-    Write-Host 'No .sdlc-ai-sync.json and no prior sync commit found.' -ForegroundColor Yellow
-    Write-Host 'Existing upstream-managed files were detected; bootstrap will overwrite them.' -ForegroundColor Yellow
-    Write-Host 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).' -ForegroundColor Yellow
+    Write-Warning 'No .sdlc-ai-sync.json and no prior sync commit found.'
+    Write-Warning 'Existing upstream-managed files were detected; bootstrap will overwrite them.'
+    Write-Warning 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).'
     $ans = Read-Host 'Proceed with bootstrap? [y/N]'
     if ($ans -match '^[Yy]') {
         return @{ Sha = ''; Source = 'bootstrap' }
@@ -1254,7 +1259,7 @@ function Invoke-AutoWorktreeSync {
             finally { if ((Get-Location).Path -eq $absWorktree) { Pop-Location } }
 
             if (-not $reusing) {
-                Write-Host "Discarding stale worktree directory '$WorktreePath' (marker does not belong to this repo)." -ForegroundColor DarkGray
+                Write-Information "Discarding stale worktree directory '$WorktreePath' (marker does not belong to this repo)."
                 # Try a clean git-worktree removal first (works when this repo
                 # has a stale registration for the path). Fall back to a raw
                 # filesystem delete when the directory is orphaned.
@@ -1271,16 +1276,16 @@ function Invoke-AutoWorktreeSync {
                 $dirty = git status --porcelain
                 $aheadOfMain = git log "$ProtectedBranch..HEAD" --oneline 2>$null
                 if ($dirty -or $aheadOfMain) {
-                    Write-Host "Resetting reused worktree '$WorktreePath' to '$ProtectedBranch' (scratch area; prior state discarded)." -ForegroundColor DarkGray
+                    Write-Information "Resetting reused worktree '$WorktreePath' to '$ProtectedBranch' (scratch area; prior state discarded)."
                     git reset --hard $ProtectedBranch 2>&1 | Out-Null
                     git clean -fdx 2>&1 | Out-Null
                 } else {
-                    Write-Host "Reusing existing worktree '$WorktreePath' (clean)." -ForegroundColor DarkGray
+                    Write-Information "Reusing existing worktree '$WorktreePath' (clean)."
                 }
             } finally { if ((Get-Location).Path -eq $absWorktree) { Pop-Location } }
         }
         else {
-            Write-Host "Creating worktree '$WorktreePath' on '$SyncBranch' from '$ProtectedBranch' ..." -ForegroundColor DarkGray
+            Write-Information "Creating worktree '$WorktreePath' on '$SyncBranch' from '$ProtectedBranch' ..."
             $branchListing = git branch --list $SyncBranch 2>$null
             $branchExists = $branchListing -ne $null -and ("$branchListing".Trim() -ne '')
             if ($branchExists) {
@@ -1294,12 +1299,12 @@ function Invoke-AutoWorktreeSync {
 
     Push-Location $absWorktree
     try {
-        Write-Host "Running sync inside worktree (branch '$SyncBranch') ..." -ForegroundColor DarkGray
+        Write-Information "Running sync inside worktree (branch '$SyncBranch') ..."
         $args = @{} + $SyncArgs
         $args['RepoRoot'] = $absWorktree
         $rc = Invoke-PullSDLC @args
         if ($rc -ne 0) {
-            Write-Host "Worktree sync returned rc=$rc. Aborting auto-PR." -ForegroundColor Red
+            Write-Error "Worktree sync returned rc=$rc. Aborting auto-PR." -ErrorAction Continue
             return 6
         }
 
@@ -1313,12 +1318,12 @@ function Invoke-AutoWorktreeSync {
         }
         $newCommits = git log "$ProtectedBranch..HEAD" --oneline 2>$null
         if (-not $newCommits) {
-            Write-Host 'No new commits to push (worktree already in sync with main). Nothing to PR.' -ForegroundColor DarkGray
+            Write-Information 'No new commits to push (worktree already in sync with main). Nothing to PR.'
             return 0
         }
 
         if ($needsPush) {
-            Write-Host "Pushing '$SyncBranch' to origin ..." -ForegroundColor DarkGray
+            Write-Information "Pushing '$SyncBranch' to origin ..."
             git push -u origin $SyncBranch 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 # 'chore/sdlc-sync' is a pure scratch branch: every run
@@ -1330,27 +1335,27 @@ function Invoke-AutoWorktreeSync {
                 # --force-with-lease. We use --force-with-lease (NOT plain
                 # --force) so we still abort if a *different* writer pushed
                 # to the remote since we last fetched.
-                Write-Host "Remote '$SyncBranch' diverged; force-pushing scratch branch ..." -ForegroundColor DarkGray
+                Write-Information "Remote '$SyncBranch' diverged; force-pushing scratch branch ..."
                 git push --force-with-lease -u origin $SyncBranch 2>&1 | Out-Null
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host "WARNING: git push failed (including --force-with-lease retry); PR step skipped." -ForegroundColor Yellow
+                    Write-Warning 'git push failed (including --force-with-lease retry); PR step skipped.'
                     return 0
                 }
             }
         }
 
         if ($NoAutoPR) {
-            Write-Host "Skipping PR creation (-NoAutoPR)." -ForegroundColor DarkGray
-            Write-Host "Open one manually: gh pr create --base $ProtectedBranch --head $SyncBranch" -ForegroundColor Yellow
+            Write-Information "Skipping PR creation (-NoAutoPR)."
+            Write-Warning "Open one manually: gh pr create --base $ProtectedBranch --head $SyncBranch"
             return 0
         }
 
         $ghCmd = Get-Command gh -ErrorAction SilentlyContinue
         if (-not $ghCmd) {
-            Write-Host 'gh CLI not found; skipping automatic PR creation.' -ForegroundColor Yellow
+            Write-Warning 'gh CLI not found; skipping automatic PR creation.'
             $remoteUrl = (git remote get-url origin).Trim()
             $compareUrl = $remoteUrl -replace '\.git$','' -replace '^git@github\.com:','https://github.com/'
-            Write-Host "Open one manually: $compareUrl/compare/${ProtectedBranch}...${SyncBranch}?expand=1" -ForegroundColor Yellow
+            Write-Warning "Open one manually: $compareUrl/compare/${ProtectedBranch}...${SyncBranch}?expand=1"
             return 0
         }
 
@@ -1381,7 +1386,7 @@ function Invoke-AutoWorktreeSync {
             -ProtectedBranch $ProtectedBranch `
             -OriginUrl $originUrlForGh
         if ($prPlan.Action -eq 'Skip') {
-            Write-Host "Cannot open PR: $($prPlan.Reason)" -ForegroundColor Yellow
+            Write-Warning "Cannot open PR: $($prPlan.Reason)"
             return 0
         }
         $ghRepoArgs = $prPlan.GhRepoArgs
@@ -1389,7 +1394,7 @@ function Invoke-AutoWorktreeSync {
         # Is there already an open PR for this branch?
         $existingPr = gh @ghRepoArgs pr list --head $SyncBranch --base $ProtectedBranch --state open --json url 2>$null | ConvertFrom-Json
         if ($existingPr -and $existingPr.Count -gt 0) {
-            Write-Host "Existing PR updated: $($existingPr[0].url)" -ForegroundColor Green
+            Write-Information "Existing PR updated: $($existingPr[0].url)"
             return 0
         }
 
@@ -1401,9 +1406,9 @@ function Invoke-AutoWorktreeSync {
         try {
             $prUrl = gh @ghRepoArgs pr create --base $ProtectedBranch --head $SyncBranch --title $title --body-file $bodyFile 2>&1 | Select-Object -Last 1
             if ($LASTEXITCODE -eq 0 -and $prUrl) {
-                Write-Host "Opened PR: $prUrl" -ForegroundColor Green
+                Write-Information "Opened PR: $prUrl"
             } else {
-                Write-Host "PR creation failed: $prUrl" -ForegroundColor Yellow
+                Write-Warning "PR creation failed: $prUrl"
             }
         }
         finally { Remove-Item $bodyFile -ErrorAction SilentlyContinue }
@@ -1511,7 +1516,7 @@ function Invoke-SelfRefresh {
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
             return ''
         }
-        Write-Host ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7)) -ForegroundColor Cyan
+        Write-Information ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7))
         Write-Verbose "Self-refresh: updated $($localHash.Substring(0,7)) -> $($remoteHash.Substring(0,7))"
         return $tmp
     }
@@ -1571,6 +1576,8 @@ function Write-NextStepsBanner {
         and -- when no `origin` is configured -- the `gh repo create`
         hint for brand-new projects.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Decorative interactive "Next steps" banner -- sanctioned host UX per powershell.instructions.md Output & Streams.')]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$RepoRoot,
@@ -1728,6 +1735,8 @@ function Add-GitConfigValueIfMissing {
         the value is not already present. Returns $true when an add happened,
         $false when the value already existed.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Decorative [skip]/[add] setup transcript -- sanctioned host UX per powershell.instructions.md Output & Streams.')]
     [CmdletBinding(SupportsShouldProcess)]
     [OutputType([bool])]
     param(
@@ -1766,11 +1775,13 @@ function Invoke-SetupGitHubSsh {
         Do not call `gh ssh-key add`. Useful when the key is already
         registered out-of-band, or for CI/test scenarios.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Decorative [skip]/[add]/[warn] setup transcript -- sanctioned host UX per powershell.instructions.md Output & Streams.')]
     [CmdletBinding(SupportsShouldProcess)]
     param([switch]$SkipKeyUpload)
 
     if (-not $IsWindows) {
-        Write-Host 'Invoke-SetupGitHubSsh: non-Windows host -- out of scope (issue #164). Skipping.' -ForegroundColor Yellow
+        Write-Warning 'Invoke-SetupGitHubSsh: non-Windows host -- out of scope (issue #164). Skipping.'
         return
     }
 
@@ -1898,6 +1909,57 @@ function Invoke-SetupGitHubSsh {
     }
 }
 
+function Write-PlannedOpsPreview {
+    <#
+    .SYNOPSIS
+        Renders the decorative "Files to update" dry-run preview (header,
+        per-op-kind counts, and word-coded op rows) to the host.
+    .DESCRIPTION
+        This is the sanctioned `Write-Host` exception from the "Output &
+        Streams" guidance: an intentional, colorized, interactive console
+        preview that is never meant to be captured as pipeline data. Keeping
+        it in a dedicated helper lets the PSAvoidUsingWriteHost suppression
+        stay narrowly scoped to the preview instead of the whole sync engine.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '',
+        Justification = 'Decorative colorized dry-run preview -- sanctioned host UX per powershell.instructions.md Output & Streams.')]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Ops,
+        [Parameter(Mandatory)][string]$AnchorLabel,
+        [Parameter(Mandatory)][string]$UpstreamLabel
+    )
+    Write-Host ''
+    if ($Ops.Count -eq 0) {
+        Write-Host "Files to update: 0 (already at upstream $UpstreamLabel -- nothing to sync)" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "Files to update: $($Ops.Count) (syncing $AnchorLabel -> $UpstreamLabel)" -ForegroundColor Cyan
+    }
+    $grouped = $Ops | Group-Object { $_.Op } | Sort-Object Name
+    foreach ($g in $grouped) {
+        Write-Host ("  {0}: {1}" -f $g.Name, $g.Count) -ForegroundColor Cyan
+    }
+    foreach ($op in $Ops) {
+        $word = switch -Regex ($op.Op) {
+            '^A$' { 'add' ; break }
+            '^M$' { 'update' ; break }
+            '^D$' { 'delete' ; break }
+            '^R'  { 'rename' ; break }
+            '^C'  { 'copy' ; break }
+            default { $op.Op }
+        }
+        $col = $word.PadRight(8)
+        $label = if ($op.Op -like 'R*' -or $op.Op -like 'C*') {
+            "{0}{1} -> {2}" -f $col, $op.OldPath, $op.Path
+        }
+        else {
+            "{0}{1}" -f $col, $op.Path
+        }
+        Write-Host "    $label" -ForegroundColor DarkGray
+    }
+}
+
 function Invoke-PullSDLC {
     <#
     .SYNOPSIS
@@ -1928,14 +1990,14 @@ function Invoke-PullSDLC {
         $topLevel = git rev-parse --show-toplevel 2>$null
         if (-not $topLevel) {
             if ($NoAutoInit) {
-                Write-Host 'ERROR: not inside a git repository and -NoAutoInit specified. Run `git init` first or omit -NoAutoInit.' -ForegroundColor Red
+                Write-Error 'ERROR: not inside a git repository and -NoAutoInit specified. Run `git init` first or omit -NoAutoInit.' -ErrorAction Continue
                 return 5
             }
-            Write-Host "[Bootstrap] No git repository detected. Running 'git init -b $Branch' in the current directory..." -ForegroundColor Cyan
+            Write-Information "[Bootstrap] No git repository detected. Running 'git init -b $Branch' in the current directory..."
             git init -b $Branch | Out-Null
             $topLevel = git rev-parse --show-toplevel 2>$null
             if (-not $topLevel) {
-                Write-Host 'ERROR: git init failed; cannot continue.' -ForegroundColor Red
+                Write-Error 'ERROR: git init failed; cannot continue.' -ErrorAction Continue
                 return 5
             }
         }
@@ -1956,20 +2018,19 @@ function Invoke-PullSDLC {
         $ctx = Test-CommitContextAllowed -RepoRoot $RepoRoot -ProtectedBranch $Branch
         if (-not $ctx.Allowed) {
             if ($NoAutoWorktree) {
-                Write-Host ''
-                Write-Host "ABORT: cannot create sync commit -- $($ctx.Reason)." -ForegroundColor Red
-                Write-Host ''
-                Write-Host 'Create a worktree first:' -ForegroundColor Yellow
-                Write-Host '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main' -ForegroundColor Yellow
-                Write-Host '  cd .worktrees/sdlc-sync' -ForegroundColor Yellow
-                Write-Host '  ../../Pull-SDLC.ai.ps1' -ForegroundColor Yellow
-                Write-Host ''
-                Write-Host 'Or rerun with -CommitOnMain to commit the sync directly on the protected branch.' -ForegroundColor DarkGray
-                Write-Host 'Use -WhatIf to preview ops without committing.' -ForegroundColor DarkGray
+                Write-Error "ABORT: cannot create sync commit -- $($ctx.Reason)." -ErrorAction Continue
+                Write-Information ''
+                Write-Information 'Create a worktree first:'
+                Write-Information '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main'
+                Write-Information '  cd .worktrees/sdlc-sync'
+                Write-Information '  ../../Pull-SDLC.ai.ps1'
+                Write-Information ''
+                Write-Information 'Or rerun with -CommitOnMain to commit the sync directly on the protected branch.'
+                Write-Information 'Use -WhatIf to preview ops without committing.'
                 return 3
             }
 
-            Write-Host "On protected branch '$($ctx.Branch)'. Switching to auto-worktree workflow ..." -ForegroundColor Cyan
+            Write-Information "On protected branch '$($ctx.Branch)'. Switching to auto-worktree workflow ..."
             $syncArgs = @{
                 Branch         = $Branch
                 RemoteName     = $RemoteName
@@ -1995,11 +2056,11 @@ function Invoke-PullSDLC {
     try {
         $existingUrl = git remote get-url $RemoteName 2>$null
         if (-not $existingUrl) {
-            Write-Host "Adding remote '$RemoteName' -> $RemoteUrl"
+            Write-Information "Adding remote '$RemoteName' -> $RemoteUrl"
             git remote add $RemoteName $RemoteUrl
         }
         if (-not $NoFetch) {
-            Write-Host "Fetching $RemoteName ..." -ForegroundColor DarkGray
+            Write-Information "Fetching $RemoteName ..."
             git fetch $RemoteName --quiet
         }
     }
@@ -2009,7 +2070,7 @@ function Invoke-PullSDLC {
 
     $anchorInfo = Resolve-SyncAnchor -RepoRoot $RepoRoot -Bootstrap:$Bootstrap -NoPrompt:$NoPrompt
     if ($null -eq $anchorInfo) {
-        Write-Host 'Bootstrap declined. Nothing to do.' -ForegroundColor Yellow
+        Write-Warning 'Bootstrap declined. Nothing to do.'
         return 1
     }
     $anchorSha = $anchorInfo.Sha
@@ -2018,22 +2079,20 @@ function Invoke-PullSDLC {
         $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchorSha -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
         if ($drift.Count -gt 0) {
             if (-not $Force) {
-                Write-Host ''
-                Write-Host 'POLICY VIOLATION: upstream-managed files have local edits since last sync.' -ForegroundColor Red
+                $violation = New-Object System.Text.StringBuilder
+                [void]$violation.AppendLine('POLICY VIOLATION: upstream-managed files have local edits since last sync.')
                 foreach ($d in $drift) {
-                    Write-Host "  - $($d.Path)   (introduced by: $($d.Commit))" -ForegroundColor Red
+                    [void]$violation.AppendLine("  - $($d.Path)   (introduced by: $($d.Commit))")
                 }
-                Write-Host ''
-                Write-Host 'Rerun with -Force to overwrite these with upstream contents, or revert the edits.' -ForegroundColor Yellow
+                [void]$violation.Append('Rerun with -Force to overwrite these with upstream contents, or revert the edits.')
+                Write-Error $violation.ToString() -ErrorAction Continue
                 return 2
             }
             else {
-                Write-Host ''
-                Write-Host 'WARNING: -Force in effect. The following local edits to upstream-managed files will be OVERWRITTEN:' -ForegroundColor Yellow
+                Write-Warning '-Force in effect. The following local edits to upstream-managed files will be OVERWRITTEN:'
                 foreach ($d in $drift) {
-                    Write-Host "  - $($d.Path)   (was: $($d.Commit))" -ForegroundColor Yellow
+                    Write-Warning "  - $($d.Path)   (was: $($d.Commit))"
                 }
-                Write-Host ''
             }
         }
     }
@@ -2045,51 +2104,21 @@ function Invoke-PullSDLC {
 
     $anchorLabel = if ($anchorSha) { $anchorSha.Substring(0, 7) } else { '(empty tree)' }
     $upstreamLabel = $upstreamHead.Substring(0, 7)
-    Write-Host ''
-    if ($ops.Count -eq 0) {
-        Write-Host "Files to update: 0 (already at upstream $upstreamLabel -- nothing to sync)" -ForegroundColor Cyan
-    }
-    else {
-        Write-Host "Files to update: $($ops.Count) (syncing $anchorLabel -> $upstreamLabel)" -ForegroundColor Cyan
-    }
-    $grouped = $ops | Group-Object { $_.Op } | Sort-Object Name
-    foreach ($g in $grouped) {
-        Write-Host ("  {0}: {1}" -f $g.Name, $g.Count) -ForegroundColor Cyan
-    }
-    foreach ($op in $ops) {
-        $word = switch -Regex ($op.Op) {
-            '^A$' { 'add' ; break }
-            '^M$' { 'update' ; break }
-            '^D$' { 'delete' ; break }
-            '^R'  { 'rename' ; break }
-            '^C'  { 'copy' ; break }
-            default { $op.Op }
-        }
-        $col = $word.PadRight(8)
-        $label = if ($op.Op -like 'R*' -or $op.Op -like 'C*') {
-            "{0}{1} -> {2}" -f $col, $op.OldPath, $op.Path
-        }
-        else {
-            "{0}{1}" -f $col, $op.Path
-        }
-        Write-Host "    $label" -ForegroundColor DarkGray
-    }
+    Write-PlannedOpsPreview -Ops $ops -AnchorLabel $anchorLabel -UpstreamLabel $upstreamLabel
 
     if ($WhatIfPreference) {
-        Write-Host ''
-        Write-Host '-WhatIf specified; no changes written.' -ForegroundColor Yellow
+        Write-Information '-WhatIf specified; no changes written.'
         return 0
     }
 
     if ($ops.Count -eq 0) {
-        Write-Host ''
-        Write-Host 'Already up to date.' -ForegroundColor Green
+        Write-Information 'Already up to date.'
     }
     else {
         foreach ($op in $ops) {
             Invoke-UpstreamOp -Op $op -Ref $mergeRef -RepoRoot $RepoRoot
         }
-        Write-Host "Applied $($ops.Count) ops." -ForegroundColor Green
+        Write-Information "Applied $($ops.Count) ops."
     }
 
     # Union-merge merge-managed files (today: .gitignore). Done after the
@@ -2100,7 +2129,7 @@ function Invoke-PullSDLC {
     foreach ($mp in $script:MergePaths) {
         if (Merge-FileFromUpstream -Path $mp -Ref $mergeRef -RepoRoot $RepoRoot) {
             $mergedPaths.Add($mp) | Out-Null
-            Write-Host "Merged upstream entries into $mp" -ForegroundColor Green
+            Write-Information "Merged upstream entries into $mp"
         }
     }
 
@@ -2126,14 +2155,14 @@ function Invoke-PullSDLC {
             git commit -m $msg | Out-Null
             $headAfter = (git rev-parse HEAD 2>$null).Trim()
             if ($headBefore -eq $headAfter) {
-                Write-Host 'ERROR: git commit did not advance HEAD. The commit was likely blocked by a pre-commit hook or branch protection.' -ForegroundColor Red
-                Write-Host 'Working tree changes have been left in place for inspection. Resolve the policy violation and rerun.' -ForegroundColor Yellow
+                Write-Error 'ERROR: git commit did not advance HEAD. The commit was likely blocked by a pre-commit hook or branch protection.' -ErrorAction Continue
+                Write-Warning 'Working tree changes have been left in place for inspection. Resolve the policy violation and rerun.'
                 return 4
             }
-            Write-Host "Created sync commit: $(git rev-parse --short HEAD)" -ForegroundColor Green
+            Write-Information "Created sync commit: $(git rev-parse --short HEAD)"
         }
         else {
-            Write-Host 'Nothing to commit.' -ForegroundColor DarkGray
+            Write-Information 'Nothing to commit.'
         }
     }
     finally { Pop-Location }
@@ -2146,16 +2175,14 @@ function Invoke-PullSDLC {
     # scaffolding.
     $originUrl = (& git -C $RepoRoot remote get-url origin 2>$null)
     if (Test-IsUpstreamRepo -RemoteUrl $originUrl) {
-        Write-Host ''
-        Write-Host "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding." -ForegroundColor DarkGray
+        Write-Information "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding."
     }
     else {
         $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $RepoRoot -TargetRoot $RepoRoot -ScaffoldMap $script:TemplateScaffoldMap -Ref $mergeRef)
         if ($scaffolded.Count -gt 0) {
-            Write-Host ''
-            Write-Host 'Scaffolded consumer-owned files from templates:' -ForegroundColor Green
-            foreach ($f in $scaffolded) { Write-Host "  + $f" -ForegroundColor Green }
-            Write-Host 'Open each file and fill in the sections, then commit them to your repo.' -ForegroundColor Green
+            Write-Information 'Scaffolded consumer-owned files from templates:'
+            foreach ($f in $scaffolded) { Write-Information "  + $f" }
+            Write-Information 'Open each file and fill in the sections, then commit them to your repo.'
         }
     }
 
