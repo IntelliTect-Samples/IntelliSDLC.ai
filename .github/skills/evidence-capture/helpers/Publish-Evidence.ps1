@@ -46,6 +46,16 @@
     PR isn't spammed with intermediate captures; the final artifact is posted
     during Phase 7 with this switch omitted.
 
+.PARAMETER SkipDisplay
+    Suppress the inline result display. By default, for an Inline (markdown /
+    text) artifact the script echoes the artifact content (ANSI-stripped) to
+    output so the result is visible without opening the file. With this switch
+    the inline echo is suppressed, but the `Evidence (local):` `file://` link
+    line is still printed. This is a deliberate user opt-out (mapped from the
+    dev-loop natural-language opt-out "skip evidence display"), never an agent
+    default. ArtifactReference (binary / UI) artifacts are never echoed inline
+    regardless of this switch.
+
 .OUTPUTS
     [pscustomobject] with:
       Mode       -- 'Inline' | 'ArtifactReference' | 'LocalOnly'
@@ -72,7 +82,9 @@ param(
 
     [scriptblock]$GhInvoker = { param([string[]]$GhArgs) & gh @GhArgs },
 
-    [switch]$LocalOnly
+    [switch]$LocalOnly,
+
+    [switch]$SkipDisplay
 )
 
 Set-StrictMode -Version Latest
@@ -91,6 +103,17 @@ function ConvertTo-FileUri {
         return "file://$forward"
     }
     return "file:///$forward"
+}
+
+function Remove-AnsiEscape {
+    <#
+    .SYNOPSIS
+        Strip ANSI/VT escape sequences (color, cursor, etc.) from a string so
+        the content renders as clean plain text inside a markdown fenced code
+        block (which does not interpret ANSI color).
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+    return [regex]::Replace($Text, "\x1B\[[0-9;?]*[ -/]*[@-~]", '')
 }
 
 function Get-ArtifactMode {
@@ -163,6 +186,19 @@ $comment = Get-CommentBody -Mode $classifiedMode -ResolvedPath $resolvedPath `
 # the reviewer's primary entry point is the local file, not the PR comment.
 $fileUri = ConvertTo-FileUri -Path $resolvedPath
 Write-Host "Evidence (local): $fileUri"
+
+# Inline result display. For an Inline (markdown / text) artifact, echo the
+# artifact content (ANSI-stripped) so the result is visible in the agent's
+# output without opening the file. This runs in both -LocalOnly and normal
+# modes. ArtifactReference (binary / UI) artifacts stay link-only. The
+# -SkipDisplay switch suppresses this echo while keeping the link line above.
+if ($classifiedMode -eq 'Inline' -and -not $SkipDisplay) {
+    $rawContent = Get-Content -LiteralPath $resolvedPath -Raw
+    $displayContent = Remove-AnsiEscape -Text $rawContent
+    Write-Host '----- Evidence (inline result) -----'
+    Write-Host $displayContent
+    Write-Host '----- end evidence -----'
+}
 
 if ($LocalOnly) {
     return [pscustomobject]@{
