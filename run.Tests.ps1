@@ -22,7 +22,7 @@ function global:Initialize-RunTests {
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>$OutputType</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 </Project>
 "@
@@ -31,7 +31,7 @@ function global:Initialize-RunTests {
             $xml = @"
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 </Project>
 "@
@@ -236,7 +236,7 @@ Describe 'Find-VsCodeLaunchProject' {
 {
   "version": "0.2.0",
   "configurations": [
-    { "name": "Launch DLL", "type": "coreclr", "request": "launch", "program": "${workspaceFolder}/src/App/bin/Debug/net9.0/App.dll" }
+    { "name": "Launch DLL", "type": "coreclr", "request": "launch", "program": "${workspaceFolder}/src/App/bin/Debug/net10.0/App.dll" }
   ]
 }
 '@
