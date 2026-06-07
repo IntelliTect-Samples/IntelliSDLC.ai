@@ -45,7 +45,7 @@ matters for code generation:
 
 | Layer            | Technology |
 |------------------|------------|
-| Language/Runtime | (e.g. C# / .NET 9) |
+| Language/Runtime | (e.g. C# / .NET 10) |
 | Web framework    | (e.g. ASP.NET Core, Minimal APIs) |
 | Data access      | (e.g. EF Core, Dapper) |
 | Testing          | (e.g. xUnit + Moq + FluentAssertions) |

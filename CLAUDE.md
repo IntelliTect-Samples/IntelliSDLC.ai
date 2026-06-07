@@ -106,7 +106,7 @@ Discover the project layout by examining the root directory. A typical C#/.NET p
 
 | Layer | Technology |
 |---|---|
-| Language | C# / .NET 9+ |
+| Language | C# / .NET 10+ |
 | Testing | xUnit, Moq, FluentAssertions |
 
 > Discover the full technology stack from solution/project files, `README.md`, and

@@ -172,8 +172,8 @@ Describe "ci workflow YAML" {
     It "runs on ubuntu-latest" {
         $script:CiBody | Should -Match 'ubuntu-latest'
     }
-    It "uses .NET 8.0 SDK" {
-        $script:CiBody | Should -Match '8\.0'
+    It "uses .NET 10.0 SDK" {
+        $script:CiBody | Should -Match '10\.0'
     }
     It "runs dotnet build and dotnet test" {
         $script:CiBody | Should -Match 'dotnet\s+build'

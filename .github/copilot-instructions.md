@@ -48,7 +48,7 @@ sections. `Pull-SDLC.ai.ps1` does this automatically on first sync.
 This is a **C#/.NET** project. Discover the project's purpose, architecture, and full
 technology stack from the solution/project files, `README.md`, and NuGet package references.
 
-Key baseline technologies: C# / .NET 9+, xUnit, Moq.
+Key baseline technologies: C# / .NET 10+, xUnit, Moq.
 
 ## Language Detection
 

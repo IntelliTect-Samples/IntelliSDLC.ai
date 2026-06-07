@@ -305,7 +305,7 @@ Describe 'nuget-metadata' {
             $csproj | Should -Match '<Authors>IntelliTect</Authors>'
             $csproj | Should -Match '<RepositoryUrl>https://github\.com/example/example</RepositoryUrl>'
             $csproj | Should -Match '<PackageTags>example;api;wrapper</PackageTags>'
-            $csproj | Should -Match '<TargetFramework>net8\.0</TargetFramework>'
+            $csproj | Should -Match '<TargetFramework>net10\.0</TargetFramework>'
         } finally { Remove-Item -Recurse -Force $out }
     }
 }

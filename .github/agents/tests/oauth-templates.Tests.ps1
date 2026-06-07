@@ -142,7 +142,7 @@ Describe "OAuth buildable output" {
             Set-Content -LiteralPath $kv.Value -Value $expanded -NoNewline
         }
 
-        $csproj = "<Project Sdk=`"Microsoft.NET.Sdk`">`n  <PropertyGroup>`n    <TargetFramework>net8.0</TargetFramework>`n    <Nullable>enable</Nullable>`n    <ImplicitUsings>enable</ImplicitUsings>`n    <RootNamespace>Contoso</RootNamespace>`n    <AssemblyName>Contoso</AssemblyName>`n  </PropertyGroup>`n  <ItemGroup>`n    <PackageReference Include=`"Microsoft.Extensions.Logging.Abstractions`" Version=`"8.0.0`" />`n    <PackageReference Include=`"System.Security.Cryptography.ProtectedData`" Version=`"8.0.0`" />`n  </ItemGroup>`n</Project>`n"
+        $csproj = "<Project Sdk=`"Microsoft.NET.Sdk`">`n  <PropertyGroup>`n    <TargetFramework>net10.0</TargetFramework>`n    <Nullable>enable</Nullable>`n    <ImplicitUsings>enable</ImplicitUsings>`n    <RootNamespace>Contoso</RootNamespace>`n    <AssemblyName>Contoso</AssemblyName>`n  </PropertyGroup>`n  <ItemGroup>`n    <PackageReference Include=`"Microsoft.Extensions.Logging.Abstractions`" Version=`"8.0.0`" />`n    <PackageReference Include=`"System.Security.Cryptography.ProtectedData`" Version=`"8.0.0`" />`n  </ItemGroup>`n</Project>`n"
         Set-Content -LiteralPath (Join-Path $script:BuildDir "Contoso.csproj") -Value $csproj -NoNewline
 
         Push-Location $script:BuildDir
