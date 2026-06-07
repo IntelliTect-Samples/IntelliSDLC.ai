@@ -2717,4 +2717,39 @@ Describe 'Output stream assignment (issue #194)' {
         $appliedRec | Should -Not -BeNullOrEmpty
         $appliedRec.Tags | Should -Not -Contain 'PSHOST'
     }
+
+    # --- Regression #196: blank-line separators dropped by the stream refactor ---
+
+    It 'emits a blank-line separator immediately before the -WhatIf footer' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline } `
+            -Tweak { 'TWO' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf -InformationVariable streamInfo 6>$null
+        $rc | Should -Be 0
+
+        $msgs = @($streamInfo | ForEach-Object { "$($_.MessageData)" })
+        $idx = [array]::IndexOf($msgs, '-WhatIf specified; no changes written.')
+        $idx | Should -BeGreaterThan 0
+        $msgs[$idx - 1] | Should -Be ''
+    }
+
+    It 'emits a blank-line separator immediately before the up-to-date footer' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'same' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.UpstreamHead
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -InformationVariable streamInfo 6>$null
+        $rc | Should -Be 0
+
+        $msgs = @($streamInfo | ForEach-Object { "$($_.MessageData)" })
+        $idx = [array]::IndexOf($msgs, 'Already up to date.')
+        $idx | Should -BeGreaterThan 0
+        $msgs[$idx - 1] | Should -Be ''
+    }
 }

@@ -2107,11 +2107,13 @@ function Invoke-PullSDLC {
     Write-PlannedOpsPreview -Ops $ops -AnchorLabel $anchorLabel -UpstreamLabel $upstreamLabel
 
     if ($WhatIfPreference) {
+        Write-Information ''
         Write-Information '-WhatIf specified; no changes written.'
         return 0
     }
 
     if ($ops.Count -eq 0) {
+        Write-Information ''
         Write-Information 'Already up to date.'
     }
     else {
