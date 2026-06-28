@@ -270,7 +270,7 @@ Reusable process definitions invoked on demand. Skills enforce methodology and d
 | `refactor-workflow` | Eliminate duplication after each green step -- YAGNI, simplicity first |
 | `functional-testing` | Generate & maintain functional / E2E tests -- explore first, verify before completion |
 | `evidence-capture` | Produce a runtime artifact for every change + AI review loop verifying it visibly matches the issue intent (max 3 iterations, then escalate) |
-| `code-review-workflow` | Independent review by severity on the latest non-author model; defines the advisory triage & convergence protocol the authoring model follows |
+| `code-review-workflow` | Independent review by severity using a parallel panel of non-author vendor models; defines the advisory triage & convergence protocol the authoring model follows |
 | `systematic-debugging` | 4-phase root cause investigation -- no fixes without understanding |
 | `dev-loop-phase-gate` | Verify phase completion before proceeding -- quality gate enforcement |
 | `security-review` | Scan code for vulnerabilities, exposed secrets, and insecure dependencies (vendored from [github/awesome-copilot](https://github.com/github/awesome-copilot)) |
@@ -284,7 +284,7 @@ Orchestrators and interactive workflows with specific tooling and model requirem
 |---|---|
 | `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Merge -> Cleanup |
 | `plan.agent.md` | Design and planning -- Socratic questioning, approach trade-offs, GitHub issue creation |
-| `code-review.agent.md` | Independent code review on the latest non-author model; produces advisory findings (the authoring model triages and converges) |
+| `code-review.agent.md` | Independent code review via a parallel panel of non-author vendor models; produces advisory findings (the authoring model dedupes, triages, and converges) |
 | `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
 | `prd.agent.md` | Generate Product Requirements Documents with user stories and acceptance criteria |
 | `api-wrapper-scaffold.agent.md` | Thin agent stub that invokes the `api-wrapper-scaffold` skill for HAR-driven .NET wrapper generation |

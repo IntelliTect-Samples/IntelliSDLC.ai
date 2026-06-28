@@ -43,9 +43,12 @@ Describe 'code-review.agent.md is a thin orchestrator' {
         $script:AgentFrontmatter | Should -Not -Match '(?i)gpt-4\.1'
     }
 
-    It 'instructs selecting the latest model and emitting a Model selection block' {
-        $script:AgentText | Should -Match '(?i)latest'
-        $script:AgentText | Should -Match '(?i)Model selection'
+    It 'instructs dispatching a parallel non-author vendor panel and a Review panel block' {
+        $script:AgentText | Should -Match '(?i)parallel'
+        $script:AgentText | Should -Match '(?i)panel'
+        $script:AgentText | Should -Match '(?i)non-author'
+        $script:AgentText | Should -Match '(?i)vendor'
+        $script:AgentText | Should -Match '(?i)Review panel'
     }
 
     It 'frames the review as advisory -- reviewer reports, does not apply fixes' {
@@ -67,9 +70,9 @@ Describe 'code-review.agent.md is a thin orchestrator' {
         $script:AgentText | Should -Match '(?i)invoke'
     }
 
-    It 'names the independent-reviewer role and different-model framing' {
+    It 'names the independent-reviewer role and non-author vendor framing' {
         $script:AgentText | Should -Match '(?i)independent'
-        $script:AgentText | Should -Match '(?i)different model'
+        $script:AgentText | Should -Match '(?i)vendors? that did not write the code|non-author vendor'
     }
 
     It 'mentions fixing Critical and Important findings (Mission handoff)' {
@@ -97,22 +100,28 @@ Describe 'code-review-workflow SKILL.md remains the canonical source' {
         $script:SkillText | Should -Match '\*\*Suggestions\*\*'
     }
 
-    It 'defines a Model Selection rubric (independence gate + latest/recency + per-vendor block)' {
-        $script:SkillText | Should -Match '(?im)^#+\s*Model Selection'
+    It 'defines a Review Panel section (parallel non-author vendors + per-vendor best model + Review panel block)' {
+        $script:SkillText | Should -Match '(?im)^#+\s*Review Panel'
         $script:SkillText | Should -Match '(?i)independence'
-        $script:SkillText | Should -Match '(?i)latest'
-        $script:SkillText | Should -Match '(?i)Model selection'   # the per-vendor output block
+        $script:SkillText | Should -Match '(?i)parallel'
+        $script:SkillText | Should -Match '(?i)non-author'
+        $script:SkillText | Should -Match '(?i)Review panel'      # the per-panelist output block
         $script:SkillText | Should -Match '(?i)vendor'
+        # Graceful degradation when fewer than three non-author vendors are available.
+        $script:SkillText | Should -Match '(?i)available'
     }
 
-    It 'defines a Triage & Convergence protocol' {
+    It 'defines a Triage & Convergence protocol over the whole panel' {
         $script:SkillText | Should -Match '(?im)^#+\s*Triage'
         $script:SkillText | Should -Match '(?i)consolidate'
+        $script:SkillText | Should -Match '(?i)dedupe'
         $script:SkillText | Should -Match '(?i)accept'
         $script:SkillText | Should -Match '(?i)reject'
         $script:SkillText | Should -Match '(?i)rationale'
         $script:SkillText | Should -Match '(?i)behavior-first'
         $script:SkillText | Should -Match '(?i)convergence'
+        # Convergence is defined across every panelist, not a single reviewer.
+        $script:SkillText | Should -Match '(?i)panelist'
     }
 
     It 'routes accepted high-effort work to issues rather than inline fixes' {

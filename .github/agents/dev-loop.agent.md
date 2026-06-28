@@ -315,25 +315,26 @@ structural fix is required that affects other tests, return to Phase 3.**
 
 **Invoke the `code-review-workflow` skill:**
 
-1. **Dispatch the independent reviewer on the latest non-author model** per the skill's
-   Model Selection rubric (the reviewer selects/confirms the model and leads its report
-   with the Model selection block). When the host fixes the session model, confirm it
-   meets the independence gate before reviewing.
-2. The reviewer runs static analysis read-only and reports findings; the authoring model
+1. **Dispatch the review panel in parallel** per the skill's Review Panel section: launch
+   the best code-review model from each available non-author vendor concurrently (target
+   three; degrade gracefully). Lead the consolidated report with the Review panel block.
+   When the host fixes the session model, confirm each panelist meets the independence gate.
+2. The panelists run static analysis read-only and report findings; the authoring model
    fixes them.
-3. The reviewer reviews all changed files: correctness, quality, tests, security, YAGNI,
-   and reports advisory findings.
-4. **(Authoring model) Triage** every finding -- accept or reject with a rationale
-   validated against the code. A review is advisory; do not auto-apply it.
+3. The panelists review all changed files: correctness, quality, tests, security, YAGNI,
+   and report advisory findings.
+4. **(Authoring model) Consolidate, dedupe, and triage** every finding across the panel --
+   accept or reject with a rationale validated against the code. A review is advisory; do
+   not auto-apply it.
 5. **(Authoring model) Fix accepted Critical / Important findings using behavior-first
    testing.** Apply accepted low-effort suggestions; **file issues** for accepted
    high-effort / high-impact work.
 6. (Authoring model) Run the full test suite after fixes. Run static analysis again.
-7. **(Authoring model) Re-submit the diff to the same reviewer and iterate until
-   convergence** (re-review surfaces no new accepted Critical / Important findings).
+7. **(Authoring model) Re-submit the diff to the same panel and iterate until convergence**
+   (every panelist surfaces no new accepted Critical / Important findings).
 
-**Exit criteria:** No accepted-and-unfixed Critical or Important findings, review converged,
-all tests green, static analysis clean.
+**Exit criteria:** No accepted-and-unfixed Critical or Important findings, every panelist
+converged, all tests green, static analysis clean.
 **-> If issues found and fixed -> back to Phase 3. If clean -> proceed to Phase 7.**
 
 ### Phase 7 -- PR + Copilot Review + Dry Run
