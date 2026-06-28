@@ -29,10 +29,11 @@ available (minimum one).
 2. **Availability (hard gate).** Only consider vendors/models actually offered by the
    current runtime / platform. Take the best non-author model from each available vendor, up
    to three vendors. **When more than three non-author vendors are available**, choose the
-   three whose best models rank highest on code-review capability (step 3); break any
-   remaining tie alphabetically by vendor name. **If capability cannot be confidently
-   compared** from the available-model list, fall back to selecting the three vendors
-   **alphabetically by vendor name** so the panel is always deterministic.
+   three whose best models are the strongest for code review (latest flagship, strongest
+   code reasoning, largest context window); break any remaining tie alphabetically by vendor
+   name. **If capability cannot be confidently compared** from the available-model list, fall
+   back to selecting the three vendors **alphabetically by vendor name** so the panel is
+   always deterministic.
 3. **Best model per vendor.** For each chosen vendor, pick its **latest** flagship (not a
    mini / flash tier) with the strongest code reasoning, largest context window, and best
    instruction-following for the project's primary language.
@@ -46,7 +47,7 @@ consolidated review with a **Review panel** block:
 ### Review panel
 - **Panelists (best model per non-author vendor):** <vendor A>: <model>, <vendor B>: <model>, <vendor C>: <model>
 - **Author model (excluded):** <author vendor/model>.
-- **Vendors available / used:** <N available> / <M used (target 3)>.
+- **Vendors available / used:** <N available> / <M used> (up to 3).
 - **Rationale:** <one line: independence confirmed, latest flagship per vendor, why this panel>.
 ```
 
@@ -66,7 +67,7 @@ model** rather than reviewing with an ineligible one.
 ## Mission
 
 1. **Review** -- Dispatch the parallel panel (best non-author model per available vendor)
-   to analyse the latest changes in production code and test code.
+   to analyze the latest changes in production code and test code.
 2. **Report** -- Produce a structured review with categorised findings by severity,
    leading with the Review panel block.
 3. **Triage** -- The current/authoring model consolidates and **dedupes** the findings from
@@ -250,7 +251,7 @@ and -- during the Triage & Convergence loop -- the **triage markers** (`Accepted
 ### Review panel
 - **Panelists (best model per non-author vendor):** <vendor A>: <model>, <vendor B>: <model>, <vendor C>: <model>
 - **Author model (excluded):** <author vendor/model>.
-- **Vendors available / used:** <N> / <M (target 3)>.
+- **Vendors available / used:** <N available> / <M used> (up to 3).
 - **Rationale:** <one line: independence confirmed, latest flagship per vendor>.
 
 **Files reviewed:** <list of files>
