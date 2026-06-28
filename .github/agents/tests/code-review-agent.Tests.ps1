@@ -13,6 +13,9 @@ BeforeAll {
     $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/code-review-workflow/SKILL.md'
     $script:AgentText  = Get-Content -LiteralPath $script:AgentPath -Raw
     $script:AgentLines = (Get-Content -LiteralPath $script:AgentPath).Count
+    # Isolate the YAML frontmatter block (between the first two `---` fences) so
+    # frontmatter assertions do not match incidental body content.
+    $script:AgentFrontmatter = if ($script:AgentText -match '(?s)^---\r?\n(.*?)\r?\n---') { $Matches[1] } else { '' }
     $script:SkillText  = Get-Content -LiteralPath $script:SkillPath  -Raw
 }
 
@@ -30,8 +33,9 @@ Describe 'code-review.agent.md is a thin orchestrator' {
 
     It 'does not freeze the review to a pinned model version' {
         # The review must run on the latest non-author model, not a frozen
-        # version. No `model:` pin may appear in the agent frontmatter.
-        $script:AgentText | Should -Not -Match '(?m)^model:\s*'
+        # version. No `model:` pin may appear in the agent frontmatter, and the
+        # previously frozen version must not appear anywhere in the file.
+        $script:AgentFrontmatter | Should -Not -Match '(?m)^model:\s*'
         $script:AgentText | Should -Not -Match '(?i)gpt-4\.1'
     }
 
