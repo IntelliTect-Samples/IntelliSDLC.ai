@@ -318,7 +318,8 @@ structural fix is required that affects other tests, return to Phase 3.**
 1. **Dispatch the review panel in parallel** per the skill's Review Panel section: launch
    the best code-review model from each available non-author vendor concurrently (target
    three; degrade gracefully). Lead the consolidated report with the Review panel block.
-   When the host fixes the session model, confirm each panelist meets the independence gate.
+   If the host fixes the session model so a parallel panel cannot run, degrade to the single
+   eligible non-author model and record the reduced panel.
 2. The panelists run static analysis read-only and report findings; the authoring model
    fixes them.
 3. The panelists review all changed files: correctness, quality, tests, security, YAGNI,
