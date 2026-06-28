@@ -319,9 +319,10 @@ structural fix is required that affects other tests, return to Phase 3.**
    the best code-review model from each of **up to three** non-author vendors concurrently
    (degrade gracefully; see the skill for the >3-vendor tie-break). Lead the consolidated
    report with the Review panel block. If the host fixes the session model so a parallel
-   panel cannot run, degrade to the single eligible non-author model and record the reduced
-   panel. **If no non-author vendor is available** (only the author's vendor is offered),
-   **stop and request a re-run with an eligible model** rather than self-reviewing.
+   panel cannot run, degrade to a single reviewer **only after confirming the assigned model
+   is from a non-author vendor** (independence gate); record the reduced panel. **If no
+   non-author vendor is available** (only the author's vendor/model is offered), **stop and
+   request a re-run with an eligible model** rather than self-reviewing.
 2. The panelists run static analysis read-only and report findings; the authoring model
    fixes them.
 3. The panelists review all changed files: correctness, quality, tests, security, YAGNI,
