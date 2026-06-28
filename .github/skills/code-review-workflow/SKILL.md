@@ -16,9 +16,9 @@ the project's existing code and community standards.
 ## Review Panel
 
 **Do not review with a single model, and do not freeze the review to one model version.**
-Run the review as a **parallel panel**: dispatch the **best code-review model from each
-available non-author vendor** concurrently, so different vendors catch different classes of
-issues. Target **three** non-author vendors; degrade gracefully to however many are
+Run the review as a **parallel panel**: dispatch the **best code-review model from each of
+up to three non-author vendors** concurrently, so different vendors catch different classes
+of issues. Use **up to three** non-author vendors; degrade gracefully to however many are
 available (minimum one).
 
 **Selecting the panel:**
@@ -27,8 +27,10 @@ available (minimum one).
    must come from a *different vendor* than the one that wrote the code, and no panelist may
    be the authoring model.
 2. **Availability (hard gate).** Only consider vendors/models actually offered by the
-   current runtime / platform. The panel is the best non-author model from each available
-   vendor, up to three.
+   current runtime / platform. Take the best non-author model from each available vendor, up
+   to three vendors. **When more than three non-author vendors are available**, choose the
+   three whose best models rank highest on code-review capability (step 3); break any
+   remaining tie alphabetically by vendor name so the panel is deterministic.
 3. **Best model per vendor.** For each chosen vendor, pick its **latest** flagship (not a
    mini / flash tier) with the strongest code reasoning, largest context window, and best
    instruction-following for the project's primary language.
