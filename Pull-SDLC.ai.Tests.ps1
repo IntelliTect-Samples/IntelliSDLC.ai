@@ -1665,20 +1665,20 @@ Describe 'Invoke-SelfRefresh' {
         (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
     }
 
-    It 'returns a temp file path and does NOT overwrite the local file when remote hash differs (issue #180)' {
+    It 'overwrites the on-disk script with upstream content and returns a backup of the original when remote hash differs (issue #200)' {
         Mock -CommandName Invoke-WebRequest -MockWith {
             param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing)
             Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline
         }
         $result = Invoke-SelfRefresh -ScriptPath $script:scriptPath
         $result | Should -Not -BeNullOrEmpty
-        $result | Should -Match 'pull-sdlc-self-.*\.ps1$'
+        $result | Should -Match 'pull-sdlc-self-backup-.*\.ps1$'
         Test-Path -LiteralPath $result | Should -BeTrue
-        # The on-disk script must NOT be overwritten (regression for issue #180).
-        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'original-body'
-        # The returned temp file holds the new upstream content.
-        (Get-Content -LiteralPath $result -Raw) | Should -Be 'NEW-upstream-body'
-        # Clean up the temp file the function intentionally leaves behind for the caller.
+        # The on-disk script IS overwritten with the new upstream content (issue #200).
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'NEW-upstream-body'
+        # The returned backup file holds the ORIGINAL on-disk content.
+        (Get-Content -LiteralPath $result -Raw) | Should -Be 'original-body'
+        # Clean up the backup the function intentionally leaves behind for the caller.
         Remove-Item -LiteralPath $result -Force -ErrorAction SilentlyContinue
     }
 
@@ -1763,14 +1763,70 @@ Describe 'Invoke-SelfRefresh' {
             param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
             Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline -WhatIf:$false
         }
-        $tempPath = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
-            Where-Object { $_ -is [string] } | Select-Object -First 1
+        # Single invocation: the overwrite mutates the on-disk file, so a second
+        # call would see matching hashes and report up-to-date instead.
         $verboseMsgs = & { Invoke-SelfRefresh -ScriptPath $script:scriptPath -Verbose 4>&1 } |
             Where-Object { $_ -is [System.Management.Automation.VerboseRecord] }
         ($verboseMsgs -join ' ') | Should -Match 'Self-refresh: updated'
-        # Clean up temp files produced by both invocations.
+        # The on-disk file was overwritten with the new content (issue #200).
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'NEW-upstream-body'
+        # Clean up backup files produced by the invocation.
         Get-ChildItem -Path ([System.IO.Path]::GetTempPath()) -Filter 'pull-sdlc-self-*.ps1' -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'produces no "What if:" output from the overwrite path when $WhatIfPreference is true (issue #200)' {
+        Mock -CommandName Invoke-WebRequest -MockWith {
+            param($Uri, $OutFile, $TimeoutSec, $UseBasicParsing, $Headers)
+            Set-Content -LiteralPath $OutFile -Value 'NEW-upstream-body' -NoNewline -WhatIf:$false
+        }
+        $transcriptPath = Join-Path $TestDrive ("transcript-ow-" + [guid]::NewGuid().ToString('N') + ".txt")
+        $WhatIfPreference = $true
+        try {
+            Start-Transcript -LiteralPath $transcriptPath -Force -WhatIf:$false | Out-Null
+            try {
+                $backup = Invoke-SelfRefresh -ScriptPath $script:scriptPath
+            }
+            finally {
+                Stop-Transcript -WhatIf:$false | Out-Null
+            }
+        }
+        finally {
+            $WhatIfPreference = $false
+        }
+        $captured = Get-Content -LiteralPath $transcriptPath -Raw
+        # The overwrite (Copy-Item backup + Move-Item) must be -WhatIf:$false so a
+        # dry run does not print "What if:" noise or skip the in-place update.
+        $captured | Should -Not -Match 'What if:'
+        (Get-Content -LiteralPath $script:scriptPath -Raw) | Should -Be 'NEW-upstream-body'
+        if ($backup) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Complete-SelfReExec restore/cleanup (issue #200)' {
+    BeforeEach {
+        $script:reexecScript = Join-Path $TestDrive ("Pull-SDLC-" + [guid]::NewGuid().ToString('N') + ".ps1")
+        $script:reexecBackup = Join-Path $TestDrive ("backup-" + [guid]::NewGuid().ToString('N') + ".ps1")
+        Set-Content -LiteralPath $script:reexecScript -Value 'NEW-upstream-body' -NoNewline
+        Set-Content -LiteralPath $script:reexecBackup -Value 'original-body' -NoNewline
+    }
+
+    It 'restores the original on-disk content from the backup under -RestoreOriginal (-WhatIf dry run)' {
+        Complete-SelfReExec -ScriptPath $script:reexecScript -BackupPath $script:reexecBackup -RestoreOriginal
+        (Get-Content -LiteralPath $script:reexecScript -Raw) | Should -Be 'original-body'
+        # Backup is always cleaned up.
+        Test-Path -LiteralPath $script:reexecBackup | Should -BeFalse
+    }
+
+    It 'keeps the new on-disk content (does not restore) for a normal run, and removes the backup' {
+        Complete-SelfReExec -ScriptPath $script:reexecScript -BackupPath $script:reexecBackup
+        (Get-Content -LiteralPath $script:reexecScript -Raw) | Should -Be 'NEW-upstream-body'
+        Test-Path -LiteralPath $script:reexecBackup | Should -BeFalse
+    }
+
+    It 'is a no-op when no backup path is supplied' {
+        { Complete-SelfReExec -ScriptPath $script:reexecScript -RestoreOriginal } | Should -Not -Throw
+        (Get-Content -LiteralPath $script:reexecScript -Raw) | Should -Be 'NEW-upstream-body'
     }
 }
 
@@ -1826,16 +1882,45 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
         $script:reExecCount | Should -Be 1
     }
 
-    It 'passes the temp-file path (not the on-disk ScriptPath) to Invoke-SelfReExec (issue #180)' {
+    It 'passes the on-disk ScriptPath (not a temp file) and the backup to Invoke-SelfReExec (issue #200)' {
         Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
-        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-abc.ps1' }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-backup-abc.ps1' }
         $script:capturedScriptPath = $null
+        $script:capturedBackupPath = $null
         Mock -CommandName Invoke-SelfReExec -MockWith {
-            param([string]$ScriptPath, [hashtable]$BoundParameters)
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
             $script:capturedScriptPath = $ScriptPath
+            $script:capturedBackupPath = $BackupPath
         }
         $null = Invoke-SelfRefreshGate -ScriptPath 'C:\Consumer\Pull-SDLC.ai.ps1' -BoundParameters @{ Branch = 'main' }
-        $script:capturedScriptPath | Should -Be 'C:\Temp\pull-sdlc-self-abc.ps1'
+        # The on-disk script (now overwritten with upstream content) is re-exec'd.
+        $script:capturedScriptPath | Should -Be 'C:\Consumer\Pull-SDLC.ai.ps1'
+        # The backup returned by Invoke-SelfRefresh is forwarded for restore.
+        $script:capturedBackupPath | Should -Be 'C:\Temp\pull-sdlc-self-backup-abc.ps1'
+    }
+
+    It 'sets -RestoreOriginal when BoundParameters carries WhatIf=$true (issue #200)' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-backup-abc.ps1' }
+        $script:capturedRestore = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
+            $script:capturedRestore = [bool]$RestoreOriginal
+        }
+        $null = Invoke-SelfRefreshGate -ScriptPath 'C:\Consumer\Pull-SDLC.ai.ps1' -BoundParameters @{ Branch = 'main'; WhatIf = $true }
+        $script:capturedRestore | Should -BeTrue
+    }
+
+    It 'does NOT set -RestoreOriginal for a normal (non-WhatIf) run (issue #200)' {
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-backup-abc.ps1' }
+        $script:capturedRestore2 = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
+            $script:capturedRestore2 = [bool]$RestoreOriginal
+        }
+        $null = Invoke-SelfRefreshGate -ScriptPath 'C:\Consumer\Pull-SDLC.ai.ps1' -BoundParameters @{ Branch = 'main' }
+        $script:capturedRestore2 | Should -BeFalse
     }
 
     It 'forwards exactly the supplied BoundParameters to Invoke-SelfReExec (regression for #110)' {
