@@ -30,7 +30,9 @@ available (minimum one).
    current runtime / platform. Take the best non-author model from each available vendor, up
    to three vendors. **When more than three non-author vendors are available**, choose the
    three whose best models rank highest on code-review capability (step 3); break any
-   remaining tie alphabetically by vendor name so the panel is deterministic.
+   remaining tie alphabetically by vendor name. **If capability cannot be confidently
+   compared** from the available-model list, fall back to selecting the three vendors
+   **alphabetically by vendor name** so the panel is always deterministic.
 3. **Best model per vendor.** For each chosen vendor, pick its **latest** flagship (not a
    mini / flash tier) with the strongest code reasoning, largest context window, and best
    instruction-following for the project's primary language.
