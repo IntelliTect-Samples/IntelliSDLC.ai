@@ -188,8 +188,6 @@ git diff --name-only origin/main...HEAD
 
 ---
 
----
-
 ## Triage & Convergence
 
 A review is **advisory, not auto-applied**. After the reviewer reports findings, the
