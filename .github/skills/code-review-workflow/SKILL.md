@@ -1,6 +1,6 @@
 ---
 name: code-review-workflow
-description: "Review and fix production and test code. Selects the latest non-author model, runs static analysis, reviews by severity (Critical/Important/Suggestions), then triages findings (accept/reject) and converges. Language-aware."
+description: "Review production and test code with a parallel panel of models from non-author vendors. Runs static analysis, reviews by severity (Critical/Important/Suggestions), then consolidates/dedupes, triages (accept/reject), and converges across the panel. Language-aware."
 ---
 
 # Code Review Workflow
@@ -23,8 +23,9 @@ available (minimum one).
 
 **Selecting the panel:**
 
-1. **Independence (hard gate).** Exclude the vendor/model that wrote the code. No panelist
-   may be the authoring model.
+1. **Independence (hard gate).** Exclude the **author's vendor entirely** -- every panelist
+   must come from a *different vendor* than the one that wrote the code, and no panelist may
+   be the authoring model.
 2. **Availability (hard gate).** Only consider vendors/models actually offered by the
    current runtime / platform. The panel is the best non-author model from each available
    vendor, up to three.
@@ -231,12 +232,12 @@ report below.
 
 ## Review Output Format
 
-Each **panelist** fills in its findings (descriptions + severity) as an advisory report.
-The **authoring model** produces the consolidated summary below: it writes the Review panel
-block, the file list, the assessment, and the deduped findings, and -- during the Triage &
-Convergence loop -- the **triage markers** (`Accepted` / `Rejected` / `Issue filed`) and
-the `Convergence` line. A panelist producing an advisory report leaves the triage markers
-blank.
+Each **panelist** produces a **findings-only** advisory report (descriptions + severity) --
+panelists do **not** write the Review panel block or triage markers, since those require
+knowing the whole panel. The **authoring model** produces the consolidated summary below:
+it writes the Review panel block, the file list, the assessment, and the deduped findings,
+and -- during the Triage & Convergence loop -- the **triage markers** (`Accepted` /
+`Rejected` / `Issue filed`) and the `Convergence` line.
 
 ```markdown
 ## Code Review Summary
@@ -250,7 +251,7 @@ blank.
 **Files reviewed:** <list of files>
 **Overall assessment:** PASS | NEEDS CHANGES | CRITICAL ISSUES
 **Static analysis:** Clean / <N> findings (fixes recorded by the authoring model during convergence)
-**Convergence:** Converged after <N> round(s), all panelists clean / In progress
+**Convergence:** Converged after <N> round(s) -- no new accepted Critical/Important from any panelist / In progress
 
 ### Critical (must fix -- blocks progress)
 - [x] `src/path/file.ext:L42` -- Description. **Accepted.** **Fixed:** <what was changed>.
