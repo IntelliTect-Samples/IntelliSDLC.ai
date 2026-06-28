@@ -5,44 +5,53 @@ description: "Review and fix production and test code. Selects the latest non-au
 
 # Code Review Workflow
 
-You are performing an independent code review. Run on a **different model** from the one
-that wrote the code when possible, providing a fresh perspective and catching blind spots.
+You are orchestrating an independent code review. Run it as a **parallel panel of models
+from different vendors than the one that wrote the code**, providing a fresh perspective and
+catching blind spots a single model (or the authoring model) would miss.
 
 **Detect the project language** from file extensions and project files. Apply the matching
 language-specific guidance below. If the language is not listed, infer conventions from
 the project's existing code and community standards.
 
-## Model Selection
+## Review Panel
 
-**Do not freeze the review to one model version.** Choose the **latest** available model
-that gives the best review, and record the decision. Apply this rubric in priority order:
+**Do not review with a single model, and do not freeze the review to one model version.**
+Run the review as a **parallel panel**: dispatch the **best code-review model from each
+available non-author vendor** concurrently, so different vendors catch different classes of
+issues. Target **three** non-author vendors; degrade gracefully to however many are
+available (minimum one).
 
-1. **Independence (hard gate).** Exclude the model that wrote the code. Never review with
-   the authoring model.
-2. **Availability (hard gate).** Only consider models actually offered by the current
-   runtime / platform.
-3. **Recency.** For each vendor, take the **latest** released flagship (not a mini / flash
-   tier).
-4. **Code-review capability.** Prefer the strongest code reasoning, the largest context
-   window, and the best instruction-following for the project's primary language.
-5. **Tie-break.** Prefer a different **vendor** than the author's (maximise perspective
-   diversity), then the larger context window.
+**Selecting the panel:**
 
-Begin the review with a **Model selection** block:
+1. **Independence (hard gate).** Exclude the vendor/model that wrote the code. No panelist
+   may be the authoring model.
+2. **Availability (hard gate).** Only consider vendors/models actually offered by the
+   current runtime / platform. The panel is the best non-author model from each available
+   vendor, up to three.
+3. **Best model per vendor.** For each chosen vendor, pick its **latest** flagship (not a
+   mini / flash tier) with the strongest code reasoning, largest context window, and best
+   instruction-following for the project's primary language.
+4. **Dispatch in parallel.** Launch the panelists concurrently (e.g., parallel review
+   subagents, one per vendor/model), each producing an independent **advisory** report.
+
+Begin the consolidated review with a **Review panel** block:
 
 ```markdown
-### Model selection
-- **Considered (latest per vendor):** <vendor A>: <model>, <vendor B>: <model>, ...
-- **Chosen:** <model> -- differs from the author's model (<author model>).
-- **Rationale:** <one line tied to the rubric: independence, recency, capability>.
+### Review panel
+- **Panelists (best model per non-author vendor):** <vendor A>: <model>, <vendor B>: <model>, <vendor C>: <model>
+- **Author model (excluded):** <author vendor/model>.
+- **Vendors available / used:** <N available> / <M used (target 3)>.
+- **Rationale:** <one line: independence confirmed, latest flagship per vendor, why this panel>.
 ```
 
 Source the per-vendor candidates from the runtime's available-model list where possible;
-otherwise use your stated knowledge (note that it may be stale). If the host fixes the
-session model and you cannot switch, document the assigned model and confirm it satisfies
-the independence and recency gates. **If the assigned model fails a hard gate** (e.g., it
-is the same model that wrote the code, or it is unavailable), **stop and request a re-run
-with an eligible model** rather than reviewing with an ineligible one.
+otherwise use your stated knowledge (note that it may be stale). If fewer than three
+non-author vendors are available, run the panel with those available and record the count.
+If the host fixes the session model so only one model can run, document the assigned model
+and confirm it satisfies the independence gate. **If a would-be panelist fails a hard gate**
+(e.g., it is the same model that wrote the code, or it is unavailable), **drop it from the
+panel**; if that leaves no eligible panelist, **stop and request a re-run with an eligible
+model** rather than reviewing with an ineligible one.
 
 ## Core Principle
 
@@ -50,17 +59,19 @@ with an eligible model** rather than reviewing with an ineligible one.
 
 ## Mission
 
-1. **Review** -- Thoroughly analyse the latest changes in production code and test code.
+1. **Review** -- Dispatch the parallel panel (best non-author model per available vendor)
+   to analyse the latest changes in production code and test code.
 2. **Report** -- Produce a structured review with categorised findings by severity,
-   leading with the Model selection block.
-3. **Triage** -- The current/authoring model consolidates the findings and **accepts or
-   rejects each one with a written rationale, validated against the code**. A review is
-   advisory: do **not** auto-apply whatever it says.
+   leading with the Review panel block.
+3. **Triage** -- The current/authoring model consolidates and **dedupes** the findings from
+   all panelists and **accepts or rejects each one with a written rationale, validated
+   against the code**. A review is advisory: do **not** auto-apply whatever it says.
 4. **Fix** -- For accepted **Critical / Important** findings, fix using **behavior-first
    testing**. Apply accepted **low-effort** suggestions directly. For accepted
    **high-effort / high-impact** work, **create a GitHub issue** instead of fixing inline.
-5. **Converge** -- Re-submit the updated diff to the **same reviewer(s)** and iterate until
-   convergence (re-review surfaces no new accepted Critical / Important findings).
+5. **Converge** -- Re-submit the updated diff to the **same panel** and iterate until
+   convergence (re-review by every panelist surfaces no new accepted Critical / Important
+   findings).
 6. **Hand off** -- Present the final review report showing what was found, the triage
    verdict for each item, what was fixed, and any issues filed for deferred work.
 
@@ -195,45 +206,51 @@ git diff --name-only origin/main...HEAD
 
 ## Triage & Convergence
 
-A review is **advisory, not auto-applied**. After the reviewer reports findings, the
+A review is **advisory, not auto-applied**. After the **panel** reports findings, the
 current/authoring model owns how they are consumed:
 
-1. **Consolidate.** Merge all findings from the reviewer(s) into one list.
+1. **Consolidate & dedupe.** Merge the findings from **all panelists** into one list and
+   **dedupe** overlapping findings (multiple vendors often flag the same issue) so each real
+   issue is triaged once. Note when several panelists independently agree -- that raises
+   confidence.
 2. **Triage.** For each finding, **accept or reject it with a written rationale**, after
-   **validating it against the actual code**. Confirm the issue is real before acting; a
-   reviewer can be wrong (see Red Flags).
+   **validating it against the actual code**. Confirm the issue is real before acting; any
+   panelist can be wrong (see Red Flags).
 3. **Fix accepted Critical / Important** findings using **behavior-first testing** -- ship
    a test that fails for a behavioral reason when the fix is reverted, then implement.
 4. **Apply accepted low-effort suggestions** directly (quick wins, no design decisions).
 5. **File issues for accepted high-effort / high-impact** work instead of fixing inline;
    capture the rationale and scope in the issue and link it in the report.
-6. **Re-submit & converge.** Send the updated diff back to the **same reviewer(s)** and
-   iterate from step 1. The loop exits at **convergence** -- re-review surfaces no new
-   accepted Critical / Important findings.
+6. **Re-submit & converge.** Send the updated diff back to the **same panel** (every
+   panelist) and iterate from step 1. The loop exits at **convergence** -- re-review by
+   **every panelist** surfaces no new **accepted** Critical / Important findings. (Rejected
+   or nitpick findings do not block convergence.)
 
 Record the triage verdict (accepted / rejected + rationale) for every finding in the
 report below.
 
 ## Review Output Format
 
-The **independent reviewer** fills in the Model selection block, the file list, the
-assessment, and the findings (descriptions + severity). The **triage markers**
-(`Accepted` / `Rejected` / `Issue filed`) and the `Convergence` line are completed by the
-**authoring model** during the Triage & Convergence loop -- a reviewer producing an
-advisory report leaves them blank.
+Each **panelist** fills in its findings (descriptions + severity) as an advisory report.
+The **authoring model** produces the consolidated summary below: it writes the Review panel
+block, the file list, the assessment, and the deduped findings, and -- during the Triage &
+Convergence loop -- the **triage markers** (`Accepted` / `Rejected` / `Issue filed`) and
+the `Convergence` line. A panelist producing an advisory report leaves the triage markers
+blank.
 
 ```markdown
 ## Code Review Summary
 
-### Model selection
-- **Considered (latest per vendor):** <vendor A>: <model>, <vendor B>: <model>, ...
-- **Chosen:** <model> -- differs from the author's model (<author model>).
-- **Rationale:** <one line tied to the rubric>.
+### Review panel
+- **Panelists (best model per non-author vendor):** <vendor A>: <model>, <vendor B>: <model>, <vendor C>: <model>
+- **Author model (excluded):** <author vendor/model>.
+- **Vendors available / used:** <N> / <M (target 3)>.
+- **Rationale:** <one line: independence confirmed, latest flagship per vendor>.
 
 **Files reviewed:** <list of files>
 **Overall assessment:** PASS | NEEDS CHANGES | CRITICAL ISSUES
 **Static analysis:** Clean / <N> findings (fixes recorded by the authoring model during convergence)
-**Convergence:** Converged after <N> review round(s) / In progress
+**Convergence:** Converged after <N> round(s), all panelists clean / In progress
 
 ### Critical (must fix -- blocks progress)
 - [x] `src/path/file.ext:L42` -- Description. **Accepted.** **Fixed:** <what was changed>.
@@ -264,22 +281,23 @@ are acted on.
 
 ## Execution Guidelines
 
-Steps 1-5 are performed by the **independent reviewer** (produce the advisory report).
-Steps 6-12 -- triage, fix, convergence -- are performed by the **authoring model**; an
-independent reviewer stops after step 5 and hands the report off.
+Steps 1-5 are performed by **each panelist** (independent reviewers producing advisory
+reports, in parallel). Steps 6-12 -- consolidation, triage, fix, convergence -- are
+performed by the **authoring model**; a panelist stops after step 5 and hands its report
+off.
 
 1. **Run static analysis tools first** -- run all formatters, linters, and compilers read-only and report any formatting, linting, or compiler warnings (the authoring model fixes them during triage).
 2. **Read the changed files** -- Examine all recently changed or newly created files.
 3. **Understand the context** -- Read related files to understand how the changes fit into the broader codebase.
 4. **Run the test suite** -- Verify all tests pass before reviewing. Report test failures as Critical.
-5. **Perform the review and report** -- Apply each review category systematically and produce the advisory report (findings + Model selection block), leaving triage markers blank.
-6. **(Authoring model) Triage every finding** -- Accept or reject each with a rationale validated against the code. Do not auto-apply the review.
+5. **Perform the review and report** -- Apply each review category systematically and produce the advisory report (findings only), leaving triage markers blank.
+6. **(Authoring model) Consolidate & triage every finding** -- Merge and dedupe findings from all panelists, then accept or reject each with a rationale validated against the code. Do not auto-apply the review.
 7. **(Authoring model) Fix accepted Critical and Important findings (behavior-first)** -- Ship a failing test first, then implement. Run tests after each fix to verify correctness.
 8. **(Authoring model) Apply accepted low-effort Suggestions; file issues for high-effort work** -- **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is high-effort -- create a GitHub issue instead.
 9. **(Authoring model) Run the full test suite after all fixes** -- All tests must pass.
 10. **(Authoring model) Run static analysis again** -- Verify everything is still clean after fixes.
-11. **(Authoring model) Re-submit to the same reviewer(s) and iterate until convergence.**
-12. **(Authoring model) Produce the final report** -- Output the structured review showing the triage verdict per finding, what was fixed, and any issues filed.
+11. **(Authoring model) Re-submit to the same panel and iterate until convergence** (every panelist surfaces no new accepted Critical / Important findings).
+12. **(Authoring model) Produce the final report** -- Output the structured review (led by the Review panel block) showing the triage verdict per finding, what was fixed, and any issues filed.
 
 ## Red Flags
 
@@ -296,11 +314,12 @@ independent reviewer stops after step 5 and hands the report off.
 
 ## Review Checklist
 
-- [ ] Latest non-author model selected; Model selection block recorded.
-- [ ] Static analysis tools run (reviewer) and findings fixed (authoring model).
+- [ ] Review panel selected (best non-author model per available vendor, target 3); Review panel block recorded.
+- [ ] Static analysis tools run (panelists) and findings fixed (authoring model).
 - [ ] All changed files examined.
 - [ ] Lint/compile runs without errors.
 - [ ] Tests run and results noted.
+- [ ] Panel findings consolidated and deduped across panelists.
 - [ ] Every finding triaged (accepted/rejected with rationale validated vs code).
 - [ ] Correctness issues identified and accepted ones fixed (behavior-first).
 - [ ] Code quality issues identified and accepted ones fixed.
@@ -310,5 +329,5 @@ independent reviewer stops after step 5 and hands the report off.
 - [ ] YAGNI compliance verified.
 - [ ] All tests pass after fixes.
 - [ ] Static analysis re-run and clean after fixes.
-- [ ] Re-submitted to the same reviewer(s); converged.
+- [ ] Re-submitted to the same panel; every panelist converged.
 - [ ] Review report produced in structured format with triage verdicts and fix status.
