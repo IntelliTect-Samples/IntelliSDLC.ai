@@ -40,7 +40,9 @@ Begin the review with a **Model selection** block:
 Source the per-vendor candidates from the runtime's available-model list where possible;
 otherwise use your stated knowledge (note that it may be stale). If the host fixes the
 session model and you cannot switch, document the assigned model and confirm it satisfies
-the independence and recency gates.
+the independence and recency gates. **If the assigned model fails a hard gate** (e.g., it
+is the same model that wrote the code, or it is unavailable), **stop and request a re-run
+with an eligible model** rather than reviewing with an ineligible one.
 
 ## Core Principle
 

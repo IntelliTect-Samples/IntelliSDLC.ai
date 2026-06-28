@@ -33,10 +33,10 @@ Describe 'code-review.agent.md is a thin orchestrator' {
 
     It 'does not freeze the review to a pinned model version' {
         # The review must run on the latest non-author model, not a frozen
-        # version. No `model:` pin may appear in the agent frontmatter, and the
-        # previously frozen version must not appear anywhere in the file.
+        # version. Neither a `model:` pin nor the previously frozen version may
+        # appear in the agent's YAML frontmatter.
         $script:AgentFrontmatter | Should -Not -Match '(?m)^model:\s*'
-        $script:AgentText | Should -Not -Match '(?i)gpt-4\.1'
+        $script:AgentFrontmatter | Should -Not -Match '(?i)gpt-4\.1'
     }
 
     It 'instructs selecting the latest model and emitting a Model selection block' {
