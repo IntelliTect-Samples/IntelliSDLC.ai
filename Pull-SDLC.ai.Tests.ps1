@@ -2722,6 +2722,11 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeTrue
+        # The Copilot cloud-agent setup workflow is the ONLY managed workflow
+        # (issue #208); all other .github/workflows/* stay consumer-owned.
+        Test-IsUpstreamManagedPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path '.github/workflows/validate-instructions.yml' | Should -BeFalse
+        Test-IsUpstreamManagedPath -Path '.github/workflows/ci.yml' | Should -BeFalse
         # The retired filename stays managed so the rename/delete replays into
         # consumer trees on their next sync (orphan cleanup). Dropping it would
         # leave every consumer with a stale Consolidate-Tasks.ps1.
