@@ -22,11 +22,22 @@ Describe 'code-review.agent.md is a thin orchestrator' {
         Test-Path -LiteralPath $script:AgentPath | Should -BeTrue
     }
 
-    It 'preserves frontmatter (name, model gpt-4.1, tools, description)' {
+    It 'preserves frontmatter (name, tools, description)' {
         $script:AgentText | Should -Match '(?m)^name:\s*"Code Review"'
-        $script:AgentText | Should -Match '(?m)^model:\s*"gpt-4\.1"'
         $script:AgentText | Should -Match '(?m)^tools:\s*\['
         $script:AgentText | Should -Match '(?m)^description:\s*"'
+    }
+
+    It 'does not freeze the review to a pinned model version' {
+        # The review must run on the latest non-author model, not a frozen
+        # version. No `model:` pin may appear in the agent frontmatter.
+        $script:AgentText | Should -Not -Match '(?m)^model:\s*'
+        $script:AgentText | Should -Not -Match '(?i)gpt-4\.1'
+    }
+
+    It 'instructs selecting the latest model and emitting a Model selection block' {
+        $script:AgentText | Should -Match '(?i)latest'
+        $script:AgentText | Should -Match '(?i)Model selection'
     }
 
     It 'is collapsed to a thin orchestrator (15-60 lines)' {
@@ -71,5 +82,28 @@ Describe 'code-review-workflow SKILL.md remains the canonical source' {
         $script:SkillText | Should -Match '\*\*Critical\*\*'
         $script:SkillText | Should -Match '\*\*Important\*\*'
         $script:SkillText | Should -Match '\*\*Suggestions\*\*'
+    }
+
+    It 'defines a Model Selection rubric (independence gate + latest/recency + per-vendor block)' {
+        $script:SkillText | Should -Match '(?im)^#+\s*Model Selection'
+        $script:SkillText | Should -Match '(?i)independence'
+        $script:SkillText | Should -Match '(?i)latest'
+        $script:SkillText | Should -Match '(?i)Model selection'   # the per-vendor output block
+        $script:SkillText | Should -Match '(?i)vendor'
+    }
+
+    It 'defines a Triage & Convergence protocol' {
+        $script:SkillText | Should -Match '(?im)^#+\s*Triage'
+        $script:SkillText | Should -Match '(?i)consolidate'
+        $script:SkillText | Should -Match '(?i)accept'
+        $script:SkillText | Should -Match '(?i)reject'
+        $script:SkillText | Should -Match '(?i)rationale'
+        $script:SkillText | Should -Match '(?i)behavior-first'
+        $script:SkillText | Should -Match '(?i)convergence'
+    }
+
+    It 'routes accepted high-effort work to issues rather than inline fixes' {
+        $script:SkillText | Should -Match '(?i)high-effort|high-impact'
+        $script:SkillText | Should -Match '(?i)issue'
     }
 }
