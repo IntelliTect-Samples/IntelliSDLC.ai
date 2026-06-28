@@ -26,15 +26,18 @@ Describe 'code-review.agent.md is a thin orchestrator' {
     }
 
     It 'preserves frontmatter (name, tools, description)' {
-        $script:AgentText | Should -Match '(?m)^name:\s*"Code Review"'
-        $script:AgentText | Should -Match '(?m)^tools:\s*\['
-        $script:AgentText | Should -Match '(?m)^description:\s*"'
+        $script:AgentFrontmatter | Should -Not -BeNullOrEmpty
+        $script:AgentFrontmatter | Should -Match '(?m)^name:\s*"Code Review"'
+        $script:AgentFrontmatter | Should -Match '(?m)^tools:\s*\['
+        $script:AgentFrontmatter | Should -Match '(?m)^description:\s*"'
     }
 
     It 'does not freeze the review to a pinned model version' {
         # The review must run on the latest non-author model, not a frozen
         # version. Neither a `model:` pin nor the previously frozen version may
         # appear in the agent's YAML frontmatter.
+        # Guard: a vacuous (empty) frontmatter must not let these checks pass.
+        $script:AgentFrontmatter | Should -Not -BeNullOrEmpty
         $script:AgentFrontmatter | Should -Not -Match '(?m)^model:\s*'
         $script:AgentFrontmatter | Should -Not -Match '(?i)gpt-4\.1'
     }
