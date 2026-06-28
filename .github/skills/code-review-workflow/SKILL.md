@@ -237,14 +237,14 @@ advisory report leaves them blank.
 
 ### Critical (must fix -- blocks progress)
 - [x] `src/path/file.ext:L42` -- Description. **Accepted.** **Fixed:** <what was changed>.
-- [ ] `src/path/file.ext:L55` -- Description. **Rejected:** <rationale validated vs code>.
+- `src/path/file.ext:L55` -- Description. **Rejected:** <rationale validated vs code>.
 
 ### Important (should fix before proceeding)
 - [x] `src/path/file.ext:L18` -- Description. **Accepted.** **Fixed:** <what was changed>.
 
 ### Suggestions (nice to have)
 - [x] `tests/path/file.ext:L7` -- Description. **Accepted (low-effort).** **Applied.**
-- [ ] `tests/path/file.ext:L22` -- Description. **Rejected:** <rationale>.
+- `tests/path/file.ext:L22` -- Description. **Rejected:** <rationale>.
 - **Issue filed:** `src/path/file.ext:L90` -- Description. *High-effort -> #<issue>.*
 
 ### Positive Observations
