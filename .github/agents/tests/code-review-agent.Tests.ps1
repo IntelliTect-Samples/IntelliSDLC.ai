@@ -47,6 +47,11 @@ Describe 'code-review.agent.md is a thin orchestrator' {
         $script:AgentText | Should -Match '(?i)Model selection'
     }
 
+    It 'frames the review as advisory -- reviewer reports, does not apply fixes' {
+        $script:AgentText | Should -Match '(?i)advisory'
+        $script:AgentText | Should -Match '(?i)not\b.{0,40}\bapply'
+    }
+
     It 'is collapsed to a thin orchestrator (15-60 lines)' {
         $script:AgentLines | Should -BeGreaterOrEqual 15
         $script:AgentLines | Should -BeLessOrEqual 60

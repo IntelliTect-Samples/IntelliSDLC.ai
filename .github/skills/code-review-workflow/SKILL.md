@@ -213,6 +213,12 @@ report below.
 
 ## Review Output Format
 
+The **independent reviewer** fills in the Model selection block, the file list, the
+assessment, and the findings (descriptions + severity). The **triage markers**
+(`Accepted` / `Rejected` / `Issue filed`) and the `Convergence` line are completed by the
+**authoring model** during the Triage & Convergence loop -- a reviewer producing an
+advisory report leaves them blank.
+
 ```markdown
 ## Code Review Summary
 
