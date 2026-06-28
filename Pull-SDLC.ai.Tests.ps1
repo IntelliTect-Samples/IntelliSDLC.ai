@@ -114,6 +114,42 @@ Describe 'Resolve-OpenSyncPRAction' {
     }
 }
 
+Describe 'Resolve-RemoteHasProtectedBranch (issue #204)' {
+    It 'returns $true when ls-remote succeeded and reported the exact branch' {
+        $out = "abc123`trefs/heads/main`n"
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput $out -LsRemoteSucceeded $true `
+            -HasLocalTrackingRef $false -ProtectedBranch 'main' | Should -BeTrue
+    }
+
+    It 'returns $false when ls-remote succeeded but the branch is genuinely absent (first push case)' {
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput '' -LsRemoteSucceeded $true `
+            -HasLocalTrackingRef $false -ProtectedBranch 'main' | Should -BeFalse
+    }
+
+    It 'returns $true when ls-remote FAILED but a local origin/<branch> tracking ref exists (the reported false-negative)' {
+        # The reported bug: a transient ls-remote/SSH failure returns empty output;
+        # the local tracking ref proves origin/main exists, so we must not skip.
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput '' -LsRemoteSucceeded $false `
+            -HasLocalTrackingRef $true -ProtectedBranch 'main' | Should -BeTrue
+    }
+
+    It 'returns $true when ls-remote FAILED and there is no tracking ref (cannot determine -> do not false-block)' {
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput '' -LsRemoteSucceeded $false `
+            -HasLocalTrackingRef $false -ProtectedBranch 'main' | Should -BeTrue
+    }
+
+    It 'returns $true when ls-remote succeeded with no match but a local tracking ref exists' {
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput '' -LsRemoteSucceeded $true `
+            -HasLocalTrackingRef $true -ProtectedBranch 'main' | Should -BeTrue
+    }
+
+    It 'does not let a glob-spoof refs/heads/release/main count as main' {
+        $out = "abc123`trefs/heads/release/main`n"
+        Resolve-RemoteHasProtectedBranch -LsRemoteOutput $out -LsRemoteSucceeded $true `
+            -HasLocalTrackingRef $false -ProtectedBranch 'main' | Should -BeFalse
+    }
+}
+
 Describe 'Test-LsRemoteOutputHasExactBranch' {
     It 'returns $true when the output contains the exact refs/heads/<branch>' {
         $out = "abc123`trefs/heads/main`n"
