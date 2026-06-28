@@ -1096,6 +1096,46 @@ function Invoke-UpstreamOp {
     }
 }
 
+function Test-PathContentInUpstreamHistory {
+    <#
+    .SYNOPSIS
+        Returns $true when the consumer's HEAD content of $Path matches any version
+        of that path in the upstream ref's history -- byte-for-byte or modulo
+        CR-at-EOL. Used to tell upstream-sourced-but-stale content (a self-update or
+        an older/newer sync that left the recorded anchor out of step with the file)
+        apart from a genuine consumer-authored local edit.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Blob,
+        [Parameter(Mandatory)][string]$UpstreamRef,
+        [string]$RepoRoot = '.'
+    )
+    Push-Location $RepoRoot
+    try {
+        # Fast path: exact blob match anywhere in the path's upstream history.
+        $hit = & git log $UpstreamRef --find-object=$Blob --max-count=1 --pretty=format:%H -- $Path 2>$null
+        if ($hit) { return $true }
+        # CRLF-tolerant fallback: a Windows consumer may have committed CRLF where
+        # upstream stores LF, so exact blob SHAs differ for identical content.
+        # Compare against each distinct upstream blob for the path, ignoring
+        # CR-at-EOL. Distinct blobs are far fewer than commits, so this is bounded.
+        $commits = @(& git log $UpstreamRef --pretty=format:%H -- $Path 2>$null)
+        $seen = New-Object System.Collections.Generic.HashSet[string]
+        foreach ($c in $commits) {
+            $upBlob = (& git rev-parse "${c}:$Path" 2>$null)
+            if (-not $upBlob) { continue }
+            if (-not $seen.Add($upBlob)) { continue }
+            & git diff --quiet --ignore-cr-at-eol $Blob $upBlob 2>$null
+            if ($LASTEXITCODE -eq 0) { return $true }
+        }
+        return $false
+    }
+    finally { Pop-Location }
+}
+
 function Test-LocalDriftOnManagedPaths {
     <#
     .SYNOPSIS
@@ -1111,11 +1151,19 @@ function Test-LocalDriftOnManagedPaths {
         diff (git diff --ignore-cr-at-eol); only paths that still differ after
         ignoring CR-at-EOL are reported as drift. Genuine divergence -- including
         upstream-deleted files the consumer still has committed -- is preserved.
+
+        When -UpstreamRef is supplied, a path whose HEAD content differs from the
+        anchor but still matches some version of that path in the upstream ref's
+        history is treated as upstream-sourced-but-stale (e.g. a self-update that
+        advanced the script ahead of the recorded anchor, or an older/newer sync)
+        and is NOT reported as drift. Only content that exists nowhere upstream is
+        a genuine consumer local edit.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Anchor,
         [Parameter(Mandatory)][string[]]$ManagedPaths,
+        [string]$UpstreamRef,
         [string]$RepoRoot = '.'
     )
     Push-Location $RepoRoot
@@ -1135,6 +1183,11 @@ function Test-LocalDriftOnManagedPaths {
                 # CRLF/LF normalization before flagging it as a policy violation.
                 & git diff --quiet --ignore-cr-at-eol $Anchor HEAD -- $p 2>$null
                 if ($LASTEXITCODE -eq 0) { continue }
+                # Content that exists somewhere in the upstream history for this
+                # path is upstream-sourced, not a consumer edit -- never a violation.
+                if ($UpstreamRef -and (Test-PathContentInUpstreamHistory -Path $p -Blob $headSha -UpstreamRef $UpstreamRef -RepoRoot $RepoRoot)) {
+                    continue
+                }
                 $log = (& git log -1 --pretty='%h %s' -- $p 2>$null) -join ''
                 $drift.Add(@{ Path = $p; Commit = $log }) | Out-Null
             }
@@ -2076,7 +2129,7 @@ function Invoke-PullSDLC {
     $anchorSha = $anchorInfo.Sha
 
     if ($anchorSha) {
-        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchorSha -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchorSha -ManagedPaths $script:UpstreamManagedPaths -UpstreamRef $mergeRef -RepoRoot $RepoRoot)
         if ($drift.Count -gt 0) {
             if (-not $Force) {
                 $violation = New-Object System.Text.StringBuilder
@@ -2098,6 +2151,31 @@ function Invoke-PullSDLC {
     }
 
     $ops = @(Get-UpstreamOps -Anchor $anchorSha -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
+
+    # Reconcile managed files whose HEAD content diverged from the upstream tip
+    # without being a genuine local edit -- e.g. a self-update or a mis-recorded
+    # anchor left HEAD out of step with the recorded anchor. The anchor->tip diff
+    # above misses any such file that did not change between the anchor and the
+    # tip, so add an explicit HEAD->tip op to bring it current. In the normal case
+    # (HEAD == anchor) these ops duplicate the anchor->tip set and are dropped.
+    # Genuine local edits only reach here under -Force (otherwise the drift gate
+    # already returned), where overwriting is the intended behavior.
+    if ($anchorSha) {
+        $reconcileOps = @(Get-UpstreamOps -Anchor 'HEAD' -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
+        if ($reconcileOps.Count -gt 0) {
+            $covered = @{}
+            foreach ($o in $ops) {
+                $covered[$o.Path] = $true
+                if ($o.OldPath) { $covered[$o.OldPath] = $true }
+            }
+            foreach ($r in $reconcileOps) {
+                if ($covered.ContainsKey($r.Path)) { continue }
+                if ($r.OldPath -and $covered.ContainsKey($r.OldPath)) { continue }
+                $ops += $r
+            }
+        }
+    }
+
     Push-Location $RepoRoot
     try { $upstreamHead = (git rev-parse $mergeRef).Trim() }
     finally { Pop-Location }

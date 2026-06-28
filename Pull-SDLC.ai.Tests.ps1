@@ -894,6 +894,111 @@ Describe 'Invoke-PullSDLC end-to-end' {
     }
 }
 
+function global:New-StaleUpstreamFixture {
+    <#
+    .SYNOPSIS
+        Builds an upstream whose managed path passes through three versions and a
+        consumer whose HEAD holds the *oldest* upstream version -- not the recorded
+        anchor. Returns @{ Upstream; Consumer; AnchorSha; UpstreamHead; Path }.
+    .DESCRIPTION
+        Reproduces the self-update / mis-recorded-anchor scenario: the consumer's
+        committed managed file is genuine upstream content, just from a different
+        commit than the recorded anchor. When -TipUnchangedFromAnchor is set the
+        tip commit touches a *different* managed file, so the managed path stays at
+        the anchor version through the tip -- exercising the reconciliation path
+        where the anchor->tip diff emits no op for the stale managed file.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string]$Path = 'CLAUDE.md',
+        [string]$OtherPath = '.github/copilot-instructions.md',
+        [switch]$TipUnchangedFromAnchor,
+        [string]$RemoteName = 'sdlc.ai'
+    )
+    $upstream = Join-Path $Root 'upstream'
+    $consumer = Join-Path $Root 'consumer'
+    New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+    New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+    Push-Location $upstream
+    try {
+        git init -q -b main
+        git config user.email u@u.u; git config user.name u
+        New-Item -ItemType Directory -Path (Split-Path $OtherPath) -Force | Out-Null
+        'v1-old-upstream' | Out-File -Encoding utf8 $Path -NoNewline
+        'instructions-v1' | Out-File -Encoding utf8 $OtherPath -NoNewline
+        git add -A | Out-Null; git commit -q -m 'v1'
+        'v2-anchor' | Out-File -Encoding utf8 $Path -NoNewline
+        git add -A | Out-Null; git commit -q -m 'v2 anchor'
+        $anchorSha = (git rev-parse HEAD).Trim()
+        if ($TipUnchangedFromAnchor) {
+            # Leave $Path at v2; advance a different managed file so tip != anchor.
+            'instructions-v2' | Out-File -Encoding utf8 $OtherPath -NoNewline
+        }
+        else {
+            'v3-tip' | Out-File -Encoding utf8 $Path -NoNewline
+        }
+        git add -A | Out-Null; git commit -q -m 'v3 tip'
+        $upstreamHead = (git rev-parse HEAD).Trim()
+    } finally { Pop-Location }
+
+    Push-Location $consumer
+    try {
+        git init -q -b main
+        git config user.email c@c.c; git config user.name c
+        # Consumer HEAD holds the OLDEST upstream version of the managed file.
+        New-Item -ItemType Directory -Path (Split-Path $OtherPath) -Force | Out-Null
+        'v1-old-upstream' | Out-File -Encoding utf8 $Path -NoNewline
+        'instructions-v1' | Out-File -Encoding utf8 $OtherPath -NoNewline
+        'consumer readme' | Out-File -Encoding utf8 README.md -NoNewline
+        '*.local' | Out-File -Encoding utf8 .gitignore -NoNewline
+        git add -A | Out-Null; git commit -q -m 'seed'
+        git checkout -q -b chore/sdlc-sync
+        git remote add $RemoteName $upstream
+        git fetch $RemoteName --quiet 2>$null | Out-Null
+    } finally { Pop-Location }
+
+    return @{
+        Upstream     = $upstream
+        Consumer     = $consumer
+        AnchorSha    = $anchorSha
+        UpstreamHead = $upstreamHead
+        Path         = $Path
+    }
+}
+
+Describe 'Invoke-PullSDLC upstream-sourced managed files are not local drift' {
+
+    BeforeEach {
+        $script:staleRoot = Join-Path $TestDrive ("stale-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'does not raise a policy violation when HEAD holds an older upstream version (changed at tip)' {
+        $fx = New-StaleUpstreamFixture -Root $script:staleRoot
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer $fx.Path) -Raw) | Should -Be 'v3-tip'
+    }
+
+    It 'reconciles a stale managed file to the tip even when the anchor->tip diff has no op for it' {
+        $fx = New-StaleUpstreamFixture -Root $script:staleRoot -TipUnchangedFromAnchor
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        # Tip never advanced $Path past the anchor version, but the consumer's
+        # stale v1 must still be reconciled up to the tip's v2.
+        (Get-Content (Join-Path $fx.Consumer $fx.Path) -Raw) | Should -Be 'v2-anchor'
+    }
+}
+
 Describe 'Test-CommitContextAllowed' {
 
     BeforeEach {
