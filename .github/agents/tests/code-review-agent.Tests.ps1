@@ -18,6 +18,10 @@ BeforeAll {
     # fence is anchored to a full line so a `---` inside a YAML value cannot end it.
     $script:AgentFrontmatter = if ($script:AgentText -match '(?ms)\A---\r?\n(.*?)\r?\n---\r?$') { $Matches[1] } else { '' }
     $script:SkillText  = Get-Content -LiteralPath $script:SkillPath  -Raw
+    $script:DevLoopPath = Join-Path $script:RepoRoot '.github/agents/dev-loop.agent.md'
+    $script:DevLoopText = Get-Content -LiteralPath $script:DevLoopPath -Raw
+    # Isolate the Phase 6 section so assertions target it (not Phase 5b/7 prose).
+    $script:DevLoopPhase6 = if ($script:DevLoopText -match '(?s)###\s*Phase 6\b.*?(?=\n###\s*Phase 7\b)') { $Matches[0] } else { '' }
 }
 
 Describe 'code-review.agent.md is a thin orchestrator' {
@@ -131,5 +135,24 @@ Describe 'code-review-workflow SKILL.md remains the canonical source' {
     It 'routes accepted high-effort work to issues rather than inline fixes' {
         $script:SkillText | Should -Match '(?i)high-effort|high-impact'
         $script:SkillText | Should -Match '(?i)issue'
+    }
+}
+
+Describe 'dev-loop.agent.md Phase 6 uses the review panel' {
+
+    It 'has a Phase 6 section' {
+        $script:DevLoopPhase6 | Should -Not -BeNullOrEmpty
+    }
+
+    It 'frames Phase 6 as a parallel non-author vendor panel with dedupe + panel convergence' {
+        $script:DevLoopPhase6 | Should -Match '(?i)review panel'
+        $script:DevLoopPhase6 | Should -Match '(?i)parallel'
+        $script:DevLoopPhase6 | Should -Match '(?i)non-author'
+        $script:DevLoopPhase6 | Should -Match '(?i)dedupe'
+        $script:DevLoopPhase6 | Should -Match '(?i)panelist'
+    }
+
+    It 'does not regress Phase 6 to single-model "Model selection" review' {
+        $script:DevLoopPhase6 | Should -Not -Match '(?i)Model selection'
     }
 }
