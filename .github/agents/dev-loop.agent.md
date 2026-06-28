@@ -315,12 +315,21 @@ structural fix is required that affects other tests, return to Phase 3.**
 
 **Invoke the `code-review-workflow` skill:**
 
-1. Run all static analysis tools first. Fix findings.
-2. Review all changed files: correctness, quality, tests, security, YAGNI.
-3. Fix all Critical and Important findings directly.
-4. Run full test suite after fixes. Run static analysis again.
+1. **Select the latest non-author model** per the skill's Model Selection rubric and lead
+   the review with the Model selection block.
+2. Run all static analysis tools first. Fix findings.
+3. Review all changed files: correctness, quality, tests, security, YAGNI.
+4. **Triage** every finding -- accept or reject with a rationale validated against the code.
+   A review is advisory; do not auto-apply it.
+5. **Fix accepted Critical / Important findings using behavior-first testing.** Apply
+   accepted low-effort suggestions; **file issues** for accepted high-effort / high-impact
+   work.
+6. Run the full test suite after fixes. Run static analysis again.
+7. **Re-submit the diff to the same reviewer and iterate until convergence** (re-review
+   surfaces no new accepted Critical / Important findings).
 
-**Exit criteria:** No Critical or Important findings, all tests green, static analysis clean.
+**Exit criteria:** No accepted-and-unfixed Critical or Important findings, review converged,
+all tests green, static analysis clean.
 **-> If issues found and fixed -> back to Phase 3. If clean -> proceed to Phase 7.**
 
 ### Phase 7 -- PR + Copilot Review + Dry Run

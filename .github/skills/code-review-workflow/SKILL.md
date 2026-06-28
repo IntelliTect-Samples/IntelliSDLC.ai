@@ -1,6 +1,6 @@
 ---
 name: code-review-workflow
-description: "Review and fix production and test code. Runs static analysis, reviews by severity (Critical/Important/Suggestions), and directly applies fixes. Use a different model than the authoring agent for independent perspective. Language-aware."
+description: "Review and fix production and test code. Selects the latest non-author model, runs static analysis, reviews by severity (Critical/Important/Suggestions), then triages findings (accept/reject) and converges. Language-aware."
 ---
 
 # Code Review Workflow
@@ -12,6 +12,36 @@ that wrote the code when possible, providing a fresh perspective and catching bl
 language-specific guidance below. If the language is not listed, infer conventions from
 the project's existing code and community standards.
 
+## Model Selection
+
+**Do not freeze the review to one model version.** Choose the **latest** available model
+that gives the best review, and record the decision. Apply this rubric in priority order:
+
+1. **Independence (hard gate).** Exclude the model that wrote the code. Never review with
+   the authoring model.
+2. **Availability (hard gate).** Only consider models actually offered by the current
+   runtime / platform.
+3. **Recency.** For each vendor, take the **latest** released flagship (not a mini / flash
+   tier).
+4. **Code-review capability.** Prefer the strongest code reasoning, the largest context
+   window, and the best instruction-following for the project's primary language.
+5. **Tie-break.** Prefer a different **vendor** than the author's (maximise perspective
+   diversity), then the larger context window.
+
+Begin the review with a **Model selection** block:
+
+```markdown
+### Model selection
+- **Considered (latest per vendor):** <vendor A>: <model>, <vendor B>: <model>, ...
+- **Chosen:** <model> -- differs from the author's model (<author model>).
+- **Rationale:** <one line tied to the rubric: independence, recency, capability>.
+```
+
+Source the per-vendor candidates from the runtime's available-model list where possible;
+otherwise use your stated knowledge (note that it may be stale). If the host fixes the
+session model and you cannot switch, document the assigned model and confirm it satisfies
+the independence and recency gates.
+
 ## Core Principle
 
 **Review early, review often.** Issues caught now are 10x cheaper than issues caught later.
@@ -19,11 +49,20 @@ the project's existing code and community standards.
 ## Mission
 
 1. **Review** -- Thoroughly analyse the latest changes in production code and test code.
-2. **Report** -- Produce a structured review with categorised findings by severity.
-3. **Fix** -- Apply fixes for all Critical and Important findings directly. Make the code
-   changes, run tests, and verify the fixes work. Do not just report -- resolve.
-4. **Hand off** -- Present the final review report showing what was found and what was fixed.
-   Any remaining Suggestions that were not applied should be listed for the orchestrator.
+2. **Report** -- Produce a structured review with categorised findings by severity,
+   leading with the Model selection block.
+3. **Triage** -- The current/authoring model consolidates the findings and **accepts or
+   rejects each one with a written rationale, validated against the code**. A review is
+   advisory: do **not** auto-apply whatever it says.
+4. **Fix** -- For accepted **Critical / Important** findings, fix using **behavior-first
+   testing**. Apply accepted **low-effort** suggestions directly. For accepted
+   **high-effort / high-impact** work, **create a GitHub issue** instead of fixing inline.
+5. **Converge** -- Re-submit the updated diff to the **same reviewer(s)** and iterate until
+   convergence (re-review surfaces no new accepted Critical / Important findings).
+6. **Hand off** -- Present the final review report showing what was found, the triage
+   verdict for each item, what was fixed, and any issues filed for deferred work.
+
+See the **Triage & Convergence** section below for the full loop.
 
 ## When to Review
 
@@ -149,26 +188,55 @@ git diff --name-only origin/main...HEAD
 
 ---
 
+---
+
+## Triage & Convergence
+
+A review is **advisory, not auto-applied**. After the reviewer reports findings, the
+current/authoring model owns how they are consumed:
+
+1. **Consolidate.** Merge all findings from the reviewer(s) into one list.
+2. **Triage.** For each finding, **accept or reject it with a written rationale**, after
+   **validating it against the actual code**. Confirm the issue is real before acting; a
+   reviewer can be wrong (see Red Flags).
+3. **Fix accepted Critical / Important** findings using **behavior-first testing** -- ship
+   a test that fails for a behavioral reason when the fix is reverted, then implement.
+4. **Apply accepted low-effort suggestions** directly (quick wins, no design decisions).
+5. **File issues for accepted high-effort / high-impact** work instead of fixing inline;
+   capture the rationale and scope in the issue and link it in the report.
+6. **Re-submit & converge.** Send the updated diff back to the **same reviewer(s)** and
+   iterate from step 1. The loop exits at **convergence** -- re-review surfaces no new
+   accepted Critical / Important findings.
+
+Record the triage verdict (accepted / rejected + rationale) for every finding in the
+report below.
+
 ## Review Output Format
 
 ```markdown
 ## Code Review Summary
 
+### Model selection
+- **Considered (latest per vendor):** <vendor A>: <model>, <vendor B>: <model>, ...
+- **Chosen:** <model> -- differs from the author's model (<author model>).
+- **Rationale:** <one line tied to the rubric>.
+
 **Files reviewed:** <list of files>
 **Overall assessment:** PASS | NEEDS CHANGES | CRITICAL ISSUES
 **Static analysis:** Clean / <N> findings fixed
+**Convergence:** Converged after <N> review round(s) / In progress
 
 ### Critical (must fix -- blocks progress)
-- [x] `src/path/file.ext:L42` -- Description. **Fixed:** <what was changed>.
-- [ ] `src/path/file.ext:L55` -- Description. **Not fixed:** <reason>.
+- [x] `src/path/file.ext:L42` -- Description. **Accepted.** **Fixed:** <what was changed>.
+- [ ] `src/path/file.ext:L55` -- Description. **Rejected:** <rationale validated vs code>.
 
 ### Important (should fix before proceeding)
-- [x] `src/path/file.ext:L18` -- Description. **Fixed:** <what was changed>.
+- [x] `src/path/file.ext:L18` -- Description. **Accepted.** **Fixed:** <what was changed>.
 
 ### Suggestions (nice to have)
-- [x] `tests/path/file.ext:L7` -- Description. **Applied.**
-- [ ] `tests/path/file.ext:L22` -- Description. Not applied (low priority).
-- **Deferred:** `src/path/file.ext:L90` -- Description. *Reason: requires design decision.*
+- [x] `tests/path/file.ext:L7` -- Description. **Accepted (low-effort).** **Applied.**
+- [ ] `tests/path/file.ext:L22` -- Description. **Rejected:** <rationale>.
+- **Issue filed:** `src/path/file.ext:L90` -- Description. *High-effort -> #<issue>.*
 
 ### Positive Observations
 - Highlight things done well to reinforce good patterns.
@@ -178,9 +246,12 @@ git diff --name-only origin/main...HEAD
 
 | Severity | Action Required |
 |----------|----------------|
-| **Critical** | Blocks progress. Must fix immediately before any further work. |
-| **Important** | Must fix before proceeding to next task. |
-| **Suggestions** | Note for later. Apply if low-effort and high-value. |
+| **Critical** | If accepted, blocks progress. Fix immediately (behavior-first) before further work. |
+| **Important** | If accepted, fix (behavior-first) before proceeding to the next task. |
+| **Suggestions** | If accepted and low-effort, apply. High-effort/high-impact -> file an issue. |
+
+Every finding is first **triaged (accept/reject with rationale)**; only accepted findings
+are acted on.
 
 ## Execution Guidelines
 
@@ -189,11 +260,13 @@ git diff --name-only origin/main...HEAD
 3. **Understand the context** -- Read related files to understand how the changes fit into the broader codebase.
 4. **Run the test suite** -- Verify all tests pass before reviewing. Report test failures as Critical.
 5. **Perform the review** -- Apply each review category systematically.
-6. **Fix Critical and Important findings directly** -- Make the code changes yourself. Run tests after each fix to verify correctness.
-7. **Apply low-effort Suggestions** -- Fix suggestions that are quick wins. **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is NOT low-effort.
-8. **Run the full test suite after all fixes** -- All tests must pass.
-9. **Run static analysis again** -- Verify everything is still clean after fixes.
-10. **Produce the final report** -- Output the structured review showing what was found, what was fixed, and any remaining suggestions.
+6. **Triage every finding** -- Accept or reject each with a rationale validated against the code. Do not auto-apply the review.
+7. **Fix accepted Critical and Important findings (behavior-first)** -- Ship a failing test first, then implement. Run tests after each fix to verify correctness.
+8. **Apply accepted low-effort Suggestions; file issues for high-effort work** -- **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is high-effort -- create a GitHub issue instead.
+9. **Run the full test suite after all fixes** -- All tests must pass.
+10. **Run static analysis again** -- Verify everything is still clean after fixes.
+11. **Re-submit to the same reviewer(s) and iterate until convergence.**
+12. **Produce the final report** -- Output the structured review showing the triage verdict per finding, what was fixed, and any issues filed.
 
 ## Red Flags
 
@@ -210,15 +283,19 @@ git diff --name-only origin/main...HEAD
 
 ## Review Checklist
 
+- [ ] Latest non-author model selected; Model selection block recorded.
 - [ ] Static analysis tools run and findings fixed.
 - [ ] All changed files examined.
 - [ ] Lint/compile runs without errors.
 - [ ] Tests run and results noted.
-- [ ] Correctness issues identified and fixed.
-- [ ] Code quality issues identified and fixed.
-- [ ] Test quality issues identified and fixed.
-- [ ] Security concerns flagged and fixed.
+- [ ] Every finding triaged (accepted/rejected with rationale validated vs code).
+- [ ] Correctness issues identified and accepted ones fixed (behavior-first).
+- [ ] Code quality issues identified and accepted ones fixed.
+- [ ] Test quality issues identified and accepted ones fixed.
+- [ ] Security concerns flagged and accepted ones fixed.
+- [ ] High-effort/high-impact accepted work filed as issues.
 - [ ] YAGNI compliance verified.
 - [ ] All tests pass after fixes.
 - [ ] Static analysis re-run and clean after fixes.
-- [ ] Review report produced in structured format with fix status.
+- [ ] Re-submitted to the same reviewer(s); converged.
+- [ ] Review report produced in structured format with triage verdicts and fix status.
