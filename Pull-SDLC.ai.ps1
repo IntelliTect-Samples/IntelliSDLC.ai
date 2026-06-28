@@ -1471,6 +1471,44 @@ function Invoke-AutoWorktreeSync {
     finally { Pop-Location }
 }
 
+function Test-ScriptHasUncommittedEdits {
+    <#
+    .SYNOPSIS
+        Returns $true only when $ScriptPath is tracked by git AND has uncommitted
+        working-tree modifications relative to HEAD (content edits, ignoring
+        CR-at-EOL normalization). Returns $false for clean, untracked, or non-git
+        files -- i.e. cases where a self-update overwrite cannot lose committed work.
+    .DESCRIPTION
+        Used to guard the self-update: overwriting an on-disk script that carries
+        uncommitted local edits would destroy them irrecoverably (they exist in no
+        commit). Clean files are recoverable from git, untracked files are fresh
+        bootstrap downloads, and non-git files have no baseline to compare -- none
+        of those should block the self-update.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath
+    )
+    $scriptDir = Split-Path -Parent $ScriptPath
+    $leaf = Split-Path -Leaf $ScriptPath
+    if ([string]::IsNullOrWhiteSpace($scriptDir)) { return $false }
+    Push-Location $scriptDir
+    try {
+        # Must be inside a work tree with the file tracked; otherwise there is no
+        # committed baseline that an overwrite could lose.
+        $inWorkTree = (git rev-parse --is-inside-work-tree 2>$null)
+        if ($inWorkTree -ne 'true') { return $false }
+        & git ls-files --error-unmatch -- $leaf 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { return $false }
+        # EOL-insensitive working-tree-vs-HEAD diff: exit 0 == clean, 1 == edited.
+        & git diff --quiet --ignore-cr-at-eol HEAD -- $leaf 2>$null
+        return ($LASTEXITCODE -ne 0)
+    }
+    catch { return $false }
+    finally { Pop-Location -ErrorAction SilentlyContinue }
+}
+
 function Test-SelfRefreshRequired {
     <#
     .SYNOPSIS
@@ -1480,8 +1518,10 @@ function Test-SelfRefreshRequired {
         Skips the refresh when any opt-out applies: -NoSelfUpdate parameter,
         $env:PULL_SDLC_NO_SELF_UPDATE, missing/empty ScriptPath, ScriptPath
         leaf is not 'Pull-SDLC.ai.ps1', running from inside .worktrees/sdlc-sync,
-        or running from the upstream IntelliSDLC.ai repo itself (so upstream
-        developers and tests don't have their working copy clobbered).
+        running from the upstream IntelliSDLC.ai repo itself (so upstream
+        developers and tests don't have their working copy clobbered), or the
+        on-disk script has uncommitted local edits (so the self-update overwrite
+        does not silently destroy un-saved work -- issue #202).
     #>
     [CmdletBinding()]
     param(
@@ -1505,6 +1545,11 @@ function Test-SelfRefreshRequired {
         } catch { }
         finally { Pop-Location -ErrorAction SilentlyContinue }
         if ($originUrl -and (Test-IsUpstreamRepo -RemoteUrl $originUrl)) { return $false }
+    }
+    # Protect uncommitted local edits from being clobbered by the overwrite.
+    if (Test-ScriptHasUncommittedEdits -ScriptPath $ScriptPath) {
+        Write-Warning "Self-update skipped: '$ScriptPath' has uncommitted local edits. Commit, stash, or revert them (or pass -NoSelfUpdate) to avoid losing work."
+        return $false
     }
     return $true
 }
