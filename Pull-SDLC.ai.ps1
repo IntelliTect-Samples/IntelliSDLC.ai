@@ -431,6 +431,38 @@ function Test-LsRemoteOutputHasExactBranch {
     return $false
 }
 
+function Resolve-RemoteHasProtectedBranch {
+    <#
+    .SYNOPSIS
+        Pure decision: does origin have the protected base branch? Combines the
+        `git ls-remote` result, whether that query SUCCEEDED, and whether a local
+        remote-tracking ref exists -- so a transient ls-remote / network failure is
+        never misread as "branch absent" (issue #204).
+    .DESCRIPTION
+        Returns $true when:
+          - ls-remote succeeded and reported the exact refs/heads/<branch>, OR
+          - a local remote-tracking ref (refs/remotes/origin/<branch>) exists, OR
+          - ls-remote FAILED (we cannot determine; do not false-block the PR).
+        Returns $false only when ls-remote SUCCEEDED, reported no exact match, AND
+        there is no local tracking ref -- the genuine "never pushed origin/<branch>"
+        case that warrants the push remediation.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowEmptyString()][AllowNull()][string]$LsRemoteOutput,
+        [Parameter(Mandatory)][bool]$LsRemoteSucceeded,
+        [Parameter(Mandatory)][bool]$HasLocalTrackingRef,
+        [Parameter(Mandatory)][string]$ProtectedBranch
+    )
+    if (Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $LsRemoteOutput -BranchName $ProtectedBranch) {
+        return $true
+    }
+    if ($HasLocalTrackingRef) { return $true }
+    if (-not $LsRemoteSucceeded) { return $true }
+    return $false
+}
+
 function Resolve-OpenSyncPRAction {
     <#
     .SYNOPSIS
@@ -1432,7 +1464,14 @@ function Invoke-AutoWorktreeSync {
         # then verify the output contains the exact ref via the unit-tested
         # helper Test-LsRemoteOutputHasExactBranch.
         $lsRemoteOut = (git ls-remote --heads origin "refs/heads/$ProtectedBranch" 2>$null | Out-String)
-        $hasProtected = Test-LsRemoteOutputHasExactBranch -LsRemoteOutput $lsRemoteOut -BranchName $ProtectedBranch
+        $lsRemoteOk = ($LASTEXITCODE -eq 0)
+        # Fall back to the local remote-tracking ref so a transient ls-remote /
+        # network failure (empty output, swallowed by 2>$null) is not misread as
+        # "origin has no <branch>" and does not skip the PR (issue #204).
+        git rev-parse --verify --quiet "refs/remotes/origin/$ProtectedBranch" 2>$null | Out-Null
+        $hasLocalTrackingRef = ($LASTEXITCODE -eq 0)
+        $hasProtected = Resolve-RemoteHasProtectedBranch -LsRemoteOutput $lsRemoteOut `
+            -LsRemoteSucceeded $lsRemoteOk -HasLocalTrackingRef $hasLocalTrackingRef -ProtectedBranch $ProtectedBranch
         $originUrlForGh = (git remote get-url origin 2>$null)
         $prPlan = Resolve-OpenSyncPRAction `
             -RemoteHasProtectedBranch $hasProtected `
