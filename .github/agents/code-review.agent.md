@@ -1,6 +1,6 @@
 ---
 name: "Code Review"
-description: "Review and fix production and test code using a different LLM for an independent perspective. Selects the latest non-author model, runs static analysis, and reports advisory findings by severity (Critical/Important/Suggestions). Language-aware."
+description: "Review production and test code using a different LLM for an independent perspective. Selects the latest non-author model, runs static analysis, and reports advisory findings by severity (Critical/Important/Suggestions). Language-aware."
 tools: ["codebase", "filesystem", "search", "problems", "findTestFiles", "runTests", "runCommands", "terminalLastCommand", "testFailure", "changes"]
 ---
 
@@ -29,7 +29,8 @@ in the canonical skill:
    (`git diff --name-only origin/main...HEAD`).
 2. **Report findings** by severity using the skill's Review Output Format,
    leading with the Model selection block. The review is **advisory** -- report
-   findings; do not auto-apply them.
+   findings only. Do **not** mark items Accepted/Rejected and do **not** apply
+   fixes; triage and fixes are the authoring model's job (step 3).
 3. **Hand off to the authoring model for triage.** Per the skill's Triage &
    Convergence section, the **current/authoring model** (not this reviewer)
    consolidates the findings, accepts or rejects each with rationale validated
