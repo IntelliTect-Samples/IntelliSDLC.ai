@@ -1513,9 +1513,10 @@ function Invoke-SelfRefresh {
     <#
     .SYNOPSIS
         Fetches the upstream Pull-SDLC.ai.ps1 and, if its SHA256 differs from
-        the local copy, returns the path to a temp file containing the new
-        content. The caller re-execs from that temp file; the on-disk
-        $ScriptPath is intentionally NOT overwritten.
+        the local copy, overwrites the on-disk $ScriptPath in place with the new
+        content so the user always runs the newest version. Returns the path to a
+        backup copy of the ORIGINAL on-disk content (so the caller can restore it
+        after a -WhatIf dry run); empty string when no update was applied.
     .DESCRIPTION
         The fetch is cache-busted on every call (per-invocation query parameter
         plus Cache-Control / Pragma no-cache headers) to defeat Fastly stale
@@ -1523,21 +1524,20 @@ function Invoke-SelfRefresh {
         the CDN's TTL of a fresh upstream merge would silently no-op against
         the previous body.
 
-        The on-disk script is left untouched (issue #180). Overwriting it on
-        `main` produced a dirty working tree on every upstream change and
-        silently destroyed any local edits. The upstream content is delivered
-        to the consumer through the worktree sync's PR; when the user merges
-        that PR and pulls, the on-disk script is updated through git like any
-        other managed file.
+        The on-disk script is overwritten in place (issue #200) so a single
+        invocation always runs the newest upstream version. Before overwriting,
+        the original content is copied to a backup temp file; the caller restores
+        it after a -WhatIf dry run (via Complete-SelfReExec) so dry runs leave no
+        net change. A normal run keeps the new content on disk.
 
         Every outcome is logged on the Verbose stream so '-Verbose' makes
         "did the refresh run, and what did it see?" answerable from the
         output without grepping for a missing line.
     .OUTPUTS
-        [string] Absolute path to a temp file with the new upstream content,
-        when an update is available (caller should re-exec from that path).
-        Empty string when hashes match, the fetch failed, or any error
-        occurred.
+        [string] Absolute path to a backup file holding the ORIGINAL on-disk
+        content, when an update was applied (the on-disk script now holds the new
+        upstream content). Empty string when hashes match, the fetch failed, or
+        any error occurred.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -1569,9 +1569,16 @@ function Invoke-SelfRefresh {
             Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
             return ''
         }
+        # Back up the original on-disk content so a -WhatIf dry run can restore it,
+        # then overwrite the on-disk script with the new upstream content. Both
+        # operations force -WhatIf:$false so a dry run still self-updates (and is
+        # restored afterward) without emitting "What if:" noise.
+        $backup = Join-Path ([System.IO.Path]::GetTempPath()) ("pull-sdlc-self-backup-" + [guid]::NewGuid().ToString('N') + ".ps1")
+        Copy-Item -LiteralPath $ScriptPath -Destination $backup -Force -WhatIf:$false -Confirm:$false
+        Move-Item -LiteralPath $tmp -Destination $ScriptPath -Force -WhatIf:$false -Confirm:$false
         Write-Information ("Self-updated Pull-SDLC.ai.ps1 from {0} to {1}; re-running with original args" -f $localHash.Substring(0, 7), $remoteHash.Substring(0, 7))
         Write-Verbose "Self-refresh: updated $($localHash.Substring(0,7)) -> $($remoteHash.Substring(0,7))"
-        return $tmp
+        return $backup
     }
     catch {
         Write-Warning "Self-update check skipped: $($_.Exception.Message)"
@@ -1580,22 +1587,53 @@ function Invoke-SelfRefresh {
     }
 }
 
-function Invoke-SelfReExec {
+function Complete-SelfReExec {
     <#
     .SYNOPSIS
-        Re-invokes the freshly self-updated Pull-SDLC.ai.ps1 (typically a temp
-        file produced by Invoke-SelfRefresh) with the caller's original bound
-        parameters, force-adding -NoSelfUpdate to prevent loops. Exits the
-        host process with the child script's exit code.
+        Finalizes a self-update re-exec: under a -WhatIf dry run, restores the
+        original on-disk script from $BackupPath so the run leaves no net change;
+        always removes the backup file. Separated from Invoke-SelfReExec (which
+        calls `exit`) so the restore/cleanup logic is unit-testable.
     .DESCRIPTION
-        $ScriptPath is the path to the script to run. With issue #180 this is
-        a temp file (the upstream-downloaded copy), not the consumer's on-disk
-        Pull-SDLC.ai.ps1. The temp file is removed after the child exits.
+        A normal (non-dry-run) self-update keeps the new upstream content on disk
+        (the desired self-overwrite). A -WhatIf dry run restores the original so
+        the working tree is left exactly as found. The backup temp file is removed
+        in both cases. A no-op when no backup path is supplied.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ScriptPath,
-        [hashtable]$BoundParameters = @{}
+        [string]$BackupPath,
+        [switch]$RestoreOriginal
+    )
+    if (-not $BackupPath) { return }
+    if (-not (Test-Path -LiteralPath $BackupPath)) { return }
+    if ($RestoreOriginal) {
+        Copy-Item -LiteralPath $BackupPath -Destination $ScriptPath -Force -WhatIf:$false -Confirm:$false
+    }
+    Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
+}
+
+function Invoke-SelfReExec {
+    <#
+    .SYNOPSIS
+        Re-invokes the freshly self-updated on-disk Pull-SDLC.ai.ps1 with the
+        caller's original bound parameters, force-adding -NoSelfUpdate to prevent
+        loops. Under a -WhatIf dry run (-RestoreOriginal), restores the original
+        on-disk content from -BackupPath after the child exits so the dry run is
+        side-effect-free. Exits the host process with the child's exit code.
+    .DESCRIPTION
+        $ScriptPath is the on-disk script, already overwritten with the new
+        upstream content by Invoke-SelfRefresh. $BackupPath holds the original
+        content; it is restored only when -RestoreOriginal is set and is always
+        removed afterward (see Complete-SelfReExec).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [hashtable]$BoundParameters = @{},
+        [string]$BackupPath,
+        [switch]$RestoreOriginal
     )
     $reArgs = @{} + $BoundParameters
     $reArgs['NoSelfUpdate'] = $true
@@ -1604,14 +1642,7 @@ function Invoke-SelfReExec {
         $childExit = $LASTEXITCODE
     }
     finally {
-        # Clean up the temp file produced by Invoke-SelfRefresh. Match the
-        # naming convention so we never delete an unrelated on-disk script.
-        $tempDir = [System.IO.Path]::GetTempPath()
-        $scriptDir = [System.IO.Path]::GetDirectoryName($ScriptPath)
-        $scriptName = [System.IO.Path]::GetFileName($ScriptPath)
-        if ($scriptDir -and ($scriptDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) -eq $tempDir.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) -and $scriptName -like 'pull-sdlc-self-*.ps1') {
-            Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
-        }
+        Complete-SelfReExec -ScriptPath $ScriptPath -BackupPath $BackupPath -RestoreOriginal:$RestoreOriginal
     }
     exit $childExit
 }
@@ -1692,9 +1723,14 @@ function Invoke-SelfRefreshGate {
         [switch]$NoSelfUpdate
     )
     if (Test-SelfRefreshRequired -ScriptPath $ScriptPath -NoSelfUpdate:$NoSelfUpdate) {
-        $newScriptPath = Invoke-SelfRefresh -ScriptPath $ScriptPath
-        if ($newScriptPath) {
-            Invoke-SelfReExec -ScriptPath $newScriptPath -BoundParameters $BoundParameters
+        # Invoke-SelfRefresh overwrites the on-disk script in place and returns a
+        # backup of the original. Re-exec the (now-updated) on-disk script; under
+        # a -WhatIf dry run, restore the original afterward so the run leaves no
+        # net change.
+        $backupPath = Invoke-SelfRefresh -ScriptPath $ScriptPath
+        if ($backupPath) {
+            $restore = [bool]($BoundParameters.ContainsKey('WhatIf') -and $BoundParameters['WhatIf'])
+            Invoke-SelfReExec -ScriptPath $ScriptPath -BoundParameters $BoundParameters -BackupPath $backupPath -RestoreOriginal:$restore
             return $true
         }
     }
