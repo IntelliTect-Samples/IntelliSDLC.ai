@@ -34,7 +34,9 @@ What the script does:
 - Adds an `sdlc.ai` git remote pointing at this repo and fetches `main`.
 - Lays down all upstream-managed files (`CLAUDE.md`,
   `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
-  generic `.github/instructions/*`, `.claude/*`).
+  generic `.github/instructions/*`, `.github/workflows/copilot-setup-steps.yml`,
+  the meta-scripts `Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`,
+  `Consolidate-Specs.ps1`, `run.ps1` and their `*.Tests.ps1`).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
   `.github/instructions/project.instructions.md`, `README.md`) from
   their `*.template` counterparts. Existing copies are never overwritten.
@@ -130,7 +132,7 @@ Files belong to one of two tiers:
 
 | Tier | Files | Edit rule |
 |---|---|---|
-| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), `.github/skills/*`, `.claude/*`, `run.ps1`, `run.Tests.ps1` | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), `.github/skills/*`, `.github/workflows/copilot-setup-steps.yml`, the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`, `run.ps1`) and their `*.Tests.ps1` | Never edit in a consumer project. Edits go upstream and pull down. |
 | **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1`. |
 
 ## Init Protocol for Consuming Projects
@@ -186,9 +188,18 @@ consumer project, either:
 | `.github/instructions/*.instructions.md` | Language/practice-specific instructions (generic) |
 | `.github/instructions/project.instructions.md.template` | Template for consumer's project instructions |
 | `.github/skills/*/SKILL.md` | Reusable process skills (TDD, refactor, debugging, security review, etc.) |
-| `.github/workflows/copilot-setup-steps.yml` | GitHub Actions setup for Copilot coding agent |
-| `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files |
-| `.claude/settings.json` | Claude Code permission settings |
-| `.claude/hooks/session-start.sh` | Claude Code session initialization |
+| `.github/workflows/copilot-setup-steps.yml` | GitHub Actions setup for Copilot coding agent (distributed to consumers) |
+| `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files (**upstream-only -- not distributed**) |
+| `.claude/settings.json` | Claude Code permission settings (**upstream-only -- not distributed**) |
+| `.claude/hooks/session-start.sh` | Claude Code session initialization (**upstream-only -- not distributed**) |
 | `Pull-SDLC.ai.ps1` | Sync this repo into a consumer project; scaffolds templates on first run |
 | `run.ps1` / `run.Tests.ps1` | Project-agnostic .NET runner (used by both this repo and consumers) |
+
+> **Distribution note:** `Pull-SDLC.ai.ps1` syncs only the files on its
+> upstream-managed list (the **Upstream** tier in the File Ownership table
+> above). `validate-instructions.yml` and `.claude/*` are maintained here but
+> are **not** distributed to consumers -- `validate-instructions.yml` is this
+> repo's own CI (it hardcodes this repo's sample-project leak patterns and
+> requires `.claude/*`), and `.claude/*` is this repo's local Claude Code
+> config. Only `copilot-setup-steps.yml` (a generic, project-agnostic setup
+> workflow) is shipped from `.github/workflows/`.

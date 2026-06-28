@@ -211,7 +211,12 @@ $script:UpstreamManagedPaths = @(
     # (issue #206). Not bootstrap-downloaded, so it is intentionally absent from
     # $script:MetaScriptPaths.
     'run.ps1',
-    'run.Tests.ps1'
+    'run.Tests.ps1',
+    # The Copilot cloud-agent environment setup workflow. Sync-managed as a
+    # single explicit file (NOT the whole .github/workflows/ tree) so consumers
+    # receive and reconcile it while keeping their own workflows -- and the
+    # upstream-only validate-instructions.yml -- consumer-owned (issue #208).
+    '.github/workflows/copilot-setup-steps.yml'
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working
