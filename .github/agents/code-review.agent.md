@@ -1,6 +1,6 @@
 ---
 name: "Code Review"
-description: "Review and fix production and test code using a different LLM for an independent perspective. Runs static analysis, reviews by severity (Critical/Important/Suggestions), and triages findings. Language-aware."
+description: "Review and fix production and test code using a different LLM for an independent perspective. Selects the latest non-author model, runs static analysis, and reports advisory findings by severity (Critical/Important/Suggestions). Language-aware."
 tools: ["codebase", "filesystem", "search", "problems", "findTestFiles", "runTests", "runCommands", "terminalLastCommand", "testFailure", "changes"]
 ---
 
@@ -28,12 +28,14 @@ in the canonical skill:
 1. **Invoke the `code-review-workflow` skill** against the latest changes
    (`git diff --name-only origin/main...HEAD`).
 2. **Report findings** by severity using the skill's Review Output Format,
-   leading with the Model selection block.
-3. **Triage, do not auto-apply.** Per the skill's Triage & Convergence section,
-   consolidate findings, accept or reject each with rationale validated against
-   the code, fix accepted Critical/Important via behavior-first testing, apply
-   low-effort suggestions, file issues for high-effort/high-impact work, then
-   re-submit the diff to the same reviewer(s) and iterate until convergence.
+   leading with the Model selection block. The review is **advisory** -- report
+   findings; do not auto-apply them.
+3. **Hand off to the authoring model for triage.** Per the skill's Triage &
+   Convergence section, the **current/authoring model** (not this reviewer)
+   consolidates the findings, accepts or rejects each with rationale validated
+   against the code, fixes accepted Critical/Important via behavior-first testing,
+   applies low-effort suggestions, files issues for high-effort/high-impact work,
+   then re-submits the diff to the same reviewer(s) and iterates until convergence.
 
 Do not restate the skill's contents here -- read the skill file and
 follow it. If guidance is missing from the skill, update the skill
