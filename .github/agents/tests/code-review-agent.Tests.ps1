@@ -105,7 +105,7 @@ Describe 'code-review-workflow SKILL.md remains the canonical source' {
         $script:SkillText | Should -Match '(?i)independence'
         $script:SkillText | Should -Match '(?i)parallel'
         $script:SkillText | Should -Match '(?i)non-author'
-        $script:SkillText | Should -Match '(?i)Review panel'      # the per-panelist output block
+        $script:SkillText | Should -Match '(?i)Review panel'      # authoring-model-produced consolidated block
         $script:SkillText | Should -Match '(?i)vendor'
         # Graceful degradation when fewer than three non-author vendors are available.
         $script:SkillText | Should -Match '(?i)available'

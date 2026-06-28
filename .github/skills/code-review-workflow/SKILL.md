@@ -37,7 +37,8 @@ available (minimum one).
 4. **Dispatch in parallel.** Launch the panelists concurrently (e.g., parallel review
    subagents, one per vendor/model), each producing an independent **advisory** report.
 
-Begin the consolidated review with a **Review panel** block:
+When consolidating, the **authoring model** (not the individual panelists) begins the
+consolidated review with a **Review panel** block:
 
 ```markdown
 ### Review panel
