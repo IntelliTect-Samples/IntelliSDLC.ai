@@ -12,11 +12,11 @@ a fresh perspective and catching blind spots a single model (or the authoring LL
 miss.
 
 **Do not review with a single frozen model.** Per the skill's **Review Panel** section,
-dispatch the **best code-review model from each available non-author vendor** in
-**parallel** (target three; degrade gracefully to those available), and begin the
-consolidated review with the **Review panel** block (panelists per vendor, the excluded
-author model, vendors available/used, rationale). No panelist may be the model that wrote
-the code.
+dispatch the **best code-review model from each of up to three non-author vendors** in
+**parallel** (degrade gracefully to those available; see the skill for the >3-vendor
+tie-break), and begin the consolidated review with the **Review panel** block (panelists per
+vendor, the excluded author model, vendors available/used, rationale). No panelist may be
+the model or vendor that wrote the code.
 
 The full review procedure -- review-panel selection, static-analysis steps,
 severity tiers (Critical / Important / Suggestions), the triage & convergence

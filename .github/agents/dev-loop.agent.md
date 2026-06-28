@@ -316,10 +316,11 @@ structural fix is required that affects other tests, return to Phase 3.**
 **Invoke the `code-review-workflow` skill:**
 
 1. **Dispatch the review panel in parallel** per the skill's Review Panel section: launch
-   the best code-review model from each available non-author vendor concurrently (target
-   three; degrade gracefully). Lead the consolidated report with the Review panel block.
-   If the host fixes the session model so a parallel panel cannot run, degrade to the single
-   eligible non-author model and record the reduced panel.
+   the best code-review model from each of **up to three** non-author vendors concurrently
+   (degrade gracefully; see the skill for the >3-vendor tie-break). Lead the consolidated
+   report with the Review panel block. If the host fixes the session model so a parallel
+   panel cannot run, degrade to the single eligible non-author model and record the reduced
+   panel.
 2. The panelists run static analysis read-only and report findings; the authoring model
    fixes them.
 3. The panelists review all changed files: correctness, quality, tests, security, YAGNI,
