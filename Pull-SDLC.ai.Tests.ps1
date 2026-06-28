@@ -1647,6 +1647,96 @@ Describe 'Test-SelfRefreshRequired' {
         } finally { Pop-Location }
         Test-SelfRefreshRequired -ScriptPath $script | Should -BeFalse
     }
+
+    It 'returns $false when the on-disk script has uncommitted local edits (issue #202)' {
+        # A consumer repo whose committed Pull-SDLC.ai.ps1 is then locally edited.
+        $repoDir = Join-Path $TestDrive 'dirty-consumer'
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $script = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Push-Location $repoDir
+        try {
+            git init -q
+            git config user.email c@c.c; git config user.name c
+            git remote add origin 'https://github.com/SomeOrg/SomeConsumer.git'
+            'committed body' | Out-File -Encoding utf8 $script -NoNewline
+            git add Pull-SDLC.ai.ps1; git commit -q -m 'add script'
+            # Local edit, not committed.
+            'LOCALLY EDITED body' | Out-File -Encoding utf8 $script -NoNewline
+        } finally { Pop-Location }
+        Test-SelfRefreshRequired -ScriptPath $script | Should -BeFalse
+    }
+
+    It 'returns $true when a tracked on-disk script is clean (no uncommitted edits) (issue #202)' {
+        $repoDir = Join-Path $TestDrive 'clean-consumer'
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $script = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Push-Location $repoDir
+        try {
+            git init -q
+            git config user.email c@c.c; git config user.name c
+            git remote add origin 'https://github.com/SomeOrg/SomeConsumer.git'
+            'committed body' | Out-File -Encoding utf8 $script -NoNewline
+            git add Pull-SDLC.ai.ps1; git commit -q -m 'add script'
+        } finally { Pop-Location }
+        Test-SelfRefreshRequired -ScriptPath $script | Should -BeTrue
+    }
+}
+
+Describe 'Test-ScriptHasUncommittedEdits (issue #202)' {
+    BeforeEach {
+        $script:edRepo = Join-Path $TestDrive ("ed-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:edRepo -Force | Out-Null
+        $script:edScript = Join-Path $script:edRepo 'Pull-SDLC.ai.ps1'
+    }
+
+    It 'returns $true for a tracked file with uncommitted working-tree changes' {
+        Push-Location $script:edRepo
+        try {
+            git init -q; git config user.email c@c.c; git config user.name c
+            'v1' | Out-File -Encoding utf8 $script:edScript -NoNewline
+            git add Pull-SDLC.ai.ps1; git commit -q -m 'v1'
+            'v2 local edit' | Out-File -Encoding utf8 $script:edScript -NoNewline
+        } finally { Pop-Location }
+        Test-ScriptHasUncommittedEdits -ScriptPath $script:edScript | Should -BeTrue
+    }
+
+    It 'returns $false for a tracked file that matches HEAD' {
+        Push-Location $script:edRepo
+        try {
+            git init -q; git config user.email c@c.c; git config user.name c
+            'v1' | Out-File -Encoding utf8 $script:edScript -NoNewline
+            git add Pull-SDLC.ai.ps1; git commit -q -m 'v1'
+        } finally { Pop-Location }
+        Test-ScriptHasUncommittedEdits -ScriptPath $script:edScript | Should -BeFalse
+    }
+
+    It 'returns $false for an untracked file (fresh bootstrap)' {
+        Push-Location $script:edRepo
+        try {
+            git init -q; git config user.email c@c.c; git config user.name c
+            'downloaded' | Out-File -Encoding utf8 $script:edScript -NoNewline
+        } finally { Pop-Location }
+        Test-ScriptHasUncommittedEdits -ScriptPath $script:edScript | Should -BeFalse
+    }
+
+    It 'returns $false when the file is not inside a git repository' {
+        $loose = Join-Path $TestDrive ("loose-" + [guid]::NewGuid().ToString('N') + ".ps1")
+        Set-Content -LiteralPath $loose -Value 'no-git' -NoNewline
+        Test-ScriptHasUncommittedEdits -ScriptPath $loose | Should -BeFalse
+    }
+
+    It 'returns $false for an EOL-only difference (CRLF vs LF normalization)' {
+        Push-Location $script:edRepo
+        try {
+            git init -q; git config user.email c@c.c; git config user.name c
+            # Commit with LF.
+            [System.IO.File]::WriteAllText($script:edScript, "line1`nline2")
+            git add Pull-SDLC.ai.ps1; git commit -q -m 'lf'
+            # Rewrite the working tree with CRLF, same content.
+            [System.IO.File]::WriteAllText($script:edScript, "line1`r`nline2")
+        } finally { Pop-Location }
+        Test-ScriptHasUncommittedEdits -ScriptPath $script:edScript | Should -BeFalse
+    }
 }
 
 Describe 'Invoke-SelfRefresh' {
