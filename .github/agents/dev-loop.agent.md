@@ -315,18 +315,22 @@ structural fix is required that affects other tests, return to Phase 3.**
 
 **Invoke the `code-review-workflow` skill:**
 
-1. **Select the latest non-author model** per the skill's Model Selection rubric and lead
-   the review with the Model selection block.
-2. Run all static analysis tools first. Fix findings.
-3. Review all changed files: correctness, quality, tests, security, YAGNI.
-4. **Triage** every finding -- accept or reject with a rationale validated against the code.
-   A review is advisory; do not auto-apply it.
-5. **Fix accepted Critical / Important findings using behavior-first testing.** Apply
-   accepted low-effort suggestions; **file issues** for accepted high-effort / high-impact
-   work.
-6. Run the full test suite after fixes. Run static analysis again.
-7. **Re-submit the diff to the same reviewer and iterate until convergence** (re-review
-   surfaces no new accepted Critical / Important findings).
+1. **Dispatch the independent reviewer on the latest non-author model** per the skill's
+   Model Selection rubric (the reviewer selects/confirms the model and leads its report
+   with the Model selection block). When the host fixes the session model, confirm it
+   meets the independence gate before reviewing.
+2. The reviewer runs static analysis read-only and reports findings; the authoring model
+   fixes them.
+3. The reviewer reviews all changed files: correctness, quality, tests, security, YAGNI,
+   and reports advisory findings.
+4. **(Authoring model) Triage** every finding -- accept or reject with a rationale
+   validated against the code. A review is advisory; do not auto-apply it.
+5. **(Authoring model) Fix accepted Critical / Important findings using behavior-first
+   testing.** Apply accepted low-effort suggestions; **file issues** for accepted
+   high-effort / high-impact work.
+6. (Authoring model) Run the full test suite after fixes. Run static analysis again.
+7. **(Authoring model) Re-submit the diff to the same reviewer and iterate until
+   convergence** (re-review surfaces no new accepted Critical / Important findings).
 
 **Exit criteria:** No accepted-and-unfixed Critical or Important findings, review converged,
 all tests green, static analysis clean.

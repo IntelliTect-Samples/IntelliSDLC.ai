@@ -82,7 +82,9 @@ See the **Triage & Convergence** section below for the full loop.
 
 ### Step 0: Run Static Analysis First
 
-Before any AI review, run **all** available static analysis tools and fix findings:
+Before any AI review, run **all** available static analysis tools. The **independent
+reviewer** runs these read-only to surface findings; the **authoring model** applies the
+fixes (static-analysis fixes are part of triage/convergence, not the reviewer's job):
 
 **C# / .NET:**
 ```bash
@@ -101,7 +103,8 @@ npm run type-check
 npm run lint
 ```
 
-Fix all static analysis findings before proceeding to the AI review below.
+The **authoring model** fixes all static analysis findings before the change is
+re-submitted for review.
 
 ### Get Changed Files
 
@@ -229,7 +232,7 @@ advisory report leaves them blank.
 
 **Files reviewed:** <list of files>
 **Overall assessment:** PASS | NEEDS CHANGES | CRITICAL ISSUES
-**Static analysis:** Clean / <N> findings fixed
+**Static analysis:** Clean / <N> findings (fixes recorded by the authoring model during convergence)
 **Convergence:** Converged after <N> review round(s) / In progress
 
 ### Critical (must fix -- blocks progress)
@@ -265,7 +268,7 @@ Steps 1-5 are performed by the **independent reviewer** (produce the advisory re
 Steps 6-12 -- triage, fix, convergence -- are performed by the **authoring model**; an
 independent reviewer stops after step 5 and hands the report off.
 
-1. **Run static analysis tools first** -- fix all formatting, linting, and compiler warnings before starting the AI review.
+1. **Run static analysis tools first** -- run all formatters, linters, and compilers read-only and report any formatting, linting, or compiler warnings (the authoring model fixes them during triage).
 2. **Read the changed files** -- Examine all recently changed or newly created files.
 3. **Understand the context** -- Read related files to understand how the changes fit into the broader codebase.
 4. **Run the test suite** -- Verify all tests pass before reviewing. Report test failures as Critical.
@@ -294,7 +297,7 @@ independent reviewer stops after step 5 and hands the report off.
 ## Review Checklist
 
 - [ ] Latest non-author model selected; Model selection block recorded.
-- [ ] Static analysis tools run and findings fixed.
+- [ ] Static analysis tools run (reviewer) and findings fixed (authoring model).
 - [ ] All changed files examined.
 - [ ] Lint/compile runs without errors.
 - [ ] Tests run and results noted.

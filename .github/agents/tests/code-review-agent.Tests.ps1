@@ -13,9 +13,10 @@ BeforeAll {
     $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/code-review-workflow/SKILL.md'
     $script:AgentText  = Get-Content -LiteralPath $script:AgentPath -Raw
     $script:AgentLines = (Get-Content -LiteralPath $script:AgentPath).Count
-    # Isolate the YAML frontmatter block (between the first two `---` fences) so
-    # frontmatter assertions do not match incidental body content.
-    $script:AgentFrontmatter = if ($script:AgentText -match '(?s)^---\r?\n(.*?)\r?\n---') { $Matches[1] } else { '' }
+    # Isolate the YAML frontmatter block (between the first two `---` fence lines)
+    # so frontmatter assertions do not match incidental body content. The closing
+    # fence is anchored to a full line so a `---` inside a YAML value cannot end it.
+    $script:AgentFrontmatter = if ($script:AgentText -match '(?ms)\A---\r?\n(.*?)\r?\n---\r?$') { $Matches[1] } else { '' }
     $script:SkillText  = Get-Content -LiteralPath $script:SkillPath  -Raw
 }
 
