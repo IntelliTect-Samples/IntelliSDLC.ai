@@ -68,8 +68,8 @@ model** rather than reviewing with an ineligible one.
 
 1. **Review** -- Dispatch the parallel panel (best non-author model per available vendor)
    to analyze the latest changes in production code and test code.
-2. **Report** -- Produce a structured review with categorised findings by severity,
-   leading with the Review panel block.
+2. **Report** -- Each panelist returns findings-only by severity. The **authoring model**
+   then produces a structured consolidated review, **led with the Review panel block**.
 3. **Triage** -- The current/authoring model consolidates and **dedupes** the findings from
    all panelists and **accepts or rejects each one with a written rationale, validated
    against the code**. A review is advisory: do **not** auto-apply whatever it says.

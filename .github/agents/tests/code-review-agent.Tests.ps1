@@ -49,6 +49,8 @@ Describe 'code-review.agent.md is a thin orchestrator' {
         $script:AgentText | Should -Match '(?i)non-author'
         $script:AgentText | Should -Match '(?i)vendor'
         $script:AgentText | Should -Match '(?i)Review panel'
+        # The single-model "Model selection" framing must be fully replaced.
+        $script:AgentText | Should -Not -Match '(?i)Model selection'
     }
 
     It 'frames the review as advisory -- reviewer reports, does not apply fixes' {
@@ -109,6 +111,8 @@ Describe 'code-review-workflow SKILL.md remains the canonical source' {
         $script:SkillText | Should -Match '(?i)vendor'
         # Graceful degradation when fewer than three non-author vendors are available.
         $script:SkillText | Should -Match '(?i)available'
+        # The old single-model "Model Selection" section/header must be gone.
+        $script:SkillText | Should -Not -Match '(?im)^#+\s*Model Selection'
     }
 
     It 'defines a Triage & Convergence protocol over the whole panel' {
