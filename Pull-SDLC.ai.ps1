@@ -205,7 +205,13 @@ $script:UpstreamManagedPaths = @(
     # their next sync -- Get-UpstreamOps filters the diff by this pathspec, so
     # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1'
+    'Consolidate-Tasks.Tests.ps1',
+    # The project-agnostic .NET runner and its tests. Sync-managed so consumers
+    # receive and keep it reconciled with upstream like the other meta-scripts
+    # (issue #206). Not bootstrap-downloaded, so it is intentionally absent from
+    # $script:MetaScriptPaths.
+    'run.ps1',
+    'run.Tests.ps1'
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working

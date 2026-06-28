@@ -2643,6 +2643,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
                 Set-Content -LiteralPath 'Consolidate-Specs.ps1' -Value "# upstream consolidate`n" -NoNewline
                 Set-Content -LiteralPath 'Consolidate-Specs.Tests.ps1' -Value "# upstream consolidate tests`n" -NoNewline
                 Set-Content -LiteralPath 'Pull-SDLC.ai.Tests.ps1' -Value "# upstream pull tests`n" -NoNewline
+                Set-Content -LiteralPath 'run.ps1' -Value "# upstream runner`n" -NoNewline
+                Set-Content -LiteralPath 'run.Tests.ps1' -Value "# upstream runner tests`n" -NoNewline
                 git add -A | Out-Null
                 git commit -q -m "upstream seed"
                 $upstreamHead = (git rev-parse HEAD).Trim()
@@ -2705,6 +2707,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             $tracked | Should -Contain 'Cleanup-Worktree.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.Tests.ps1'
+            $tracked | Should -Contain 'run.ps1' -Because 'the project-agnostic .NET runner is upstream-managed and must reach consumers (issue #206)'
+            $tracked | Should -Contain 'run.Tests.ps1'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.ps1' -Because 'the legacy script name was renamed and must not be re-introduced'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.Tests.ps1'
         } finally { Pop-Location }
@@ -2716,6 +2720,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeTrue
         # The retired filename stays managed so the rename/delete replays into
         # consumer trees on their next sync (orphan cleanup). Dropping it would
         # leave every consumer with a stale Consolidate-Tasks.ps1.
