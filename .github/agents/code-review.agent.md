@@ -14,9 +14,10 @@ miss.
 **Do not review with a single frozen model.** Per the skill's **Review Panel** section,
 dispatch the **best code-review model from each of up to three non-author vendors** in
 **parallel** (degrade gracefully to those available; see the skill for the >3-vendor
-tie-break), and begin the consolidated review with the **Review panel** block (panelists per
-vendor, the excluded author model, vendors available/used, rationale). No panelist may be
-the model or vendor that wrote the code.
+tie-break). Each panelist returns a **findings-only** advisory report. The **authoring
+model** then assembles the consolidated review and leads it with the **Review panel** block
+(panelists per vendor, the excluded author model, vendors available/used, rationale). No
+panelist may be the model or vendor that wrote the code.
 
 The full review procedure -- review-panel selection, static-analysis steps,
 severity tiers (Critical / Important / Suggestions), the triage & convergence
@@ -29,10 +30,10 @@ in the canonical skill:
 
 1. **Invoke the `code-review-workflow` skill** against the latest changes
    (`git diff --name-only origin/main...HEAD`).
-2. **Report findings** by severity using the skill's Review Output Format,
-   leading with the Review panel block. Each panelist's review is **advisory** --
-   report findings only. Do **not** mark items Accepted/Rejected and do **not** apply
-   fixes; triage and fixes are the authoring model's job (step 3).
+2. **Collect panelist findings** by severity. Each panelist's review is **advisory** and
+   **findings-only** -- panelists do **not** emit the Review panel block, do **not** mark
+   items Accepted/Rejected, and do **not** apply fixes. The authoring model assembles the
+   consolidated report (leading with the Review panel block) and owns triage/fixes (step 3).
 3. **Hand off to the authoring model for triage.** Per the skill's Triage &
    Convergence section, the **current/authoring model** (not the panelists)
    consolidates and dedupes findings across the panel, accepts or rejects each with
