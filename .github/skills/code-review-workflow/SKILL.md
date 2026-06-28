@@ -88,7 +88,7 @@ fixes (static-analysis fixes are part of triage/convergence, not the reviewer's 
 
 **C# / .NET:**
 ```bash
-dotnet format
+dotnet format --verify-no-changes
 dotnet build --no-restore
 ```
 
