@@ -261,18 +261,22 @@ are acted on.
 
 ## Execution Guidelines
 
+Steps 1-5 are performed by the **independent reviewer** (produce the advisory report).
+Steps 6-12 -- triage, fix, convergence -- are performed by the **authoring model**; an
+independent reviewer stops after step 5 and hands the report off.
+
 1. **Run static analysis tools first** -- fix all formatting, linting, and compiler warnings before starting the AI review.
 2. **Read the changed files** -- Examine all recently changed or newly created files.
 3. **Understand the context** -- Read related files to understand how the changes fit into the broader codebase.
 4. **Run the test suite** -- Verify all tests pass before reviewing. Report test failures as Critical.
-5. **Perform the review** -- Apply each review category systematically.
-6. **Triage every finding** -- Accept or reject each with a rationale validated against the code. Do not auto-apply the review.
-7. **Fix accepted Critical and Important findings (behavior-first)** -- Ship a failing test first, then implement. Run tests after each fix to verify correctness.
-8. **Apply accepted low-effort Suggestions; file issues for high-effort work** -- **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is high-effort -- create a GitHub issue instead.
-9. **Run the full test suite after all fixes** -- All tests must pass.
-10. **Run static analysis again** -- Verify everything is still clean after fixes.
-11. **Re-submit to the same reviewer(s) and iterate until convergence.**
-12. **Produce the final report** -- Output the structured review showing the triage verdict per finding, what was fixed, and any issues filed.
+5. **Perform the review and report** -- Apply each review category systematically and produce the advisory report (findings + Model selection block), leaving triage markers blank.
+6. **(Authoring model) Triage every finding** -- Accept or reject each with a rationale validated against the code. Do not auto-apply the review.
+7. **(Authoring model) Fix accepted Critical and Important findings (behavior-first)** -- Ship a failing test first, then implement. Run tests after each fix to verify correctness.
+8. **(Authoring model) Apply accepted low-effort Suggestions; file issues for high-effort work** -- **Low-effort** means: changes that can be made in under 5 minutes with no design decisions -- renaming, adding missing null checks, fixing typos, adding missing XML docs, extracting a method of <= 10 lines. Anything requiring design choices or touching > 3 files is high-effort -- create a GitHub issue instead.
+9. **(Authoring model) Run the full test suite after all fixes** -- All tests must pass.
+10. **(Authoring model) Run static analysis again** -- Verify everything is still clean after fixes.
+11. **(Authoring model) Re-submit to the same reviewer(s) and iterate until convergence.**
+12. **(Authoring model) Produce the final report** -- Output the structured review showing the triage verdict per finding, what was fixed, and any issues filed.
 
 ## Red Flags
 
