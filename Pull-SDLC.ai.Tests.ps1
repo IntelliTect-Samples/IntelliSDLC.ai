@@ -266,6 +266,34 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path 'docsy.md' | Should -BeFalse
         Test-IsAlwaysLocalPath -Path 'src/docs-runner.cs' | Should -BeFalse
     }
+
+    It 'returns $true for a consumer-owned skill under a .github/skills/project-* directory (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project-foo/SKILL.md' | Should -BeTrue
+    }
+
+    It 'returns $true for a bare .github/skills/project/ container skill (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project/SKILL.md' | Should -BeTrue
+    }
+
+    It 'returns $true for a nested supporting file under a project-* skill (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project-foo/scripts/helper.ps1' | Should -BeTrue
+    }
+
+    It 'returns $false for a shared upstream skill (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/behavior-first-testing/SKILL.md' | Should -BeFalse
+    }
+
+    It 'returns $false for a skill whose name merely starts with "project" but is not "project" or "project-*" (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/projectile/SKILL.md' | Should -BeFalse
+    }
+
+    It 'returns $false for a *.template under a project-* skill (upstream can still scaffold a starter) (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project-example/SKILL.md.template' | Should -BeFalse
+    }
+
+    It 'returns $false for .gitkeep under a project-* skill (directory anchor flows from upstream) (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project-example/.gitkeep' | Should -BeFalse
+    }
 }
 
 Describe 'Resolve-AlwaysLocalConflicts (removed)' {
@@ -678,6 +706,43 @@ Describe 'Get-UpstreamOps' {
             -Tweak { 'changed upstream' | Out-File -Encoding utf8 .github/instructions/project.instructions.md -NoNewline }
         $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
         ($ops | Where-Object { $_.Path -match 'project\.instructions\.md' }) | Should -BeNullOrEmpty
+    }
+
+    It 'does not enqueue an op for a consumer-owned .github/skills/project-*/ file even when upstream changed it (issue #214)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/skills/project-foo -Force | Out-Null
+                'consumer skill' | Out-File -Encoding utf8 .github/skills/project-foo/SKILL.md -NoNewline
+            } `
+            -Tweak { 'upstream override that must be ignored' | Out-File -Encoding utf8 .github/skills/project-foo/SKILL.md -NoNewline }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/skills/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -match 'project-foo' }) | Should -BeNullOrEmpty
+    }
+
+    It 'does not enqueue a delete for a consumer-owned .github/skills/project-*/ file when it is absent upstream (issue #214)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/skills/shared -Force | Out-Null; 'shared' | Out-File -Encoding utf8 .github/skills/shared/SKILL.md -NoNewline } `
+            -Tweak {
+                # Consumer adds a project-* skill locally; a later upstream diff must
+                # never propose deleting it just because upstream has no such file.
+                New-Item -ItemType Directory -Path .github/skills/project-local -Force | Out-Null
+                'local only' | Out-File -Encoding utf8 .github/skills/project-local/SKILL.md -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/skills/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -match 'project-local' }) | Should -BeNullOrEmpty
+    }
+
+    It 'still delivers *.template / .gitkeep scaffolds under a project-* skill from upstream (issue #214)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/skills -Force | Out-Null; 'x' | Out-File -Encoding utf8 .github/skills/anchor.md -NoNewline } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .github/skills/project-example -Force | Out-Null
+                'starter' | Out-File -Encoding utf8 .github/skills/project-example/SKILL.md.template -NoNewline
+                '' | Out-File -Encoding utf8 .github/skills/project-example/.gitkeep -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/skills/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/SKILL.md.template' }) | Should -Not -BeNullOrEmpty
+        ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/.gitkeep' }) | Should -Not -BeNullOrEmpty
     }
 }
 

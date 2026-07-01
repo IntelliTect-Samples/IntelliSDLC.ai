@@ -253,6 +253,21 @@ $script:AlwaysLocalPaths = @(
     'docs/README.md'
 )
 
+# Glob-style always-local prefixes for cases the exact / trailing-slash matcher
+# in $script:AlwaysLocalPaths cannot express. Each entry is a regex matched
+# (case-insensitively) against the repo-relative, forward-slash path.
+# Consumer-owned skills live under the otherwise upstream-managed
+# .github/skills/ tree: any immediate child directory of .github/skills/ named
+# exactly 'project' or beginning with 'project-' is consumer-owned, so a project
+# can ship its own repository-specific skill (e.g. a project's own review-to-
+# fixture workflow) without the sync overwriting or deleting it. The same
+# '.template' / '.gitkeep' carve-out that applies to $script:AlwaysLocalPaths
+# directory prefixes applies here (see Test-IsAlwaysLocalPath), so upstream can
+# still scaffold a starter under a project-* directory if it ever ships one.
+$script:AlwaysLocalPrefixes = @(
+    '^\.github/skills/project(-[^/]+)?/'
+)
+
 # Paths whose upstream content is union-merged into the consumer's copy rather
 # than overwritten (managed-paths) or left alone (always-local). The consumer
 # keeps any local entries; any new upstream entries are appended. Today this is
@@ -283,7 +298,11 @@ function Test-IsAlwaysLocalPath {
         whose leaf name ends in '.template' or is exactly '.gitkeep' are
         upstream-managed even when they live inside a consumer-owned
         directory prefix (so first-time scaffolds and directory anchors can
-        still flow from upstream). Other entries match exactly.
+        still flow from upstream). Other entries match exactly. The path is
+        also tested against $script:AlwaysLocalPrefixes (regex patterns) for
+        cases the exact / trailing-slash matcher cannot express, e.g. the
+        consumer-owned .github/skills/project-*/ carve-out; the same
+        '.template' / '.gitkeep' exemption applies to those prefix matches.
         Comparison is case-insensitive and tolerates ./ or .\ prefix.
     #>
     [CmdletBinding()]
@@ -304,6 +323,14 @@ function Test-IsAlwaysLocalPath {
             if ([string]::Equals($n, $cc, [System.StringComparison]::OrdinalIgnoreCase)) {
                 return $true
             }
+        }
+    }
+    foreach ($prefix in $script:AlwaysLocalPrefixes) {
+        if ($n -match $prefix) {
+            $leaf = Split-Path -Leaf $n
+            if ($leaf.EndsWith('.template', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ([string]::Equals($leaf, '.gitkeep', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            return $true
         }
     }
     return $false
