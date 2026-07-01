@@ -222,7 +222,9 @@ can confirm or correct it. State "None" when you made no autonomous assumptions.
 This applies to **all** cases where you continued on your own judgment because
 the user could not be consulted -- not just plan work. It is enforced as the
 mandatory **Assumptions** field of the Task Complete Summary Format (see
-**Skills & Agents -> Task Complete Summary Format** below).
+**Skills & Agents -> Task Complete Summary Format** below). When the work
+produces a pull request, mirror the same assumptions in the PR description so
+they are visible to reviewers as well.
 
 ## PR & Issue Body Formatting
 
