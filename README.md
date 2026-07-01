@@ -159,7 +159,9 @@ leaks in upstream files.
   sync never overwrites or deletes it, and the `validate-instructions.yml`
   leak-scan skips it (so it may contain project-specific names). Drop the
   `SKILL.md` (and any supporting files) in place -- no upstream change is
-  required.
+  required. The one exception: files named `*.template` or `.gitkeep` stay
+  upstream-managed even inside a `project-*/` directory (they are reserved for
+  upstream scaffolding), so avoid those two filenames for consumer content.
 
 `Pull-SDLC.ai.ps1` performs the template-to-bare-name copy automatically
 on first sync. You only need to fill in the sections.
