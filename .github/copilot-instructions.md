@@ -38,7 +38,9 @@ on the next sync. The Validate Instructions workflow may also flag leaks.
 - `.github/skills/project-<name>/SKILL.md` -- optional per-repo skills. Any
   skill directory whose name starts with `project-` is consumer-owned: the
   sync never overwrites or deletes it and the leak-scan skips it, so it may
-  contain project-specific names. No upstream change is required.
+  contain project-specific names. No upstream change is required. (Exception:
+  files named `*.template` or `.gitkeep` stay upstream-managed even inside a
+  `project-*/` directory, so avoid those two filenames for consumer content.)
 - `README.md` -- copy from `README.md.template` if missing. Default
   skeleton covers GitHub's five README questions (what / why / start /
   help / who) using `##` headings so GitHub auto-generates the Outline.
