@@ -719,17 +719,20 @@ Describe 'Get-UpstreamOps' {
         ($ops | Where-Object { $_.Path -match 'project-foo' }) | Should -BeNullOrEmpty
     }
 
-    It 'does not enqueue a delete for a consumer-owned .github/skills/project-*/ file when it is absent upstream (issue #214)' {
+    It 'filters out an upstream delete of a consumer-owned .github/skills/project-*/ file so consumers keep their copy (issue #214)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
-            -Seed { New-Item -ItemType Directory -Path .github/skills/shared -Force | Out-Null; 'shared' | Out-File -Encoding utf8 .github/skills/shared/SKILL.md -NoNewline } `
+            -Seed {
+                # File exists at the anchor (both upstream and consumer have it)...
+                New-Item -ItemType Directory -Path .github/skills/project-del -Force | Out-Null
+                'skill body' | Out-File -Encoding utf8 .github/skills/project-del/SKILL.md -NoNewline
+            } `
             -Tweak {
-                # Consumer adds a project-* skill locally; a later upstream diff must
-                # never propose deleting it just because upstream has no such file.
-                New-Item -ItemType Directory -Path .github/skills/project-local -Force | Out-Null
-                'local only' | Out-File -Encoding utf8 .github/skills/project-local/SKILL.md -NoNewline
+                # ...and upstream deletes it. The raw diff yields a D op, but the
+                # always-local rule must drop it so the consumer's copy survives.
+                Remove-Item .github/skills/project-del/SKILL.md
             }
         $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/skills/') -RepoRoot $fx.Consumer
-        ($ops | Where-Object { $_.Path -match 'project-local' }) | Should -BeNullOrEmpty
+        ($ops | Where-Object { $_.Path -match 'project-del' }) | Should -BeNullOrEmpty
     }
 
     It 'still delivers *.template / .gitkeep scaffolds under a project-* skill from upstream (issue #214)' {
