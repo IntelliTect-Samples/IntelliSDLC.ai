@@ -50,10 +50,11 @@ jobs:
       - name: Verify every skill has a SKILL.md
         run: |
           echo "=== Checking .github/skills/*/SKILL.md ==="
-          # NOTE: consumer-owned skills live under .github/skills/project-*/
-          # (see the always-local carve-out in Pull-SDLC.ai.ps1). Each such
-          # directory still ships its own SKILL.md, so this check needs no
-          # special-casing for them -- every skill directory must have a SKILL.md.
+          # NOTE: consumer-owned skills live under .github/skills/project/ or
+          # .github/skills/project-*/ (see the always-local carve-out in
+          # Pull-SDLC.ai.ps1). Each such directory still ships its own SKILL.md,
+          # so this check needs no special-casing for them -- every skill
+          # directory must have a SKILL.md.
           if [ ! -d .github/skills ]; then
             echo "No .github/skills directory; skipping."
             exit 0
@@ -99,8 +100,9 @@ jobs:
           # *.template files are excluded everywhere -- they intentionally
           # carry placeholder project names that consumers replace.
           # project.instructions.md is consumer-owned and excluded by basename.
-          # Consumer-owned skills under .github/skills/project-*/ are excluded
-          # by path -- they legitimately contain project-specific names.
+          # Consumer-owned skills under .github/skills/project/ and
+          # .github/skills/project-*/ are excluded by path -- they legitimately
+          # contain project-specific names.
           scan_roots=(
             'CLAUDE.md'
             '.github/copilot-instructions.md'

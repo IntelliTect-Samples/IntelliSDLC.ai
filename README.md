@@ -194,7 +194,7 @@ consumer project, either:
 | `.github/instructions/*.instructions.md` | Language/practice-specific instructions (generic) |
 | `.github/instructions/project.instructions.md.template` | Template for consumer's project instructions |
 | `.github/skills/*/SKILL.md` | Reusable process skills (TDD, refactor, debugging, security review, etc.) |
-| `.github/skills/project-*/SKILL.md` | **Consumer-owned** per-repo skills (a directory named exactly `project` or starting with `project-`) -- never synced, excluded from the leak-scan |
+| `.github/skills/project/` + `.github/skills/project-*/` (`SKILL.md`) | **Consumer-owned** per-repo skills (a directory named exactly `project` or starting with `project-`) -- never synced, excluded from the leak-scan |
 | `.github/workflows/copilot-setup-steps.yml` | GitHub Actions setup for Copilot coding agent (distributed to consumers) |
 | `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files (**upstream-only -- not distributed**) |
 | `.claude/settings.json` | Claude Code permission settings (**upstream-only -- not distributed**) |
