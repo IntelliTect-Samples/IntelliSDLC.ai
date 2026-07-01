@@ -23,7 +23,7 @@ that consumes IntelliSDLC.ai, follow this protocol:
 - `.github/copilot-instructions.md`
 - `.github/agents/*`
 - `.github/instructions/*` (except `project.instructions.md`)
-- `.github/skills/*`
+- `.github/skills/*` (shared skills -- but **not** `.github/skills/project-*/`, which is consumer-owned)
 
 These are pulled from IntelliSDLC.ai and any local edits will be lost
 on the next sync. The Validate Instructions workflow may also flag leaks.
@@ -37,6 +37,10 @@ on the next sync. The Validate Instructions workflow may also flag leaks.
 - `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
   Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the
   bottom of this file. Use for Claude-specific orientation overrides.
+- `.github/skills/project-<name>/SKILL.md` -- optional per-repo skills. Any
+  skill directory named exactly `project` or starting with `project-` is
+  consumer-owned: the sync never overwrites it and the leak-scan skips it, so
+  it may contain project-specific names. No upstream change is required.
 - `README.md` -- copy from `README.md.template` if missing. The default
   skeleton covers GitHub's five README questions (what / why / start /
   help / who) using `##` headings so GitHub auto-generates the Outline.

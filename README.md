@@ -132,8 +132,8 @@ Files belong to one of two tiers:
 
 | Tier | Files | Edit rule |
 |---|---|---|
-| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), `.github/skills/*`, `.github/workflows/copilot-setup-steps.yml`, the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`, `run.ps1`) and their `*.Tests.ps1` | Never edit in a consumer project. Edits go upstream and pull down. |
-| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1`. |
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** `.github/skills/project-*/`), `.github/workflows/copilot-setup-steps.yml`, the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`, `run.ps1`) and their `*.Tests.ps1` | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1`. |
 
 ## Init Protocol for Consuming Projects
 
@@ -154,6 +154,12 @@ leaks in upstream files.
 - `CLAUDE.project.md` -- copy from `CLAUDE.project.md.template` if missing.
   Auto-imported by Claude Code via the `@CLAUDE.project.md` line at the bottom
   of `CLAUDE.md`. Use for Claude-specific orientation overrides.
+- `.github/skills/project-<name>/SKILL.md` -- optional per-repo skills. Any
+  skill directory named exactly `project` or starting with `project-` is
+  consumer-owned: the sync never overwrites or deletes it, and the
+  `validate-instructions.yml` leak-scan skips it (so it may contain
+  project-specific names). Drop the `SKILL.md` (and any supporting files) in
+  place -- no upstream change is required.
 
 `Pull-SDLC.ai.ps1` performs the template-to-bare-name copy automatically
 on first sync. You only need to fill in the sections.
@@ -188,6 +194,7 @@ consumer project, either:
 | `.github/instructions/*.instructions.md` | Language/practice-specific instructions (generic) |
 | `.github/instructions/project.instructions.md.template` | Template for consumer's project instructions |
 | `.github/skills/*/SKILL.md` | Reusable process skills (TDD, refactor, debugging, security review, etc.) |
+| `.github/skills/project-*/SKILL.md` | **Consumer-owned** per-repo skills -- never synced, excluded from the leak-scan |
 | `.github/workflows/copilot-setup-steps.yml` | GitHub Actions setup for Copilot coding agent (distributed to consumers) |
 | `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files (**upstream-only -- not distributed**) |
 | `.claude/settings.json` | Claude Code permission settings (**upstream-only -- not distributed**) |
