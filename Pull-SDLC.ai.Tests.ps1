@@ -271,8 +271,8 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path '.github/skills/project-foo/SKILL.md' | Should -BeTrue
     }
 
-    It 'returns $true for a bare .github/skills/project/ container skill (issue #214)' {
-        Test-IsAlwaysLocalPath -Path '.github/skills/project/SKILL.md' | Should -BeTrue
+    It 'returns $false for a bare .github/skills/project/ directory (only the hyphenated project- form is consumer-owned) (issue #214)' {
+        Test-IsAlwaysLocalPath -Path '.github/skills/project/SKILL.md' | Should -BeFalse
     }
 
     It 'returns $true for a nested supporting file under a project-* skill (issue #214)' {
@@ -283,7 +283,7 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path '.github/skills/behavior-first-testing/SKILL.md' | Should -BeFalse
     }
 
-    It 'returns $false for a skill whose name merely starts with "project" but is not "project" or "project-*" (issue #214)' {
+    It 'returns $false for a skill whose name merely starts with the letters "project" but not the "project-" prefix (issue #214)' {
         Test-IsAlwaysLocalPath -Path '.github/skills/projectile/SKILL.md' | Should -BeFalse
     }
 
