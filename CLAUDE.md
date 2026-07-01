@@ -189,9 +189,9 @@ surface it at the end for review**. List every such assumption with what you
 assumed and the decision it drove, so the user can confirm or correct it; say
 "None" when you made no autonomous assumptions. This applies to **all** cases
 where you continued on your own judgment because the user could not be
-consulted, and is enforced as the mandatory **Assumptions** field of the Task
-Complete summary. See the canonical **Surfacing Assumptions -- Report What You
-Decided Without Me** section in
+consulted, and is enforced as the mandatory **Assumptions** field of the **Task
+Complete Summary Format**. See the canonical **Surfacing Assumptions -- Report
+What You Decided Without Me** section in
 [`.github/copilot-instructions.md`](./.github/copilot-instructions.md).
 
 ## Task Complete Summaries
