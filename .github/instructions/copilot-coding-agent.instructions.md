@@ -89,4 +89,5 @@ All of the following must be true before opening a PR:
 - **Don't skip tests** — every new behavior must have a corresponding test; never commit with failing tests
 - **Don't commit secrets** — no API keys, credentials, or tokens in source code
 - **Don't run `dotnet restore`** during development unless package references change — dependencies are pre-installed in the runner environment
+- **Don't add new command-line options without explicit human approval** — a new flag, switch, argument, or environment-variable toggle is an API decision, not an implementation detail. STOP and get sign-off first: surface a recommendation in the issue/PR (prefer changing the default over accumulating an option) and wait for confirmation before implementing it, even when running autonomously. See "Adding Command-Line Options -- Prompt First" in `.github/copilot-instructions.md`.
 - **Don't use `throw ex;`** inside catch blocks — use `throw;` to preserve the call stack

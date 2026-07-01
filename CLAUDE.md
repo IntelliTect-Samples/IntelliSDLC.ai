@@ -170,6 +170,16 @@ See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete re
 - **Autopilot mode:** When autopilot is used to implement a plan, always use the
   Dev Loop agent (`@dev-loop`). Never skip the full quality cycle for plan work.
 
+## Adding Command-Line Options -- Prompt First
+
+A new command-line option (flag, switch, positional argument, or environment-variable
+toggle) is a deliberate API decision, not an implementation detail. **STOP and get
+explicit human approval before adding one** -- surface a recommendation (prefer changing
+the default over accumulating an option) and wait for confirmation before writing the
+option, its parsing, help text, or tests. This applies even in autopilot / autonomous
+mode. See the canonical **Adding Command-Line Options -- Prompt First** section in
+[`.github/copilot-instructions.md`](./.github/copilot-instructions.md) for the full rule.
+
 ## Task Complete Summaries
 
 When calling `task_complete`, include the following fields whenever the data
