@@ -210,6 +210,20 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 - **When autopilot mode is used to implement a plan, always use the Dev Loop
   agent (`@dev-loop`).** Never skip the full quality cycle for plan work.
 
+## Surfacing Assumptions -- Report What You Decided Without Me
+
+When you proceed without the user because they are unavailable (autopilot,
+background / `bg:` tasks, or any other unattended continuation) and you resolve
+an ambiguity by making your own assumption instead of asking, **record it and
+surface it at the end for review**. In your final summary, list every such
+assumption with (a) what you assumed and (b) the decision it drove, so the user
+can confirm or correct it. State "None" when you made no autonomous assumptions.
+
+This applies to **all** cases where you continued on your own judgment because
+the user could not be consulted -- not just plan work. It is enforced as the
+mandatory **Assumptions** field of the Task Complete Summary Format (see
+**Skills & Agents -> Task Complete Summary Format** below).
+
 ## PR & Issue Body Formatting
 
 When writing PR descriptions, issue bodies, or review comments through the CLI
@@ -349,7 +363,9 @@ Every `task_complete` summary must include the following fields whenever the
 underlying data exists. Omit a field only when it does not apply to the work
 just performed (e.g., a Q&A turn with no PR). **Exception:** on every dev-loop
 run the **Result display** is mandatory and must not be omitted -- only the PR
-link may be dropped when no PR exists.
+link may be dropped when no PR exists. The **Assumptions** field is likewise
+mandatory whenever you proceeded without the user (autopilot / unattended):
+state your autonomous assumptions or "None".
 
 | Field | Required format |
 |---|---|
@@ -358,6 +374,7 @@ link may be dropped when no PR exists.
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
 | **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
+| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. State "None" when you made no autonomous assumptions. **Mandatory whenever you proceeded without the user** (see **Surfacing Assumptions**). |
 | **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
 | **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
 
@@ -385,6 +402,7 @@ Example:
   > app auth --user alice
   Authenticated alice (token expires in 3600s)
   ```
+- **Assumptions**: Assumed the token TTL should stay at the existing 3600s default (the issue did not specify); no new option added.
 - **Evidence (local)**: file:///D:/Git/repo/.evidence/phase-5b-20260101T000000Z/evidence.md
 - **Evidence (PR)**: https://github.com/owner/repo/pull/57#issuecomment-1234567
 ```
