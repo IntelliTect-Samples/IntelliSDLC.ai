@@ -257,15 +257,15 @@ $script:AlwaysLocalPaths = @(
 # in $script:AlwaysLocalPaths cannot express. Each entry is a regex matched
 # (case-insensitively) against the repo-relative, forward-slash path.
 # Consumer-owned skills live under the otherwise upstream-managed
-# .github/skills/ tree: any immediate child directory of .github/skills/ named
-# exactly 'project' or beginning with 'project-' is consumer-owned, so a project
-# can ship its own repository-specific skill (e.g. a project's own review-to-
-# fixture workflow) without the sync overwriting or deleting it. The same
-# '.template' / '.gitkeep' carve-out that applies to $script:AlwaysLocalPaths
+# .github/skills/ tree: any immediate child directory of .github/skills/ whose
+# name begins with 'project-' (i.e. a 'project-<name>' skill) is consumer-owned,
+# so a project can ship its own repository-specific skill (e.g. a project's own
+# review-to-fixture workflow) without the sync overwriting or deleting it. The
+# same '.template' / '.gitkeep' carve-out that applies to $script:AlwaysLocalPaths
 # directory prefixes applies here (see Test-IsAlwaysLocalPath), so upstream can
 # still scaffold a starter under a project-* directory if it ever ships one.
 $script:AlwaysLocalPrefixes = @(
-    '^\.github/skills/project(-[^/]+)?/'
+    '^\.github/skills/project-[^/]+/'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather
