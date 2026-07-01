@@ -23,7 +23,7 @@ that consumes IntelliSDLC.ai, follow this protocol:
 - `.github/copilot-instructions.md`
 - `.github/agents/*`
 - `.github/instructions/*` (except `project.instructions.md`)
-- `.github/skills/*` (shared skills -- but **not** `.github/skills/project-*/`, which is consumer-owned)
+- `.github/skills/*` (shared skills -- but **not** the consumer-owned `.github/skills/project/` or `.github/skills/project-*/`)
 
 These are pulled from IntelliSDLC.ai and any local edits will be lost
 on the next sync. The Validate Instructions workflow may also flag leaks.
