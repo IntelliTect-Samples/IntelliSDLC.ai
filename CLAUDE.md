@@ -200,7 +200,8 @@ When calling `task_complete`, include the following fields whenever the data
 exists (omit any that don't apply, e.g., a Q&A turn with no PR). The **Result
 display** is the exception: it is mandatory on every dev-loop run and must not be
 omitted -- only the PR link may be dropped when no PR exists. The **Assumptions**
-field is likewise mandatory whenever you proceeded without the user.
+field is **always present** in every summary -- state "None" when there were no
+autonomous assumptions.
 
 - **Issue** -- `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)`
 - **PR** -- `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)`
@@ -214,8 +215,8 @@ field is likewise mandatory whenever you proceeded without the user.
   (`-SkipDisplay`), and note it was skipped by user request.
 - **Assumptions** -- every assumption you made while proceeding without the user
   (autopilot / unattended), each with what you assumed and the decision it drove,
-  so they can be reviewed and corrected. State "None" when you made none.
-  **Mandatory whenever you proceeded without the user.**
+  so they can be reviewed and corrected. **Always present in every summary** --
+  state "None" when you made no autonomous assumptions.
 - **Evidence (local)** -- clickable `file:///` URL to
   `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
   Phase 5b ran.

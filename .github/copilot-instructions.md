@@ -363,9 +363,9 @@ Every `task_complete` summary must include the following fields whenever the
 underlying data exists. Omit a field only when it does not apply to the work
 just performed (e.g., a Q&A turn with no PR). **Exception:** on every dev-loop
 run the **Result display** is mandatory and must not be omitted -- only the PR
-link may be dropped when no PR exists. The **Assumptions** field is likewise
-mandatory whenever you proceeded without the user (autopilot / unattended):
-state your autonomous assumptions or "None".
+link may be dropped when no PR exists. The **Assumptions** field is **always
+present** in every summary: list the assumptions you made while proceeding
+without the user, or state "None".
 
 | Field | Required format |
 |---|---|
@@ -374,7 +374,7 @@ state your autonomous assumptions or "None".
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
 | **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
-| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. State "None" when you made no autonomous assumptions. **Mandatory whenever you proceeded without the user** (see **Surfacing Assumptions**). |
+| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. **Always present in every `task_complete` summary** -- state "None" when you made no autonomous assumptions (see **Surfacing Assumptions**). |
 | **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
 | **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
 
