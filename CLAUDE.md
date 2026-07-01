@@ -180,12 +180,27 @@ option, its parsing, help text, or tests. This applies even in autopilot / auton
 mode. See the canonical **Adding Command-Line Options -- Prompt First** section in
 [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) for the full rule.
 
+## Surfacing Assumptions -- Report What You Decided Without Me
+
+When you proceed without the user because they are unavailable (autopilot,
+background / `bg:` tasks, or any other unattended continuation) and you resolve
+an ambiguity by making your own assumption instead of asking, **record it and
+surface it at the end for review**. List every such assumption with what you
+assumed and the decision it drove, so the user can confirm or correct it; say
+"None" when you made no autonomous assumptions. This applies to **all** cases
+where you continued on your own judgment because the user could not be
+consulted, and is enforced as the mandatory **Assumptions** field of the Task
+Complete summary. See the canonical **Surfacing Assumptions -- Report What You
+Decided Without Me** section in
+[`.github/copilot-instructions.md`](./.github/copilot-instructions.md).
+
 ## Task Complete Summaries
 
 When calling `task_complete`, include the following fields whenever the data
 exists (omit any that don't apply, e.g., a Q&A turn with no PR). The **Result
 display** is the exception: it is mandatory on every dev-loop run and must not be
-omitted -- only the PR link may be dropped when no PR exists.
+omitted -- only the PR link may be dropped when no PR exists. The **Assumptions**
+field is likewise mandatory whenever you proceeded without the user.
 
 - **Issue** -- `[#NNN](https://github.com/<owner>/<repo>/issues/NNN)`
 - **PR** -- `[#NNN](https://github.com/<owner>/<repo>/pull/NNN)`
@@ -197,6 +212,10 @@ omitted -- only the PR link may be dropped when no PR exists.
   fenced) captured output for CLI/markdown changes; a `file:///` link for
   UI/binary changes. Omit the inline output only when the user opted out
   (`-SkipDisplay`), and note it was skipped by user request.
+- **Assumptions** -- every assumption you made while proceeding without the user
+  (autopilot / unattended), each with what you assumed and the decision it drove,
+  so they can be reviewed and corrected. State "None" when you made none.
+  **Mandatory whenever you proceeded without the user.**
 - **Evidence (local)** -- clickable `file:///` URL to
   `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
   Phase 5b ran.
