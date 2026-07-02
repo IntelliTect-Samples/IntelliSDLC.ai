@@ -37,9 +37,9 @@ What the script does:
   generic `.github/instructions/*`, the meta-scripts `Pull-SDLC.ai.ps1`,
   `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1` and their `*.Tests.ps1`).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
-  `.github/instructions/project.instructions.md`, `README.md`, `run.ps1`,
-  `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`) from their
-  templates or the upstream copy. Existing copies are never overwritten.
+  `.github/instructions/project.instructions.md`, `README.md`, `docs/README.md`,
+  `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`) from
+  their templates or the upstream copy. Existing copies are never overwritten.
   (`.gitattributes` and `.gitignore` baselines are owned by
   `Initialize-GitDefaults.ps1`, not Pull-SDLC.)
 - Extends `.gitignore` with required entries; never replaces it.
