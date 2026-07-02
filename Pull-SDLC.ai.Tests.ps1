@@ -782,19 +782,22 @@ Describe 'Get-UpstreamOps' {
         ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/.gitkeep' }) | Should -Not -BeNullOrEmpty
     }
 
-    It 'does not enqueue an op for consumer-owned run.ps1 / copilot-setup-steps.yml even when upstream changes them (issue #222)' {
+    It 'does not enqueue an op for consumer-owned run.ps1 / run.Tests.ps1 / copilot-setup-steps.yml even when upstream changes them (issue #222)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed {
                 'consumer runner' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                'consumer runner tests' | Out-File -Encoding utf8 run.Tests.ps1 -NoNewline
                 New-Item -ItemType Directory -Path .github/workflows -Force | Out-Null
                 'consumer setup' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
             } `
             -Tweak {
                 'upstream override that must be ignored' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                'upstream tests override' | Out-File -Encoding utf8 run.Tests.ps1 -NoNewline
                 'upstream setup override' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
             }
-        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('run.ps1','.github/workflows/copilot-setup-steps.yml') -RepoRoot $fx.Consumer
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('run.ps1','run.Tests.ps1','.github/workflows/copilot-setup-steps.yml') -RepoRoot $fx.Consumer
         ($ops | Where-Object { $_.Path -eq 'run.ps1' }) | Should -BeNullOrEmpty
+        ($ops | Where-Object { $_.Path -eq 'run.Tests.ps1' }) | Should -BeNullOrEmpty
         ($ops | Where-Object { $_.Path -eq '.github/workflows/copilot-setup-steps.yml' }) | Should -BeNullOrEmpty
     }
 }
@@ -907,6 +910,32 @@ Describe 'Invoke-PullSDLC end-to-end' {
         $rc | Should -Be 2
         # CLAUDE.md should NOT have been overwritten.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'consumer override'
+    }
+
+    It 'does not sweep a consumer''s uncommitted run.ps1 edits into the sync commit (issue #222)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'upstream runner' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak { 'upstream claude v2 with more content to sync' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Consumer has an UNCOMMITTED local edit to its (consumer-owned) run.ps1.
+        'CONSUMER UNCOMMITTED EDIT' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'run.ps1') -NoNewline
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            # The sync commit updated CLAUDE.md but must NOT include run.ps1.
+            $syncFiles = @(git show --name-only --pretty=format: HEAD | Where-Object { $_ })
+            $syncFiles | Should -Contain 'CLAUDE.md'
+            $syncFiles | Should -Not -Contain 'run.ps1' -Because 'run.ps1 is consumer-owned and must never be staged into the sync commit (issue #222)'
+            # The consumer's uncommitted edit survives untouched in the working tree.
+            (Get-Content run.ps1 -Raw).Trim() | Should -Be 'CONSUMER UNCOMMITTED EDIT'
+        } finally { Pop-Location }
     }
 
     It '-Force bypasses the pre-flight guard and overwrites' {

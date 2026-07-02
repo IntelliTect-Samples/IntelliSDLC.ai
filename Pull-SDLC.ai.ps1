@@ -212,17 +212,13 @@ $script:UpstreamManagedPaths = @(
     # their next sync -- Get-UpstreamOps filters the diff by this pathspec, so
     # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1',
-    # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
-    # setup workflow are listed here only for scaffold/drift parity with
-    # docs/README.md: they are ALSO on $script:AlwaysLocalPaths (which trumps),
-    # so they are consumer-owned -- scaffolded once from upstream for a fresh
-    # consumer (see $script:TemplateScaffoldMap) then never overwritten,
-    # deleted, or drift-gated. This supersedes the sync-reconcile behavior of
-    # issues #206/#208 so each project can customize them per-repo (issue #222).
-    'run.ps1',
-    'run.Tests.ps1',
-    '.github/workflows/copilot-setup-steps.yml'
+    'Consolidate-Tasks.Tests.ps1'
+    # NOTE: run.ps1, run.Tests.ps1, and .github/workflows/copilot-setup-steps.yml
+    # are intentionally NOT on this list. They are consumer-owned (see
+    # $script:AlwaysLocalPaths) and seeded via the same-name scaffold (see
+    # $script:TemplateScaffoldMap). Keeping them here would sweep a consumer's
+    # uncommitted edits into the sync commit's `git add -A` staging step, so
+    # they are excluded (issue #222; supersedes #206/#208).
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working
@@ -252,10 +248,11 @@ $script:AlwaysLocalPaths = @(
     '.sdlc-ai-sync.json',
     # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
     # setup workflow: consumer-owned so each project can customize its build/run
-    # loop and its cloud-agent setup steps without tripping the drift guard.
-    # Seeded once from upstream via the same-name scaffold (see
-    # $script:TemplateScaffoldMap) then never overwritten or deleted. This
-    # supersedes the sync-reconcile behavior of issues #206/#208 (issue #222).
+    # loop and its cloud-agent setup steps without tripping the drift guard or
+    # having uncommitted edits swept into the sync commit. Seeded once from
+    # upstream via the same-name scaffold (see $script:TemplateScaffoldMap) then
+    # never overwritten or deleted. This supersedes the sync-reconcile behavior
+    # of issues #206/#208 (issue #222).
     'run.ps1',
     'run.Tests.ps1',
     '.github/workflows/copilot-setup-steps.yml',
