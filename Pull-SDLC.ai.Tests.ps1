@@ -294,6 +294,12 @@ Describe 'Test-IsAlwaysLocalPath' {
     It 'returns $false for .gitkeep under a project-* skill (directory anchor flows from upstream) (issue #214)' {
         Test-IsAlwaysLocalPath -Path '.github/skills/project-example/.gitkeep' | Should -BeFalse
     }
+
+    It 'returns $true for run.ps1, run.Tests.ps1, and copilot-setup-steps.yml (consumer-owned, issue #222)' {
+        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path 'run.Tests.ps1' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+    }
 }
 
 Describe 'Resolve-AlwaysLocalConflicts (removed)' {
@@ -385,6 +391,11 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
             git config user.name t
             New-Item -ItemType Directory -Path docs -Force | Out-Null
             'UPSTREAM_DOCS_README_BODY' | Out-File -Encoding utf8 docs/README.md -NoNewline
+            # Also seed the issue #222 consumer-owned scaffolded files.
+            'UPSTREAM_RUN_PS1_BODY' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            'UPSTREAM_RUN_TESTS_BODY' | Out-File -Encoding utf8 run.Tests.ps1 -NoNewline
+            New-Item -ItemType Directory -Path .github/workflows -Force | Out-Null
+            'UPSTREAM_SETUP_YML_BODY' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
             git add -A | Out-Null
             git commit -q -m 'seed'
         } finally { Pop-Location }
@@ -416,6 +427,29 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
         $result = @(Invoke-TemplateScaffold -SourceRoot $script:dstRoot -TargetRoot $script:dstRoot -ScaffoldMap $script:samenameMap)
         $result.Count | Should -Be 0
         Test-Path (Join-Path $script:dstRoot 'docs/README.md') | Should -BeFalse
+    }
+
+    It 'scaffolds run.ps1, run.Tests.ps1, and copilot-setup-steps.yml same-name from the upstream ref when missing (issue #222)' {
+        $map = [ordered]@{
+            'run.ps1'                                   = 'run.ps1'
+            'run.Tests.ps1'                             = 'run.Tests.ps1'
+            '.github/workflows/copilot-setup-steps.yml' = '.github/workflows/copilot-setup-steps.yml'
+        }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $script:srcRepo -TargetRoot $script:dstRoot -ScaffoldMap $map -Ref HEAD)
+        $result | Should -Contain 'run.ps1'
+        $result | Should -Contain 'run.Tests.ps1'
+        $result | Should -Contain '.github/workflows/copilot-setup-steps.yml'
+        (Get-Content (Join-Path $script:dstRoot 'run.ps1') -Raw).Trim() | Should -Be 'UPSTREAM_RUN_PS1_BODY'
+        (Get-Content (Join-Path $script:dstRoot 'run.Tests.ps1') -Raw).Trim() | Should -Be 'UPSTREAM_RUN_TESTS_BODY'
+        (Get-Content (Join-Path $script:dstRoot '.github/workflows/copilot-setup-steps.yml') -Raw).Trim() | Should -Be 'UPSTREAM_SETUP_YML_BODY'
+    }
+
+    It 'leaves an existing consumer-customized run.ps1 untouched (issue #222)' {
+        Set-Content -Path (Join-Path $script:dstRoot 'run.ps1') -Value 'CONSUMER_CUSTOMIZED_RUN' -NoNewline
+        $map = [ordered]@{ 'run.ps1' = 'run.ps1' }
+        $result = @(Invoke-TemplateScaffold -SourceRoot $script:srcRepo -TargetRoot $script:dstRoot -ScaffoldMap $map -Ref HEAD)
+        $result.Count | Should -Be 0
+        (Get-Content (Join-Path $script:dstRoot 'run.ps1') -Raw).Trim() | Should -Be 'CONSUMER_CUSTOMIZED_RUN'
     }
 }
 
@@ -746,6 +780,22 @@ Describe 'Get-UpstreamOps' {
         $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/skills/') -RepoRoot $fx.Consumer
         ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/SKILL.md.template' }) | Should -Not -BeNullOrEmpty
         ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/.gitkeep' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'does not enqueue an op for consumer-owned run.ps1 / copilot-setup-steps.yml even when upstream changes them (issue #222)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'consumer runner' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                New-Item -ItemType Directory -Path .github/workflows -Force | Out-Null
+                'consumer setup' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
+            } `
+            -Tweak {
+                'upstream override that must be ignored' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                'upstream setup override' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('run.ps1','.github/workflows/copilot-setup-steps.yml') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq 'run.ps1' }) | Should -BeNullOrEmpty
+        ($ops | Where-Object { $_.Path -eq '.github/workflows/copilot-setup-steps.yml' }) | Should -BeNullOrEmpty
     }
 }
 
@@ -2775,8 +2825,8 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             $tracked | Should -Contain 'Cleanup-Worktree.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.Tests.ps1'
-            $tracked | Should -Contain 'run.ps1' -Because 'the project-agnostic .NET runner is upstream-managed and must reach consumers (issue #206)'
-            $tracked | Should -Contain 'run.Tests.ps1'
+            $tracked | Should -Not -Contain 'run.ps1' -Because 'run.ps1 is consumer-owned (issue #222): it is scaffolded untracked for the consumer to commit and customize, not auto-committed as an upstream-managed meta-script'
+            $tracked | Should -Not -Contain 'run.Tests.ps1' -Because 'run.Tests.ps1 is consumer-owned (issue #222), scaffolded untracked like run.ps1'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.ps1' -Because 'the legacy script name was renamed and must not be re-introduced'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.Tests.ps1'
         } finally { Pop-Location }
@@ -2788,11 +2838,16 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeTrue
-        # The Copilot cloud-agent setup workflow is the ONLY managed workflow
-        # (issue #208); all other .github/workflows/* stay consumer-owned.
-        Test-IsUpstreamManagedPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+        # run.ps1, run.Tests.ps1, and copilot-setup-steps.yml are consumer-owned
+        # (issue #222): scaffolded once then always-local, so they are NOT
+        # upstream-managed and never drift-gated (supersedes #206/#208).
+        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeFalse
+        Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeFalse
+        Test-IsUpstreamManagedPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeFalse
+        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path 'run.Tests.ps1' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+        # All other .github/workflows/* remain consumer-owned too.
         Test-IsUpstreamManagedPath -Path '.github/workflows/validate-instructions.yml' | Should -BeFalse
         Test-IsUpstreamManagedPath -Path '.github/workflows/ci.yml' | Should -BeFalse
         # The retired filename stays managed so the rename/delete replays into
@@ -3006,6 +3061,39 @@ Describe 'Test-LocalDriftOnManagedPaths (issue #178: EOL false positive)' {
         $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'CLAUDE.md' -RepoRoot $script:driftRepo)
         $drift.Count | Should -Be 1
         $drift[0].Path | Should -Be 'CLAUDE.md'
+    }
+
+    It 'does NOT report drift for a locally-customized run.ps1 (consumer-owned, issue #222)' {
+        # Reproduces the PSBitwarden POLICY VIOLATION: a consumer that customizes
+        # run.ps1 must not be blocked. run.ps1 is always-local, so the drift gate
+        # skips it even though its content genuinely differs from the anchor.
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'run.ps1'), "# upstream runner`n")
+        git add -A | Out-Null
+        git commit -q -m 'anchor'
+        $anchor = (git rev-parse HEAD).Trim()
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'run.ps1'), "# CONSUMER-CUSTOMIZED runner with extra behavior`n")
+        git add -A | Out-Null
+        git commit -q -m 'consumer customizes run.ps1'
+
+        # Sanity: a genuine content change (not just EOL) -- otherwise vacuous.
+        (git rev-parse "HEAD:run.ps1").Trim() | Should -Not -Be (git rev-parse "${anchor}:run.ps1").Trim()
+
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'run.ps1' -RepoRoot $script:driftRepo)
+        $drift.Count | Should -Be 0 -Because 'run.ps1 is consumer-owned (always-local) and must never trip the drift gate (issue #222)'
+    }
+
+    It 'does NOT report drift for a locally-customized .github/workflows/copilot-setup-steps.yml (consumer-owned, issue #222)' {
+        New-Item -ItemType Directory -Path (Join-Path $script:driftRepo '.github/workflows') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo '.github/workflows/copilot-setup-steps.yml'), "name: upstream setup`n")
+        git add -A | Out-Null
+        git commit -q -m 'anchor'
+        $anchor = (git rev-parse HEAD).Trim()
+        [System.IO.File]::WriteAllText((Join-Path $script:driftRepo '.github/workflows/copilot-setup-steps.yml'), "name: consumer-customized setup`n")
+        git add -A | Out-Null
+        git commit -q -m 'consumer customizes setup workflow'
+
+        $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths '.github/workflows/copilot-setup-steps.yml' -RepoRoot $script:driftRepo)
+        $drift.Count | Should -Be 0 -Because 'copilot-setup-steps.yml is consumer-owned (always-local) and must never trip the drift gate (issue #222)'
     }
 }
 
