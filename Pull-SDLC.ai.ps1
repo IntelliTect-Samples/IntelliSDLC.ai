@@ -174,6 +174,13 @@ $script:TemplateScaffoldMap = [ordered]@{
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     'README.md.template'                                    = 'README.md'
     'docs/README.md'                                        = 'docs/README.md'
+    # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
+    # setup workflow are consumer-owned but seeded once from upstream via the
+    # same-name scaffold (like docs/README.md), so a fresh consumer gets a
+    # working starting point they can then customize per-repo (issue #222).
+    'run.ps1'                                               = 'run.ps1'
+    'run.Tests.ps1'                                         = 'run.Tests.ps1'
+    '.github/workflows/copilot-setup-steps.yml'             = '.github/workflows/copilot-setup-steps.yml'
 }
 
 # Paths (file or directory prefixes) that upstream owns. Anything under one
@@ -206,16 +213,15 @@ $script:UpstreamManagedPaths = @(
     # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
     'Consolidate-Tasks.Tests.ps1',
-    # The project-agnostic .NET runner and its tests. Sync-managed so consumers
-    # receive and keep it reconciled with upstream like the other meta-scripts
-    # (issue #206). Not bootstrap-downloaded, so it is intentionally absent from
-    # $script:MetaScriptPaths.
+    # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
+    # setup workflow are listed here only for scaffold/drift parity with
+    # docs/README.md: they are ALSO on $script:AlwaysLocalPaths (which trumps),
+    # so they are consumer-owned -- scaffolded once from upstream for a fresh
+    # consumer (see $script:TemplateScaffoldMap) then never overwritten,
+    # deleted, or drift-gated. This supersedes the sync-reconcile behavior of
+    # issues #206/#208 so each project can customize them per-repo (issue #222).
     'run.ps1',
     'run.Tests.ps1',
-    # The Copilot cloud-agent environment setup workflow. Sync-managed as a
-    # single explicit file (NOT the whole .github/workflows/ tree) so consumers
-    # receive and reconcile it while keeping their own workflows -- and the
-    # upstream-only validate-instructions.yml -- consumer-owned (issue #208).
     '.github/workflows/copilot-setup-steps.yml'
 )
 
@@ -244,6 +250,15 @@ $script:AlwaysLocalPaths = @(
     'CLAUDE.project.md',
     '.gitattributes',
     '.sdlc-ai-sync.json',
+    # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
+    # setup workflow: consumer-owned so each project can customize its build/run
+    # loop and its cloud-agent setup steps without tripping the drift guard.
+    # Seeded once from upstream via the same-name scaffold (see
+    # $script:TemplateScaffoldMap) then never overwritten or deleted. This
+    # supersedes the sync-reconcile behavior of issues #206/#208 (issue #222).
+    'run.ps1',
+    'run.Tests.ps1',
+    '.github/workflows/copilot-setup-steps.yml',
     # The standard spec archive: PRDs (the *what*) under docs/specs/,
     # implementation plans (the *how*) under docs/designs/, and the
     # consumer-owned archive guide docs/README.md. All consumer-owned so
