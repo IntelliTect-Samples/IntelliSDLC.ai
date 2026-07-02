@@ -133,7 +133,7 @@ Files belong to one of two tiers:
 | Tier | Files | Edit rule |
 |---|---|---|
 | **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`) and their `*.Tests.ps1` | Never edit in a consumer project. Edits go upstream and pull down. |
-| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml` (scaffolded once, then yours to customize), `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
+| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`, `docs/README.md` (all scaffolded once, then yours to customize), `docs/specs/`, `docs/designs/`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
 
 ## Init Protocol for Consuming Projects
 
