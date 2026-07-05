@@ -1376,6 +1376,12 @@ function Invoke-SyncPRMerge {
         return $false
     }
 
+    # The PR merged on the server. From here failures no longer leave the PR
+    # open -- they leave the LOCAL tree slightly behind -- so warn (with a
+    # remediation) instead of aborting, and record whether local cleanup was
+    # fully successful so the return value stays honest.
+    $localOk = $true
+
     # Fast-forward the local protected branch to the just-merged state so the
     # user's working tree reflects the merge without another sync run.
     Push-Location $RepoRoot
@@ -1383,15 +1389,32 @@ function Invoke-SyncPRMerge {
         git fetch --quiet origin 2>&1 | Write-Information
         git checkout --quiet $ProtectedBranch 2>&1 | Write-Information
         git pull --ff-only --quiet origin $ProtectedBranch 2>&1 | Write-Information
+        if ($LASTEXITCODE -ne 0) {
+            $localOk = $false
+            Write-Warning "Sync PR merged, but could not fast-forward local '$ProtectedBranch'. Update it manually: git checkout $ProtectedBranch; git pull --ff-only origin $ProtectedBranch"
+        }
     }
     finally { Pop-Location }
 
-    # Remove the scratch worktree now that the sync branch is merged and gone.
+    # Remove the scratch worktree and delete the local scratch branch now that
+    # the sync branch is merged and its remote copy deleted. Skipping the local
+    # branch deletion would leave a stale 'chore/sdlc-sync' at pre-squash
+    # history that the next run would reuse (re-opening a PR with stale
+    # content), so this cleanup is required, not cosmetic.
     git -C $RepoRoot worktree remove --force $absWorktree 2>&1 | Write-Information
+    if ($LASTEXITCODE -ne 0) {
+        $localOk = $false
+        Write-Warning "Sync PR merged, but could not remove the scratch worktree '$absWorktree'. Remove it manually: git worktree remove --force '$absWorktree'"
+    }
     git -C $RepoRoot worktree prune 2>&1 | Write-Information
+    # -D (not -d): after a squash-merge the scratch branch is not an ancestor of
+    # $ProtectedBranch, so git does not consider it "merged"; force-delete it.
+    git -C $RepoRoot branch -D $SyncBranch 2>&1 | Write-Information
 
-    Write-Information "Merged sync PR into '$ProtectedBranch' and updated your local branch: $PrUrl"
-    return $true
+    if ($localOk) {
+        Write-Information "Merged sync PR into '$ProtectedBranch' and updated your local branch: $PrUrl"
+    }
+    return $localOk
 }
 
 function Invoke-AutoWorktreeSync {
@@ -2483,15 +2506,26 @@ function Invoke-PullSDLC {
         try { $currentBranch = (git rev-parse --abbrev-ref HEAD 2>$null).Trim() }
         finally { Pop-Location }
 
+        # Mirror the real run's decision inputs so the preview cannot disagree
+        # with what actually happens: a real run makes a commit when there are
+        # ops OR the recorded sync state is stale (RC1 gate), and it opens a PR
+        # only when it would NOT commit directly on the current branch
+        # (i.e. -CommitOnMain is not in effect AND we are on the protected
+        # branch). Otherwise it commits in place.
+        $existingState = Get-SdlcSyncState -RepoRoot $RepoRoot
+        $stateCurrent = $existingState -and ($existingState.lastSyncCommit -eq $upstreamHead)
+        $wouldChange = ($ops.Count -gt 0) -or (-not $stateCurrent)
+        $changeDesc = if ($ops.Count -gt 0) { "$($ops.Count) change(s)" } else { 'a sync-state update' }
+
         Write-Information ''
-        if ($ops.Count -eq 0) {
+        if (-not $wouldChange) {
             Write-Information "Already at upstream $upstreamLabel -- a real run syncs no files and opens no PR."
         }
-        elseif ($currentBranch -eq $Branch) {
-            Write-Information "A real run opens a PR against '$Branch' with these $($ops.Count) change(s); with -Confirm:`$false it also squash-merges the PR and updates your local '$Branch'."
+        elseif (-not $commitOnMainEffective -and ($currentBranch -eq $Branch)) {
+            Write-Information "A real run opens a PR against '$Branch' with $changeDesc; with -Confirm:`$false it also squash-merges the PR and updates your local '$Branch'."
         }
         else {
-            Write-Information "A real run commits these $($ops.Count) change(s) directly on '$currentBranch'."
+            Write-Information "A real run commits $changeDesc directly on '$currentBranch'."
         }
 
         Write-Information ''

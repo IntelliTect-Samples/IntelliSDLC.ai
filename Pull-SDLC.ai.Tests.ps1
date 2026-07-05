@@ -1920,6 +1920,37 @@ Describe 'Invoke-SyncPRMerge (issue #224)' {
         Should -Invoke -CommandName gh -Times 0 -ParameterFilter { $args -contains 'merge' }
         Test-Path $script:mWt | Should -BeTrue -Because 'declining ShouldProcess must not touch the worktree'
     }
+
+    It 'warns and returns $false when the PR merges but the local fast-forward fails' {
+        Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0 } -ParameterFilter { $args -contains 'merge' }
+        # Fail only the fast-forward pull; every other git call runs for real.
+        Mock -CommandName git -MockWith { $global:LASTEXITCODE = 1 } -ParameterFilter { $args -contains 'pull' }
+        $warnings = @()
+        $result = Invoke-SyncPRMerge -RepoRoot $script:mMain -ProtectedBranch 'main' `
+            -SyncBranch 'chore/sdlc-sync' -WorktreePath $script:mWt `
+            -PrRef 'https://example/pr/1' -PrUrl 'https://example/pr/1' `
+            -Confirm:$false -InformationAction SilentlyContinue `
+            -WarningVariable warnings 3>$null
+
+        $result | Should -BeFalse -Because 'a merged PR whose local fast-forward failed is not fully complete'
+        ($warnings -join "`n") | Should -Match 'fast-forward local' -Because 'the user must be told local main was not updated'
+    }
+
+    It 'deletes the local scratch branch after a successful merge (issue #224)' {
+        Mock -CommandName gh -MockWith {
+            & git -C $script:mMain push -q origin 'chore/sdlc-sync:main'
+            $global:LASTEXITCODE = 0
+        } -ParameterFilter { $args -contains 'merge' }
+
+        $result = Invoke-SyncPRMerge -RepoRoot $script:mMain -ProtectedBranch 'main' `
+            -SyncBranch 'chore/sdlc-sync' -WorktreePath $script:mWt `
+            -PrRef 'https://example/pr/1' -PrUrl 'https://example/pr/1' `
+            -Confirm:$false -InformationAction SilentlyContinue
+
+        $result | Should -BeTrue
+        (git -C $script:mMain branch --list chore/sdlc-sync) |
+            Should -BeNullOrEmpty -Because 'leaving the stale scratch branch would make the next run reuse pre-squash history'
+    }
 }
 
 Describe 'Invoke-PullSDLC auto-worktree merge control (issue #224)' {
