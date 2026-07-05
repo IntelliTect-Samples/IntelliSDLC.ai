@@ -877,20 +877,23 @@ Describe 'Invoke-PullSDLC end-to-end' {
         $rc | Should -Be 0
         Test-Path (Join-Path $fx.Consumer '.github/agents/zap.md') | Should -BeFalse
 
-        # Rerun -- no ops, no new sync commit (state already current).
+        # Rerun -- state already current + zero ops => truly no-op: no new
+        # commit at all (not even a state-file timestamp refresh), and the
+        # state file is left byte-for-byte unchanged.
         $beforeSha = $null
         Push-Location $fx.Consumer
         try { $beforeSha = (git rev-parse HEAD).Trim() } finally { Pop-Location }
+        $statePath = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        $stateBefore = [System.IO.File]::ReadAllBytes($statePath)
         $rc2 = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
         $rc2 | Should -Be 0
         Push-Location $fx.Consumer
         try {
-            $afterSha = (git rev-parse HEAD).Trim()
-            # Allow a state-file refresh commit (syncedAt timestamp changes) but
-            # never a content commit.
-            $changed = git diff --name-only "$beforeSha..HEAD"
-            $changed | Where-Object { $_ -ne '.sdlc-ai-sync.json' } | Should -BeNullOrEmpty
+            (git rev-parse HEAD).Trim() | Should -Be $beforeSha -Because 'a no-op rerun must create no commit at all'
         } finally { Pop-Location }
+        $stateAfter = [System.IO.File]::ReadAllBytes($statePath)
+        [System.Convert]::ToBase64String($stateAfter) |
+            Should -Be ([System.Convert]::ToBase64String($stateBefore)) -Because 'a no-op rerun must not rewrite the state-file timestamp'
     }
 
     It 'pre-flight guard aborts when an upstream-managed file has local drift' {
@@ -1599,6 +1602,69 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         } finally { Pop-Location }
     }
 
+    It 'a no-op sync on main pushes nothing and opens no PR (issue #224)' {
+        # Consumer is already at upstream (no Tweak => anchor == head) and the
+        # state file records that. A real run must therefore be a true no-op:
+        # no scratch branch pushed to origin, no PR, main untouched.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git branch -D chore/sdlc-sync 2>$null | Out-Null
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.UpstreamHead
+            git add .sdlc-ai-sync.json
+            git -c user.email=t@t.t -c user.name=t commit -q -m 'seed state'
+            git push -q origin main
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR -CommitOnMain:$false
+        $rc | Should -Be 0
+        (git -C $fx.Consumer ls-remote --heads origin chore/sdlc-sync) |
+            Should -BeNullOrEmpty -Because 'a no-op sync must push no scratch branch and open no PR'
+        Push-Location $fx.Consumer
+        try { (git log -1 --pretty=%s main).Trim() | Should -Be 'seed state' -Because 'main must be untouched by a no-op sync' } finally { Pop-Location }
+    }
+
+    It 'scaffolds consumer-owned files into the invoking directory, not the scratch worktree (issue #224)' {
+        # In auto-worktree mode the sync runs inside .worktrees/sdlc-sync, but
+        # scaffolded starter files must land in the directory the user invoked
+        # the command from (their real working tree), left untracked -- not in
+        # the throwaway worktree where they would be invisible and wiped.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                New-Item -ItemType Directory -Path .github/instructions -Force | Out-Null
+                'PROJECT TEMPLATE BODY' | Out-File -Encoding utf8 .github/instructions/project.instructions.md.template -NoNewline
+            } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $fx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $fx.Consumer remote add origin $origin
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git branch -D chore/sdlc-sync 2>$null | Out-Null
+            git push -q origin main
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR -CommitOnMain:$false
+        $rc | Should -Be 0
+
+        $inMain = Join-Path $fx.Consumer '.github/instructions/project.instructions.md'
+        $inWorktree = Join-Path $fx.Consumer '.worktrees/sdlc-sync/.github/instructions/project.instructions.md'
+        Test-Path $inMain | Should -BeTrue -Because 'scaffolds must land in the invoking directory'
+        (Get-Content $inMain -Raw).Trim() | Should -Be 'PROJECT TEMPLATE BODY'
+        (git -C $fx.Consumer status --porcelain -- '.github/instructions/project.instructions.md').Trim() |
+            Should -Match '^\?\?' -Because 'the scaffolded file must be left untracked for the user to fill in and commit'
+        Test-Path $inWorktree | Should -BeFalse -Because 'scaffolds must not be written into the scratch worktree'
+    }
+
     It 'auto-recovers when existing worktree has uncommitted changes' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
@@ -1771,6 +1837,141 @@ Describe 'Invoke-PullSDLC auto-worktree mode' {
         # And it really isn't fast-forward: X is not an ancestor of Y.
         & git -c safe.bareRepository=all -C $origin merge-base --is-ancestor $shaAfterRun1 $shaAfterRun2 2>$null
         $LASTEXITCODE | Should -Not -Be 0
+    }
+}
+
+Describe 'Invoke-SyncPRMerge (issue #224)' {
+
+    BeforeEach {
+        # Build a real consumer working tree + bare origin + a scratch worktree
+        # that already carries an unpushed sync commit, so the helper's
+        # merge/fast-forward/cleanup can be exercised end-to-end.
+        $script:mRoot = Join-Path $TestDrive ("prmerge-" + [guid]::NewGuid().ToString('N'))
+        $script:mMain = Join-Path $script:mRoot 'consumer'
+        $script:mOrigin = Join-Path $script:mRoot 'origin.git'
+        New-Item -ItemType Directory -Path $script:mMain -Force | Out-Null
+        Push-Location $script:mMain
+        try {
+            git init -q -b main
+            git config user.email 't@t.t'; git config user.name 't'
+            'base' | Out-File -Encoding utf8 file.txt -NoNewline
+            git add -A; git commit -q -m 'initial'
+            git init --bare -q -b main $script:mOrigin
+            git remote add origin $script:mOrigin
+            git push -q origin main
+            $script:mWt = Join-Path $script:mMain '.worktrees/sdlc-sync'
+            git worktree add -q -b chore/sdlc-sync $script:mWt main
+        } finally { Pop-Location }
+        # Create + push a sync commit on the scratch branch (an "open PR").
+        Push-Location $script:mWt
+        try {
+            'synced' | Out-File -Encoding utf8 file.txt -NoNewline
+            git -c user.email=t@t.t -c user.name=t commit -q -am 'chore: sync'
+            git push -q origin chore/sdlc-sync
+            $script:mSyncSha = (git rev-parse HEAD).Trim()
+        } finally { Pop-Location }
+    }
+
+    It 'squash-merges, fast-forwards local main, and removes the worktree under -Confirm:$false' {
+        # Simulate the squash-merge landing on origin/main so the helper's
+        # `git pull --ff-only` has something to advance to.
+        Mock -CommandName gh -MockWith {
+            & git -C $script:mMain push -q origin 'chore/sdlc-sync:main'
+            $global:LASTEXITCODE = 0
+        } -ParameterFilter { $args -contains 'merge' }
+
+        $result = Invoke-SyncPRMerge -RepoRoot $script:mMain -ProtectedBranch 'main' `
+            -SyncBranch 'chore/sdlc-sync' -WorktreePath $script:mWt `
+            -PrRef 'https://example/pr/1' -PrUrl 'https://example/pr/1' `
+            -Confirm:$false -InformationAction SilentlyContinue
+
+        $result | Should -BeTrue
+        Should -Invoke -CommandName gh -Times 1 -ParameterFilter {
+            ($args -contains 'merge') -and ($args -contains '--squash') -and ($args -contains '--delete-branch')
+        }
+        (Get-Content (Join-Path $script:mMain 'file.txt') -Raw) | Should -Be 'synced' -Because 'local main must fast-forward to the merged content'
+        (git -C $script:mMain rev-parse HEAD).Trim() | Should -Be $script:mSyncSha
+        Test-Path $script:mWt | Should -BeFalse -Because 'a successful merge removes the scratch worktree'
+    }
+
+    It 'leaves the PR open and the worktree intact when the merge is blocked' {
+        Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 1 } -ParameterFilter { $args -contains 'merge' }
+        $warnings = @()
+        $result = Invoke-SyncPRMerge -RepoRoot $script:mMain -ProtectedBranch 'main' `
+            -SyncBranch 'chore/sdlc-sync' -WorktreePath $script:mWt `
+            -PrRef 'https://example/pr/1' -PrUrl 'https://example/pr/1' `
+            -Confirm:$false -InformationAction SilentlyContinue `
+            -WarningVariable warnings 3>$null
+
+        $result | Should -BeFalse
+        Test-Path $script:mWt | Should -BeTrue -Because 'a blocked merge must leave the scratch worktree in place for manual action'
+        (git -C $script:mMain rev-parse HEAD).Trim() | Should -Not -Be $script:mSyncSha -Because 'local main must not advance when the merge did not happen'
+        ($warnings -join "`n") | Should -Match 'remains open'
+    }
+
+    It 'does not merge (PR only) when ShouldProcess declines, e.g. under -WhatIf' {
+        Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0 } -ParameterFilter { $args -contains 'merge' }
+        $result = Invoke-SyncPRMerge -RepoRoot $script:mMain -ProtectedBranch 'main' `
+            -SyncBranch 'chore/sdlc-sync' -WorktreePath $script:mWt `
+            -PrRef 'https://example/pr/1' -PrUrl 'https://example/pr/1' `
+            -WhatIf -InformationAction SilentlyContinue
+
+        $result | Should -BeFalse
+        Should -Invoke -CommandName gh -Times 0 -ParameterFilter { $args -contains 'merge' }
+        Test-Path $script:mWt | Should -BeTrue -Because 'declining ShouldProcess must not touch the worktree'
+    }
+}
+
+Describe 'Invoke-PullSDLC auto-worktree merge control (issue #224)' {
+
+    BeforeEach {
+        $script:mergeFixtureRoot = Join-Path $TestDrive ("merge-" + [guid]::NewGuid().ToString('N'))
+        $script:acFx = New-DiffReplayFixture -Root $script:mergeFixtureRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $script:acFx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
+        git -C $script:acFx.Consumer remote remove origin 2>$null | Out-Null
+        git -C $script:acFx.Consumer remote add origin $origin
+        Push-Location $script:acFx.Consumer
+        try {
+            git checkout -q main
+            git branch -D chore/sdlc-sync 2>$null | Out-Null
+            git push -q origin main
+        } finally { Pop-Location }
+        $script:acMain = $script:acFx.Consumer
+    }
+
+    It 'default (no -Confirm) opens the PR but does NOT squash-merge it' {
+        Mock -CommandName gh -MockWith {
+            $joined = $args -join ' '
+            if ($joined -match '\bpr list\b')   { '[]'; $global:LASTEXITCODE = 0; return }
+            if ($joined -match '\bpr create\b') { 'https://example/pr/7'; $global:LASTEXITCODE = 0; return }
+            $global:LASTEXITCODE = 0
+        }
+
+        $rc = Invoke-PullSDLC -RepoRoot $script:acMain -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -CommitOnMain:$false -InformationAction SilentlyContinue
+        $rc | Should -Be 0
+        Should -Invoke -CommandName gh -Times 1 -ParameterFilter { ($args -join ' ') -match '\bpr create\b' } -Because 'a real sync still opens the PR'
+        Should -Invoke -CommandName gh -Times 0 -ParameterFilter { $args -contains 'merge' } -Because 'without -Confirm the PR is opened but not merged'
+        Test-Path (Join-Path $script:acMain '.worktrees/sdlc-sync') | Should -BeTrue -Because 'an un-merged PR keeps its scratch worktree'
+    }
+
+    It '-Confirm:$false squash-merges the opened PR' {
+        Mock -CommandName gh -MockWith {
+            $joined = $args -join ' '
+            if ($joined -match '\bpr list\b')   { '[]'; $global:LASTEXITCODE = 0; return }
+            if ($joined -match '\bpr create\b') { 'https://example/pr/7'; $global:LASTEXITCODE = 0; return }
+            if ($joined -match '\bpr merge\b')  { & git -C $script:acMain push -q origin 'chore/sdlc-sync:main'; $global:LASTEXITCODE = 0; return }
+            $global:LASTEXITCODE = 0
+        }
+
+        $rc = Invoke-PullSDLC -RepoRoot $script:acMain -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -CommitOnMain:$false -AutoMerge -Confirm:$false -InformationAction SilentlyContinue
+        $rc | Should -Be 0
+        Should -Invoke -CommandName gh -Times 1 -ParameterFilter {
+            ($args -contains 'merge') -and ($args -contains '--squash') -and ($args -contains '--delete-branch')
+        } -Because '-Confirm:$false auto-squash-merges the sync PR'
+        Test-Path (Join-Path $script:acMain '.worktrees/sdlc-sync') | Should -BeFalse -Because 'a merged PR removes its scratch worktree'
     }
 }
 
@@ -3263,5 +3464,44 @@ Describe 'Output stream assignment (issue #194)' {
         $idx = [array]::IndexOf($msgs, 'Already up to date.')
         $idx | Should -BeGreaterThan 0
         $msgs[$idx - 1] | Should -Be ''
+    }
+
+    It '-WhatIf on the protected branch reports the PR/merge a real run would perform and writes nothing (issue #224)' {
+        # A real run on main opens (and, with -Confirm:$false, squash-merges) a
+        # PR. -WhatIf must SAY so -- not just list ops -- so the dry run reflects
+        # the real outcome instead of only the file diff.
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+        $before = (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw)
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf -InformationVariable streamInfo 6>$null
+        $rc | Should -Be 0
+
+        $joined = (@($streamInfo | ForEach-Object { "$($_.MessageData)" }) -join "`n")
+        $joined | Should -Match "opens a PR against 'main'" -Because '-WhatIf must reflect the PR a real run opens'
+        $joined | Should -Match 'squash-merges' -Because '-WhatIf must mention the -Confirm:$false auto-merge outcome'
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be $before -Because '-WhatIf must not modify the working tree'
+    }
+
+    It '-WhatIf on an already-current tree reports no PR (issue #224)' {
+        $fx = New-DiffReplayFixture -Root $script:streamRoot `
+            -Seed { 'same' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        Push-Location $fx.Consumer
+        try { git checkout -q main } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.UpstreamHead
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf -InformationVariable streamInfo 6>$null
+        $rc | Should -Be 0
+
+        $joined = (@($streamInfo | ForEach-Object { "$($_.MessageData)" }) -join "`n")
+        $joined | Should -Match 'syncs no files and opens no PR' -Because 'an already-current -WhatIf must say a real run does nothing'
     }
 }
