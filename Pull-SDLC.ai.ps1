@@ -280,6 +280,21 @@ $script:AlwaysLocalPrefixes = @(
     '^\.github/skills/project-[^/]+/'
 )
 
+# Glob-style "upstream-private" regex prefixes (matched case-insensitively
+# against the repo-relative, forward-slash path). These match any 'tests' or
+# 'fixtures' directory at any depth under the otherwise upstream-managed
+# .github/agents/ and .github/skills/ trees. Such files exercise the toolkit's
+# OWN internals -- Pester tests plus HAR/PII sample fixtures -- and are useless
+# (and, for the fixtures, undesirable: secret/PII-shaped payloads) inside a
+# consuming project. The sync engine therefore neither ships them (they are
+# filtered out of the op list in Get-UpstreamOps) nor lets a consumer retain a
+# stale pre-carve-out copy (they are delete-replayed via Get-UpstreamPrivatePruneOps).
+# Consumer-owned .github/skills/project-*/ trees are exempt because always-local
+# trumps -- see Test-IsUpstreamPrivatePath, which checks Test-IsAlwaysLocalPath first.
+$script:UpstreamPrivatePrefixes = @(
+    '^\.github/(?:agents|skills)/(?:[^/]+/)*(?:tests|fixtures)/'
+)
+
 # Paths whose upstream content is union-merged into the consumer's copy rather
 # than overwritten (managed-paths) or left alone (always-local). The consumer
 # keeps any local entries; any new upstream entries are appended. Today this is
@@ -388,6 +403,33 @@ function Test-IsMergePath {
         if ([string]::Equals($n, $candidate, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $true
         }
+    }
+    return $false
+}
+
+function Test-IsUpstreamPrivatePath {
+    <#
+    .SYNOPSIS
+        Returns $true if the given repo-relative path is "upstream-private": a
+        file inside a 'tests' or 'fixtures' directory at any depth under the
+        .github/agents/ or .github/skills/ trees.
+    .DESCRIPTION
+        Upstream-private files test the toolkit's own internals (Pester tests
+        and HAR/PII sample fixtures) and are never shipped to -- or retained
+        by -- consuming projects. Always-local paths trump: a consumer-owned
+        .github/skills/project-*/ tree is never treated as upstream-private, so
+        a project's own tests/fixtures are preserved (Test-IsAlwaysLocalPath is
+        checked first). The path is matched against $script:UpstreamPrivatePrefixes.
+        Comparison is case-insensitive and tolerates a ./ or .\ prefix.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    $n = ConvertTo-RepoRelativePath -Path $Path
+    if (-not $n) { return $false }
+    if (Test-IsAlwaysLocalPath -Path $n) { return $false }
+    foreach ($prefix in $script:UpstreamPrivatePrefixes) {
+        if ($n -match $prefix) { return $true }
     }
     return $false
 }
@@ -1115,7 +1157,49 @@ function Get-UpstreamOps {
         if (Test-IsMergePath -Path $entry.Path) { continue }
         if ($entry.OldPath -and (Test-IsAlwaysLocalPath -Path $entry.OldPath)) { continue }
         if ($entry.OldPath -and (Test-IsMergePath -Path $entry.OldPath)) { continue }
+        # Never ship upstream-private paths (tests/ and fixtures/ dirs under the
+        # agent/skill trees). These exercise the toolkit's own internals and are
+        # not wanted in consumer repos (issue #226). A consumer that synced
+        # before this carve-out is cleaned up separately by Get-UpstreamPrivatePruneOps.
+        if (Test-IsUpstreamPrivatePath -Path $entry.Path) { continue }
+        if ($entry.OldPath -and (Test-IsUpstreamPrivatePath -Path $entry.OldPath)) { continue }
         $ops.Add($entry) | Out-Null
+    }
+    return $ops.ToArray()
+}
+
+function Get-UpstreamPrivatePruneOps {
+    <#
+    .SYNOPSIS
+        Emits delete (D) ops for upstream-private files already tracked in the
+        consumer's working tree so a sync removes them (issue #226).
+    .DESCRIPTION
+        Upstream-private paths (tests/ and fixtures/ directories under
+        .github/agents/ or .github/skills/) are filtered out of the shipped op
+        list by Get-UpstreamOps, but a consumer that synced before this carve-out
+        existed still holds stale copies. Because those files are unchanged
+        between the recorded anchor and the upstream tip, the diff-replay never
+        generates a delete for them. This function lists the tracked files under
+        the managed agent/skill trees and returns a D op for each one that is
+        upstream-private (Test-IsUpstreamPrivatePath already excludes
+        consumer-owned always-local paths such as .github/skills/project-*/),
+        letting the caller replay the deletions. Idempotent: once the files are
+        gone, a rerun lists nothing and returns an empty array.
+    #>
+    [CmdletBinding()]
+    param([string]$RepoRoot = '.')
+    Push-Location $RepoRoot
+    try {
+        $tracked = & git ls-files -- '.github/agents' '.github/skills' 2>$null
+    }
+    finally { Pop-Location }
+    $ops = New-Object System.Collections.Generic.List[hashtable]
+    if (-not $tracked) { return @() }
+    foreach ($path in $tracked) {
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $n = ConvertTo-RepoRelativePath -Path $path
+        if (-not (Test-IsUpstreamPrivatePath -Path $n)) { continue }
+        $ops.Add(@{ Op = 'D'; Path = $n; OldPath = $null }) | Out-Null
     }
     return $ops.ToArray()
 }
@@ -2346,6 +2430,33 @@ function Invoke-PullSDLC {
         }
     }
 
+    # Scope the upstream-repo detection to $RepoRoot rather than the shell's CWD;
+    # otherwise a caller invoked from inside the upstream repo (e.g. tests, or a
+    # maintainer running against a consumer fixture) misclassifies the target.
+    # Computed once here and reused for the template-scaffold skip below.
+    $originUrl = (& git -C $RepoRoot remote get-url origin 2>$null)
+    $isUpstreamRepo = Test-IsUpstreamRepo -RemoteUrl $originUrl
+
+    # Prune upstream-private files (tests/ and fixtures/ dirs under the agent /
+    # skill trees) that a consumer synced before this carve-out existed. They are
+    # unchanged between the anchor and the tip, so the diff-replay above never
+    # emits a delete for them; add explicit D ops here (issue #226). Never runs
+    # in the upstream repo itself, where those files are the source of truth.
+    if (-not $isUpstreamRepo) {
+        $pruneOps = @(Get-UpstreamPrivatePruneOps -RepoRoot $RepoRoot)
+        if ($pruneOps.Count -gt 0) {
+            $covered = @{}
+            foreach ($o in $ops) {
+                $covered[$o.Path] = $true
+                if ($o.OldPath) { $covered[$o.OldPath] = $true }
+            }
+            foreach ($p in $pruneOps) {
+                if ($covered.ContainsKey($p.Path)) { continue }
+                $ops += $p
+            }
+        }
+    }
+
     Push-Location $RepoRoot
     try { $upstreamHead = (git rev-parse $mergeRef).Trim() }
     finally { Pop-Location }
@@ -2419,12 +2530,9 @@ function Invoke-PullSDLC {
 
     # Scaffold consumer-owned files from templates (first sync only).
     $scaffolded = @()
-    # Scope the upstream-repo detection to $RepoRoot rather than the shell's
-    # CWD; otherwise tests (and any caller invoked from inside the upstream
-    # repo) misclassify a consumer fixture as the upstream repo and skip
-    # scaffolding.
-    $originUrl = (& git -C $RepoRoot remote get-url origin 2>$null)
-    if (Test-IsUpstreamRepo -RemoteUrl $originUrl) {
+    # $isUpstreamRepo was computed earlier (scoped to $RepoRoot, not the shell's
+    # CWD) so tests and maintainer-run consumer fixtures are classified correctly.
+    if ($isUpstreamRepo) {
         Write-Information "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding."
     }
     else {

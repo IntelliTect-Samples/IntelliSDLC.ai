@@ -3265,3 +3265,184 @@ Describe 'Output stream assignment (issue #194)' {
         $msgs[$idx - 1] | Should -Be ''
     }
 }
+
+Describe 'Test-IsUpstreamPrivatePath' {
+
+    It 'is true for a Pester test file under .github/agents/tests/' {
+        Test-IsUpstreamPrivatePath -Path '.github/agents/tests/dev-loop.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'is true for a fixture under .github/agents/tests/fixtures/' {
+        Test-IsUpstreamPrivatePath -Path '.github/agents/tests/fixtures/pii-planted.har' | Should -BeTrue
+    }
+
+    It 'is true for a tests directory nested under a named skill' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/evidence-capture/tests/evidence.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'is true for a fixtures directory nested under a named skill' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/api-wrapper-scaffold/fixtures/bearer.har' | Should -BeTrue
+    }
+
+    It 'is false for a shipped agent definition' {
+        Test-IsUpstreamPrivatePath -Path '.github/agents/dev-loop.agent.md' | Should -BeFalse
+    }
+
+    It 'is false for a shipped skill definition' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/evidence-capture/SKILL.md' | Should -BeFalse
+    }
+
+    It 'is false for a managed instruction file' {
+        Test-IsUpstreamPrivatePath -Path '.github/instructions/csharp.instructions.md' | Should -BeFalse
+    }
+
+    It 'is false for a directory merely containing "tests" in its name' {
+        Test-IsUpstreamPrivatePath -Path '.github/agents/mytests/foo.md' | Should -BeFalse
+    }
+
+    It 'is false for a consumer-owned project-* skill tests directory (always-local trumps)' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/project-foo/tests/bar.Tests.ps1' | Should -BeFalse
+    }
+
+    It 'is false for a consumer-owned project-* skill fixtures directory (always-local trumps)' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/project-foo/fixtures/sample.har' | Should -BeFalse
+    }
+
+    It 'tolerates a ./ prefix' {
+        Test-IsUpstreamPrivatePath -Path './.github/agents/tests/foo.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'is false for an empty path' {
+        Test-IsUpstreamPrivatePath -Path '' | Should -BeFalse
+    }
+}
+
+Describe 'Get-UpstreamOps upstream-private filtering' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("fxpriv-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'drops an A row for a newly added upstream-private test file but keeps a normal add' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/agents -Force | Out-Null; 'one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .github/agents/tests -Force | Out-Null
+                'normal' | Out-File -Encoding utf8 .github/agents/b.md -NoNewline
+                'private test' | Out-File -Encoding utf8 .github/agents/tests/new.Tests.ps1 -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/agents/','.github/skills/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq '.github/agents/b.md' }) | Should -Not -BeNullOrEmpty
+        ($ops | Where-Object { $_.Path -eq '.github/agents/tests/new.Tests.ps1' }) | Should -BeNullOrEmpty
+    }
+
+    It 'drops an M row for a modified upstream-private fixture' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents/tests/fixtures -Force | Out-Null
+                'v1 payload' | Out-File -Encoding utf8 .github/agents/tests/fixtures/bearer.har -NoNewline
+            } `
+            -Tweak { 'v2 payload with more content to sync' | Out-File -Encoding utf8 .github/agents/tests/fixtures/bearer.har -NoNewline }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/agents/','.github/skills/') -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq '.github/agents/tests/fixtures/bearer.har' }) | Should -BeNullOrEmpty
+    }
+
+    It 'keeps an add for a consumer-owned project-* skill tests file (never treated as upstream-private)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { New-Item -ItemType Directory -Path .github/skills -Force | Out-Null; 'anchor' | Out-File -Encoding utf8 .github/skills/keep.md -NoNewline } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .github/skills/project-foo/tests -Force | Out-Null
+                'proj test' | Out-File -Encoding utf8 .github/skills/project-foo/tests/bar.Tests.ps1 -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('.github/agents/','.github/skills/') -RepoRoot $fx.Consumer
+        # project-* is always-local, so Get-UpstreamOps drops it as always-local
+        # (not because it is upstream-private). Assert it is not shipped either way.
+        ($ops | Where-Object { $_.Path -eq '.github/skills/project-foo/tests/bar.Tests.ps1' }) | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-UpstreamPrivatePruneOps' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("fxprune-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'emits D ops for tracked upstream-private files and nothing else' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents/tests/fixtures -Force | Out-Null
+                New-Item -ItemType Directory -Path .github/skills/evidence-capture/tests -Force | Out-Null
+                New-Item -ItemType Directory -Path .github/skills/project-foo/tests -Force | Out-Null
+                'agent' | Out-File -Encoding utf8 .github/agents/dev-loop.agent.md -NoNewline
+                'test'  | Out-File -Encoding utf8 .github/agents/tests/foo.Tests.ps1 -NoNewline
+                'har'   | Out-File -Encoding utf8 .github/agents/tests/fixtures/bar.har -NoNewline
+                'skill' | Out-File -Encoding utf8 .github/skills/evidence-capture/SKILL.md -NoNewline
+                'stest' | Out-File -Encoding utf8 .github/skills/evidence-capture/tests/baz.Tests.ps1 -NoNewline
+                'keep'  | Out-File -Encoding utf8 .github/skills/project-foo/tests/keep.Tests.ps1 -NoNewline
+            }
+        $ops = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer)
+        $pruned = $ops | ForEach-Object { $_.Path } | Sort-Object
+        $ops | ForEach-Object { $_.Op } | Should -Not -Contain 'A'
+        $pruned | Should -Be @(
+            '.github/agents/tests/fixtures/bar.har',
+            '.github/agents/tests/foo.Tests.ps1',
+            '.github/skills/evidence-capture/tests/baz.Tests.ps1'
+        )
+    }
+
+    It 'returns no ops when there are no upstream-private files present' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'agent' | Out-File -Encoding utf8 .github/agents/dev-loop.agent.md -NoNewline
+            }
+        @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Count | Should -Be 0
+    }
+
+    It 'does not prune a consumer-owned project-* skill tests file' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/skills/project-foo/tests -Force | Out-Null
+                'keep' | Out-File -Encoding utf8 .github/skills/project-foo/tests/keep.Tests.ps1 -NoNewline
+            }
+        @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Count | Should -Be 0
+    }
+}
+
+Describe 'Invoke-PullSDLC prunes upstream-private paths from consumers' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("e2eprune-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'removes a stale upstream-private file from the consumer and never ships a new one' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents/tests -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'agent one' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                'stale private test' | Out-File -Encoding utf8 .github/agents/tests/stale.Tests.ps1 -NoNewline
+            } `
+            -Tweak {
+                'agent one v2 with more content to sync downstream' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                'brand new private test' | Out-File -Encoding utf8 .github/agents/tests/new.Tests.ps1 -NoNewline
+            }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        # Stale upstream-private file pruned from the consumer working tree.
+        Test-Path (Join-Path $fx.Consumer '.github/agents/tests/stale.Tests.ps1') | Should -BeFalse
+        # New upstream-private file was never shipped.
+        Test-Path (Join-Path $fx.Consumer '.github/agents/tests/new.Tests.ps1') | Should -BeFalse
+        # Normal managed sync still applied.
+        (Get-Content (Join-Path $fx.Consumer '.github/agents/a.md') -Raw).Trim() | Should -Match 'agent one v2'
+        # The prune is committed (working tree clean under the managed path).
+        Push-Location $fx.Consumer
+        try {
+            (git status --porcelain -- .github/agents) | Should -BeNullOrEmpty
+        } finally { Pop-Location }
+    }
+}
