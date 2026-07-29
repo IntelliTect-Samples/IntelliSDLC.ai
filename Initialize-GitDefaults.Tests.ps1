@@ -679,3 +679,73 @@ Describe 'Copilot review #161 round 7: detection ignores IntelliSDLC.ai tooling'
         }
     }
 }
+
+Describe 'Copilot review #161 round 9: input validation, layout, and IntelliSDLC block' {
+    Context 'n8u Requires PowerShell 7' {
+        It 'declares #Requires -Version 7.0 in the script header' {
+            $head = Get-Content -LiteralPath "$PSScriptRoot\Initialize-GitDefaults.ps1" -TotalCount 5
+            ($head -join "`n") | Should -Match '#Requires -Version 7\.0'
+        }
+    }
+
+    Context 'n8s rejects empty Language inputs' {
+        It 'throws when -Language is an empty string' {
+            { Resolve-GitDefaultsLanguages -Language @('') } | Should -Throw
+        }
+        It 'throws when -Language is whitespace only' {
+            { Resolve-GitDefaultsLanguages -Language @('   ') } | Should -Throw -ExpectedMessage '*non-empty*'
+        }
+    }
+
+    Context 'n8q rejects both-includes-disabled' {
+        It 'throws when both -IncludeGitignore:$false and -IncludeGitattributes:$false are passed' {
+            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("both-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $tmp | Out-Null
+            & git -C $tmp init --quiet 2>&1 | Out-Null
+            Push-Location $tmp
+            try {
+                { Initialize-GitDefaults -Language 'CSharp' -IncludeGitignore:$false -IncludeGitattributes:$false -Force } |
+                    Should -Throw -ExpectedMessage '*nothing to generate*'
+            } finally {
+                Pop-Location
+                Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Context 'n8v writes to the repository root, not a subdirectory' {
+        It 'writes .gitattributes/.gitignore at the repo root when invoked from a subdirectory' {
+            $root = Join-Path ([System.IO.Path]::GetTempPath()) ("root-" + [System.Guid]::NewGuid().ToString('N').Substring(0,8))
+            New-Item -ItemType Directory -Path $root | Out-Null
+            & git -C $root init --quiet 2>&1 | Out-Null
+            $sub = Join-Path $root 'src'
+            New-Item -ItemType Directory -Path $sub | Out-Null
+            Push-Location $sub
+            try {
+                Initialize-GitDefaults -Language 'CSharp' -Force
+                Test-Path (Join-Path $root '.gitattributes') | Should -BeTrue
+                Test-Path (Join-Path $root '.gitignore')     | Should -BeTrue
+                Test-Path (Join-Path $sub  '.gitattributes') | Should -BeFalse
+                Test-Path (Join-Path $sub  '.gitignore')     | Should -BeFalse
+            } finally {
+                Pop-Location
+                Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Context 'n8n preserves IntelliSDLC.ai-required .gitignore entries' {
+        It 'emits .evidence/, .playwright-mcp/, .worktrees/, testResults.xml unconditionally' {
+            $content = New-GitIgnoreContent -Language 'CSharp'
+            $content | Should -Match '(?m)^\.evidence/'
+            $content | Should -Match '(?m)^\.playwright-mcp/'
+            $content | Should -Match '(?m)^\.worktrees/'
+            $content | Should -Match '(?m)^testResults\.xml'
+        }
+        It 'emits the IntelliSDLC block even for non-CSharp selections' {
+            $content = New-GitIgnoreContent -Language 'TypeScript'
+            $content | Should -Match '(?m)^\.evidence/'
+            $content | Should -Match '(?m)^\.worktrees/'
+        }
+    }
+}

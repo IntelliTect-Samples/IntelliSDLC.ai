@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 <#
 .SYNOPSIS
     Compose .gitattributes and .gitignore for a consumer project from per-language
@@ -127,6 +128,23 @@ PSReadLine/ConsoleHost_history.txt
 *.psproj.user
 '@
 
+# Always-emitted curated block for IntelliSDLC.ai-required paths. These
+# entries used to reach consumers via Pull-SDLC.ai's union-merge of
+# .gitignore; once Initialize-GitDefaults.ps1 replaces the consumer's
+# .gitignore (with -Force) those entries would disappear and tracked
+# generated artifacts would slip into commits. Emitted regardless of
+# language selection. Copilot review #161 round 9.
+$script:CuratedIntelliSDLCGitignore = @'
+# IntelliSDLC.ai-required (always emitted by Initialize-GitDefaults.ps1
+# so that running this script with -Force after a Pull-SDLC.ai sync does
+# not strip these entries from the consumer's .gitignore). See Pull-SDLC.ai.ps1
+# and .github/skills/evidence-capture/SKILL.md.
+.evidence/
+.playwright-mcp/
+.worktrees/
+testResults.xml
+'@
+
 # Authority labels surfaced in file headers and SOURCES.md.
 $script:GitattributesAuthority = 'community de facto; no GitHub-org source exists'
 $script:GitignoreAuthority     = 'GitHub-org authoritative'
@@ -170,17 +188,29 @@ function Resolve-GitDefaultsLanguages {
 
     $resolved = [System.Collections.Generic.HashSet[string]]::new()
     foreach ($lang in $Language) {
-        if (-not $lang) { continue }
-        $key = $lang.ToLowerInvariant()
+        # Reject empty/whitespace inputs explicitly. Silently skipping
+        # them lets `-Language ''` or `-Language @('')` slip past
+        # validation and compose an empty selection. Copilot review #161
+        # round 9.
+        if ([string]::IsNullOrWhiteSpace($lang)) {
+            $supported = ($script:GitDefaultsLanguages.Keys | Sort-Object) -join ', '
+            throw "Language entries must be non-empty. Supported languages: $supported."
+        }
+        $trimmed = $lang.Trim()
+        $key = $trimmed.ToLowerInvariant()
         if (-not $canonicalMap.ContainsKey($key)) {
             $supported = ($script:GitDefaultsLanguages.Keys | Sort-Object) -join ', '
-            throw "Unknown language '$lang'. Supported languages: $supported."
+            throw "Unknown language '$trimmed'. Supported languages: $supported."
         }
         $canonical = $canonicalMap[$key]
         [void]$resolved.Add($canonical)
         foreach ($dep in $script:GitDefaultsLanguages[$canonical].Deps) {
             [void]$resolved.Add($dep)
         }
+    }
+    if ($resolved.Count -eq 0) {
+        $supported = ($script:GitDefaultsLanguages.Keys | Sort-Object) -join ', '
+        throw "No valid languages were supplied. Supported languages: $supported."
     }
     return @($resolved | Sort-Object)
 }
@@ -470,6 +500,11 @@ function New-GitIgnoreContent {
         [void]$body.Add((New-GitDefaultsSectionDivider -Section 'Global/Backup' -SourceLabel $backupFile))
         [void]$body.Add((Get-GitDefaultsTemplateContent -FileName $backupFile @fetchSplat))
     }
+    # IntelliSDLC.ai-required block (Copilot review #161 round 9). Always
+    # emitted so a -Force run does not strip entries that Pull-SDLC.ai's
+    # union-merge would have put in place.
+    [void]$body.Add((New-GitDefaultsSectionDivider -Section 'IntelliSDLC.ai' -SourceLabel 'curated in-script'))
+    [void]$body.Add($script:CuratedIntelliSDLCGitignore)
     return ($body -join "`n")
 }
 
@@ -673,9 +708,31 @@ function Initialize-GitDefaults {
         $IncludeGitattributes = $true
     }
 
+    if (-not $IncludeGitignore -and -not $IncludeGitattributes) {
+        # Both targets explicitly disabled => the script has nothing to do.
+        # Treat as an automation/configuration error, not a silent success.
+        # Copilot review #161 round 9.
+        throw "Both -IncludeGitignore and -IncludeGitattributes are disabled; nothing to generate. Enable at least one."
+    }
+
     if (-not (Test-GitDefaultsRepo)) {
         throw "Current directory is not a git repository. Run 'git init' first or cd into a repo."
     }
+
+    # Resolve to the repository top-level so a subdirectory invocation
+    # (./../Initialize-GitDefaults.ps1, or run from within tests/, src/,
+    # etc.) writes a single root-level .gitattributes / .gitignore pair
+    # instead of nested files alongside cwd. Copilot review #161 round 9.
+    $repoRoot = (& git rev-parse --show-toplevel 2>$null)
+    if (-not $repoRoot) {
+        throw "Unable to resolve repository root via 'git rev-parse --show-toplevel'."
+    }
+    $repoRoot = $repoRoot.Trim()
+    if ((Resolve-Path -LiteralPath $repoRoot).Path -ne (Resolve-Path -LiteralPath (Get-Location).Path).Path) {
+        Write-Verbose "Operating on repository root '$repoRoot' (invoked from '$((Get-Location).Path)')."
+    }
+    Push-Location -LiteralPath $repoRoot
+    try {
 
     if (-not $Language -or $Language.Count -eq 0) {
         $Language = Read-GitDefaultsLanguageSelection
@@ -719,6 +776,7 @@ function Initialize-GitDefaults {
             Write-Host "Wrote $path ($($expanded -join ', '))" -ForegroundColor Green
         }
     }
+    } finally { Pop-Location }
 }
 
 # Skip the rest when dot-sourced (e.g. by tests).
