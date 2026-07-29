@@ -313,9 +313,11 @@ function Get-BuiltAssembly {
         Returns the most recently built output assembly (<AssemblyName>.dll) for
         a project, searching its bin directory, or $null if none has been built.
     .DESCRIPTION
-        Assumes the default convention that the assembly name matches the project
-        file name (e.g. App.csproj -> App.dll). When a project overrides
-        AssemblyName the lookup returns $null, which conservatively forces a build.
+        Honors an <AssemblyName> override in the project file (e.g. App.Cli.csproj
+        producing app.dll) and otherwise falls back to the convention that the
+        assembly name matches the project file name (App.csproj -> App.dll).
+        When the resolved name still yields no output the function returns
+        $null, which conservatively forces a build.
     #>
     param([System.IO.FileInfo]$ProjectFile)
 
@@ -323,6 +325,10 @@ function Get-BuiltAssembly {
     if (-not (Test-Path $binDir)) { return $null }
 
     $assemblyName = [System.IO.Path]::GetFileNameWithoutExtension($ProjectFile.Name)
+    $projectXml = Get-Content -LiteralPath $ProjectFile.FullName -Raw -ErrorAction SilentlyContinue
+    if ($projectXml -and $projectXml -match '<AssemblyName>\s*([^<$]+?)\s*</AssemblyName>') {
+        $assemblyName = $Matches[1]
+    }
     $candidates = @(
         Get-ChildItem -Path $binDir -Filter "$assemblyName.dll" -Recurse -File -ErrorAction SilentlyContinue
     )
@@ -341,6 +347,12 @@ function Get-NewestSourceWriteTime {
         props/targets, solution files, Razor, resources, etc.) and ignores
         generated output (bin, obj) and non-source trees (.git, .worktrees, .vs,
         node_modules) so that build artifacts never make a project look stale.
+
+        Exclusions are evaluated against each file's path *relative to $Root*,
+        so a checkout that itself lives under one of those names -- notably a
+        git worktree under .worktrees/ -- is not excluded wholesale. Matching on
+        the absolute path would find zero sources there and silently skip every
+        rebuild.
     #>
     param([string]$Root)
 
@@ -349,16 +361,27 @@ function Get-NewestSourceWriteTime {
         '.razor', '.cshtml', '.resx', '.vb', '.vbproj', '.fs', '.fsproj'
     )
 
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $rootFull = [System.IO.Path]::GetFullPath($Root)
+    if (-not $rootFull.EndsWith($sep)) { $rootFull += $sep }
+
     $sourceFiles = @(
         Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
                 $full = $_.FullName
-                ($full -notmatch '[\\/]bin[\\/]') -and
-                ($full -notmatch '[\\/]obj[\\/]') -and
-                ($full -notmatch '[\\/]\.git[\\/]') -and
-                ($full -notmatch '[\\/]\.worktrees[\\/]') -and
-                ($full -notmatch '[\\/]\.vs[\\/]') -and
-                ($full -notmatch '[\\/]node_modules[\\/]') -and
+                $rel = if ($full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $full.Substring($rootFull.Length)
+                }
+                else { $full }
+                # Leading separator so the [\\/]name[\\/] patterns also match a
+                # directory sitting directly at the root.
+                $rel = $sep + $rel
+                ($rel -notmatch '[\\/]bin[\\/]') -and
+                ($rel -notmatch '[\\/]obj[\\/]') -and
+                ($rel -notmatch '[\\/]\.git[\\/]') -and
+                ($rel -notmatch '[\\/]\.worktrees[\\/]') -and
+                ($rel -notmatch '[\\/]\.vs[\\/]') -and
+                ($rel -notmatch '[\\/]node_modules[\\/]') -and
                 ($sourceExtensions -contains $_.Extension)
             }
     )

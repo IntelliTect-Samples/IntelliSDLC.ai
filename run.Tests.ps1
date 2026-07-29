@@ -431,3 +431,96 @@ Describe 'Test-BuildRequired' {
         Test-BuildRequired -ProjectFile $proj -Root $root | Should -BeTrue
     }
 }
+
+Describe 'Get-BuiltAssembly with AssemblyName override' {
+    BeforeEach {
+        $script:ovRoot = Join-Path $TestDrive ([guid]::NewGuid())
+        $script:ovProj = Join-Path $script:ovRoot 'src/App/App.csproj'
+        New-Item -ItemType Directory -Path (Split-Path $script:ovProj -Parent) -Force | Out-Null
+        $xml = @(
+            '<Project Sdk="Microsoft.NET.Sdk">'
+            '  <PropertyGroup>'
+            '    <OutputType>Exe</OutputType>'
+            '    <TargetFramework>net10.0</TargetFramework>'
+            '    <AssemblyName>codi</AssemblyName>'
+            '  </PropertyGroup>'
+            '</Project>'
+        ) -join [Environment]::NewLine
+        Set-Content -Path $script:ovProj -Value $xml
+        $script:ovDllDir = Join-Path $script:ovRoot 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $script:ovDllDir -Force | Out-Null
+    }
+
+    It 'finds the output assembly named by AssemblyName rather than the project file' {
+        Set-Content (Join-Path $script:ovDllDir 'codi.dll') 'binary'
+
+        $result = Get-BuiltAssembly -ProjectFile (Get-Item $script:ovProj)
+        $result | Should -Not -BeNullOrEmpty
+        $result.Name | Should -Be 'codi.dll'
+    }
+
+    It 'does not force a rebuild when the renamed output is newer than all sources' {
+        $src = Join-Path $script:ovRoot 'src/App/Program.cs'
+        Set-Content $src 'class P {}'
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item $script:ovProj).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $dll = Join-Path $script:ovDllDir 'codi.dll'
+        Set-Content $dll 'binary'
+        (Get-Item $dll).LastWriteTimeUtc = [datetime]::new(2020, 6, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Test-BuildRequired -ProjectFile (Get-Item $script:ovProj) -Root $script:ovRoot | Should -BeFalse
+    }
+}
+
+
+Describe 'Get-NewestSourceWriteTime path exclusions are relative to the root' {
+    It 'still finds sources when the root path itself sits under .worktrees' {
+        $root = Join-Path $TestDrive '.worktrees/366-x'
+        New-Item -ItemType Directory -Path (Join-Path $root 'src/App') -Force | Out-Null
+        $src = Join-Path $root 'src/App/Program.cs'
+        Set-Content $src 'class P {}'
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2022, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Get-NewestSourceWriteTime -Root $root |
+            Should -Be ([datetime]::new(2022, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc))
+    }
+
+    It 'still ignores a nested .worktrees directory inside the root' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-Item -ItemType Directory -Path (Join-Path $root 'src/App') -Force | Out-Null
+        $src = Join-Path $root 'src/App/Program.cs'
+        Set-Content $src 'class P {}'
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $nested = Join-Path $root '.worktrees/other/src'
+        New-Item -ItemType Directory -Path $nested -Force | Out-Null
+        $nestedSrc = Join-Path $nested 'Other.cs'
+        Set-Content $nestedSrc 'class O {}'
+        (Get-Item $nestedSrc).LastWriteTimeUtc = [datetime]::new(2099, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Get-NewestSourceWriteTime -Root $root |
+            Should -Be ([datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc))
+    }
+
+    It 'requires a build when a source under a .worktrees root is newer than the output' {
+        $root = Join-Path $TestDrive '.worktrees/366-y'
+        New-Item -ItemType Directory -Path (Join-Path $root 'src/App') -Force | Out-Null
+        $proj = Join-Path $root 'src/App/App.csproj'
+        New-CsprojStub $proj
+        $src = Join-Path $root 'src/App/Program.cs'
+        Set-Content $src 'class P {}'
+
+        $dllDir = Join-Path $root 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $dllDir -Force | Out-Null
+        $dll = Join-Path $dllDir 'App.dll'
+        Set-Content $dll 'binary'
+        (Get-Item $dll).LastWriteTimeUtc = [datetime]::new(2020, 6, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        (Get-Item $proj).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 12, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Test-BuildRequired -ProjectFile (Get-Item $proj) -Root $root | Should -BeTrue
+    }
+}
+
