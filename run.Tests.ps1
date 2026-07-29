@@ -321,3 +321,113 @@ Describe 'Integration: detection chain with two projects' {
         $autoSelected.FullName | Should -Be $selected.FullName
     }
 }
+
+Describe 'Get-BuiltAssembly' {
+    It 'returns the built assembly matching the project name' {
+        New-CsprojStub "$TestDrive/src/App/App.csproj"
+        $dllDir = Join-Path $TestDrive 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $dllDir -Force | Out-Null
+        Set-Content (Join-Path $dllDir 'App.dll') 'binary'
+
+        $proj = Get-Item "$TestDrive/src/App/App.csproj"
+        $result = Get-BuiltAssembly -ProjectFile $proj
+        $result | Should -Not -BeNullOrEmpty
+        $result.Name | Should -Be 'App.dll'
+    }
+
+    It 'returns null when the project has never been built' {
+        New-CsprojStub "$TestDrive/src/Unbuilt/Unbuilt.csproj"
+        $proj = Get-Item "$TestDrive/src/Unbuilt/Unbuilt.csproj"
+        Get-BuiltAssembly -ProjectFile $proj | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-NewestSourceWriteTime' {
+    It 'returns the newest LastWriteTimeUtc among source files' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-CsprojStub "$root/src/App/App.csproj"
+        $old = "$root/src/App/Old.cs"
+        $new = "$root/src/App/New.cs"
+        Set-Content $old 'class O {}'
+        Set-Content $new 'class N {}'
+        (Get-Item $old).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item $new).LastWriteTimeUtc = [datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item "$root/src/App/App.csproj").LastWriteTimeUtc = [datetime]::new(2019, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Get-NewestSourceWriteTime -Root $root |
+            Should -Be ([datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc))
+    }
+
+    It 'ignores generated files under bin and obj directories' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-CsprojStub "$root/src/App/App.csproj"
+        $src = "$root/src/App/Program.cs"
+        Set-Content $src 'class P {}'
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item "$root/src/App/App.csproj").LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $objDir = Join-Path $root 'src/App/obj'
+        New-Item -ItemType Directory -Path $objDir -Force | Out-Null
+        $generated = Join-Path $objDir 'App.AssemblyInfo.cs'
+        Set-Content $generated 'class G {}'
+        (Get-Item $generated).LastWriteTimeUtc = [datetime]::new(2099, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        Get-NewestSourceWriteTime -Root $root |
+            Should -Be ([datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc))
+    }
+
+    It 'returns null when there are no source files' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Get-NewestSourceWriteTime -Root $root | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Test-BuildRequired' {
+    It 'requires a build when the project has never been built' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-CsprojStub "$root/src/App/App.csproj"
+        Set-Content "$root/src/App/Program.cs" 'class P {}'
+
+        $proj = Get-Item "$root/src/App/App.csproj"
+        Test-BuildRequired -ProjectFile $proj -Root $root | Should -BeTrue
+    }
+
+    It 'does not require a build when the output is newer than all sources' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-CsprojStub "$root/src/App/App.csproj"
+        $src = "$root/src/App/Program.cs"
+        Set-Content $src 'class P {}'
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item "$root/src/App/App.csproj").LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $dllDir = Join-Path $root 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $dllDir -Force | Out-Null
+        $dll = Join-Path $dllDir 'App.dll'
+        Set-Content $dll 'binary'
+        (Get-Item $dll).LastWriteTimeUtc = [datetime]::new(2020, 6, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $proj = Get-Item "$root/src/App/App.csproj"
+        Test-BuildRequired -ProjectFile $proj -Root $root | Should -BeFalse
+    }
+
+    It 'requires a build when a source file changed after the last build' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-CsprojStub "$root/src/App/App.csproj"
+        $src = "$root/src/App/Program.cs"
+        Set-Content $src 'class P {}'
+        (Get-Item "$root/src/App/App.csproj").LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $dllDir = Join-Path $root 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $dllDir -Force | Out-Null
+        $dll = Join-Path $dllDir 'App.dll'
+        Set-Content $dll 'binary'
+        (Get-Item $dll).LastWriteTimeUtc = [datetime]::new(2020, 6, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        # Source edited after the build output was produced
+        (Get-Item $src).LastWriteTimeUtc = [datetime]::new(2020, 12, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $proj = Get-Item "$root/src/App/App.csproj"
+        Test-BuildRequired -ProjectFile $proj -Root $root | Should -BeTrue
+    }
+}
