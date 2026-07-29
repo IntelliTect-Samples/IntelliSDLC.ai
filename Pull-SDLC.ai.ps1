@@ -1413,6 +1413,51 @@ function Test-IsBootstrapSync {
     return [string]::IsNullOrWhiteSpace(($grep | Out-String))
 }
 
+function Remove-ScratchSyncWorktree {
+    <#
+    .SYNOPSIS
+        Removes the throwaway sync worktree and its local branch after an
+        auto-worktree run that produced no commit and no PR, leaving the repo
+        exactly as it was found (issue #240).
+    .DESCRIPTION
+        Only the LOCAL branch is deleted. Any remote branch is left untouched so
+        an already-open sync PR is never broken. All failures are non-fatal --
+        the worktree is pure scratch and the next run resets it regardless.
+    .OUTPUTS
+        [bool] $true when the worktree directory is gone afterwards.
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][string]$SyncBranch,
+        [string]$DisplayPath
+    )
+    if (-not (Test-Path -LiteralPath $WorktreePath)) { return $true }
+    if (-not $PSCmdlet.ShouldProcess($WorktreePath, 'Remove scratch sync worktree')) { return $false }
+
+    Push-Location $RepoRoot
+    try {
+        git worktree remove --force $WorktreePath 2>&1 | Out-Null
+        git worktree prune 2>&1 | Out-Null
+        if (Test-Path -LiteralPath $WorktreePath) {
+            Remove-Item -LiteralPath $WorktreePath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        # -D (not -d): the scratch branch is never merged into the protected
+        # branch, so a safe delete would always refuse.
+        git branch -D $SyncBranch 2>&1 | Out-Null
+    }
+    finally { Pop-Location }
+
+    $gone = -not (Test-Path -LiteralPath $WorktreePath)
+    if ($gone) {
+        $shown = if ($DisplayPath) { $DisplayPath } else { $WorktreePath }
+        Write-Information "Removed scratch worktree '$shown' and branch '$SyncBranch' (run produced no changes)."
+    }
+    return $gone
+}
+
 function Invoke-AutoWorktreeSync {
     <#
     .SYNOPSIS
@@ -1517,6 +1562,7 @@ function Invoke-AutoWorktreeSync {
     finally { Pop-Location }
 
     Push-Location $absWorktree
+    $cleanupScratch = $false
     try {
         Write-Information "Running sync inside worktree (branch '$SyncBranch') ..."
         $args = @{} + $SyncArgs
@@ -1538,6 +1584,10 @@ function Invoke-AutoWorktreeSync {
         $newCommits = git log "$ProtectedBranch..HEAD" --oneline 2>$null
         if (-not $newCommits) {
             Write-Information 'No new commits to push (worktree already in sync with main). Nothing to PR.'
+            # The run produced nothing, so the scratch worktree earned its keep
+            # for exactly zero purpose. Tear it down (issue #240). Productive
+            # runs keep it so repeat syncs skip the full checkout.
+            $cleanupScratch = $true
             return 0
         }
 
@@ -1641,7 +1691,13 @@ function Invoke-AutoWorktreeSync {
 
         return 0
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        if ($cleanupScratch) {
+            $null = Remove-ScratchSyncWorktree -RepoRoot $RepoRoot -WorktreePath $absWorktree `
+                -SyncBranch $SyncBranch -DisplayPath $WorktreePath
+        }
+    }
 }
 
 function Test-ScriptHasUncommittedEdits {
