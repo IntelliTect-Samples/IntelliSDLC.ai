@@ -2291,6 +2291,13 @@ function Invoke-PullSDLC {
         [string]$RemoteName = 'sdlc.ai',
         [string]$RemoteUrl = 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git',
         [string]$RepoRoot,
+        # Internal plumbing (not a CLI switch): where consumer-owned template
+        # scaffolding is written. Defaults to $RepoRoot. The auto-worktree
+        # flow re-invokes with $RepoRoot pointed at the throwaway sync
+        # worktree, so it passes the user's real checkout here -- otherwise
+        # scaffolded files land in scratch space and are silently discarded
+        # (issue #237).
+        [string]$ScaffoldRoot,
         [switch]$Force,
         [switch]$Bootstrap,
         [switch]$NoPrompt,
@@ -2355,6 +2362,7 @@ function Invoke-PullSDLC {
                 NoPrompt       = [bool]$NoPrompt
                 NoFetch        = [bool]$NoFetch
                 NoAutoWorktree = $true
+                ScaffoldRoot   = $RepoRoot
             }
             $rc = Invoke-AutoWorktreeSync -RepoRoot $RepoRoot -ProtectedBranch $Branch -NoAutoPR:$NoAutoPR -SyncArgs $syncArgs
             if ($rc -eq 0) {
@@ -2553,7 +2561,10 @@ function Invoke-PullSDLC {
     }
     finally { Pop-Location }
 
-    # Scaffold consumer-owned files from templates (first sync only).
+    # Scaffold consumer-owned files from templates (first sync only). Templates
+    # are read from the synced tree ($RepoRoot) but written to the user's real
+    # checkout, which differs from $RepoRoot on the auto-worktree path.
+    $scaffoldTarget = if ($ScaffoldRoot) { $ScaffoldRoot } else { $RepoRoot }
     $scaffolded = @()
     # $isUpstreamRepo was computed earlier (scoped to $RepoRoot, not the shell's
     # CWD) so tests and maintainer-run consumer fixtures are classified correctly.
@@ -2561,7 +2572,7 @@ function Invoke-PullSDLC {
         Write-Information "Detected upstream repo (origin -> IntelliSDLC.ai). Skipping template scaffolding."
     }
     else {
-        $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $RepoRoot -TargetRoot $RepoRoot -ScaffoldMap $script:TemplateScaffoldMap -Ref $mergeRef)
+        $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $RepoRoot -TargetRoot $scaffoldTarget -ScaffoldMap $script:TemplateScaffoldMap -Ref $mergeRef)
         if ($scaffolded.Count -gt 0) {
             Write-Information 'Scaffolded consumer-owned files from templates:'
             foreach ($f in $scaffolded) { Write-Information "  + $f" }
@@ -2569,7 +2580,7 @@ function Invoke-PullSDLC {
         }
     }
 
-    Write-NextStepsBanner -RepoRoot $RepoRoot -AnchorSource $anchorInfo.Source -ScaffoldedFiles $scaffolded
+    Write-NextStepsBanner -RepoRoot $scaffoldTarget -AnchorSource $anchorInfo.Source -ScaffoldedFiles $scaffolded
 
     return 0
 }

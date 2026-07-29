@@ -3575,3 +3575,69 @@ Describe 'Invoke-PullSDLC anchor-only sync (issue #235)' {
         $state.lastSyncCommit | Should -Be $fx.UpstreamHead -Because 'a real sync must record the new upstream head'
     }
 }
+
+Describe 'Invoke-PullSDLC scaffolds into the real checkout (issue #237)' {
+    BeforeAll {
+        $script:fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sdlc-scaffold-root-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:fixtureRoot -Force | Out-Null
+    }
+    AfterAll {
+        if ($script:fixtureRoot -and (Test-Path $script:fixtureRoot)) {
+            Remove-Item -LiteralPath $script:fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Builds an upstream that gains a consumer-owned same-name scaffold file
+    # (docs/README.md) plus a real managed change, and a consumer sitting on
+    # the protected branch so the auto-worktree path is taken.
+    function global:New-ScaffoldFixture {
+        param([Parameter(Mandatory)][string]$Base)
+        $root = Join-Path $Base ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $fx = New-DiffReplayFixture -Root $root `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            } `
+            -Tweak {
+                New-Item -ItemType Directory -Path docs -Force | Out-Null
+                'consumer first draft' | Out-File -Encoding utf8 docs/README.md -NoNewline
+                'updated-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git branch -q -D chore/sdlc-sync 2>&1 | Out-Null
+            $json = '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"' + $fx.AnchorSha + '","syncedAt":"2000-01-01T00:00:00Z"}'
+            [System.IO.File]::WriteAllText((Join-Path $fx.Consumer '.sdlc-ai-sync.json'), $json + "`n", (New-Object System.Text.UTF8Encoding $false))
+            git add -A | Out-Null
+            git commit -q -m 'seed sync anchor'
+        } finally { Pop-Location }
+        return $fx
+    }
+
+    It 'writes scaffolded consumer-owned files into the checkout, not the sync worktree' {
+        $fx = New-ScaffoldFixture -Base $script:fixtureRoot
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        $inCheckout = Join-Path $fx.Consumer 'docs/README.md'
+        Test-Path -LiteralPath $inCheckout | Should -BeTrue -Because 'scaffolded files must reach the tree the user actually works in'
+        (Get-Content -LiteralPath $inCheckout -Raw).TrimEnd("`r", "`n") | Should -Be 'consumer first draft'
+    }
+
+    It 'does not add scaffolded consumer-owned files to the sync commit' {
+        $fx = New-ScaffoldFixture -Base $script:fixtureRoot
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        Push-Location $fx.Consumer
+        try {
+            $tracked = @(git ls-tree -r --name-only chore/sdlc-sync)
+        } finally { Pop-Location }
+        $tracked | Should -Not -Contain 'docs/README.md' -Because 'consumer-owned files stay out of the upstream sync commit'
+    }
+}
+
