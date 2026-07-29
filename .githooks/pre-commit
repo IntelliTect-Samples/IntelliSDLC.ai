@@ -1,0 +1,79 @@
+#!/bin/bash
+# Pre-commit hook to enforce development workflow constraints
+# - Prevent commits on 'main' branch (use worktrees and feature branches)
+# - Prevent commits from repo root (use worktrees)
+#
+# Installation:
+#   git config core.hooksPath .githooks
+#
+# This hook is checked into the repository so all clones can enforce it uniformly.
+
+set -e
+
+# Get the absolute path to the git directory and common directory
+git_dir=$(git rev-parse --git-dir)
+git_common_dir=$(git rev-parse --git-common-dir)
+
+# Resolve to absolute paths (git-common-dir is relative from git-dir)
+if [[ "$git_dir" != /* ]]; then
+    git_dir=$(cd "$(dirname "$git_dir")" && pwd)/$(basename "$git_dir")
+fi
+if [[ "$git_common_dir" != /* ]]; then
+    git_common_dir=$(cd "$(dirname "$git_common_dir")" && pwd)/$(basename "$git_common_dir")
+fi
+
+# Normalize paths (remove /. and /..) for reliable comparison
+git_dir=$(cd "$git_dir" 2>/dev/null && pwd || echo "$git_dir")
+git_common_dir=$(cd "$git_common_dir" 2>/dev/null && pwd || echo "$git_common_dir")
+
+# Check 1: Ensure we are in a worktree, not the repo root
+# In a worktree: git-dir differs from git-common-dir
+# In the repo root: they are the same (both point to .git)
+if [[ "$git_dir" == "$git_common_dir" ]]; then
+    cat >&2 <<EOF
+ERROR: COMMIT BLOCKED: You are committing from the repository root.
+
+This repository requires all commits to be made from a worktree, not the repo root.
+A worktree isolates your branch and prevents accidental commits to 'main'.
+
+To fix this:
+1. Create a worktree for your branch:
+   git worktree add .worktrees/<branch-name> -b <branch-name>
+
+2. Change into the worktree:
+   cd .worktrees/<branch-name>
+
+3. Try your commit again.
+
+For more details, see CLAUDE.md: "Before ANY Commit"
+EOF
+    exit 1
+fi
+
+# Check 2: Ensure we are not on the 'main' branch
+current_branch=$(git rev-parse --abbrev-ref HEAD)
+if [[ "$current_branch" == "main" ]]; then
+    cat >&2 <<EOF
+ERROR: COMMIT BLOCKED: You are on the 'main' branch.
+
+Direct commits to 'main' are not allowed. All work must go through:
+1. A feature branch (created in a worktree via 'git worktree add -b <name>')
+2. A pull request on GitHub
+
+To fix this:
+1. Stash any uncommitted changes:
+   git stash
+
+2. Go back to the repo root and create a worktree:
+   cd ..
+   git worktree add .worktrees/<feature-name> -b <feature-name>
+
+3. Re-apply your changes and try again.
+
+For more details, see CLAUDE.md: "Before ANY Commit"
+EOF
+    exit 1
+fi
+
+# All checks passed
+exit 0

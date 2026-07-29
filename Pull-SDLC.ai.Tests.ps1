@@ -645,6 +645,132 @@ function global:New-DiffReplayFixture {
     }
 }
 
+
+function global:Find-BashExecutable {
+    $bash = Get-Command bash -ErrorAction SilentlyContinue
+    if ($bash) { return $bash.Source }
+
+    $candidates = @(
+        'C:\Program Files\Git\bin\bash.exe',
+        'C:\Program Files\Git\usr\bin\bash.exe',
+        'C:\Program Files (x86)\Git\bin\bash.exe',
+        'C:\Program Files (x86)\Git\usr\bin\bash.exe'
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+
+    return $null
+}
+
+function global:Invoke-GitForHookTest {
+    param(
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $output = & git -C $WorkingDirectory @Arguments 2>&1
+    [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String)
+    }
+}
+
+function global:New-PreCommitHookFixture {
+    param([Parameter(Mandatory)][string]$Root)
+
+    $sourceHook = Join-Path $PSScriptRoot '.githooks/pre-commit'
+    Test-Path -LiteralPath $sourceHook | Should -BeTrue -Because 'the upstream pre-commit hook must be shipped'
+
+    $repo = Join-Path $Root ('repo-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $repo -Force | Out-Null
+    Push-Location $repo
+    try {
+        git init -q -b main
+        git config user.email hook@example.test
+        git config user.name HookTest
+        New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+        Copy-Item -LiteralPath $sourceHook -Destination .githooks/pre-commit
+        'seed' | Out-File -Encoding utf8 seed.txt -NoNewline
+        git add -A | Out-Null
+        git commit -q -m 'seed'
+        git config core.hooksPath .githooks
+    } finally { Pop-Location }
+
+    return $repo
+}
+
+Describe '.githooks/pre-commit' {
+
+    BeforeAll {
+        $script:bashPath = Find-BashExecutable
+    }
+
+    BeforeEach {
+        $script:hookFixtureRoot = Join-Path $TestDrive ("hook-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:hookFixtureRoot -Force | Out-Null
+    }
+
+    It 'can be invoked by bash' {
+        $script:bashPath | Should -Not -BeNullOrEmpty -Because 'behavioral hook tests require bash; Git for Windows normally provides bash.exe'
+        $sourceHook = Join-Path $PSScriptRoot '.githooks/pre-commit'
+        Test-Path -LiteralPath $sourceHook | Should -BeTrue
+
+        $result = & $script:bashPath -n $sourceHook 2>&1
+        $LASTEXITCODE | Should -Be 0 -Because ($result | Out-String)
+    }
+
+    It 'rejects a commit from the repository root' {
+        $script:bashPath | Should -Not -BeNullOrEmpty -Because 'behavioral hook tests require bash; Git for Windows normally provides bash.exe'
+        $repo = New-PreCommitHookFixture -Root $script:hookFixtureRoot
+        $checkout = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('checkout','-q','-b','feature/root-block')
+        $checkout.ExitCode | Should -Be 0 -Because $checkout.Output
+        'root change' | Out-File -Encoding utf8 (Join-Path $repo 'root.txt') -NoNewline
+        $add = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('add','root.txt')
+        $add.ExitCode | Should -Be 0 -Because $add.Output
+
+        $commit = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('commit','-m','root commit')
+
+        $commit.ExitCode | Should -Not -Be 0
+        $commit.Output | Should -Match 'COMMIT BLOCKED: You are committing from the repository root'
+    }
+
+    It 'rejects a commit on main from a worktree' {
+        $script:bashPath | Should -Not -BeNullOrEmpty -Because 'behavioral hook tests require bash; Git for Windows normally provides bash.exe'
+        $repo = New-PreCommitHookFixture -Root $script:hookFixtureRoot
+        $checkout = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('checkout','-q','-b','parking')
+        $checkout.ExitCode | Should -Be 0 -Because $checkout.Output
+        $mainWorktree = Join-Path $script:hookFixtureRoot 'main-worktree'
+        $addWorktree = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('worktree','add','-q',$mainWorktree,'main')
+        $addWorktree.ExitCode | Should -Be 0 -Because $addWorktree.Output
+        'main change' | Out-File -Encoding utf8 (Join-Path $mainWorktree 'main.txt') -NoNewline
+        $add = Invoke-GitForHookTest -WorkingDirectory $mainWorktree -Arguments @('add','main.txt')
+        $add.ExitCode | Should -Be 0 -Because $add.Output
+
+        $commit = Invoke-GitForHookTest -WorkingDirectory $mainWorktree -Arguments @('commit','-m','main commit')
+
+        $commit.ExitCode | Should -Not -Be 0
+        $commit.Output | Should -Match "COMMIT BLOCKED: You are on the 'main' branch"
+    }
+
+    It 'allows a commit from a feature-branch worktree' {
+        $script:bashPath | Should -Not -BeNullOrEmpty -Because 'behavioral hook tests require bash; Git for Windows normally provides bash.exe'
+        $repo = New-PreCommitHookFixture -Root $script:hookFixtureRoot
+        $checkout = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('checkout','-q','-b','parking')
+        $checkout.ExitCode | Should -Be 0 -Because $checkout.Output
+        $featureWorktree = Join-Path $script:hookFixtureRoot 'feature-worktree'
+        $addWorktree = Invoke-GitForHookTest -WorkingDirectory $repo -Arguments @('worktree','add','-q','-b','feature/hook-pass',$featureWorktree,'main')
+        $addWorktree.ExitCode | Should -Be 0 -Because $addWorktree.Output
+        'feature change' | Out-File -Encoding utf8 (Join-Path $featureWorktree 'feature.txt') -NoNewline
+        $add = Invoke-GitForHookTest -WorkingDirectory $featureWorktree -Arguments @('add','feature.txt')
+        $add.ExitCode | Should -Be 0 -Because $add.Output
+
+        $commit = Invoke-GitForHookTest -WorkingDirectory $featureWorktree -Arguments @('commit','-m','feature commit')
+
+        $commit.ExitCode | Should -Be 0 -Because $commit.Output
+    }
+}
+
 Describe 'Get-UpstreamOps' {
 
     BeforeEach {
@@ -657,6 +783,19 @@ Describe 'Get-UpstreamOps' {
             -Tweak { 'two' | Out-File -Encoding utf8 .github/agents/b.md -NoNewline }
         $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('CLAUDE.md','.github/copilot-instructions.md','.github/agents/','.github/skills/','.github/instructions/') -RepoRoot $fx.Consumer
         ($ops | Where-Object { $_.Op -eq 'A' -and $_.Path -eq '.github/agents/b.md' }) | Should -Not -BeNullOrEmpty
+    }
+
+
+    It 'returns an A row for a newly added file under .githooks' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                'hook body' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+            }
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Op -eq 'A' -and $_.Path -eq '.githooks/pre-commit' }) |
+            Should -Not -BeNullOrEmpty -Because '.githooks must be upstream-managed so hooks reach consumers'
     }
 
     It 'returns a D row when upstream deletes a managed file' {
@@ -3443,6 +3582,74 @@ Describe 'Invoke-PullSDLC prunes upstream-private paths from consumers' {
         Push-Location $fx.Consumer
         try {
             (git status --porcelain -- .github/agents) | Should -BeNullOrEmpty
+        } finally { Pop-Location }
+    }
+}
+
+
+Describe 'Invoke-PullSDLC syncs .githooks' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("githooks-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'replays a new upstream hook file into the consumer tree' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                'synced hook' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+            }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+
+        $hookPath = Join-Path $fx.Consumer '.githooks/pre-commit'
+        Test-Path -LiteralPath $hookPath | Should -BeTrue
+        (Get-Content -LiteralPath $hookPath -Raw).TrimEnd("`r", "`n") | Should -Be 'synced hook'
+
+        Push-Location $fx.Consumer
+        try {
+            (git ls-tree -r --name-only HEAD) | Should -Contain '.githooks/pre-commit'
+            (git status --porcelain -- .githooks) | Should -BeNullOrEmpty
+        } finally { Pop-Location }
+    }
+
+
+    It 'does not block the sync commit when hooksPath is already active' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            } `
+            -Tweak {
+                New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                Copy-Item -LiteralPath (Join-Path $PSScriptRoot '.githooks/pre-commit') -Destination .githooks/pre-commit
+                git add .githooks/pre-commit | Out-Null
+                git update-index --chmod=+x .githooks/pre-commit
+            }
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git branch -q -D chore/sdlc-sync 2>&1 | Out-Null
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+            git add .sdlc-ai-sync.json | Out-Null
+            git commit -q -m 'seed state'
+            git config core.hooksPath .githooks
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            (git ls-tree -r --name-only chore/sdlc-sync) | Should -Contain '.githooks/pre-commit'
+            $branch = (git -C (Join-Path $fx.Consumer '.worktrees/sdlc-sync') rev-parse --abbrev-ref HEAD).Trim()
+            $branch | Should -Be 'chore/sdlc-sync'
         } finally { Pop-Location }
     }
 }

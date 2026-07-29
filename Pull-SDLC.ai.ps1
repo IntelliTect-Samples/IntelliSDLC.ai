@@ -192,6 +192,9 @@ $script:UpstreamManagedPaths = @(
     '.github/agents/',
     '.github/skills/',
     '.github/instructions/',
+    # Workflow guard hooks must sync to consumers or CLAUDE.md's
+    # core.hooksPath guidance promises automation that never arrives.
+    '.githooks/',
     # The consumer-owned spec-archive guide. Sync-managed so the same-name
     # scaffold delivers `docs/README.md` on first sync and the file is
     # reconciled against upstream until the consumer takes ownership (it is
