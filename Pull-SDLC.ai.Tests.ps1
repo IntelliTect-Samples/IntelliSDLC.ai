@@ -3446,3 +3446,48 @@ Describe 'Invoke-PullSDLC prunes upstream-private paths from consumers' {
         } finally { Pop-Location }
     }
 }
+
+Describe 'Invoke-PullSDLC no-op sync (issue #224)' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("noop-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'creates no commit and does not rewrite syncedAt when already at upstream head' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            }
+
+        # Consumer already sits on the upstream head. Stamp a deliberately stale
+        # syncedAt so any gratuitous rewrite is detectable without sleeping.
+        $statePath = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        $stale = '2000-01-01T00:00:00Z'
+        $json = @"
+{
+  "remote": "sdlc.ai",
+  "ref": "main",
+  "lastSyncCommit": "$($fx.UpstreamHead)",
+  "syncedAt": "$stale"
+}
+"@
+        [System.IO.File]::WriteAllText($statePath, (($json -replace "`r`n", "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        Push-Location $fx.Consumer
+        try {
+            git add -A | Out-Null
+            git commit -q -m 'seed state at upstream head'
+            $before = (git rev-parse HEAD).Trim()
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+
+        Push-Location $fx.Consumer
+        try { $after = (git rev-parse HEAD).Trim() } finally { Pop-Location }
+        $after | Should -Be $before -Because 'a zero-op sync must not manufacture a commit'
+
+        (Get-Content $statePath -Raw) | Should -Match ([regex]::Escape($stale)) -Because 'syncedAt must not churn when nothing was synced'
+    }
+}

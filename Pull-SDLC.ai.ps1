@@ -2494,7 +2494,13 @@ function Invoke-PullSDLC {
         }
     }
 
-    Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
+    # A zero-op sync must not churn the state file. Rewriting `syncedAt` alone
+    # dirties the working tree, which manufactures an empty sync commit and --
+    # on a protected branch -- an empty branch/PR (issue #224).
+    $syncStateChanged = ($ops.Count -gt 0) -or ($mergedPaths.Count -gt 0) -or ($anchorSha -ne $upstreamHead)
+    if ($syncStateChanged) {
+        Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
+    }
 
     Push-Location $RepoRoot
     try {
