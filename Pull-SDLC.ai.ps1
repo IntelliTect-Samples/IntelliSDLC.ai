@@ -2238,7 +2238,16 @@ function Write-PlannedOpsPreview {
     )
     Write-Host ''
     if ($Ops.Count -eq 0) {
-        Write-Host "Files to update: 0 (already at upstream $UpstreamLabel -- nothing to sync)" -ForegroundColor Cyan
+        # Distinguish "anchor is literally at the head" from "upstream moved but
+        # every commit in the range touched only carved-out/consumer-owned
+        # paths." Claiming the latter is "already at upstream <head>" is false
+        # and hides why nothing synced (issue #235).
+        if ($AnchorLabel -eq $UpstreamLabel) {
+            Write-Host "Files to update: 0 (already at upstream $UpstreamLabel -- nothing to sync)" -ForegroundColor Cyan
+        }
+        else {
+            Write-Host "Files to update: 0 (upstream moved $AnchorLabel -> $UpstreamLabel, but no managed file changed -- nothing to sync)" -ForegroundColor Cyan
+        }
     }
     else {
         Write-Host "Files to update: $($Ops.Count) (syncing $AnchorLabel -> $UpstreamLabel)" -ForegroundColor Cyan
@@ -2494,10 +2503,20 @@ function Invoke-PullSDLC {
         }
     }
 
-    # A zero-op sync must not churn the state file. Rewriting `syncedAt` alone
-    # dirties the working tree, which manufactures an empty sync commit and --
-    # on a protected branch -- an empty branch/PR (issue #224).
-    $syncStateChanged = ($ops.Count -gt 0) -or ($mergedPaths.Count -gt 0) -or ($anchorSha -ne $upstreamHead)
+    # A zero-op sync must not churn the state file. Rewriting `syncedAt` (or an
+    # anchor-only `lastSyncCommit` bump) dirties the working tree, which
+    # manufactures an empty sync commit and -- on a protected branch -- an empty
+    # branch/PR (issues #224, #235).
+    #
+    # Deliberately NOT keyed on ($anchorSha -ne $upstreamHead): upstream commits
+    # that touch only carved-out/consumer-owned paths (run.ps1, agent tests, ...)
+    # move the head while producing zero managed-path ops, and bumping the anchor
+    # for those is exactly the empty-PR bug. Holding the anchor back is safe --
+    # it feeds only Test-LocalDriftOnManagedPaths and Get-UpstreamOps, which
+    # compare managed-path *content*. Zero ops means no managed path differs
+    # between anchor and head, so a stale anchor yields identical results; it
+    # merely re-diffs a slightly wider range until real managed content lands.
+    $syncStateChanged = ($ops.Count -gt 0) -or ($mergedPaths.Count -gt 0)
     if ($syncStateChanged) {
         Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
     }

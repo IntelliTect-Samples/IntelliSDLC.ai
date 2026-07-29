@@ -3491,3 +3491,87 @@ Describe 'Invoke-PullSDLC no-op sync (issue #224)' {
         (Get-Content $statePath -Raw) | Should -Match ([regex]::Escape($stale)) -Because 'syncedAt must not churn when nothing was synced'
     }
 }
+
+Describe 'Invoke-PullSDLC anchor-only sync (issue #235)' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("anchoronly-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'creates no commit when upstream moved but touched only carved-out paths' {
+        # Upstream advances by one commit that edits ONLY consumer-owned files,
+        # so the managed-path diff is empty even though anchor != head.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak {
+                'runner v2' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            }
+
+        $fx.AnchorSha | Should -Not -Be $fx.UpstreamHead -Because 'the fixture must model a moved upstream'
+
+        $statePath = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        $stale = '2000-01-01T00:00:00Z'
+        $json = @"
+{
+  "remote": "sdlc.ai",
+  "ref": "main",
+  "lastSyncCommit": "$($fx.AnchorSha)",
+  "syncedAt": "$stale"
+}
+"@
+        [System.IO.File]::WriteAllText($statePath, (($json -replace "`r`n", "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        Push-Location $fx.Consumer
+        try {
+            git add -A | Out-Null
+            git commit -q -m 'seed state behind upstream head'
+            $before = (git rev-parse HEAD).Trim()
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+
+        Push-Location $fx.Consumer
+        try { $after = (git rev-parse HEAD).Trim() } finally { Pop-Location }
+        $after | Should -Be $before -Because 'an anchor-only bump must not manufacture a commit or PR'
+
+        (Get-Content $statePath -Raw) | Should -Match ([regex]::Escape($stale)) -Because 'syncedAt must not churn when no managed file changed'
+    }
+
+    It 'still advances the anchor when real managed ops are replayed' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            } `
+            -Tweak {
+                'updated-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+
+        $statePath = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        $json = @"
+{
+  "remote": "sdlc.ai",
+  "ref": "main",
+  "lastSyncCommit": "$($fx.AnchorSha)",
+  "syncedAt": "2000-01-01T00:00:00Z"
+}
+"@
+        [System.IO.File]::WriteAllText($statePath, (($json -replace "`r`n", "`n") + "`n"), (New-Object System.Text.UTF8Encoding $false))
+        Push-Location $fx.Consumer
+        try {
+            git add -A | Out-Null
+            git commit -q -m 'seed state behind upstream head'
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+
+        $state = Get-Content $statePath -Raw | ConvertFrom-Json
+        $state.lastSyncCommit | Should -Be $fx.UpstreamHead -Because 'a real sync must record the new upstream head'
+    }
+}
