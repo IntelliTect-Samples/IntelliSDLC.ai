@@ -886,11 +886,42 @@ Describe 'Invoke-PullSDLC end-to-end' {
         Push-Location $fx.Consumer
         try {
             $afterSha = (git rev-parse HEAD).Trim()
-            # Allow a state-file refresh commit (syncedAt timestamp changes) but
-            # never a content commit.
-            $changed = git diff --name-only "$beforeSha..HEAD"
-            $changed | Where-Object { $_ -ne '.sdlc-ai-sync.json' } | Should -BeNullOrEmpty
+            # A no-op rerun must create NO commit -- not even a state-file refresh
+            # that only bumps `syncedAt`. On a protected branch that stray commit
+            # becomes a spurious auto-worktree PR (issue #224).
+            $afterSha | Should -Be $beforeSha
         } finally { Pop-Location }
+    }
+
+    It 'does not create a commit or rewrite syncedAt on an up-to-date rerun (issue #224)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed { 'baseline' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        # Record the anchor already at the upstream tip, but with a deliberately
+        # OLD syncedAt so that a (buggy) unconditional rewrite to "now" would
+        # produce a visible diff -> commit. With the fix, an up-to-date run must
+        # leave the anchor untouched.
+        $statePath = Join-Path $fx.Consumer '.sdlc-ai-sync.json'
+        $stale = [ordered]@{ remote = 'sdlc.ai'; ref = 'main'; lastSyncCommit = $fx.UpstreamHead; syncedAt = '2000-01-01T00:00:00Z' }
+        (($stale | ConvertTo-Json) -replace "`r`n", "`n") + "`n" | Set-Content -NoNewline -Encoding utf8 $statePath
+        $beforeSha = $null
+        Push-Location $fx.Consumer
+        try {
+            git add .sdlc-ai-sync.json | Out-Null
+            git commit -q -m 'seed stale state'
+            $beforeSha = (git rev-parse HEAD).Trim()
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            (git rev-parse HEAD).Trim() | Should -Be $beforeSha -Because 'an up-to-date sync must not create a commit'
+            (git status --porcelain) | Should -BeNullOrEmpty
+        } finally { Pop-Location }
+        # syncedAt preserved -> Set-SdlcSyncState was not re-run on the no-op.
+        # Assert against the raw text: ConvertFrom-Json coerces ISO-8601 strings
+        # into [datetime] and reformats them, which would mask an untouched file.
+        (Get-Content $statePath -Raw) | Should -Match '2000-01-01T00:00:00Z'
     }
 
     It 'pre-flight guard aborts when an upstream-managed file has local drift' {

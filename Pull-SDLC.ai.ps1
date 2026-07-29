@@ -2494,7 +2494,15 @@ function Invoke-PullSDLC {
         }
     }
 
-    Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
+    # Only rewrite .sdlc-ai-sync.json when the sync actually did something:
+    # files were replayed/pruned, a merge-managed file changed, or the recorded
+    # upstream commit advanced. Rewriting it on an up-to-date rerun would bump
+    # only the `syncedAt` timestamp, producing a stray 1-line commit -- and, on
+    # a protected branch, a spurious auto-worktree PR (issue #224).
+    $syncStateNeedsUpdate = ($ops.Count -gt 0) -or ($mergedPaths.Count -gt 0) -or ($anchorSha -ne $upstreamHead)
+    if ($syncStateNeedsUpdate) {
+        Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
+    }
 
     Push-Location $RepoRoot
     try {
