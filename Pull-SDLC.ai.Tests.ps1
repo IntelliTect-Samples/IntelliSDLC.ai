@@ -3641,3 +3641,72 @@ Describe 'Invoke-PullSDLC scaffolds into the real checkout (issue #237)' {
     }
 }
 
+
+Describe 'Invoke-PullSDLC cleans up the scratch sync worktree (issue #240)' {
+    BeforeAll {
+        $script:fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sdlc-scratch-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:fixtureRoot -Force | Out-Null
+    }
+    AfterAll {
+        if ($script:fixtureRoot -and (Test-Path $script:fixtureRoot)) {
+            Remove-Item -LiteralPath $script:fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # Consumer sits on the protected branch (so the auto-worktree path runs)
+    # with its anchor already at upstream HEAD, so the sync is a pure no-op.
+    function global:New-NoOpWorktreeFixture {
+        param([Parameter(Mandatory)][string]$Base, [switch]$WithPendingOps)
+        $root = Join-Path $Base ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $fx = New-DiffReplayFixture -Root $root `
+            -Seed { 'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'updated-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+
+        # An anchor at UpstreamHead yields zero ops; at AnchorSha yields real ops.
+        $anchor = if ($WithPendingOps) { $fx.AnchorSha } else { $fx.UpstreamHead }
+        Push-Location $fx.Consumer
+        try {
+            git checkout -q main
+            git branch -q -D chore/sdlc-sync 2>&1 | Out-Null
+            if (-not $WithPendingOps) { 'updated-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+            $json = '{"remote":"sdlc.ai","ref":"main","lastSyncCommit":"' + $anchor + '","syncedAt":"2000-01-01T00:00:00Z"}'
+            [System.IO.File]::WriteAllText((Join-Path $fx.Consumer '.sdlc-ai-sync.json'), $json + "`n", (New-Object System.Text.UTF8Encoding $false))
+            git add -A | Out-Null
+            git commit -q -m 'seed sync anchor'
+        } finally { Pop-Location }
+        return $fx
+    }
+
+    It 'removes the scratch worktree when the run produces no commit and no PR' {
+        $fx = New-NoOpWorktreeFixture -Base $script:fixtureRoot
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Test-Path -LiteralPath $wt | Should -BeFalse -Because 'a run that produced nothing must leave the repo as it found it'
+    }
+
+    It 'removes the local scratch branch when the run produces no commit and no PR' {
+        $fx = New-NoOpWorktreeFixture -Base $script:fixtureRoot
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        Push-Location $fx.Consumer
+        try { $branches = @(git branch --list chore/sdlc-sync) } finally { Pop-Location }
+        $branches.Count | Should -Be 0 -Because 'the scratch branch has no reason to survive a no-op run'
+    }
+
+    It 'keeps the scratch worktree when the run actually commits' {
+        $fx = New-NoOpWorktreeFixture -Base $script:fixtureRoot -WithPendingOps
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+        $rc | Should -Be 0
+
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Test-Path -LiteralPath $wt | Should -BeTrue -Because 'a productive run keeps the worktree so repeat syncs skip the full checkout'
+    }
+}
+
