@@ -17,6 +17,12 @@
 
     Supports launchSettings.json profiles and pass-through args.
 
+    To avoid needless recompilation, run mode skips the build step (passing
+    `--no-build` to `dotnet run`) whenever no source file is newer than the
+    project's last build output. The first run - or any run after a source
+    file changes - compiles as usual; subsequent unchanged runs start without
+    rebuilding.
+
     Use `./run.ps1 test` to run `dotnet test` across the entire solution.
     Use `./run.ps1 help` to show the application's own help text.
 
@@ -301,6 +307,93 @@ function Find-LaunchSettingsProject {
     return $null
 }
 
+function Get-BuiltAssembly {
+    <#
+    .SYNOPSIS
+        Returns the most recently built output assembly (<AssemblyName>.dll) for
+        a project, searching its bin directory, or $null if none has been built.
+    .DESCRIPTION
+        Assumes the default convention that the assembly name matches the project
+        file name (e.g. App.csproj -> App.dll). When a project overrides
+        AssemblyName the lookup returns $null, which conservatively forces a build.
+    #>
+    param([System.IO.FileInfo]$ProjectFile)
+
+    $binDir = Join-Path $ProjectFile.DirectoryName 'bin'
+    if (-not (Test-Path $binDir)) { return $null }
+
+    $assemblyName = [System.IO.Path]::GetFileNameWithoutExtension($ProjectFile.Name)
+    $candidates = @(
+        Get-ChildItem -Path $binDir -Filter "$assemblyName.dll" -Recurse -File -ErrorAction SilentlyContinue
+    )
+    if ($candidates.Count -eq 0) { return $null }
+
+    return $candidates | Sort-Object -Property LastWriteTimeUtc -Descending | Select-Object -First 1
+}
+
+function Get-NewestSourceWriteTime {
+    <#
+    .SYNOPSIS
+        Returns the newest LastWriteTimeUtc among build-relevant source files
+        under $Root, or $null when no such files exist.
+    .DESCRIPTION
+        Considers common .NET source and build files (.cs, .csproj, MSBuild
+        props/targets, solution files, Razor, resources, etc.) and ignores
+        generated output (bin, obj) and non-source trees (.git, .worktrees, .vs,
+        node_modules) so that build artifacts never make a project look stale.
+    #>
+    param([string]$Root)
+
+    $sourceExtensions = @(
+        '.cs', '.csproj', '.props', '.targets', '.sln', '.slnx',
+        '.razor', '.cshtml', '.resx', '.vb', '.vbproj', '.fs', '.fsproj'
+    )
+
+    $sourceFiles = @(
+        Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                $full = $_.FullName
+                ($full -notmatch '[\\/]bin[\\/]') -and
+                ($full -notmatch '[\\/]obj[\\/]') -and
+                ($full -notmatch '[\\/]\.git[\\/]') -and
+                ($full -notmatch '[\\/]\.worktrees[\\/]') -and
+                ($full -notmatch '[\\/]\.vs[\\/]') -and
+                ($full -notmatch '[\\/]node_modules[\\/]') -and
+                ($sourceExtensions -contains $_.Extension)
+            }
+    )
+    if ($sourceFiles.Count -eq 0) { return $null }
+
+    return $sourceFiles |
+        Sort-Object -Property LastWriteTimeUtc -Descending |
+        Select-Object -First 1 -ExpandProperty LastWriteTimeUtc
+}
+
+function Test-BuildRequired {
+    <#
+    .SYNOPSIS
+        Returns $true when the project must be rebuilt, i.e. it has never been
+        built or a source file under $Root is newer than the last build output.
+    .DESCRIPTION
+        Enables run mode to pass `--no-build` and skip compilation when nothing
+        has changed. When the output assembly is missing (never built or cleaned)
+        a rebuild is always required. When no source files are found there is
+        nothing to compile, so a rebuild is not required.
+    #>
+    param(
+        [System.IO.FileInfo]$ProjectFile,
+        [string]$Root
+    )
+
+    $assembly = Get-BuiltAssembly -ProjectFile $ProjectFile
+    if (-not $assembly) { return $true }
+
+    $newestSource = Get-NewestSourceWriteTime -Root $Root
+    if ($null -eq $newestSource) { return $false }
+
+    return $newestSource -gt $assembly.LastWriteTimeUtc
+}
+
 # Allow dot-sourcing for testing (loads functions only)
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -409,6 +502,15 @@ Write-Host ''
 
 # Build the dotnet run command
 $dotnetArgs = @('run', '--project', $selectedProject.FullName)
+
+# Skip compilation when no source file is newer than the last build output.
+if (Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot) {
+    Write-Host 'Source changes detected - building.' -ForegroundColor DarkGray
+}
+else {
+    $dotnetArgs += '--no-build'
+    Write-Host 'No source changes detected - skipping build.' -ForegroundColor DarkGray
+}
 
 # Add launch profile if applicable
 $profileArgs = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile
