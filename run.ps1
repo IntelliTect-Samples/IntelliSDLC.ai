@@ -26,6 +26,11 @@
     Use `./run.ps1 test` to run `dotnet test` across the entire solution.
     Use `./run.ps1 help` to show the application's own help text.
 
+    Help flags are honored only in leading position. `./run.ps1 --help` shows
+    the application's root help, while `./run.ps1 mysubcommand --help` forwards
+    `--help` so the application's own parser resolves the subcommand help.
+    Likewise `./run.ps1 test --help` forwards to `dotnet test --help`.
+
 .PARAMETER Command
     Optional subcommand. Use `test` to run dotnet test on the solution.
     Omit (or use `run`) to run the application.
@@ -42,12 +47,16 @@
 
 .PARAMETER Args
     Additional arguments passed through to the application (after `--`)
-    or to `dotnet test` (when using `test` command).
+    or to `dotnet test` (when using `test` command). Tokens are forwarded
+    verbatim; unquoted comma-separated values such as `--to a,b` survive
+    intact rather than being joined with a space.
 
 .EXAMPLE
     ./run.ps1
     ./run.ps1 -- --dry-run
     ./run.ps1 mysubcommand
+    ./run.ps1 mysubcommand --help
+    ./run.ps1 mysubcommand --to a,b
     ./run.ps1 -- mysubcommand --flag
     ./run.ps1 run -- --some-flag
     ./run.ps1 -LaunchProfile https
@@ -66,7 +75,7 @@ param(
     [string]$Project,
     [string]$SearchPath,
     [Parameter(ValueFromRemainingArguments)]
-    [string[]]$Args
+    [object[]]$Args
 )
 
 Set-StrictMode -Version Latest
@@ -74,18 +83,6 @@ $ErrorActionPreference = 'Stop'
 
 # Reserved subcommands handled by this script itself (not forwarded to the app).
 $ReservedCommands = @('run', 'test', 'help')
-
-# PowerShell binds positional args (even after `--`) to $Command before $Args,
-# so `.\run.ps1 -- --flag ...` or `.\run.ps1 mycmd` both land with $Command
-# holding the first token. Forward it into $Args if it's either a flag
-# (starts with '-') or a non-reserved subcommand so the child process sees it.
-# 'run' is treated as an explicit no-op keyword so callers can write
-# `.\run.ps1 run -- args` when they need to force run mode.
-if ($Command -and ($Command.StartsWith('-') -or $Command -notin $ReservedCommands)) {
-    if ($null -eq $Args) { $Args = @() }
-    $Args = @($Command) + $Args
-    $Command = ''
-}
 
 # Resolve search root: where to look for solutions and projects
 $SearchRoot = if ($SearchPath) { (Resolve-Path $SearchPath).Path } else { $PSScriptRoot }
@@ -417,21 +414,86 @@ function Test-BuildRequired {
     return $newestSource -gt $assembly.LastWriteTimeUtc
 }
 
+$script:HelpFlags = @('--help', '-h', '-?')
+
+function ConvertTo-ForwardedArgument {
+    <#
+    .SYNOPSIS
+        Normalizes raw bound arguments into the verbatim token list forwarded to
+        the child process.
+    .DESCRIPTION
+        PowerShell parses an unquoted comma-separated token such as `--to fb,ig`
+        as an array literal @('fb','ig'). Binding that to a [string[]] parameter
+        coerces the element into the single string 'fb ig' -- joined with a
+        SPACE -- silently corrupting the value. Binding as [object[]] preserves
+        the nested array; this function rejoins it with ',' so the token reaches
+        the app exactly as the user typed it (issue #243).
+    .OUTPUTS
+        [string[]] one entry per original command-line token.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([object[]]$Argument)
+
+    if (-not $Argument) { return , @() }
+    return , @(foreach ($item in $Argument) {
+            if ($item -is [System.Array]) { ($item -join ',') } else { [string]$item }
+        })
+}
+
+function Test-RootHelpRequest {
+    <#
+    .SYNOPSIS
+        Returns $true only when the LEADING command-line token requests this
+        script's root help.
+    .DESCRIPTION
+        A help flag is honored only in leading position. A flag appearing later
+        (e.g. `run.ps1 post --to fb --help`) belongs to a subcommand and must be
+        forwarded so the app's own parser resolves it. Likewise a reserved
+        subcommand in leading position (e.g. `test --help`) keeps ownership of
+        the flag (issue #243).
+
+        Call this AFTER the leading positional token has been folded into
+        $Argument, so a non-empty $Command means a reserved subcommand.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [string]$Command,
+        [string[]]$Argument
+    )
+
+    if ($Command) { return ($Command -eq 'help' -or $Command -in $script:HelpFlags) }
+    if ($Argument -and $Argument.Count -gt 0) { return ($Argument[0] -in $script:HelpFlags) }
+    return $false
+}
+
 # Allow dot-sourcing for testing (loads functions only)
 if ($MyInvocation.InvocationName -eq '.') { return }
 
 # --- Main ---
 
-# --- Help mode ---
-# Handle help requests: `./run.ps1 help`, `./run.ps1 -- --help`, or help
-# flags in $Args. When invoked interactively, `-- --help` puts `--help` into
-# $Command (positional). With `pwsh -File`, `--help` goes into $Args.
-# Use `./run.ps1 help` for the most reliable cross-invocation behavior.
-$helpFlags = @('--help', '-h', '-?')
-$isHelpCommand = $Command -eq 'help' -or $Command -in $helpFlags
-$hasHelpFlag = $Args | Where-Object { $_ -in $helpFlags } | Select-Object -First 1
+# Normalize forwarded arguments before anything inspects them, so array
+# literals survive as typed (see ConvertTo-ForwardedArgument).
+$Args = @(ConvertTo-ForwardedArgument -Argument $Args)
 
-if ($isHelpCommand -or $hasHelpFlag) {
+# PowerShell binds positional args (even after `--`) to $Command before $Args,
+# so `.\run.ps1 -- --flag ...` or `.\run.ps1 mycmd` both land with $Command
+# holding the first token. Forward it into $Args if it's either a flag
+# (starts with '-') or a non-reserved subcommand so the child process sees it.
+# 'run' is treated as an explicit no-op keyword so callers can write
+# `.\run.ps1 run -- args` when they need to force run mode.
+if ($Command -and ($Command.StartsWith('-') -or $Command -notin $ReservedCommands)) {
+    $Args = @($Command) + $Args
+    $Command = ''
+}
+
+# --- Help mode ---
+# Root help is requested only when the LEADING token is `help` or a help flag.
+# `./run.ps1 post --to fb --help` forwards `--help` to the app instead.
+if (Test-RootHelpRequest -Command $Command -Argument $Args) {
     $runnableProjects = @(Find-RunnableProjects)
     if ($runnableProjects.Count -eq 0) {
         Write-Error 'No runnable projects found. Ensure at least one .csproj has <OutputType>Exe</OutputType>.'
