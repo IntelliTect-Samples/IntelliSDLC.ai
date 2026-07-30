@@ -524,3 +524,73 @@ Describe 'Get-NewestSourceWriteTime path exclusions are relative to the root' {
     }
 }
 
+
+Describe 'ConvertTo-ForwardedArgument' {
+    It 'preserves an unquoted comma-separated token as typed' {
+        # PowerShell binds `--to fb,ig` as a nested array literal @('fb','ig').
+        $result = ConvertTo-ForwardedArgument -Argument @('--to', @('fb', 'ig'))
+        $result[1] | Should -Be 'fb,ig'
+    }
+
+    It 'does not join a comma-separated token with a space' {
+        $result = ConvertTo-ForwardedArgument -Argument @('--to', @('fb', 'ig'))
+        $result[1] | Should -Not -Be 'fb ig'
+    }
+
+    It 'preserves three or more comma-separated values' {
+        $result = ConvertTo-ForwardedArgument -Argument @('--to', @('fb', 'ig', 'tw'))
+        $result[1] | Should -Be 'fb,ig,tw'
+    }
+
+    It 'keeps space-separated tokens as distinct entries' {
+        $result = ConvertTo-ForwardedArgument -Argument @('--from', 'ps', '--dry-run')
+        $result.Count | Should -Be 3
+        $result[0] | Should -Be '--from'
+        $result[1] | Should -Be 'ps'
+        $result[2] | Should -Be '--dry-run'
+    }
+
+    It 'returns an empty array for no arguments' {
+        (ConvertTo-ForwardedArgument -Argument @()).Count | Should -Be 0
+        (ConvertTo-ForwardedArgument -Argument $null).Count | Should -Be 0
+    }
+
+    It 'emits every element as a string' {
+        $result = ConvertTo-ForwardedArgument -Argument @('--count', 3, @('a', 'b'))
+        foreach ($item in $result) { $item | Should -BeOfType [string] }
+    }
+}
+
+Describe 'Test-RootHelpRequest' {
+    It 'treats a leading help flag as a root help request' {
+        foreach ($flag in @('--help', '-h', '-?')) {
+            Test-RootHelpRequest -Command '' -Argument @($flag) | Should -BeTrue -Because "'$flag' leads the command line"
+        }
+    }
+
+    It 'treats the help subcommand as a root help request' {
+        Test-RootHelpRequest -Command 'help' -Argument @() | Should -BeTrue
+    }
+
+    It 'does not hijack a help flag intended for a subcommand' {
+        # ./run.ps1 post --to fb --help  ->  'post' has been folded into $Argument
+        Test-RootHelpRequest -Command '' -Argument @('post', '--to', 'fb', '--help') |
+            Should -BeFalse -Because 'the app parser must resolve `post --help` itself'
+    }
+
+    It 'does not hijack a help flag in any non-leading position' {
+        Test-RootHelpRequest -Command '' -Argument @('post', '--help', '--dry-run') | Should -BeFalse
+        Test-RootHelpRequest -Command '' -Argument @('post', '-h') | Should -BeFalse
+    }
+
+    It 'leaves a help flag to a reserved subcommand that leads the line' {
+        # ./run.ps1 test --help  ->  'test' stays in $Command
+        Test-RootHelpRequest -Command 'test' -Argument @('--help') |
+            Should -BeFalse -Because 'the flag belongs to `dotnet test`, not to root help'
+    }
+
+    It 'returns false when no arguments are supplied' {
+        Test-RootHelpRequest -Command '' -Argument @() | Should -BeFalse
+        Test-RootHelpRequest -Command '' -Argument $null | Should -BeFalse
+    }
+}
