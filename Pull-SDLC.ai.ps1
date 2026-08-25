@@ -1972,6 +1972,56 @@ function Write-NextStepsBanner {
     }
 }
 
+function Test-SelfRefreshTargetsProtectedMain {
+    <#
+    .SYNOPSIS
+        Returns $true when persisting the self-refresh overwrite to
+        $ScriptPath would leave the protected branch's working tree dirty
+        for no reason -- because Invoke-PullSDLC is about to take the
+        auto-worktree path for this run, which delivers the identical
+        content via the sync PR instead (issue #247).
+    .DESCRIPTION
+        $true only when the script's repo is currently checked out on the
+        protected branch (from -Branch in $BoundParameters, default 'main')
+        AND the effective -CommitOnMain setting is $false. This mirrors the
+        same effective-CommitOnMain resolution Invoke-PullSDLC applies
+        before deciding whether to commit on the protected branch or switch
+        to the auto-worktree workflow.
+
+        Any git failure (no repo at $ScriptPath's directory, detached HEAD,
+        etc.) resolves to $false so self-refresh keeps its unchanged
+        persistent-overwrite default.
+    .OUTPUTS
+        [bool]
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [hashtable]$BoundParameters = @{}
+    )
+    $scriptDir = Split-Path -Parent $ScriptPath
+    if (-not $scriptDir -or -not (Test-Path -LiteralPath $scriptDir)) { return $false }
+    $protectedBranch = if ($BoundParameters.ContainsKey('Branch') -and $BoundParameters['Branch']) {
+        $BoundParameters['Branch']
+    } else { 'main' }
+    $repoRoot = $null
+    Push-Location $scriptDir
+    try {
+        $repoRoot = (git rev-parse --show-toplevel 2>$null)
+        if (-not $repoRoot) { return $false }
+        $branch = (git symbolic-ref --short HEAD 2>$null)
+        if ($branch -ne $protectedBranch) { return $false }
+    }
+    finally { Pop-Location -ErrorAction SilentlyContinue }
+    $commitOnMainEffective = if ($BoundParameters.ContainsKey('CommitOnMain')) {
+        [bool]$BoundParameters['CommitOnMain']
+    } else {
+        Test-IsBootstrapSync -RepoRoot $repoRoot.Trim()
+    }
+    return -not $commitOnMainEffective
+}
+
 function Invoke-SelfRefreshGate {
     <#
     .SYNOPSIS
@@ -2002,11 +2052,15 @@ function Invoke-SelfRefreshGate {
     if (Test-SelfRefreshRequired -ScriptPath $ScriptPath -NoSelfUpdate:$NoSelfUpdate) {
         # Invoke-SelfRefresh overwrites the on-disk script in place and returns a
         # backup of the original. Re-exec the (now-updated) on-disk script; under
-        # a -WhatIf dry run, restore the original afterward so the run leaves no
-        # net change.
+        # a -WhatIf dry run, or a normal run on the protected branch that is about
+        # to take the auto-worktree path (issue #247 -- the sync PR already
+        # delivers this same content, so persisting the overwrite here would only
+        # leave a redundant, dirty diff on the protected branch), restore the
+        # original afterward so the run leaves no net change on disk.
         $backupPath = Invoke-SelfRefresh -ScriptPath $ScriptPath
         if ($backupPath) {
-            $restore = [bool]($BoundParameters.ContainsKey('WhatIf') -and $BoundParameters['WhatIf'])
+            $restore = [bool]($BoundParameters.ContainsKey('WhatIf') -and $BoundParameters['WhatIf']) `
+                -or (Test-SelfRefreshTargetsProtectedMain -ScriptPath $ScriptPath -BoundParameters $BoundParameters)
             Invoke-SelfReExec -ScriptPath $ScriptPath -BoundParameters $BoundParameters -BackupPath $backupPath -RestoreOriginal:$restore
             return $true
         }
