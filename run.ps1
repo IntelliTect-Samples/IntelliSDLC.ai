@@ -585,16 +585,55 @@ Write-Host ''
 Write-Host "Running: $projectPath" -ForegroundColor Green
 Write-Host ''
 
+$script:TransientStatusLength = 0
+
+function Write-TransientStatus {
+    <#
+    .SYNOPSIS
+        Writes an in-place status message that a later Write-TransientStatus or
+        Clear-TransientStatus call overwrites, instead of scrolling the console.
+    .DESCRIPTION
+        Returns the cursor to the start of the line and pads to erase leftover
+        characters from a longer previous message. The status is progress, not
+        output: it never survives the run, so it cannot be pasted into a bug
+        report as though it were a result.
+    #>
+    param([string]$Message, [string]$ForegroundColor = 'DarkGray')
+
+    $pad = ''.PadRight([Math]::Max(0, $script:TransientStatusLength - $Message.Length))
+    Write-Host -NoNewline "`r$Message$pad" -ForegroundColor $ForegroundColor
+    $script:TransientStatusLength = $Message.Length
+}
+
+function Clear-TransientStatus {
+    <#
+    .SYNOPSIS
+        Blanks the line written by Write-TransientStatus, leaving no trace.
+    #>
+    if ($script:TransientStatusLength -gt 0) {
+        Write-Host -NoNewline ("`r" + ''.PadRight($script:TransientStatusLength) + "`r")
+        $script:TransientStatusLength = 0
+    }
+}
+
 # Build the dotnet run command
 $dotnetArgs = @('run', '--project', $selectedProject.FullName)
 
 # Skip compilation when no source file is newer than the last build output.
+Write-TransientStatus 'Checking whether a build is required...'
 if (Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot) {
+    # A build IS happening, so say so permanently -- the compiler output that
+    # follows would otherwise appear unexplained.
+    Clear-TransientStatus
     Write-Host 'Source changes detected - building.' -ForegroundColor DarkGray
 }
 else {
     $dotnetArgs += '--no-build'
-    Write-Host 'No source changes detected - skipping build.' -ForegroundColor DarkGray
+    # Nothing to report. Flash it, then erase it: a skipped build is the
+    # uneventful case and should not survive into copied console output.
+    Write-TransientStatus 'No build required.'
+    Start-Sleep -Milliseconds 800
+    Clear-TransientStatus
 }
 
 # Add launch profile if applicable
