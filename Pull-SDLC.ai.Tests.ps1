@@ -2351,6 +2351,103 @@ Describe 'Invoke-SelfRefreshGate (issue #110)' {
     }
 }
 
+Describe 'Test-SelfRefreshTargetsProtectedMain (issue #247)' {
+    BeforeEach {
+        $script:pmRoot = Join-Path $TestDrive ("pm-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:pmRoot -Force | Out-Null
+        $script:pmScript = Join-Path $script:pmRoot 'Pull-SDLC.ai.ps1'
+        Push-Location $script:pmRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            'seed' | Out-File -Encoding utf8 $script:pmScript -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+            # A prior sync commit marks this repo as past bootstrap (steady state).
+            'x' | Out-File -Encoding utf8 -LiteralPath (Join-Path $script:pmRoot 'CLAUDE.md') -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+        } finally { Pop-Location }
+    }
+
+    It 'returns $true on the protected branch in steady state (no -CommitOnMain)' {
+        Test-SelfRefreshTargetsProtectedMain -ScriptPath $script:pmScript -BoundParameters @{ Branch = 'main' } |
+            Should -BeTrue
+    }
+
+    It 'returns $false when -CommitOnMain is explicitly set' {
+        Test-SelfRefreshTargetsProtectedMain -ScriptPath $script:pmScript -BoundParameters @{ Branch = 'main'; CommitOnMain = $true } |
+            Should -BeFalse
+    }
+
+    It 'returns $false on a feature branch' {
+        Push-Location $script:pmRoot
+        try { git checkout -q -b feat/other } finally { Pop-Location }
+        Test-SelfRefreshTargetsProtectedMain -ScriptPath $script:pmScript -BoundParameters @{ Branch = 'main' } |
+            Should -BeFalse
+    }
+
+    It 'returns $false when the script path is not inside a git repo' {
+        $orphan = Join-Path $TestDrive ("orphan-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $orphan -Force | Out-Null
+        $orphanScript = Join-Path $orphan 'Pull-SDLC.ai.ps1'
+        'x' | Out-File -Encoding utf8 $orphanScript -NoNewline
+        Test-SelfRefreshTargetsProtectedMain -ScriptPath $orphanScript -BoundParameters @{ Branch = 'main' } |
+            Should -BeFalse
+    }
+}
+
+Describe 'Invoke-SelfRefreshGate restores on protected main (issue #247)' {
+    It 'sets -RestoreOriginal for a normal run on the protected branch headed to auto-worktree' {
+        $repoDir = Join-Path $TestDrive ("gate-pm-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $script = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Push-Location $repoDir
+        try {
+            git init -q -b main
+            git config user.email c@c.c; git config user.name c
+            'seed' | Out-File -Encoding utf8 $script -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+        } finally { Pop-Location }
+
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-backup-abc.ps1' }
+        $script:capturedRestore3 = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
+            $script:capturedRestore3 = [bool]$RestoreOriginal
+        }
+        $null = Invoke-SelfRefreshGate -ScriptPath $script -BoundParameters @{ Branch = 'main' }
+        $script:capturedRestore3 | Should -BeTrue
+    }
+
+    It 'does NOT set -RestoreOriginal when -CommitOnMain is in effect on the protected branch' {
+        $repoDir = Join-Path $TestDrive ("gate-pm-commitmain-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $script = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Push-Location $repoDir
+        try {
+            git init -q -b main
+            git config user.email c@c.c; git config user.name c
+            'seed' | Out-File -Encoding utf8 $script -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+        } finally { Pop-Location }
+
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh   -MockWith { return 'C:\Temp\pull-sdlc-self-backup-abc.ps1' }
+        $script:capturedRestore4 = $null
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
+            $script:capturedRestore4 = [bool]$RestoreOriginal
+        }
+        $null = Invoke-SelfRefreshGate -ScriptPath $script -BoundParameters @{ Branch = 'main'; CommitOnMain = $true }
+        $script:capturedRestore4 | Should -BeFalse
+    }
+}
+
 Describe 'Script top-level self-refresh (issue #110 end-to-end)' {
     It 'exposes RemoteUrl as a script param (org-portability) and excludes function-only params' {
         # Issue #110 originally asserted RemoteUrl was NOT a script param so
