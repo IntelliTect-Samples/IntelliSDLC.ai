@@ -144,6 +144,36 @@ backwards compatibility for its API or CLI surface.
 > Language-specific testing conventions are in the corresponding
 > `*.instructions.md` files referenced in the Language Detection table above.
 
+### CLI Testing -- Scope and the `--dry-run` Seam
+
+- **Scope live/integration coverage to what actually needs a real dependency.**
+  CLI-layer concerns -- argument/option parsing, selection/listing rendering
+  and paging, confirmation prompts, and any other pure control-flow branching
+  -- should be unit-tested against mocks/fakes of the underlying client or
+  provider. None of that logic depends on real external state, so it never
+  needs a live/integration test. Reserve live/integration tests for the
+  functions that actually call out to the real external system (real ids,
+  real auth, real network calls, real writes) -- the places where a mock
+  genuinely can't prove correctness (e.g., an id-format heuristic that has
+  never run against real ids, or confirming a delete actually removed
+  something). When scoping test coverage for a CLI feature, ask "does this
+  case need real external state to be meaningful, or is it exercising
+  CLI-side control flow?" and route accordingly -- apply this across the
+  whole feature, not just to one option or flag within it.
+- **Proactively suggest `--dry-run` for write/destructive commands.** When a
+  CLI command performs a write or destructive operation (create, delete,
+  publish, or anything that mutates real external state) and has no
+  `--dry-run` option, suggest adding one rather than waiting to be asked --
+  as a recommendation, subject to the **Adding Command-Line Options -- Prompt
+  First** rule above (surface the proposal and wait for confirmation before
+  implementing it). Beyond safety, `--dry-run` is a testing seam: it resolves
+  and validates everything the real operation would (arguments, selection, id
+  resolution) while stopping short of the actual external call. Once it
+  exists, that resolution/validation logic can be unit- or dry-run-tested
+  without touching a live account or system, shrinking what still needs live
+  coverage down to the write call itself. It narrows the live-test surface --
+  it does not replace a live test of the actual write path.
+
 ## Product Specification
 
 If the project maintains a living product specification (e.g., `product-spec.md`):
