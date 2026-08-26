@@ -148,6 +148,67 @@ must not proceed without explicit user acknowledgement.
 - Polite crawl: respect robots.txt, throttle to ~1 req/sec on automated
   traversal, descriptive User-Agent.
 
+#### Capturing traffic reliably
+
+Lessons from hand-driven capture sessions against production sites -- each
+of these has cost real diagnosis time when skipped.
+
+- **`--save-har` only flushes on browser close, not on process kill.**
+  Stopping the Playwright driver process orphans the browser and **discards
+  everything recorded so far**. Every capture instruction to the human must
+  end with, in bold: "**close the browser window** -- that is what writes
+  the file." Before moving on to Phase 3, verify the HAR file exists and is
+  non-trivial in size; do not attempt to analyze a HAR that was never
+  flushed.
+- **Never terminate the browser to end a capture.** Killing Chrome processes
+  can also destroy unrelated signed-in work elsewhere on the developer's
+  machine. Always end a capture by asking the human to close the window.
+  If more than one capture window may exist (a prior run wasn't cleaned up,
+  or the human opened a second tab), **disambiguate before the human
+  acts** -- list Chrome processes by `--user-data-dir` and creation time and
+  tell the user exactly which window to use (e.g. "the one that opened 4
+  minutes ago"). A human posting into the wrong window produces no capture,
+  and the loss is silent until they've already done the work.
+- **The first capture is always unfiltered.** Do not scope `--save-har-glob`
+  to a guessed path on the first pass, even when the target mutation looks
+  like it obviously belongs to one API family (e.g. GraphQL). Media upload
+  protocols in particular routinely run over entirely separate hosts and
+  paths (`vupload2.<host>`, `rupload-<region>.up.<host>`,
+  `i.<host>/rupload_<kind>`) that a premature glob silently discards. Narrow
+  the glob only on a second pass, once the endpoints actually in play are
+  known -- an oversized HAR is cheap; a capture that silently omits the
+  thing you were hunting is not.
+- **Deliberately capture failure paths, not just the happy path.** Ask the
+  human to also reproduce cancel, retry, invalid-input, and rapid-repeat
+  flows. Failure captures are frequently the highest-value entries in a
+  session -- they establish the platform's real error taxonomy (see
+  "Interpreting captured responses" below) and can reveal genuine platform
+  limitations (e.g. "this field cannot be edited after publish") that save
+  a future engineer from building a feature that cannot work. Never discard
+  a "mistake" run without scanning it first.
+- **Plan for very large HARs.** Video/media captures commonly land in the
+  hundreds of MB; a mistaken large-file capture can push into multiple GB.
+  Whole-file JSON parsing at that size is slow and memory-hungry. Analyze
+  in two stages:
+  1. **Discovery** -- `grep` / stream-scan the raw file for URL and
+     friendly-name patterns. Works at any size.
+  2. **Extraction** -- only after narrowing, parse and pull the specific
+     entries of interest.
+
+  A mistaken oversized capture (e.g. a large-file upload run by accident)
+  is usually best discarded rather than flushed and parsed.
+- **Building an authenticated capture context from stored secrets.** Rather
+  than making the human log in inside the capture browser every time,
+  construct a Playwright `storageState.json` from already-stored
+  credentials and pass it via `--load-storage` / the skill's Input 7. Two
+  gotchas:
+  - **Secret key casing is not consistent** across secret stores (e.g.
+    `Facebook:datr` vs. `Facebook:Workspaces:<alias>:Datr`). Look secrets
+    up case-insensitively.
+  - **Include every session cookie the platform needs**, not just the
+    primary auth token -- a partial cookie set produces confusing,
+    non-obvious failures rather than a clean "not authenticated" error.
+
 ### Phase 3 -- Scrub
 
 - Run `templates/api-wrapper-scaffold/scripts/sanitize-har.js` and
@@ -163,6 +224,10 @@ must not proceed without explicit user acknowledgement.
   - No original PII value appears in scrubbed output.
   - Every fake in output reverses via the table.
 - Output written to `samples/har/`.
+- **Before the scrubbed HAR is written, verify the capture path itself is
+  covered by `.gitignore`.** `samples/har-original/` (the unscrubbed
+  capture) must never be committable even transiently; treat a missing
+  gitignore rule as a hard stop for the phase, not a warning.
 
 ### Phase 4 -- Classify Auth
 
@@ -189,6 +254,48 @@ Emit a JSON manifest the codegen step consumes.
 - Detect GraphQL: POST to `*/graphql*` with `{query, variables}`. When
   detected, emit a single `QueryAsync<T>` client plus typed convenience
   methods per observed `operationName`.
+
+#### Interpreting captured responses
+
+The single highest-value lesson from dogfooding this skill: **HTTP status
+alone does not tell you whether a request succeeded.** Real platforms mix
+these patterns in the same session, and a naively generated client gets all
+three wrong:
+
+| Observed | Actually means | Naive client reports |
+|---|---|---|
+| `200` + `{"errors":[{"severity":"CRITICAL"}]}` | **Failure** (e.g. GraphQL) | success |
+| `202` + `{"message":"...not finished yet.","status":"fail"}` | **Retry** (async processing still running) | failure |
+| `400` + `{"message":"feedback_required", ...throttle marker}` | **Throttled -- retry later** | malformed request |
+
+The throttling case is the most expensive to misdiagnose: the identical
+payload succeeds on retry, so an engineer can burn real time "fixing" a
+request that was never wrong. Classify outcomes from **status + body
+shape**, not status alone, and have the generator emit distinct
+result/exception types for `retryable-transient`, `retryable-throttled`,
+and `permanent` failure. Add a detection pass over the endpoint catalog
+that flags any endpoint observed returning the same body shape under
+multiple status codes -- that's the signature of this problem.
+
+Two more parsing gotchas that show up as opaque failures if unhandled:
+
+- **Vendor JSON prefixes.** Some AJAX endpoints prefix bodies with a
+  guard string such as `for (;;);` before the JSON payload.
+- **Encoded bodies.** Some probe/status endpoints (e.g. resumable-upload
+  polling) return **base64-encoded** JSON rather than JSON directly.
+
+Maintain a known-prefix / known-encoding table and have the generated
+deserializer strip/decode these before parsing, instead of surfacing a raw
+JSON-parse error.
+
+**Publishing/creation can return before the resource is usable.** Async
+media processing (transcode, indexing) means a create call can return
+success while the resource isn't yet readable -- this races any immediate
+read-back, follow-up edit, or cleanup delete performed right after. The
+generated client should expose an explicit "wait until usable" step (poll
+with backoff), generated functional tests must poll rather than assume
+immediate availability, and cleanup logic must not interpret "not visible
+yet" as "nothing to delete."
 
 ### Phase 6 -- Code Generation
 
@@ -235,6 +342,64 @@ Generated rules:
   user marks them stable.
 - MCP tool descriptions are first-drafted from `(method, path-template,
   response keys, query params)` with `// TODO: refine`.
+- **Emit the full browser header set on every generated request by
+  default**, not just cookies. Modern anti-bot stacks gate authenticated
+  GETs on Sec-Fetch / client-hint headers (`sec-ch-ua*`, `sec-fetch-dest`,
+  `sec-fetch-mode`, `sec-fetch-site`, `sec-fetch-user`,
+  `upgrade-insecure-requests`) as well as the session cookie. A bare `400`
+  with a small, generic body when replaying a captured request is the
+  signature of a missing-header problem, not a stale-credential problem --
+  document this explicitly in the generated troubleshooting notes so it
+  isn't misdiagnosed as a re-auth bug.
+- **Detect and model multi-step resumable upload protocols** rather than
+  assuming a single-request wrapper. Media upload endpoints commonly follow
+  a five-phase shape: (1) start session -> returns an upload/video id plus
+  a byte-offset range, (2) a resume probe (GET) that returns the current
+  offset, (3) byte upload (POST) carrying offset / entity-length /
+  entity-name / entity-type headers with raw bytes as the body, (4) a
+  receive/finish call confirming the offset range is complete, (5) poll
+  for transcode completion, then attach the resulting id to the
+  create/configure call. Detect this shape by offset-bearing headers or a
+  URL containing an `-<start>-<end>` range or an `upload_id`/`video_id`,
+  and generate a resumable uploader -- not a single POST -- when detected.
+  Resume support is not optional for large files.
+- **Never hardcode API version identifiers scraped from a single
+  capture** (e.g. a GraphQL `doc_id`). These rotate over time, and a
+  hardcoded default going stale breaks the wrapper completely. Generated
+  clients must (a) prefer a scraped/refreshed value over a baked-in
+  constant, (b) treat "document/version not found" as a dedicated,
+  self-describing error that names the refresh procedure, and (c) carry an
+  explicit warning that a rotation may change the *payload schema*, not
+  merely the identifier -- a second failure (e.g. a newly required
+  variable) can appear only after the id is refreshed.
+- **Copy the whole captured variables/payload blob verbatim**, parameterizing
+  only fields proven to vary across multiple captures, rather than
+  hand-picking the fields that look meaningful. Real mutations can carry
+  dozens of internal provider flags and tracking/session fields that are
+  silently required; omitting them produces a "missing required variable"
+  error that does not say which variable is missing. Fields shaped like
+  `idempotence_token` / `client_mutation_id` are the one exception: they
+  must be **regenerated per request**, never replayed from the capture.
+- **Do not hardcode upload/API hosts.** Hosts are commonly region-sharded
+  (e.g. multiple distinct upload hosts observed within a single session).
+  The start-session response names the host to use for subsequent steps --
+  read it from there rather than baking in a constant.
+- **Generate realistic media fixtures**, not trivially small synthetic
+  files -- some platforms accept a near-empty sample file while others
+  reject it outright, and a tiny file transcodes instantly, which hides
+  the async-transcode race the client actually needs to handle (see
+  "Interpreting captured responses" above). A representative fixture
+  recipe:
+
+  ```bash
+  ffmpeg -f lavfi -i "testsrc=size=1080x1920:rate=30:duration=6" \
+         -f lavfi -i "sine=frequency=440:duration=6" \
+         -c:v libx264 -pix_fmt yuv420p -c:a aac -b:a 128k \
+         -shortest -movflags +faststart out.mp4
+  ```
+
+  Generated clients must also send probed media metadata (duration,
+  height, width) with the upload rather than guessing it.
 
 **Authenticator contract (issue #97).** The generated
 `<Name>Authenticator.cs` must use `Microsoft.Playwright` directly to run
@@ -275,6 +440,31 @@ Generate:
   Phase 2).
 - `tests/<Name>.PowerShell.Tests/` -- Pester 5, one `Describe` per cmdlet.
 
+#### Verifying with capture-derived probes
+
+Any verification probe built from a capture (a functional test's
+"is this page in the expected state" check, a dogfood smoke test, etc.)
+must have a **positive control** -- proof it's actually looking at the
+right thing -- or it will produce false results in both directions. The
+concrete failure mode observed: a detector fetched a page and reported
+"clean" when a marker string was absent -- and reported "clean" for a
+**400 error page**, because the marker was absent for entirely the wrong
+reason. After the fetch itself was fixed, the same detector then reported
+a false positive for pages that were plainly fine, because the marker also
+occurred in unrelated page chrome.
+
+Require every capture-derived probe to:
+
+- refuse to emit a verdict unless the response is `200`, exceeds a
+  plausible minimum size, **and** matches a positive control proving the
+  intended page/resource actually loaded (not merely that an error page
+  loaded successfully);
+- emit an explicit `Unknown` result -- never a negative verdict -- when
+  the positive control can't be evaluated;
+- scope the search to the entity under test rather than the whole
+  document/response, since page chrome and admin UI routinely repeat the
+  same identifiers as the content under test.
+
 ### Phase 8 -- Security Gates
 
 - `.githooks/pre-commit` invokes gitleaks; activated via
@@ -285,6 +475,26 @@ Generate:
 - `samples/har-original/` is gitignored. The CI workflow includes a
   belt-and-suspenders step that fails if any file under that path is
   present in the commit tree.
+- `sanitize-har.js` (Phase 3) must treat at least the following as
+  secrets, in addition to its pattern-based JWT/hex/UUID/email scrubbing --
+  all of these have been observed in plaintext in real captures and are
+  not caught by generic token-shape patterns alone:
+  - **Cookies:** any session cookie (`c_user`, `xs`, `datr`, `fr`, `sb`,
+    `sessionid`, `ds_user_id`, `csrftoken`, `mid`, `ig_did`, and
+    equivalents for other platforms).
+  - **Body/param fields:** CSRF-adjacent and request-signing fields such
+    as `fb_dtsg`, `lsd`, `jazoest`, and `__spin_r` / `__spin_b` /
+    `__spin_t` / `__hs` / `__hsi` / `__csr` / `__hsdp` / `__req` /
+    `__rev`-shaped fields -- these are short and don't match a hex/UUID
+    pattern, so they need field-name-based scrubbing, not just
+    pattern-based.
+  - **Headers:** platform request-signing headers such as `x-fb-lsd`,
+    `x-asbd-id`, `x-ig-app-id`, and upload-parameter headers that embed an
+    id (`x-instagram-rupload-params` and equivalents).
+  - **Response fields:** upload/session handle tokens returned in
+    response bodies (e.g. a `{"h": "1:<base64>:<mime>:<token>:e:<expiry>:<sig>"}`
+    shaped handle) -- these are credentials even though they never touch a
+    request header.
 
 ### Pipeline entry point: `run-agent.js`
 
