@@ -224,6 +224,15 @@ function main() {
         discardWork();
         fail(message, code);
     };
+    // `process.exit` does not unwind, so a `finally` here would not run on the
+    // failure paths. Instead every deliberate exit goes through
+    // `failAndDiscard`, and this handler catches anything that throws -- a
+    // full disk or a read-only temp directory on a constrained CI runner would
+    // otherwise strand the unscrubbed staging on disk with nothing reported.
+    process.on('uncaughtException', (e) => {
+        failAndDiscard(`unexpected failure while staging: ${e.message}`);
+    });
+
     const stagedIn = path.join(work, 'selected.har');
     const stagedOut = path.join(work, 'scrubbed.har');
     fs.writeFileSync(stagedIn, JSON.stringify(trimmed, null, 2), 'utf8');
