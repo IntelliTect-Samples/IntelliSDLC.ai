@@ -65,7 +65,11 @@
          matters specifically for `wt.exe`.
 
     The session is left to create its own git worktree/branch as part of the
-    dev loop (@dev-loop) -- this script does not pre-create one.
+    dev loop (@dev-loop) -- this script does not pre-create one. It does start
+    the session in the repository's **main worktree root**, not in whichever
+    tree this script file happens to sit in: a copy of this launcher exists in
+    every linked worktree, and a session started there would create its own
+    worktree nested inside that one. See Get-LaunchDirectory.
 
     Runnable from both pwsh and bash: use start-issue-agent.sh from bash,
     which forwards its arguments to `pwsh -File Start-IssueAgent.ps1`
@@ -327,6 +331,79 @@ function Get-ConsoleWidth {
     }
 
     return 80
+}
+
+function Get-GitCommonDir {
+    <#
+    .SYNOPSIS
+        The repository's common git directory (`<main-worktree>/.git`) as an
+        absolute path, or '' when it can't be determined.
+    .DESCRIPTION
+        The one impure step of launch-directory resolution -- kept separate
+        from Get-LaunchDirectory so the policy is testable without a repo.
+
+        `--git-common-dir` is the *shared* git directory: it answers with the
+        main worktree's `.git` from the main worktree and from every linked
+        worktree alike, which `--show-toplevel` (the current tree) does not.
+
+        Anything that goes wrong -- not a repository, git not installed, or a
+        git older than 2.31 which lacks `--path-format` -- yields '' so the
+        caller falls back rather than throwing.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $output = git -C $Path rev-parse --path-format=absolute --git-common-dir 2>$null
+        if ($LASTEXITCODE -ne 0) { return '' }
+    }
+    catch {
+        Write-Verbose "Could not resolve the git common dir for '$Path', falling back: $_"
+        return ''
+    }
+
+    return ($output | Select-Object -First 1)
+}
+
+function Get-LaunchDirectory {
+    <#
+    .SYNOPSIS
+        The directory the claude session should start in: the main worktree
+        root, falling back to $ScriptRoot.
+    .DESCRIPTION
+        Deliberately NOT $PSScriptRoot. Every linked worktree carries its own
+        tracked copy of this script, so dispatching from
+        `.worktrees/<issue-number>-<name>` would start the session inside that
+        worktree, on that worktree's feature branch -- and @dev-loop's own
+        `git worktree add .worktrees/<n>-<name>` resolves relative to its
+        working directory, nesting a worktree inside a worktree. A dev-loop
+        session works inside a worktree by definition, so this is the normal
+        case, not an edge case.
+
+        Given `<root>/.git` (what Get-GitCommonDir returns from any worktree
+        of the repo), the main worktree root is its parent. A common dir whose
+        leaf is not `.git` has no main worktree to point at -- a bare repo, or
+        a `--separate-git-dir` checkout -- so $ScriptRoot stands, as it does
+        when git reported nothing at all.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$GitCommonDir,
+        [Parameter(Mandatory)][string]$ScriptRoot
+    )
+
+    $commonDir = if ($GitCommonDir) { $GitCommonDir.Trim() } else { '' }
+    if (-not $commonDir) { return $ScriptRoot }
+    if ((Split-Path $commonDir -Leaf) -ne '.git') { return $ScriptRoot }
+
+    $root = Split-Path $commonDir -Parent
+    if (-not $root) { return $ScriptRoot }
+
+    # git reports forward slashes even on Windows; normalize for the display
+    # message and for Set-Location/-WorkingDirectory.
+    return [IO.Path]::GetFullPath($root)
 }
 
 function New-IssueAgentPrompt {
@@ -686,7 +763,7 @@ else {
     $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber
 }
 
-$startDir = $PSScriptRoot
+$startDir = Get-LaunchDirectory -GitCommonDir (Get-GitCommonDir -Path $PSScriptRoot) -ScriptRoot $PSScriptRoot
 
 Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
 Start-ClaudeIssueSession -Name $name -Prompt $prompt -PermissionMode $PermissionMode `
