@@ -61,6 +61,14 @@ Describe 'CLAUDE.md carries the independent-review step' {
         $script:ClaudeText | Should -Match 'dev-loop\.agent\.md'
     }
 
+    It 'lists the model override inside the what-must-still-happen checklist' {
+        # The checklist reads as complete ('exactly what those steps exist to
+        # produce'), so anything absent from it is silently skippable. The
+        # override is the one item that stops self-review, so it belongs here
+        # and not only in the paragraph above.
+        $script:ClaudeText | Should -Match '(?i)-\s+it\s+ran\s+under\s+an\s+explicit\s+model\s+override'
+    }
+
     It 'names the trigger for the skip permission instead of a bare pronoun' {
         # A pronoun ('In that case') silently detaches from its antecedent the
         # moment a paragraph is inserted above it, which is exactly what
