@@ -259,7 +259,7 @@ function Write-DogfoodReport {
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
 $scriptsDir = Join-Path $repoRoot 'templates/web-api-discovery/scripts'
-$runAgent   = Join-Path $scriptsDir 'run-agent.js'
+$runAgent   = Join-Path $scriptsDir 'codegen/run-agent.js'
 
 if (-not (Test-Path $runAgent)) {
     throw "run-agent.js not found at $runAgent (run from a clone of IntelliSDLC.ai)"
@@ -302,7 +302,7 @@ $harPath = Join-Path $harDir 'tripit-dogfood.har'
 
 if ($effectiveMode -eq 'live') {
     Write-Host "[dogfood] Invoking capture-cdp.js (live, polite-crawl)..." -ForegroundColor Cyan
-    & node (Join-Path $scriptsDir 'capture-cdp.js') `
+    & node (Join-Path $scriptsDir 'capture/capture-cdp.js') `
         --storage-state $StorageState --out $harPath --max-requests 10
     if ($LASTEXITCODE -ne 0) { throw "capture-cdp.js failed (exit $LASTEXITCODE)" }
 } else {

@@ -2,7 +2,7 @@
 /**
  * Behavior test for issue #90.a: generated README must contain a
  * mobile-app coverage section that points at templates/api-wrapper-
- * scaffold/scripts/codegen/import-mobile-app.js, so a project user knows how to
+ * scaffold/scripts/capture/import-mobile-app.js, so a project user knows how to
  * add mobile traffic to an already-scaffolded wrapper.
  */
 

@@ -935,7 +935,7 @@ function mobileImportReadmeSection() {
         '# 1. Print the platform-specific capture instructions and create the',
         '#    target paths under Samples/HAR-Original/ (proxy mode) or',
         '#    Samples/MobileApp-Discovered/ (decompile mode).',
-        'node <IntelliSDLC.ai>/templates/web-api-discovery/scripts/codegen/import-mobile-app.js `',
+        'node <IntelliSDLC.ai>/templates/web-api-discovery/scripts/capture/import-mobile-app.js `',
         '  --platform=<ios|android|both> `',
         '  --mode=<proxy|decompile|both>',
         '',
