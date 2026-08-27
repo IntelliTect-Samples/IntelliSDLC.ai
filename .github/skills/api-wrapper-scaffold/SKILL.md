@@ -138,38 +138,79 @@ app's Terms of Service permit security research). The skill must surface
 this warning before running `import-mobile-app.js --mode=decompile` and
 must not proceed without explicit user acknowledgement.
 
-### Phase 2 -- Probe with Playwright
+### Phase 2 -- Record the session
 
-- Launch chromium via Playwright (CDP attach so the user can interact).
-- If a `storageState.json` was supplied, load it and skip interactive
-  login.
-- Capture all network traffic to a HAR file (`samples/har-original/<timestamp>.har`).
-- Use the `templates/api-wrapper-scaffold/scripts/capture-cdp.js`
-  template as the baseline.
+The operator's entire surface is a URL:
+
+```powershell
+Start-HarRecording https://example.com    # browse, then press ENTER
+```
+
+`templates/api-wrapper-scaffold/scripts/capture-har.js` owns the browser
+context; `Start-HarRecording.ps1` / `Stop-HarRecording.ps1` are its PowerShell
+front doors. It opens system Chrome on a **dedicated capture profile** that
+stays signed in between sessions -- never the operator's daily profile, which
+holds live sessions this must not disturb -- and records every request. Pass
+`-Isolated` for bundled Chromium with a throwaway profile (CI), optionally with
+`-StorageState`.
+
+**A human ends the recording with ENTER. An AI ends it with
+`Stop-HarRecording`.** Both perform the same close, and that close is what
+writes the HAR. Ctrl+C is trapped and does the same thing rather than killing
+the capture.
+
+**Never end a recording by closing the browser window.** Playwright serializes
+`recordHar` during a close the driver performs; when the window goes first,
+Chrome exits before that can happen and **no HAR is written at all**. This is
+measured, not theoretical. A snapshot of finished requests is therefore flushed
+every few seconds to `raw.snapshot.ndjson`, and a lost driver is recovered into
+`raw.snapshot.har` -- a genuine recovery artifact, with best-effort response
+bodies and no timings. Prefer a clean re-capture whenever one is affordable.
+
+**Driving the browser as an AI.** `Start-HarRecording` prints a CDP endpoint.
+`chromium.connectOverCDP(endpoint).contexts()[0]` **is** the recording context,
+so anything the agent does there lands in the same HAR -- there is no second
+context and no second capture. Detaching (`browser.close()` on the CDP side)
+does *not* end the recording; only ENTER, `Stop-HarRecording`, or the window
+does.
+
+A persistent profile is single-instance, so a second recording against the same
+profile cannot start while one is live. The script detects this and says so
+rather than hanging; end the running capture, or use `--port <other> --isolated`.
+
+- Capture is **unfiltered**: no HAR glob, ever, on a first pass.
+- If a `storageState.json` was supplied, load it and skip interactive login.
 - Polite crawl: respect robots.txt, throttle to ~1 req/sec on automated
   traversal, descriptive User-Agent.
+- The raw capture is gitignored and never committed. Phase 3.5 turns it into a
+  committable reference.
 
 #### Capturing traffic reliably
 
 Lessons from hand-driven capture sessions against production sites -- each
 of these has cost real diagnosis time when skipped.
 
-- **`--save-har` only flushes on browser close, not on process kill.**
-  Stopping the Playwright driver process orphans the browser and **discards
-  everything recorded so far**. Every capture instruction to the human must
-  end with, in bold: "**close the browser window** -- that is what writes
-  the file." Before moving on to Phase 3, verify the HAR file exists and is
-  non-trivial in size; do not attempt to analyze a HAR that was never
-  flushed.
+- **The HAR is written by the driver's close, and by nothing else.** Playwright
+  buffers the whole session and serializes it during a client-initiated
+  `context.close()`. Two endings therefore produce nothing at all: killing the
+  driver process, and **closing the browser window** -- Chrome exits first and
+  the close never runs. Instruct the human to press **ENTER** in the recording
+  terminal; `Stop-HarRecording` is the equivalent for an agent. (Earlier
+  guidance here said to close the window: that is correct for the
+  `playwright open --save-har` CLI, whose own process closes the context on
+  exit, and wrong for a driver that owns the context. It cost a capture to
+  learn.) Before moving on to Phase 3, verify the HAR exists and is non-trivial
+  in size; never analyze a HAR that was never flushed.
 - **Never terminate the browser to end a capture.** Killing Chrome processes
   can also destroy unrelated signed-in work elsewhere on the developer's
-  machine. Always end a capture by asking the human to close the window.
-  If more than one capture window may exist (a prior run wasn't cleaned up,
-  or the human opened a second tab), **disambiguate before the human
-  acts** -- list Chrome processes by `--user-data-dir` and creation time and
-  tell the user exactly which window to use (e.g. "the one that opened 4
-  minutes ago"). A human posting into the wrong window produces no capture,
-  and the loss is silent until they've already done the work.
+  machine, and it discards the recording besides. Always end a capture by
+  asking the human to press ENTER in the recording terminal. If more than one
+  capture may be live (a prior run wasn't ended, or a second terminal is open),
+  **disambiguate before the human acts** -- `node capture-har.js status` names
+  what is recording and where, and the launch itself refuses to start a second
+  capture against a profile that is already in use. A human acting on the wrong
+  window produces no capture, and the loss is silent until they've already done
+  the work.
 - **The first capture is always unfiltered.** Do not scope `--save-har-glob`
   to a guessed path on the first pass, even when the target mutation looks
   like it obviously belongs to one API family (e.g. GraphQL). Media upload
@@ -827,12 +868,15 @@ PowerShell convenience wrapper:
 - Subsequent runs: if a fresh stored session exists, the wrapper uses it
   silently; otherwise it re-launches the Playwright browser for
   re-authentication.
-- `scripts/capture-cdp.js` (the Node-based Playwright helper) is now
-  used **only** for the Phase 2 HAR-discovery flow during initial
-  scaffold generation. It is **not** used for runtime authentication --
-  the wrapper consumer never needs Node.js installed.
-- `--storage-state <path>` is still supported on the HAR-capture helper
-  so non-interactive runs (CI, dogfood) skip the browser during Phase 2.
+- `scripts/capture-har.js` (the Node-based Playwright recorder behind
+  `Start-HarRecording`) is used **only** for the Phase 2 recording flow
+  during initial scaffold generation. It is **not** used for runtime
+  authentication -- the wrapper consumer never needs Node.js installed.
+  `scripts/capture-cdp.js` is its predecessor: a single launch-and-wait
+  helper with no stop, no snapshot, and no CDP attach. Prefer
+  `capture-har.js` for anything new.
+- `--storage-state <path>` is still supported on the recorder so
+  non-interactive runs (CI, dogfood) skip interactive login during Phase 2.
 
 ### Phase 10 -- Generated README
 

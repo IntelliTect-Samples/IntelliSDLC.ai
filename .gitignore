@@ -13,6 +13,20 @@ Thumbs.db
 # Git worktrees managed by Cleanup-Worktree.ps1.
 .worktrees/
 
+# Raw HAR captures (see Start-HarRecording). A raw capture runs to hundreds of
+# megabytes and carries live session cookies -- only trimmed, scrubbed extracts
+# under docs/har-reference/ are ever committed.
+.har-captures/
+*.raw.har
+*.snapshot.har
+*.snapshot.ndjson
+
+# The operator's HAR profile: real account identifiers and the scrub salt.
+.har-profile.json
+
+# Playwright storage state -- a serialized signed-in session.
+*.storage-state.json
+
 testResults.xml
 
 # >>> upstream-only >>>

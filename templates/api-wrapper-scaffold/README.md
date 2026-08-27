@@ -13,7 +13,11 @@ user's chosen output directory.
 templates/api-wrapper-scaffold/
 ├── README.md            # this file
 ├── scripts/             # Node + PowerShell capture / scrub helpers
-│   ├── capture-cdp.js               # Playwright CDP attach + HAR capture
+│   ├── capture-har.js               # session recorder: start/stop, CDP attach,
+│   │                                #   5s crash snapshot (Start-HarRecording)
+│   ├── Start-HarRecording.ps1       # front door: record a session to a raw HAR
+│   ├── Stop-HarRecording.ps1        # end a recording (automation / AI path)
+│   ├── capture-cdp.js               # predecessor; superseded by capture-har.js
 │   ├── sanitize-har.js              # token/PII redaction with deterministic faker
 │   ├── verify-scrub.js              # double-check pass; fails CI on leak
 │   └── Invoke-SanitizeHar.ps1       # PowerShell wrapper for sanitize-har.js

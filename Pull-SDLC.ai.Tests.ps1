@@ -193,6 +193,43 @@ Describe 'Test-LsRemoteOutputHasExactBranch' {
     }
 }
 
+Describe 'templates/ sync (issue #270)' {
+    # SKILL.md tells a consuming project to run tools by path under
+    # templates/<skill>/scripts/. Before #270 that tree was on no sync list, so
+    # a consumer received instructions naming files it had never been given.
+
+    It 'ships templates/ to consumers' {
+        $script:UpstreamManagedPaths | Should -Contain 'templates/'
+    }
+
+    It 'withholds the toolkit own node tests' {
+        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/har-literals.test.js' |
+            Should -BeTrue
+    }
+
+    It 'ships the scripts those tests cover' {
+        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/capture-har.js' |
+            Should -BeFalse
+        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/Start-HarRecording.ps1' |
+            Should -BeFalse
+    }
+
+    It 'ships a tests/ directory under templates/ -- those are emitted templates, not our tests' {
+        # The generator writes these into the consumer's own solution; treating
+        # them like the toolkit's internal tests would emit a project that
+        # cannot build its test assembly.
+        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/csharp/tests/ClientTests.cs.tmpl' |
+            Should -BeFalse
+        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/csharp/tests/Tests.csproj.tmpl' |
+            Should -BeFalse
+    }
+
+    It 'still withholds tests under the skills tree' {
+        Test-IsUpstreamPrivatePath -Path '.github/skills/evidence-capture/tests/Publish-Evidence.Tests.ps1' |
+            Should -BeTrue
+    }
+}
+
 Describe 'Test-IsAlwaysLocalPath' {
     It 'returns $true for README.md' {
         Test-IsAlwaysLocalPath -Path 'README.md' | Should -BeTrue
