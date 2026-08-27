@@ -112,11 +112,6 @@ const LAUNCH_TIMEOUT_MS = 45000;
 const CDP_PROBE_MS = 1500;
 
 /**
- * Ask a debugging port whether a browser is already there. Used to turn the
- * profile-already-in-use case into an immediate, actionable message instead
- * of a three-minute hang.
- */
-/**
  * Is the driver that owns this session still running?
  *
  * Signal 0 sends nothing: it is the POSIX and Node idiom for "does this pid
@@ -141,6 +136,15 @@ function isDriverAlive(session) {
     }
 }
 
+/**
+ * Ask a debugging port whether a browser is already there. Used to turn the
+ * profile-already-in-use case into an immediate, actionable message instead
+ * of a three-minute hang.
+ *
+ * Deliberately NOT a liveness check for a session: a port answers for any
+ * browser that holds it, including one orphaned by a crashed driver. Use
+ * isDriverAlive() for "is this recording still running".
+ */
 async function probeCdp(port) {
     try {
         const controller = new AbortController();
