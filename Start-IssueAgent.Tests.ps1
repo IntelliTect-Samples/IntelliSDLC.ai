@@ -120,6 +120,12 @@ Describe 'New-PlanAgentName' {
         New-PlanAgentName -Description "  `t " | Should -Be 'new issue'
     }
 
+    It 'collapses a multi-line description onto one line -- a tab title is one line' {
+        $desc = "Review this log:`nwarning: CRLF will be replaced by LF`n`nPlease investigate"
+        New-PlanAgentName -Description $desc |
+            Should -Be 'new: Review this log: warning: CRLF will be replaced by LF Please investigate'
+    }
+
     It 'truncates a long description with a trailing "..." at -MaxLength' {
         $result = New-PlanAgentName -Description 'users need a way to export reports as CSV' -MaxLength 20
         $result.Length | Should -Be 20
@@ -158,6 +164,49 @@ Describe 'New-PlanAgentPrompt' {
 
     It 'passes a description containing a single quote through verbatim' {
         New-PlanAgentPrompt -Description "it's broken" | Should -Be "@plan it's broken"
+    }
+}
+
+Describe 'Read-DescriptionFromStdin' {
+    It 'returns the text read from stdin' {
+        Read-DescriptionFromStdin -Reader { 'users need CSV export' } -IsInputRedirected $true |
+            Should -Be 'users need CSV export'
+    }
+
+    It 'preserves interior newlines and blank lines of a pasted transcript' {
+        $heredoc = "Review this log:`n`nwarning: CRLF will be replaced by LF`nPlease investigate"
+        Read-DescriptionFromStdin -Reader { $heredoc }.GetNewClosure() -IsInputRedirected $true |
+            Should -Be $heredoc
+    }
+
+    It 'normalizes CRLF to LF' {
+        Read-DescriptionFromStdin -Reader { "line one`r`nline two" } -IsInputRedirected $true |
+            Should -Be "line one`nline two"
+    }
+
+    It 'trims the trailing newline a heredoc always adds' {
+        Read-DescriptionFromStdin -Reader { "the description`n`n" } -IsInputRedirected $true |
+            Should -Be 'the description'
+    }
+
+    It 'preserves embedded single quotes verbatim' {
+        Read-DescriptionFromStdin -Reader { "it's broken" } -IsInputRedirected $true |
+            Should -Be "it's broken"
+    }
+
+    It 'throws when stdin is not redirected, rather than blocking on the console' {
+        { Read-DescriptionFromStdin -Reader { 'unused' } -IsInputRedirected $false } |
+            Should -Throw '*stdin is not redirected*'
+    }
+
+    It 'throws on empty stdin rather than launching a seedless session' {
+        { Read-DescriptionFromStdin -Reader { '' } -IsInputRedirected $true } |
+            Should -Throw '*empty description*'
+    }
+
+    It 'throws on whitespace-only stdin' {
+        { Read-DescriptionFromStdin -Reader { "  `n`t " } -IsInputRedirected $true } |
+            Should -Throw '*empty description*'
     }
 }
 
@@ -213,6 +262,22 @@ Describe 'Get-ClaudeLaunchMode' {
 
     It 'opens a new tab when inside a Claude Code session, even inside Windows Terminal and without -NewTab' {
         Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $true | Should -Be 'NewTab'
+    }
+
+    It 'opens a new tab when stdin was consumed, even inside Windows Terminal without -NewTab' {
+        # An inline claude in the current pane would inherit the drained stdin.
+        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $false `
+            -StdinConsumed $true | Should -Be 'NewTab'
+    }
+
+    It 'falls back to a new window when stdin was consumed but wt.exe is unavailable' {
+        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $false -InClaudeCodeSession $false `
+            -StdinConsumed $true | Should -Be 'NewWindow'
+    }
+
+    It 'still reuses the current pane when stdin was NOT consumed (the default)' {
+        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $false `
+            -StdinConsumed $false | Should -Be 'CurrentPane'
     }
 
     It 'opens a new tab when not in Windows Terminal but wt.exe is available' {
@@ -299,6 +364,36 @@ Describe 'Start-ClaudeIssueSession' {
                 "Set-Location 'C:\repo'; & claude '--name' 'new: users need CSV export' '--remote-control' " +
                 "'--permission-mode' 'plan' '--' '@plan users need CSV export'"
             )
+        }
+    }
+
+    It 'opens a new tab when -StdinConsumed is passed, even in Windows Terminal without -NewTab' {
+        $env:WT_SESSION = 'some-guid'
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
+        Mock -CommandName Start-Process -MockWith { }
+        Mock -CommandName claude -MockWith { }
+
+        Start-ClaudeIssueSession -Name 'new: Review this log' -Prompt "@plan Review this log:`nwarning: CRLF" `
+            -PermissionMode 'plan' -WorkingDirectory 'C:\repo' -StdinConsumed
+
+        Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'wt.exe' }
+        Should -Invoke claude -Times 0
+    }
+
+    It 'round-trips a multi-line prompt through the -EncodedCommand blob intact' {
+        $env:WT_SESSION = $null
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
+        Mock -CommandName Start-Process -MockWith { }
+
+        $multiline = "@plan Review this log:`nwarning: it's CRLF again`n`nPlease investigate"
+        Start-ClaudeIssueSession -Name 'new: Review this log' -Prompt $multiline `
+            -PermissionMode 'plan' -WorkingDirectory 'C:\repo' -StdinConsumed
+
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[7]))
+            # Newlines survive inside the single-quoted PS literal; the lone
+            # quote in "it's" is doubled by ConvertTo-PowerShellLiteral.
+            $decoded.Contains("'@plan Review this log:`nwarning: it''s CRLF again`n`nPlease investigate'")
         }
     }
 
