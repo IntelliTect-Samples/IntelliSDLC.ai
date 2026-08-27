@@ -2448,6 +2448,98 @@ Describe 'Invoke-SelfRefreshGate restores on protected main (issue #247)' {
     }
 }
 
+Describe 'Self-refresh leaves the protected branch clean (issue #247 end-to-end)' {
+    # The sibling #247 Describes mock Invoke-SelfReExec and assert only the
+    # captured -RestoreOriginal switch. These exercise the whole chain against a
+    # real on-disk file -- real overwrite, real backup, real Complete-SelfReExec --
+    # and assert the outcome a consumer actually observes: `git status` on the
+    # protected branch after a sync run. Only the network fetch and the child
+    # process are stood in for (the real Invoke-SelfReExec calls `exit`).
+    BeforeEach {
+        $script:e2eRoot = Join-Path $TestDrive ("selfrefresh-e2e-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:e2eRoot -Force | Out-Null
+        $script:e2eScript = Join-Path $script:e2eRoot 'Pull-SDLC.ai.ps1'
+        $script:e2eOriginal = '# ORIGINAL-ON-DISK-CONTENT'
+        $script:e2eUpstream = '# NEW-UPSTREAM-CONTENT'
+        $script:e2eBackup = $null
+        Push-Location $script:e2eRoot
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            $script:e2eOriginal | Out-File -Encoding utf8 -LiteralPath $script:e2eScript -NoNewline
+            git add -A | Out-Null
+            # A prior sync commit marks the repo as past bootstrap (steady state),
+            # so the effective -CommitOnMain is $false and the run is headed to
+            # the auto-worktree path.
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+        } finally { Pop-Location }
+
+        # Stand in for the network fetch, but perform exactly the on-disk work the
+        # real Invoke-SelfRefresh performs: back up the original, overwrite in
+        # place, return the backup path.
+        Mock -CommandName Test-SelfRefreshRequired -MockWith { return $true }
+        Mock -CommandName Invoke-SelfRefresh -MockWith {
+            param([string]$ScriptPath)
+            $backup = Join-Path $TestDrive ("pull-sdlc-self-backup-" + [guid]::NewGuid().ToString('N') + '.ps1')
+            Copy-Item -LiteralPath $ScriptPath -Destination $backup -Force
+            $script:e2eUpstream | Out-File -Encoding utf8 -LiteralPath $ScriptPath -NoNewline
+            $script:e2eBackup = $backup
+            return $backup
+        }
+        # Skip the child process (the real Invoke-SelfReExec calls `exit`, which
+        # Pester cannot survive) but run the REAL Complete-SelfReExec so the
+        # restore/cleanup path is genuinely exercised.
+        Mock -CommandName Invoke-SelfReExec -MockWith {
+            param([string]$ScriptPath, [hashtable]$BoundParameters, [string]$BackupPath, [switch]$RestoreOriginal)
+            Complete-SelfReExec -ScriptPath $ScriptPath -BackupPath $BackupPath -RestoreOriginal:$RestoreOriginal
+        }
+    }
+
+    It 'leaves no unstaged change to Pull-SDLC.ai.ps1 on the protected branch' {
+        $null = Invoke-SelfRefreshGate -ScriptPath $script:e2eScript -BoundParameters @{ Branch = 'main' }
+
+        Push-Location $script:e2eRoot
+        try { $status = @(git status --porcelain) } finally { Pop-Location }
+        # This is the symptom from issue #247: a `modified: Pull-SDLC.ai.ps1`
+        # entry left behind on main after a sync run.
+        $status | Should -BeNullOrEmpty
+        (Get-Content -Raw -LiteralPath $script:e2eScript) | Should -Be $script:e2eOriginal
+    }
+
+    It 'removes the backup temp file after restoring' {
+        $null = Invoke-SelfRefreshGate -ScriptPath $script:e2eScript -BoundParameters @{ Branch = 'main' }
+
+        $script:e2eBackup | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $script:e2eBackup | Should -BeFalse
+    }
+
+    It 'persists the overwrite when -CommitOnMain keeps the run on the protected branch' {
+        $null = Invoke-SelfRefreshGate -ScriptPath $script:e2eScript -BoundParameters @{ Branch = 'main'; CommitOnMain = $true }
+
+        # No sync PR will deliver the new content here, so the newest script must
+        # stay on disk -- the mirror image of the case above.
+        (Get-Content -Raw -LiteralPath $script:e2eScript) | Should -Be $script:e2eUpstream
+        Push-Location $script:e2eRoot
+        try { $status = @(git status --porcelain) } finally { Pop-Location }
+        $status | Should -Not -BeNullOrEmpty
+    }
+
+    It 'persists the overwrite on a feature branch' {
+        Push-Location $script:e2eRoot
+        try { git checkout -q -b feat/other } finally { Pop-Location }
+        $null = Invoke-SelfRefreshGate -ScriptPath $script:e2eScript -BoundParameters @{ Branch = 'main' }
+
+        (Get-Content -Raw -LiteralPath $script:e2eScript) | Should -Be $script:e2eUpstream
+    }
+
+    It 'restores the original under a -WhatIf dry run' {
+        $null = Invoke-SelfRefreshGate -ScriptPath $script:e2eScript -BoundParameters @{ Branch = 'main'; CommitOnMain = $true; WhatIf = $true }
+
+        (Get-Content -Raw -LiteralPath $script:e2eScript) | Should -Be $script:e2eOriginal
+    }
+}
+
 Describe 'Script top-level self-refresh (issue #110 end-to-end)' {
     It 'exposes RemoteUrl as a script param (org-portability) and excludes function-only params' {
         # Issue #110 originally asserted RemoteUrl was NOT a script param so
