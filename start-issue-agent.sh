@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Forwards to Start-IssueAgent.ps1 so the same logic runs from bash or pwsh.
 # Usage: ./start-issue-agent.sh <issue-number> [-Repo owner/repo] [-PermissionMode auto|...] [-NewTab]
+#        ./start-issue-agent.sh -New "<description of the new issue>" [-Repo owner/repo] [-PermissionMode ...] [-NewTab]
+#          (-New plans a brand-new issue via @plan instead of dispatching an existing one.)
 #
 # No forced -NewTab here: Start-IssueAgent.ps1 already detects $env:CLAUDECODE
 # (set for both Claude Code's Bash tool and its interactive `!` command) and
