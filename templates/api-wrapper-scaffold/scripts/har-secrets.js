@@ -65,6 +65,19 @@ const NAME_ATTR_RE = /\bname="((?:[^"\\]|\\.)*)"/i;
 // line one meant one odd leading byte blinded the control for the entire
 // body, in the scrubber and the detector alike. Failing closed on a whole
 // request body is a worse shape of bug than mis-parsing one field.
+// KNOWN LIMITATIONS -- accepted, not oversights. This is a split heuristic,
+// not a MIME parser, and closing these properly means writing one:
+//
+//  1. The delimiter is the first `--` line found. A preamble or an earlier
+//     field whose value contains a line consisting only of `--...` would be
+//     picked instead, mis-scoping the split for that body.
+//  2. A boundary token that also occurs inside a field value over-segments
+//     the split.
+//
+// Both need an uncommon body shape and fail toward a missed redaction in one
+// body, which the literal-value and shape controls still cover. If either
+// starts showing up in real captures, replace this with a real parser rather
+// than adding another heuristic on top.
 const DELIMITER_LINE_RE = /^(--[^\r\n]+?)[ \t]*$/m;
 
 function detectBoundary(text) {
@@ -78,7 +91,11 @@ function detectBoundary(text) {
     // which is the case when we happened to find the CLOSING delimiter first.
     if (delimiter.endsWith('--')) {
         const withoutClosing = delimiter.slice(0, -2);
-        if (withoutClosing.length > 2 && text.includes(withoutClosing + '\n')) {
+        // CRLF first: RFC 2046 mandates it around delimiters, so a check for
+        // the bare-LF spelling alone would never fire on a real capture and
+        // this branch would silently never run.
+        if (withoutClosing.length > 2
+            && (text.includes(withoutClosing + '\r\n') || text.includes(withoutClosing + '\n'))) {
             return withoutClosing;
         }
     }
