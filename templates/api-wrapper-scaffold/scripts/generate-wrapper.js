@@ -61,9 +61,14 @@ function fail(msg) { console.error('generate-wrapper: ' + msg); process.exit(1);
 // - Samples/HAR-Original/    real captures, always contain real PII/tokens.
 // - Samples/MobileApp-Binaries/  downloaded apk/ipa binaries; documented as
 //                            "always gitignored" in SKILL.md Phase 1.
+// - .har-profile.json        the operator's own salt and identifier ->
+//                            sentinel map; an operator secret, never project
+//                            configuration, and the reason the scrub tooling
+//                            refuses to run without it.
 const SCAFFOLD_GITIGNORE_ENTRIES = [
     'Samples/HAR-Original/',
     'Samples/MobileApp-Binaries/',
+    '.har-profile.json',
 ];
 
 function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {

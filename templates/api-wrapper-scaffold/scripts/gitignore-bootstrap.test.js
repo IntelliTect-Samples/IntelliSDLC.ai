@@ -1,7 +1,9 @@
 // Behavior test for ensureRepoRootGitignoreHasScaffoldEntries (issue #119).
 // Zero-dep, runs under plain Node. Asserts:
 //   1. On a fresh outDir with no .gitignore, the function creates one and
-//      adds both Samples/HAR-Original/ and Samples/MobileApp-Binaries/.
+//      adds every scaffold entry -- the raw-capture and binary directories,
+//      and the operator's .har-profile.json (issue #255), which carries the
+//      salt and identifier -> sentinel map and must never be committed.
 //   2. Idempotent: a second call adds nothing.
 //   3. Pre-existing .gitignore with unrelated content is preserved; only
 //      missing scaffold entries are appended.
@@ -34,7 +36,10 @@ function assert(cond, msg) {
 {
     const dir = mkTmp();
     const added = ensureRepoRootGitignoreHasScaffoldEntries(dir);
-    assert(added.length === 2, '[fresh] both entries should be added, got ' + added.length);
+    assert(added.length === SCAFFOLD_GITIGNORE_ENTRIES.length,
+        '[fresh] every entry should be added, got ' + added.length);
+    assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.har-profile.json'),
+        '[fresh] the operator profile must be gitignored -- it holds real identifiers');
     const body = readGi(dir);
     for (const e of SCAFFOLD_GITIGNORE_ENTRIES) {
         assert(body.includes(e), '[fresh] .gitignore missing ' + e);
@@ -57,7 +62,8 @@ function assert(cond, msg) {
     const dir = mkTmp();
     fs.writeFileSync(path.join(dir, '.gitignore'), 'bin/\nobj/\n', 'utf8');
     const added = ensureRepoRootGitignoreHasScaffoldEntries(dir);
-    assert(added.length === 2, '[preserve] should add both, got ' + added.length);
+    assert(added.length === SCAFFOLD_GITIGNORE_ENTRIES.length,
+        '[preserve] should add every entry, got ' + added.length);
     const body = readGi(dir);
     assert(body.startsWith('bin/\nobj/\n'), '[preserve] original content must be preserved at start');
     for (const e of SCAFFOLD_GITIGNORE_ENTRIES) {
@@ -70,8 +76,10 @@ function assert(cond, msg) {
     const dir = mkTmp();
     fs.writeFileSync(path.join(dir, '.gitignore'), 'bin/\nSamples/HAR-Original/\n', 'utf8');
     const added = ensureRepoRootGitignoreHasScaffoldEntries(dir);
-    assert(added.length === 1, '[partial] should add exactly one, got ' + added.length);
-    assert(added[0] === 'Samples/MobileApp-Binaries/', '[partial] should add MobileApp-Binaries/, got ' + added[0]);
+    assert(added.length === SCAFFOLD_GITIGNORE_ENTRIES.length - 1,
+        '[partial] should add all but the one already listed, got ' + added.length);
+    assert(!added.includes('Samples/HAR-Original/'),
+        '[partial] should not re-add the entry already present');
     const body = readGi(dir);
     // exactly one occurrence of HAR-Original
     const harCount = (body.match(/Samples\/HAR-Original\//g) || []).length;

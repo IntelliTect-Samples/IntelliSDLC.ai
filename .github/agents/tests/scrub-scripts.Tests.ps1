@@ -75,6 +75,12 @@ Describe 'sanitize-har.js' {
     BeforeEach {
         $script:Tmp     = Join-Path ([IO.Path]::GetTempPath()) ("har-test-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
         $script:InHar   = Join-Path $script:Tmp 'in.har'
         $script:OutHar  = Join-Path $script:Tmp 'out.har'
         $script:SubsMap = Join-Path $script:Tmp 'subs.json'
@@ -92,28 +98,28 @@ Describe 'sanitize-har.js' {
     }
 
     It 'removes a JWT from the scrubbed HAR' {
-        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --salt 'test-salt'
+        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --profile $script:Profile
         $LASTEXITCODE | Should -Be 0
         $scrubbed = Get-Content -LiteralPath $script:OutHar -Raw
         $scrubbed | Should -Not -Match 'eyJhbGciOiJIUzI1NiJ9'
     }
 
     It 'removes a 64-char hex session token from the scrubbed HAR' {
-        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --salt 'test-salt'
+        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --profile $script:Profile
         $LASTEXITCODE | Should -Be 0
         $scrubbed = Get-Content -LiteralPath $script:OutHar -Raw
         $scrubbed | Should -Not -Match ('a' * 64)
     }
 
     It 'removes email addresses from the scrubbed HAR' {
-        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --salt 'test-salt'
+        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --profile $script:Profile
         $LASTEXITCODE | Should -Be 0
         $scrubbed = Get-Content -LiteralPath $script:OutHar -Raw
         $scrubbed | Should -Not -Match 'jane\.doe@example\.com'
     }
 
     It 'persists a substitution map' {
-        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --salt 'test-salt'
+        & node $script:SanitizeJs --in $script:InHar --out $script:OutHar --subs $script:SubsMap --profile $script:Profile
         Test-Path -LiteralPath $script:SubsMap | Should -BeTrue
         $map = Get-Content -LiteralPath $script:SubsMap -Raw | ConvertFrom-Json
         $map.PSObject.Properties.Count | Should -BeGreaterThan 0
@@ -122,8 +128,8 @@ Describe 'sanitize-har.js' {
     It 'is deterministic: same input + same salt produce same output' {
         $out1 = Join-Path $script:Tmp 'out1.har'
         $out2 = Join-Path $script:Tmp 'out2.har'
-        & node $script:SanitizeJs --in $script:InHar --out $out1 --subs (Join-Path $script:Tmp 's1.json') --salt 'fixed'
-        & node $script:SanitizeJs --in $script:InHar --out $out2 --subs (Join-Path $script:Tmp 's2.json') --salt 'fixed'
+        & node $script:SanitizeJs --in $script:InHar --out $out1 --subs (Join-Path $script:Tmp 's1.json') --profile $script:Profile
+        & node $script:SanitizeJs --in $script:InHar --out $out2 --subs (Join-Path $script:Tmp 's2.json') --profile $script:Profile
         (Get-FileHash $out1).Hash | Should -Be (Get-FileHash $out2).Hash
     }
 }
@@ -133,13 +139,19 @@ Describe 'verify-scrub.js' {
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("verify-test-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
         $script:CleanHar = Join-Path $script:Tmp 'clean.har'
         New-FixtureHar -Path (Join-Path $script:Tmp 'src.har')
         & node $script:SanitizeJs `
             --in   (Join-Path $script:Tmp 'src.har') `
             --out  $script:CleanHar `
             --subs (Join-Path $script:Tmp 'subs.json') `
-            --salt 'test'
+            --profile $script:Profile
     }
 
     AfterEach {
@@ -181,6 +193,12 @@ Describe 'Invoke-SanitizeHar.ps1' {
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("wrap-test-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
         $script:InHar = Join-Path $script:Tmp 'in.har'
         $script:OutHar = Join-Path $script:Tmp 'out.har'
         New-FixtureHar -Path $script:InHar
@@ -197,7 +215,7 @@ Describe 'Invoke-SanitizeHar.ps1' {
     }
 
     It 'runs sanitize then verify and produces a scrubbed HAR' {
-        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar -Salt 'test'
+        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar -ProfilePath $script:Profile
         $LASTEXITCODE | Should -Be 0
         Test-Path -LiteralPath $script:OutHar | Should -BeTrue
         (Get-Content -LiteralPath $script:OutHar -Raw) | Should -Not -Match 'eyJhbGciOiJIUzI1NiJ9'
@@ -208,7 +226,7 @@ Describe 'Invoke-SanitizeHar.ps1' {
         $jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsZWFrZWQifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
         $payload = '{"log":{"entries":[{"response":{"content":{"text":"' + $jwt + '"}}}]}}'
         Set-Content -LiteralPath $leaked -Value $payload -Encoding utf8
-        & $script:WrapperPs1 -InputHar $leaked -OutputHar (Join-Path $script:Tmp 'ignored.har') -Salt 'test' -VerifyOnly 2>&1 | Out-Null
+        & $script:WrapperPs1 -InputHar $leaked -OutputHar (Join-Path $script:Tmp 'ignored.har') -ProfilePath $script:Profile -VerifyOnly 2>&1 | Out-Null
         $LASTEXITCODE | Should -Not -Be 0
     }
 }

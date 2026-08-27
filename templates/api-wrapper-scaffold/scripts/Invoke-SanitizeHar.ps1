@@ -17,8 +17,12 @@
 .PARAMETER OutputHar
     Path to write the scrubbed HAR to. Ignored when -VerifyOnly is set.
 
-.PARAMETER Salt
-    HMAC salt for the deterministic faker substitution table. Required.
+.PARAMETER ProfilePath
+    Path to the operator's .har-profile.json, which carries the HMAC salt for
+    the deterministic faker table and the literal -> sentinel map for the
+    literal-value scrub pass. Defaults to the nearest .har-profile.json at or
+    above the working directory. The file is gitignored and never defaulted:
+    the literals are the operator's own identifiers.
 
 .PARAMETER SubstitutionsFile
     Path to write the substitution map to. Defaults to alongside OutputHar.
@@ -27,7 +31,7 @@
     Skip sanitize; only run verify-scrub against InputHar.
 
 .EXAMPLE
-    .\Invoke-SanitizeHar.ps1 -InputHar capture.har -OutputHar clean.har -Salt 'project-salt'
+    .\Invoke-SanitizeHar.ps1 -InputHar capture.har -OutputHar clean.har
 #>
 
 [CmdletBinding()]
@@ -37,8 +41,7 @@ param(
 
     [string]$OutputHar,
 
-    [Parameter(Mandatory)]
-    [string]$Salt,
+    [string]$ProfilePath,
 
     [string]$SubstitutionsFile,
 
@@ -66,6 +69,8 @@ if (-not (Test-Path -LiteralPath $verifyJs)) {
     exit 1
 }
 
+$profileArgs = if ($ProfilePath) { @('--profile', $ProfilePath) } else { @() }
+
 if (-not $VerifyOnly) {
     if (-not $OutputHar) {
         Write-Error "OutputHar is required when not using -VerifyOnly."
@@ -74,7 +79,7 @@ if (-not $VerifyOnly) {
     if (-not $SubstitutionsFile) {
         $SubstitutionsFile = [System.IO.Path]::ChangeExtension($OutputHar, '.subs.json')
     }
-    & node $sanitizeJs --in $InputHar --out $OutputHar --subs $SubstitutionsFile --salt $Salt
+    & node $sanitizeJs --in $InputHar --out $OutputHar --subs $SubstitutionsFile @profileArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Error "sanitize-har.js failed with exit code $LASTEXITCODE."
         exit $LASTEXITCODE
@@ -85,5 +90,5 @@ else {
     $target = $InputHar
 }
 
-& node $verifyJs --in $target
+& node $verifyJs --in $target @profileArgs
 exit $LASTEXITCODE

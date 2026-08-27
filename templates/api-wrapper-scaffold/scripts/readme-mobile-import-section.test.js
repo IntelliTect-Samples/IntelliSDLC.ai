@@ -22,10 +22,17 @@ const FIXTURE_HAR = path.join(REPO_ROOT, '.github', 'agents', 'tests', 'fixtures
 function scaffold() {
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'readme-mobile-test-'));
     fs.rmSync(out, { recursive: true, force: true });
+    // The pipeline reads its salt and literal -> sentinel map from the
+    // operator's gitignored `.har-profile.json` (issue #255) and refuses to
+    // run without one, so a test project has to declare its own.
+    fs.mkdirSync(out, { recursive: true });
+    const profile = path.join(out, '.har-profile.json');
+    fs.writeFileSync(profile, JSON.stringify({ salt: 'readme-mobile-test', literals: {} }, null, 2));
     execFileSync('node', [
         RUN_AGENT,
         '--har', FIXTURE_HAR,
         '--out', out,
+        '--profile', profile,
         '--project', 'SampleEx',
         '--namespace', 'SampleEx',
         '--base-url', 'https://sample.invalid',

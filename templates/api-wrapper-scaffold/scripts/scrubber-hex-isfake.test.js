@@ -24,6 +24,17 @@ const verify = path.join(scriptsDir, 'verify-scrub.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scrubber-hex-isfake-'));
 
+// The salt and the literal map now live in the operator's gitignored
+// `.har-profile.json` (issue #255); `--salt` was retired so that one profile
+// serves every HAR script instead of four separate flags.
+function writeProfile(dir, salt, literals) {
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, '.har-profile.json');
+    fs.writeFileSync(p, JSON.stringify({ salt, literals: literals || {} }, null, 2));
+    return p;
+}
+
+
 function writeHar(name, content) {
     const p = path.join(tmp, name);
     fs.writeFileSync(p, JSON.stringify(content, null, 2));
@@ -76,7 +87,7 @@ function makeHar(payloadString) {
     const harOut = path.join(tmp, 'with-hex64.scrubbed.har');
     const subs = path.join(tmp, 'with-hex64.subs.json');
 
-    const s = runNode(sanitize, ['--in', harIn, '--out', harOut, '--subs', subs, '--salt', 'test-salt', '--fixed-time', '2026-01-01T00:00:00.000Z']);
+    const s = runNode(sanitize, ['--in', harIn, '--out', harOut, '--subs', subs, '--profile', writeProfile(tmp, 'test-salt'), '--fixed-time', '2026-01-01T00:00:00.000Z']);
     assert.strictEqual(s.code, 0, `sanitize-har failed: ${s.stderr || s.stdout}`);
 
     const scrubbed = fs.readFileSync(harOut, 'utf8');
@@ -95,7 +106,7 @@ function makeHar(payloadString) {
     const harOut = path.join(tmp, 'with-hex32.scrubbed.har');
     const subs = path.join(tmp, 'with-hex32.subs.json');
 
-    const s = runNode(sanitize, ['--in', harIn, '--out', harOut, '--subs', subs, '--salt', 'test-salt', '--fixed-time', '2026-01-01T00:00:00.000Z']);
+    const s = runNode(sanitize, ['--in', harIn, '--out', harOut, '--subs', subs, '--profile', writeProfile(tmp, 'test-salt'), '--fixed-time', '2026-01-01T00:00:00.000Z']);
     assert.strictEqual(s.code, 0, `2.a: sanitize-har failed: ${s.stderr || s.stdout}`);
 
     const scrubbed = fs.readFileSync(harOut, 'utf8');
@@ -128,8 +139,8 @@ function makeHar(payloadString) {
     const subs1 = path.join(tmp, 'det-1.subs.json');
     const subs2 = path.join(tmp, 'det-2.subs.json');
 
-    runNode(sanitize, ['--in', har1, '--out', out1, '--subs', subs1, '--salt', 'salt-A', '--fixed-time', '2026-01-01T00:00:00.000Z']);
-    runNode(sanitize, ['--in', har2, '--out', out2, '--subs', subs2, '--salt', 'salt-A', '--fixed-time', '2026-01-01T00:00:00.000Z']);
+    runNode(sanitize, ['--in', har1, '--out', out1, '--subs', subs1, '--profile', writeProfile(tmp, 'salt-A'), '--fixed-time', '2026-01-01T00:00:00.000Z']);
+    runNode(sanitize, ['--in', har2, '--out', out2, '--subs', subs2, '--profile', writeProfile(tmp, 'salt-A'), '--fixed-time', '2026-01-01T00:00:00.000Z']);
 
     const s1 = fs.readFileSync(out1, 'utf8');
     const s2 = fs.readFileSync(out2, 'utf8');
