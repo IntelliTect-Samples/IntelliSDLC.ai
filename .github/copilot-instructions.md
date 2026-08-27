@@ -334,7 +334,7 @@ Orchestrators and interactive workflows with specific tooling and model requirem
 
 | Agent | Purpose |
 |---|---|
-| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Merge -> Cleanup |
+| `dev-loop.agent.md` | Orchestrator: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Independent Review+Dry Run]* -> Merge -> Cleanup |
 | `plan.agent.md` | Design and planning -- Socratic questioning, approach trade-offs, GitHub issue creation |
 | `code-review.agent.md` | Independent code review via a parallel panel of non-author vendor models; produces advisory findings (the authoring model dedupes, triages, and converges) |
 | `instructions.agent.md` | Maintain instruction files and tooling config across platforms |
@@ -348,7 +348,7 @@ Phases 3-7 use an expanding loop -- each phase is a quality gate, failure routes
 back to Phase 3 (TDD).
 
 ```
-Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Merge -> Cleanup
+Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Independent Review+Dry Run]* -> Merge -> Cleanup
 ```
 
 #### CI Failure Restart Loop
@@ -359,8 +359,15 @@ A PR must **never** be merged while CI is red.
 #### Merge Step
 
 Once the expanding loop exits cleanly (CI green, all review threads resolved,
-latest Copilot review introduced zero new threads, dry run passes if applicable),
-merge the PR before running Cleanup. **This repo only allows rebase merges:**
+**an independent review satisfied the invariant** -- a reviewer that is not the
+authoring model read the latest diff and surfaced no new accepted Critical /
+Important findings -- dry run passes if applicable), merge the PR before running
+Cleanup. Copilot review is one way to satisfy that invariant; a review by a
+different model than the authoring one satisfies it equally. See the
+**Independent Code Review -- Reviewer != Author Model** section in `CLAUDE.md`
+for the canonical rule, the substitution trigger, and the detection call.
+
+**This repo only allows rebase merges:**
 
 ```powershell
 gh pr merge <pr-number> --rebase --delete-branch

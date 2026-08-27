@@ -1,6 +1,6 @@
 ---
 name: "Dev Loop"
-description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Copilot Review+Dry Run]* -> Merge -> Cleanup. Each phase failure routes back to TDD. Language-aware."
+description: "Expanding-loop dev cycle: Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> Evidence+Verify -> Code Review+Fix -> PR+Independent Review+Dry Run]* -> Merge -> Cleanup. Each phase failure routes back to TDD. Language-aware."
 tools: ["findTestFiles", "edit/editFiles", "runTests", "runCommands", "codebase", "filesystem", "search", "problems", "testFailure", "terminalLastCommand", "changes", "playwright"]
 ---
 
@@ -41,7 +41,8 @@ Phases are classified as **interactive** or **autonomous**:
 continuous flow.** Do NOT pause between phases to ask for confirmation, report status, or
 wait for input. When a phase's exit criteria are met, immediately begin the next phase.
 
-**Exception:** Phase 7 involves external async operations (CI runs, Copilot review).
+**Exception:** Phase 7 involves external async operations (CI runs, an external
+independent review such as Copilot's).
 Waiting/polling for these external results is expected and does not count as "pausing".
 
 **Phases 3-7 use an expanding loop pattern.** Each phase acts as a quality gate. When a
@@ -83,7 +84,7 @@ autonomous run (after Phase 7 completes or when you must pause).
 |   |        |                                                  |
 |   |    6. Code Review + Fix -- issues? --+                   |
 |   |        |                              |                   |
-|   |    7. PR + Copilot Review - issues? -+                   |
+|   |    7. PR + Indep. Review -- issues? -+                   |
 |   |        |                              |                   |
 |   |        7b. Dry Run ---- fails? ------+                   |
 |   |        |                                                  |
@@ -320,9 +321,15 @@ structural fix is required that affects other tests, return to Phase 3.**
    (degrade gracefully; see the skill for the >3-vendor tie-break). Lead the consolidated
    report with the Review panel block. If the host fixes the session model so a parallel
    panel cannot run, degrade to a single reviewer **only after confirming the assigned model
-   is from a non-author vendor** (independence gate); record the reduced panel. **If no
-   non-author vendor is available** (only the author's vendor/model is offered), **stop and
-   request a re-run with an eligible model** rather than self-reviewing.
+   is from a non-author vendor** (independence gate); record the reduced panel.
+
+   **Inside Claude Code, a single-vendor runtime is not a dead end.** The gate exists to
+   ensure the code is reviewed by something other than what wrote it, so a **different
+   Anthropic model than the authoring model** (e.g. Opus authored -> Sonnet reviews)
+   satisfies it. Spawn the review subagent on that model and record the panel as
+   single-vendor / different-model. **Stop and request a re-run with an eligible model
+   only when there is no model at all other than the authoring one.** See the
+   **Independent Code Review -- Reviewer != Author Model** section in `CLAUDE.md`.
 2. The panelists run static analysis read-only and report findings; the authoring model
    fixes them.
 3. The panelists review all changed files: correctness, quality, tests, security, YAGNI,
@@ -341,7 +348,7 @@ structural fix is required that affects other tests, return to Phase 3.**
 converged, all tests green, static analysis clean.
 **-> If issues found and fixed -> back to Phase 3. If clean -> proceed to Phase 7.**
 
-### Phase 7 -- PR + Copilot Review + Dry Run
+### Phase 7 -- PR + Independent Review + Dry Run
 
 #### Step 1: Rebase onto latest main
 
@@ -383,15 +390,43 @@ gh run list --branch <branch-name> --limit 5
 
 If CI fails, fix and push. Non-trivial fixes -> Phase 3.
 
-#### Step 5: Request Copilot review
+#### Step 5: Obtain an independent review
+
+**The requirement is the invariant, not the tool: the diff must be reviewed by a model
+that did not write it.** Copilot review is one transport for that; a review subagent on a
+different model is another. See the **Independent Code Review -- Reviewer != Author
+Model** section in `CLAUDE.md` for the canonical rule.
+
+**When running inside Claude Code, go straight to the different-model path below** and
+skip the Copilot mechanics entirely.
+
+Otherwise, request Copilot review and then **confirm that the request registered** -- the
+command exiting 0 is not evidence that it worked:
 
 ```bash
 gh pr edit <pr-number> --add-reviewer "@copilot"
+gh api repos/<owner>/<repo>/pulls/<pr-number>/requested_reviewers
 ```
 
-Wait up to 5 minutes for the review.
+If `requested_reviewers` comes back **empty**, Copilot code review is not enabled for this
+repo or org. Do **not** poll for a review that will never arrive -- fall through to the
+different-model path immediately. Otherwise wait up to 5 minutes for the review.
+
+**Different-model path.** Spawn a review subagent on a **different model than the
+authoring model** (e.g. Opus authored -> Sonnet reviews) and have it review the full diff.
+Triage its findings exactly as Copilot findings are triaged in Step 6 -- accept or reject
+each with a rationale validated against the code, fix accepted Critical / Important
+findings using behavior-first testing, then re-submit the updated diff to the same
+reviewer. The loop does not exit until that reviewer reports **no new accepted Critical /
+Important findings**.
 
 #### Step 6: Address review feedback (internal loop)
+
+The GitHub review-thread mechanics below -- the `resolveReviewThread` GraphQL loop, the
+re-request, and the `submittedAt` polling -- are **Copilot's transport**, not the
+requirement. **Skip them when the review came from the different-model path**; there the
+equivalent is triage -> fix -> re-review until the reviewer reports no new accepted
+Critical / Important findings.
 
 For each unresolved review thread:
 
@@ -443,14 +478,19 @@ Append dry run results to PR body using `--body-file`. Construct the complete bo
 from scratch -- never read-modify-write. See `copilot-instructions.md` > PR & Issue
 Body Formatting.
 
-**Exit criteria:** PR created, CI green, all review threads resolved, latest Copilot
-review introduced zero new threads, dry run passes (if applicable), no mojibake.
+**Exit criteria:** PR created, CI green, **an independent review (a reviewer that is not
+the authoring model) read the latest diff and surfaced no new accepted Critical /
+Important findings** -- via resolved Copilot threads or via the different-model path --
+dry run passes (if applicable), no mojibake.
 
 ### Phase 8 -- Merge
 
 Runs after Phase 7 exits cleanly. **Preconditions:** CI green, all review
-threads resolved, latest Copilot review introduced zero new threads, dry run
-passes (if applicable).
+threads resolved, **an independent review satisfied the invariant** (a reviewer
+that is not the authoring model read the latest diff and surfaced no new
+accepted Critical / Important findings -- a substituted different-model review
+satisfies this exactly as a Copilot review does), dry run passes (if
+applicable).
 
 This repo only allows **rebase merges**. Squash and merge-commit modes are
 disabled. Use:
@@ -513,7 +553,7 @@ Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` 
 | 5 -- Functional Testing | Done/In Progress/Pending/Skipped | <details> |
 | 5b -- Evidence + Verify | Done/In Progress/Pending/Escalated | <details> |
 | 6 -- Code Review + Fix | Done/In Progress/Pending | <details> |
-| 7 -- PR + Copilot Review + Dry Run | Done/In Progress/Pending | <details> |
+| 7 -- PR + Independent Review + Dry Run | Done/In Progress/Pending | <details> |
 | 8 -- Merge | Done/In Progress/Pending | <details> |
 | 9 -- Cleanup | Done/Pending (after merge) | <details> |
 
@@ -535,7 +575,8 @@ Once Phase 7 passes with zero unresolved threads and a successful dry run:
    that the display was skipped by user request.
 4. Summarize: branch name, what was implemented, what was refactored,
    functional tests added, loop iterations, dry run result, PR number,
-   linked issue number, Copilot review status.
+   linked issue number, independent-review status (Copilot threads or the
+   different-model reviewer that stood in for them).
 5. **Execute Phase 8 (Merge)** -- rebase-merge the PR with
    ``gh pr merge <pr-number> --rebase --delete-branch``. Never merge while CI
    is red or with unresolved review threads.
