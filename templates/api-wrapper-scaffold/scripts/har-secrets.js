@@ -59,12 +59,30 @@ function isKnownSecretField(key) {
 // notices. Anchoring on the declared boundary removes both blind spots.
 const NAME_ATTR_RE = /\bname="((?:[^"\\]|\\.)*)"/i;
 
+// The opening delimiter is the first line that starts with `--`, ANYWHERE in
+// the body -- not necessarily the first line. A leading CRLF or a MIME
+// preamble (legal per RFC 2046) is enough to push it down, and keying off
+// line one meant one odd leading byte blinded the control for the entire
+// body, in the scrubber and the detector alike. Failing closed on a whole
+// request body is a worse shape of bug than mis-parsing one field.
+const DELIMITER_LINE_RE = /^(--[^\r\n]+?)[ \t]*$/m;
+
 function detectBoundary(text) {
-    const firstLine = text.slice(0, text.indexOf('\n') + 1 || undefined).trim();
-    if (firstLine.startsWith('--') && firstLine.length > 2) {
-        return firstLine.replace(/--$/, '');
+    const match = DELIMITER_LINE_RE.exec(text);
+    if (!match) return null;
+    const delimiter = match[1];
+
+    // A boundary token may itself end in `-` (RFC 2046 allows it), so a
+    // trailing `--` cannot be assumed to be the closing marker. Only strip it
+    // when the shorter string is what the rest of the body actually uses --
+    // which is the case when we happened to find the CLOSING delimiter first.
+    if (delimiter.endsWith('--')) {
+        const withoutClosing = delimiter.slice(0, -2);
+        if (withoutClosing.length > 2 && text.includes(withoutClosing + '\n')) {
+            return withoutClosing;
+        }
     }
-    return null;
+    return delimiter;
 }
 
 /**

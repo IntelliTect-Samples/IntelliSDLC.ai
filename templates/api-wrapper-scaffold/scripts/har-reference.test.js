@@ -415,9 +415,16 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
     // discarded on the success path. `failAndDiscard`'s own definition sits
     // inside it, so exclude the one bare `fail(` it legitimately contains.
     const source = fs.readFileSync(extract, 'utf8');
-    const guarded = source.slice(
-        source.indexOf('const work = fs.mkdtempSync'),
-        source.indexOf('const serialized = JSON.stringify'));
+    const from = source.indexOf('const work = fs.mkdtempSync');
+    const to = source.indexOf('const serialized = JSON.stringify');
+    // Without this, a rename on either side would leave indexOf returning -1,
+    // the slice would degenerate, and the assertion below would pass while
+    // checking nothing -- the exact failure mode a static test invites.
+    assert.ok(from >= 0 && to > from,
+        '17.c: the staging window anchors no longer match the source; this check has stopped checking anything');
+    const guarded = source.slice(from, to);
+    assert.ok(/uncaughtException/.test(guarded),
+        '17.d: nothing catches a throw between creating and discarding the staging directory');
     const definitionBody = guarded.slice(
         guarded.indexOf('const failAndDiscard'), guarded.indexOf('};', guarded.indexOf('const failAndDiscard')));
     const bareFails = (guarded.replace(definitionBody, '').match(/(?<!AndDiscard)\bfail\(/g) || []);

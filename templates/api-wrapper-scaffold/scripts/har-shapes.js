@@ -164,7 +164,10 @@ function findLeaksDeep(text) {
  * findings and to confirm one is gone, without ever printing the value.
  */
 function fingerprint(value) {
-    return crypto.createHash('sha256').update(value).digest('hex').slice(0, 8);
+    // 12 hex characters, not 8: findings are deduplicated by this tag, and a
+    // 32-bit prefix is small enough to make an accidental merge of two
+    // genuinely different secrets conceivable.
+    return crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
 
 /** Render a finding for a human, with no part of the value in it. */

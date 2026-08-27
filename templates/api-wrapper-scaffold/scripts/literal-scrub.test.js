@@ -372,6 +372,50 @@ function scrubbedPath(dir) {
         '11b.e: a final field with no closing boundary was skipped entirely:\n' + outB);
 }
 
+// --- 11c. A body that does not START with its delimiter still parses. ---
+// A leading CRLF or a MIME preamble (legal per RFC 2046) pushes the opening
+// delimiter off line one. Keying off the first line meant one odd leading
+// byte blinded the control for the WHOLE body -- every field, in the scrubber
+// and the detector alike. Failing closed on an entire request body is a worse
+// shape of bug than mis-parsing one field.
+{
+    const dir = makeProject('multipart-preamble', { literals: {} });
+    const cases = {
+        'leading-crlf': '\r\n' + [
+            '------B',
+            'Content-Disposition: form-data; name="lsd"',
+            '',
+            'AVpreambleTokenA',
+            '------B--',
+        ].join('\r\n'),
+        'mime-preamble': [
+            'This is a multi-part message in MIME format.',
+            '------B',
+            'Content-Disposition: form-data; name="lsd"',
+            '',
+            'AVpreambleTokenB',
+            '------B--',
+        ].join('\r\n'),
+    };
+
+    for (const [label, body] of Object.entries(cases)) {
+        const caseDir = makeProject('multipart-' + label, { literals: {} });
+        const harIn = writeHar(caseDir, {
+            request: {
+                bodySize: body.length,
+                postData: { mimeType: 'multipart/form-data; boundary=----B', text: body },
+            },
+        });
+        const r = runNode(sanitize, ['--in', harIn], caseDir);
+        assert.strictEqual(r.code, 0, `11c.a (${label}): sanitize failed: ` + r.stderr);
+
+        const out = fs.readFileSync(scrubbedPath(caseDir), 'utf8');
+        assert.ok(!/AVpreambleToken[AB]/.test(out),
+            `11c.b (${label}): the whole body was skipped because the delimiter was not on line one:\n${out}`);
+    }
+    void dir;
+}
+
 // --- 12. A cookie present only in the structured cookies[] array is scrubbed. ---
 // The HAR spec allows `cookies[]` and the `Cookie` header to diverge. The
 // 16-char length heuristic only ever ran over header text, so a token-shaped
