@@ -195,6 +195,14 @@ $script:UpstreamManagedPaths = @(
     # Workflow guard hooks must sync to consumers or CLAUDE.md's
     # core.hooksPath guidance promises automation that never arrives.
     '.githooks/',
+    # Skill tooling: the capture / scrub / extract scripts and the code
+    # templates a skill invokes by path. SKILL.md documents these as
+    # `templates/<skill>/scripts/...`, so a consumer that never receives them
+    # gets instructions naming files that are not on its disk (issue #270).
+    # The toolkit's own `*.test.js` files are carved out in
+    # $script:UpstreamPrivatePrefixes -- they test this repo's internals and
+    # are noise in a consuming project.
+    'templates/',
     # The consumer-owned spec-archive guide. Sync-managed so the same-name
     # scaffold delivers `docs/README.md` on first sync and the file is
     # reconciled against upstream until the consumer takes ownership (it is
@@ -306,7 +314,14 @@ $script:AlwaysLocalPrefixes = @(
 # Consumer-owned .github/skills/project-*/ trees are exempt because always-local
 # trumps -- see Test-IsUpstreamPrivatePath, which checks Test-IsAlwaysLocalPath first.
 $script:UpstreamPrivatePrefixes = @(
-    '^\.github/(?:agents|skills)/(?:[^/]+/)*(?:tests|fixtures)/'
+    '^\.github/(?:agents|skills)/(?:[^/]+/)*(?:tests|fixtures)/',
+    # Node tests for the skill tooling under templates/. They exercise this
+    # repo's own scripts and add nothing to a consuming project, which receives
+    # the scripts themselves but never runs their unit tests (issue #270).
+    # NOTE: deliberately narrower than the rule above -- a `tests/` directory
+    # under templates/ holds test-project TEMPLATES the generator emits into
+    # the consumer's own solution, so it must ship.
+    '^templates/(?:[^/]+/)*[^/]+\.test\.js$'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather
@@ -426,11 +441,14 @@ function Test-IsUpstreamPrivatePath {
     .SYNOPSIS
         Returns $true if the given repo-relative path is "upstream-private": a
         file inside a 'tests' or 'fixtures' directory at any depth under the
-        .github/agents/ or .github/skills/ trees.
+        .github/agents/ or .github/skills/ trees, or a '*.test.js' beside the
+        skill tooling under templates/.
     .DESCRIPTION
-        Upstream-private files test the toolkit's own internals (Pester tests
-        and HAR/PII sample fixtures) and are never shipped to -- or retained
-        by -- consuming projects. Always-local paths trump: a consumer-owned
+        Upstream-private files test the toolkit's own internals (Pester tests,
+        node unit tests, and HAR/PII sample fixtures) and are never shipped to
+        -- or retained by -- consuming projects. A 'tests' directory under
+        templates/ is NOT private: it holds test-project templates the
+        generator emits into the consumer's own solution. Always-local paths trump: a consumer-owned
         .github/skills/project-*/ tree is never treated as upstream-private, so
         a project's own tests/fixtures are preserved (Test-IsAlwaysLocalPath is
         checked first). The path is matched against $script:UpstreamPrivatePrefixes.
