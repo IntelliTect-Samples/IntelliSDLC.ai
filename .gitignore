@@ -16,8 +16,18 @@ Thumbs.db
 # Raw HAR captures (see Start-HarRecording). A raw capture runs to hundreds of
 # megabytes and carries live session cookies -- only trimmed, scrubbed extracts
 # under docs/har-reference/ are ever committed.
+#
+# `raw.har` is listed literally as well as by suffix: the recorder names the
+# file exactly `raw.har`, which `*.raw.har` does NOT match (that pattern needs
+# a `.raw.har` suffix). The .har-captures/ rule hides the difference only while
+# the capture directory is the default one -- point -CapturesDirectory
+# elsewhere and an unignored, credential-bearing capture is one `git add -A`
+# away from being committed.
 .har-captures/
+raw.har
 *.raw.har
+raw.snapshot.har
+raw.snapshot.ndjson
 *.snapshot.har
 *.snapshot.ndjson
 

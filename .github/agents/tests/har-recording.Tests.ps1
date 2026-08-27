@@ -221,6 +221,46 @@ Describe 'capture-har.js snapshot recovery' {
         $har.log.comment | Should -Match 'truncated'
     }
 
+    It 'honours an explicit --min-bytes 0 instead of substituting the default' {
+        # `Number(x) || DEFAULT` swallows a deliberate 0, turning "accept
+        # whatever was captured" into the 1024-byte floor without a word.
+        $sessionDir = New-LostSession -Root $script:Tmp
+        Set-Content -LiteralPath (Join-Path $sessionDir 'raw.har') `
+            -Value '{"log":{"version":"1.2","entries":[]}}' -Encoding utf8
+
+        $r = Invoke-CaptureHar stop --session $sessionDir --min-bytes 0
+        $r.ExitCode | Should -Be 0
+        $r.Output | Should -Not -Match 'failed capture'
+    }
+
+    It 'gives up quickly on a session whose recorder is gone' {
+        # A dead driver never answers the sentinel. Waiting the full 60s timeout
+        # for it is indistinguishable from a healthy but slow stop.
+        $sessionDir = New-LostSession -Root $script:Tmp
+        $session = Get-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Raw | ConvertFrom-Json
+        $session.PSObject.Properties.Remove('endedUtc')
+        # A port nothing is listening on == the recorder is gone.
+        $session | Add-Member -NotePropertyName port -NotePropertyValue 49999 -Force
+        $session | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
+
+        $elapsed = Measure-Command { $script:R = Invoke-CaptureHar stop --session $sessionDir }
+        $elapsed.TotalSeconds | Should -BeLessThan 30
+        $script:R.Output | Should -Match 'no longer running'
+    }
+
+    It 'ignores a stale current-session pointer left by a dead recorder' {
+        # Following it forever would pin every later stop/status to a dead
+        # session while newer captures are ignored.
+        $stale = New-LostSession -Root $script:Tmp          # already ended
+        @{ sessionDir = $stale } | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
+
+        $r = Invoke-CaptureHar status --dir $script:Tmp
+        $r.ExitCode | Should -Be 0
+        ($r.StdOut | ConvertFrom-Json).recording | Should -BeFalse
+    }
+
     It 'reports a failure when neither a HAR nor a snapshot exists' {
         $sessionDir = New-LostSession -Root $script:Tmp
         Remove-Item -LiteralPath (Join-Path $sessionDir 'raw.snapshot.ndjson') -Force
@@ -237,6 +277,36 @@ Describe 'capture-har.js snapshot recovery' {
         $r = Invoke-CaptureHar stop --session $sessionDir --min-bytes 1024
         $r.ExitCode | Should -Be 4
         $r.Output | Should -Match 'failed capture'
+    }
+}
+
+Describe 'raw captures are gitignored' {
+    # A raw capture carries live session cookies. These assert what git will
+    # ACTUALLY do, because the natural-looking pattern `*.raw.har` does not
+    # match the file the recorder writes (`raw.har`), and the .har-captures/
+    # directory rule hides that until someone redirects the output.
+
+    It 'ignores the capture the recorder writes, wherever it is written' {
+        foreach ($p in @(
+                '.har-captures/2026-01-01-120000/raw.har',
+                'somewhere/else/raw.har',
+                'somewhere/else/raw.snapshot.har',
+                'somewhere/else/raw.snapshot.ndjson')) {
+            & git -C $script:RepoRoot check-ignore -q -- $p
+            $LASTEXITCODE | Should -Be 0 -Because "$p holds live credentials and must never be committable"
+        }
+    }
+
+    It 'ignores the operator profile and any serialized session' {
+        foreach ($p in @('.har-profile.json', 'anywhere/creds.storage-state.json')) {
+            & git -C $script:RepoRoot check-ignore -q -- $p
+            $LASTEXITCODE | Should -Be 0 -Because "$p holds real account identifiers or a live session"
+        }
+    }
+
+    It 'does not ignore a scrubbed reference bound for the catalogue' {
+        & git -C $script:RepoRoot check-ignore -q -- 'docs/har-reference/example.com/example.com-login-2026-01-01.har'
+        $LASTEXITCODE | Should -Not -Be 0
     }
 }
 
