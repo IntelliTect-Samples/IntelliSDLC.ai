@@ -414,6 +414,11 @@ different-model path immediately. Otherwise wait up to 5 minutes for the review.
 
 **Different-model path.** Spawn a review subagent on a **different model than the
 authoring model** (e.g. Opus authored -> Sonnet reviews) and have it review the full diff.
+**Pass an explicit model override when launching it** -- a subagent spawned without one
+inherits the authoring model, which is self-review, not independent review -- and
+**record the reviewing model's name** in the loop summary as the evidence. If the runtime
+offers no model other than the authoring one, **stop and request a re-run with an eligible
+model** rather than self-reviewing (same last-resort escape as the Phase 6 gate).
 Triage its findings exactly as Copilot findings are triaged in Step 6 -- accept or reject
 each with a rationale validated against the code, fix accepted Critical / Important
 findings using behavior-first testing, then re-submit the updated diff to the same
@@ -485,12 +490,13 @@ dry run passes (if applicable), no mojibake.
 
 ### Phase 8 -- Merge
 
-Runs after Phase 7 exits cleanly. **Preconditions:** CI green, all review
-threads resolved, **an independent review satisfied the invariant** (a reviewer
-that is not the authoring model read the latest diff and surfaced no new
-accepted Critical / Important findings -- a substituted different-model review
-satisfies this exactly as a Copilot review does), dry run passes (if
-applicable).
+Runs after Phase 7 exits cleanly. **Preconditions:** CI green, **an
+independent review satisfied the invariant** (a reviewer that is not the
+authoring model read the latest diff and surfaced no new accepted Critical /
+Important findings -- a substituted different-model review satisfies this
+exactly as a Copilot review does), all review threads resolved **when the review
+used the Copilot transport** (there are no GitHub review threads to resolve on
+the different-model path), dry run passes (if applicable).
 
 This repo only allows **rebase merges**. Squash and merge-commit modes are
 disabled. Use:
