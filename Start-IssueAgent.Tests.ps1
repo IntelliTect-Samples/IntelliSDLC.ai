@@ -49,6 +49,30 @@ Describe 'Get-GitHubIssue' {
     }
 }
 
+Describe 'Limit-DisplayName' {
+    It 'does not truncate when -MaxLength is 0 (unlimited, the default)' {
+        Limit-DisplayName -Value ('x' * 200) | Should -Be ('x' * 200)
+    }
+
+    It 'does not truncate when the value already fits within -MaxLength' {
+        Limit-DisplayName -Value 'short' -MaxLength 100 | Should -Be 'short'
+    }
+
+    It 'truncates with a trailing "..." when the value exceeds -MaxLength' {
+        $result = Limit-DisplayName -Value 'a value that is far too long' -MaxLength 10
+        $result.Length | Should -Be 10
+        $result | Should -Be 'a value...'
+    }
+
+    It 'handles a -MaxLength too small even for the ellipsis' {
+        Limit-DisplayName -Value 'anything' -MaxLength 2 | Should -Be '..'
+    }
+
+    It 'handles an empty value' {
+        Limit-DisplayName -Value '' -MaxLength 10 | Should -Be ''
+    }
+}
+
 Describe 'New-IssueAgentName' {
     It 'formats as "issue number: issue title"' {
         $issue = [pscustomobject]@{ number = 42; title = 'Add widget support' }
@@ -79,6 +103,30 @@ Describe 'New-IssueAgentName' {
     }
 }
 
+Describe 'New-PlanAgentName' {
+    It 'formats as "new: description"' {
+        New-PlanAgentName -Description 'users need CSV export' | Should -Be 'new: users need CSV export'
+    }
+
+    It 'trims surrounding whitespace from the description' {
+        New-PlanAgentName -Description '  users need CSV export  ' | Should -Be 'new: users need CSV export'
+    }
+
+    It 'falls back to a bare "new issue" for an empty description' {
+        New-PlanAgentName -Description '' | Should -Be 'new issue'
+    }
+
+    It 'falls back to a bare "new issue" for a whitespace-only description' {
+        New-PlanAgentName -Description "  `t " | Should -Be 'new issue'
+    }
+
+    It 'truncates a long description with a trailing "..." at -MaxLength' {
+        $result = New-PlanAgentName -Description 'users need a way to export reports as CSV' -MaxLength 20
+        $result.Length | Should -Be 20
+        $result | Should -Be 'new: users need a...'
+    }
+}
+
 Describe 'Get-ConsoleWidth' {
     It 'returns a positive integer' {
         Get-ConsoleWidth | Should -BeGreaterThan 0
@@ -88,6 +136,42 @@ Describe 'Get-ConsoleWidth' {
 Describe 'New-IssueAgentPrompt' {
     It 'delegates to @dev-loop by issue number, without inlining the issue body' {
         New-IssueAgentPrompt -IssueNumber 42 | Should -Be '@dev-loop gh issue 42'
+    }
+}
+
+Describe 'New-PlanAgentPrompt' {
+    It 'delegates to @plan with the description as a seed' {
+        New-PlanAgentPrompt -Description 'users need CSV export' | Should -Be '@plan users need CSV export'
+    }
+
+    It 'trims surrounding whitespace from the description' {
+        New-PlanAgentPrompt -Description '  users need CSV export  ' | Should -Be '@plan users need CSV export'
+    }
+
+    It 'yields the bare @plan for an empty description' {
+        New-PlanAgentPrompt -Description '' | Should -Be '@plan'
+    }
+
+    It 'yields the bare @plan for a whitespace-only description' {
+        New-PlanAgentPrompt -Description "  `t " | Should -Be '@plan'
+    }
+
+    It 'passes a description containing a single quote through verbatim' {
+        New-PlanAgentPrompt -Description "it's broken" | Should -Be "@plan it's broken"
+    }
+}
+
+Describe 'Get-DefaultPermissionMode' {
+    It 'defaults the -New parameter set to plan mode' {
+        Get-DefaultPermissionMode -ParameterSetName 'New' | Should -Be 'plan'
+    }
+
+    It 'defaults issue dispatch to auto' {
+        Get-DefaultPermissionMode -ParameterSetName 'Issue' | Should -Be 'auto'
+    }
+
+    It 'rejects an unknown parameter set name' {
+        { Get-DefaultPermissionMode -ParameterSetName 'Nope' } | Should -Throw
     }
 }
 
@@ -194,6 +278,26 @@ Describe 'Start-ClaudeIssueSession' {
                 'Remove-Item Env:\CLAUDE_CODE_CHILD_SESSION -ErrorAction SilentlyContinue; ' +
                 "Set-Location 'C:\repo'; & claude '--name' '42: Add widget support' '--remote-control' " +
                 "'--permission-mode' 'auto' '--' '@dev-loop gh issue 42'"
+            )
+        }
+    }
+
+    It 'carries a -New session (plan mode, @plan prompt) through to claude intact' {
+        $env:WT_SESSION = $null
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
+        Mock -CommandName Start-Process -MockWith { }
+
+        Start-ClaudeIssueSession -Name 'new: users need CSV export' -Prompt '@plan users need CSV export' `
+            -PermissionMode 'plan' -WorkingDirectory 'C:\repo'
+
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            if ($FilePath -ne 'wt.exe') { return $false }
+
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[7]))
+            $decoded -eq (
+                'Remove-Item Env:\CLAUDE_CODE_CHILD_SESSION -ErrorAction SilentlyContinue; ' +
+                "Set-Location 'C:\repo'; & claude '--name' 'new: users need CSV export' '--remote-control' " +
+                "'--permission-mode' 'plan' '--' '@plan users need CSV export'"
             )
         }
     }

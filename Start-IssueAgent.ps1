@@ -1,10 +1,22 @@
 <#
 .SYNOPSIS
-    Dispatches a GitHub issue to an interactive `claude` CLI session.
+    Dispatches a GitHub issue to an interactive `claude` CLI session, or opens
+    one to plan a brand-new issue.
 
 .DESCRIPTION
-    Given only a `gh` issue number, opens a new interactive `claude` session
-    to work it. Where that session lands depends on the current shell:
+    Two modes, one launcher:
+
+      - `-IssueNumber <n>` (the default, positional): work an issue that
+        already exists. Prompt: `@dev-loop gh issue <n>`, permission mode
+        `auto`.
+      - `-New <description>`: there is no issue yet. Prompt: `@plan
+        <description>`, permission mode `plan`. No `gh`/`git remote` call is
+        made -- `@plan` (.github/agents/plan.agent.md) runs its own discovery
+        dialogue, resolves the repo itself, and files the issue as its primary
+        output.
+
+    Where the session lands depends on the current shell (identical in both
+    modes):
 
       - Already inside a Windows Terminal pane (checked via $env:WT_SESSION,
         which Windows Terminal sets on every process it hosts) and neither
@@ -19,7 +31,7 @@
         Claude Code session from ever hijacking its own pane -- whether
         dispatched via its Bash tool or a user's `!Start-IssueAgent.ps1 ...`.
 
-    Steps:
+    Steps (the `-IssueNumber` path; `-New` skips 1-2 entirely):
 
       1. Resolve owner/repo from `git remote get-url origin` (never from the
          local directory name -- see CLAUDE.md).
@@ -28,13 +40,16 @@
          full issue -- title, body, comments -- when given an issue number,
          per .github/agents/dev-loop.agent.md Phase 0, so this script does
          not duplicate that).
-      3. Derive a session Name of the form `<issue ID>: <Issue Title>`,
-         capped to 3/4 of the current console width (a long issue title would
-         otherwise overflow the tab title/prompt box/resume picker), and pass
-         it to `claude --name` (which also sets the terminal/tab title).
-      4. Build the prompt `@dev-loop gh issue <IssueNumber>`, telling the
+      3. Derive a session Name -- `<issue ID>: <Issue Title>`, or `new:
+         <description>` under -New -- capped to 3/4 of the current console
+         width (a long issue title/description would otherwise overflow the
+         tab title/prompt box/resume picker), and pass it to `claude --name`
+         (which also sets the terminal/tab title).
+      4. Build the prompt: `@dev-loop gh issue <IssueNumber>`, telling the
          session to run the full dev loop starting from the existing issue
-         -- no issue creation step needed.
+         -- no issue creation step needed; or, under -New, `@plan
+         <description>`, which starts at design and ends by creating the
+         issue.
       5. Launch `claude` with CLI options first, the derived prompt last:
          `claude --name <Name> --remote-control --permission-mode <mode> -- <prompt>`
          When opening a new wt.exe tab, this command (plus a `Set-Location`
@@ -52,16 +67,30 @@
     way regardless of which shell launched it).
 
 .PARAMETER IssueNumber
-    The GitHub issue number to dispatch. Required (not marked Mandatory on the
-    parameter itself so this script can be dot-sourced for testing; validated
-    at the start of Main instead).
+    The GitHub issue number to dispatch. Required for the default parameter
+    set (not marked Mandatory on the parameter itself so this script can be
+    dot-sourced for testing; validated at the start of Main instead).
+    Mutually exclusive with -New.
+
+.PARAMETER New
+    Plan a brand-new issue instead of dispatching an existing one. The value
+    is a plain-English description of the idea, used to seed `@plan` -- a
+    seed, not a spec: @plan asks its own clarifying questions from there.
+    Mutually exclusive with -IssueNumber.
+
+    Pass `-New ''` for a seedless planning session (prompt: just `@plan`). A
+    bare valueless `-New` is a PowerShell binding error, since -New takes a
+    string.
 
 .PARAMETER Repo
     Explicit `owner/repo` to pass to `gh issue view --repo`. If omitted, it is
     resolved from `git remote get-url origin` in the current directory.
+    Unused under -New (no issue is fetched).
 
 .PARAMETER PermissionMode
-    Value passed to `claude --permission-mode`. Default: auto.
+    Value passed to `claude --permission-mode`. Defaults to `auto` when
+    dispatching an issue, and to `plan` under -New; pass it explicitly to
+    override either default.
 
 .PARAMETER NewTab
     Open a new Windows Terminal tab (or console window, if `wt.exe` isn't
@@ -79,17 +108,29 @@
 
 .EXAMPLE
     ./Start-IssueAgent.ps1 -IssueNumber 123 -Repo IntelliTect-Dev/IntelliSDLC.ai
+
+.EXAMPLE
+    ./Start-IssueAgent.ps1 -New "users need a way to export reports as CSV"
+
+.EXAMPLE
+    ./Start-IssueAgent.ps1 -New "spike: cache gh issue lookups" -PermissionMode auto
 #>
-[CmdletBinding(SupportsShouldProcess)]
+[CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Issue')]
 param(
-    [Parameter(Position = 0)]
+    [Parameter(ParameterSetName = 'Issue', Position = 0)]
     [ValidateRange(1, [int]::MaxValue)]
     [int]$IssueNumber,
 
+    [Parameter(ParameterSetName = 'New')]
+    [AllowEmptyString()]
+    [string]$New,
+
     [string]$Repo,
 
+    # No literal default -- it depends on the parameter set (see
+    # Get-DefaultPermissionMode), so Main fills it in only when unbound.
     [ValidateSet('acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan')]
-    [string]$PermissionMode = 'auto',
+    [string]$PermissionMode,
 
     [switch]$NewTab
 )
@@ -147,16 +188,40 @@ function Get-GitHubIssue {
     return $json | ConvertFrom-Json
 }
 
+function Limit-DisplayName {
+    <#
+    .SYNOPSIS
+        Caps a session display name to -MaxLength, marking a cut with a
+        trailing '...'.
+    .DESCRIPTION
+        A name beyond -MaxLength would otherwise wrap/overflow the tab title,
+        prompt box, and /resume picker. The '...' makes the cut visible rather
+        than silent. -MaxLength 0 (the default) means unlimited; a -MaxLength
+        too small even for the ellipsis degrades to that many dots.
+
+        Shared by New-IssueAgentName and New-PlanAgentName so both modes cap
+        identically.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value,
+        [int]$MaxLength = 0
+    )
+
+    if ($MaxLength -le 0 -or $Value.Length -le $MaxLength) { return $Value }
+    if ($MaxLength -le 3) { return '.' * $MaxLength }
+
+    return $Value.Substring(0, $MaxLength - 3) + '...'
+}
+
 function New-IssueAgentName {
     <#
     .SYNOPSIS
-        Builds the session display name: `<issue ID>: <Issue Title>`, capped
-        to -MaxLength (a long issue title would otherwise wrap/overflow the
-        tab title, prompt box, and /resume picker).
+        Builds the session display name for issue dispatch:
+        `<issue ID>: <Issue Title>`, capped to -MaxLength.
     .DESCRIPTION
-        A title beyond -MaxLength is cut short and marked with a trailing
-        '...' so it's visibly truncated rather than silently cut.
-        -MaxLength 0 (the default) means unlimited.
+        Capping/truncation rules live in Limit-DisplayName.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
@@ -167,11 +232,32 @@ function New-IssueAgentName {
         [int]$MaxLength = 0
     )
 
-    $fullName = "$($Issue.number): $($Issue.title)"
-    if ($MaxLength -le 0 -or $fullName.Length -le $MaxLength) { return $fullName }
-    if ($MaxLength -le 3) { return '.' * $MaxLength }
+    return Limit-DisplayName -Value "$($Issue.number): $($Issue.title)" -MaxLength $MaxLength
+}
 
-    return $fullName.Substring(0, $MaxLength - 3) + '...'
+function New-PlanAgentName {
+    <#
+    .SYNOPSIS
+        Builds the session display name for -New: `new: <description>`, capped
+        to -MaxLength.
+    .DESCRIPTION
+        There is no issue number yet, so the description stands in for the
+        title. An empty/whitespace description falls back to a bare
+        'new issue'. Capping/truncation rules live in Limit-DisplayName.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Description,
+        [int]$MaxLength = 0
+    )
+
+    $trimmed = $Description.Trim()
+    $fullName = if ($trimmed) { "new: $trimmed" } else { 'new issue' }
+
+    return Limit-DisplayName -Value $fullName -MaxLength $MaxLength
 }
 
 function Get-ConsoleWidth {
@@ -213,6 +299,52 @@ function New-IssueAgentPrompt {
     param([Parameter(Mandatory)][int]$IssueNumber)
 
     return "@dev-loop gh issue $IssueNumber"
+}
+
+function New-PlanAgentPrompt {
+    <#
+    .SYNOPSIS
+        Builds the initial prompt handed to a -New (plan a brand-new issue)
+        claude session.
+    .DESCRIPTION
+        `@plan` (.github/agents/plan.agent.md) runs its own Socratic discovery
+        -- purpose, constraints, success criteria -- proposes approaches, gets
+        the design approved, and only then creates the GitHub issue. The
+        description is therefore a seed, not a spec: nothing else needs to be
+        inlined here. An empty/whitespace description yields the bare `@plan`,
+        letting the agent open the conversation itself.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Description)
+
+    $trimmed = $Description.Trim()
+    if (-not $trimmed) { return '@plan' }
+
+    return "@plan $trimmed"
+}
+
+function Get-DefaultPermissionMode {
+    <#
+    .SYNOPSIS
+        The `claude --permission-mode` default for a given parameter set.
+    .DESCRIPTION
+        -New opens a design conversation, so it defaults to 'plan'; issue
+        dispatch runs the full dev loop and defaults to 'auto'. Only consulted
+        when -PermissionMode was left unbound -- an explicit -PermissionMode
+        always wins.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure lookup -- the Get- verb here names output shape, not state change.')]
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][ValidateSet('Issue', 'New')][string]$ParameterSetName)
+
+    if ($ParameterSetName -eq 'New') { return 'plan' }
+
+    return 'auto'
 }
 
 function ConvertTo-PowerShellLiteral {
@@ -395,16 +527,29 @@ foreach ($cmd in 'gh', 'claude') {
     }
 }
 
-if ($IssueNumber -le 0) {
-    Write-Error 'IssueNumber is required, e.g. ./Start-IssueAgent.ps1 123'
-    exit 1
+$maxNameLength = [Math]::Max(1, [int][Math]::Floor((Get-ConsoleWidth) * 0.75))
+
+if (-not $PSBoundParameters.ContainsKey('PermissionMode')) {
+    $PermissionMode = Get-DefaultPermissionMode -ParameterSetName $PSCmdlet.ParameterSetName
 }
 
-$repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug }
-$issue = Get-GitHubIssue -Number $IssueNumber -RepoSlug $repoSlug
-$maxNameLength = [Math]::Max(1, [int][Math]::Floor((Get-ConsoleWidth) * 0.75))
-$name = New-IssueAgentName -Issue $issue -MaxLength $maxNameLength
-$prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber
+if ($PSCmdlet.ParameterSetName -eq 'New') {
+    # No gh/git call at all -- @plan resolves the repo and files the issue itself.
+    $name = New-PlanAgentName -Description $New -MaxLength $maxNameLength
+    $prompt = New-PlanAgentPrompt -Description $New
+}
+else {
+    if ($IssueNumber -le 0) {
+        Write-Error 'IssueNumber is required, e.g. ./Start-IssueAgent.ps1 123 (or -New "<description>" to plan a new one)'
+        exit 1
+    }
+
+    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug }
+    $issue = Get-GitHubIssue -Number $IssueNumber -RepoSlug $repoSlug
+    $name = New-IssueAgentName -Issue $issue -MaxLength $maxNameLength
+    $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber
+}
+
 $startDir = $PSScriptRoot
 
 Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
