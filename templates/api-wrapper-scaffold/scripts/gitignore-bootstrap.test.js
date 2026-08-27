@@ -40,6 +40,12 @@ function assert(cond, msg) {
         '[fresh] every entry should be added, got ' + added.length);
     assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.har-profile.json'),
         '[fresh] the operator profile must be gitignored -- it holds real identifiers');
+    // The legacy substitution map is keyed by `<kind>:<original>`, so the KEYS
+    // are the secrets. It sits beside the scrubbed HAR in a committed
+    // directory; without this entry the scrub would publish exactly what it
+    // was run to remove.
+    assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.har-substitutions.json'),
+        '[fresh] the substitution map must be gitignored -- its keys are the original secrets');
     const body = readGi(dir);
     for (const e of SCAFFOLD_GITIGNORE_ENTRIES) {
         assert(body.includes(e), '[fresh] .gitignore missing ' + e);
