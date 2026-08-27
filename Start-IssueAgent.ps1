@@ -365,6 +365,11 @@ function New-PlanAgentPrompt {
           2. `@dev-loop gh issue <number>` picks up that brand-new issue and
              runs the full quality cycle, exactly as `-IssueNumber` would have.
 
+        The whole prompt is natural language read by the claude session, not a
+        command line: `<number>` stays a literal placeholder the session fills
+        in from the issue @plan just created. This script cannot substitute it
+        -- the issue does not exist yet when the prompt is built.
+
         Naming step 2 in the initial prompt is what makes -New converge:
         `@plan` on its own ends at "hand off to @dev-loop" and waits, so a
         seed-only prompt left the session parked after the issue was filed --
