@@ -7,8 +7,8 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:TestJs     = Join-Path $script:ScriptsDir 'verify-scrub-cc-timestamp.test.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:TestJs     = Join-Path $script:ScriptsDir 'har/verify-scrub-cc-timestamp.test.js'
 }
 
 Describe 'verify-scrub credit-card vs Unix-ms timestamp (issue #87)' {

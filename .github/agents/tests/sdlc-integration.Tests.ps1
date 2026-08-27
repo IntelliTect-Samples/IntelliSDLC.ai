@@ -9,8 +9,8 @@
 
 BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:Runner   = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts/run-agent.js'
-    $script:Module   = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts/sdlc-integration.js'
+    $script:Runner   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/codegen/run-agent.js'
+    $script:Module   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/codegen/sdlc-integration.js'
     $script:RestHar  = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-rest.har'
     $script:Stub     = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/sdlc-stub/Pull-SDLC.ai.ps1'
     $script:StubDir  = Split-Path -Parent $script:Stub

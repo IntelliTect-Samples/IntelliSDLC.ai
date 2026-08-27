@@ -1,12 +1,12 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for templates/api-wrapper-scaffold/scripts/run-agent.js
+# Behavior tests for templates/web-api-discovery/scripts/codegen/run-agent.js
 # -- the thin orchestrator that chains sanitize -> verify -> detect -> generate.
 
 BeforeAll {
     $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:Runner   = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts/run-agent.js'
+    $script:Runner   = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/codegen/run-agent.js'
     $script:RestHar  = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/e2e-rest.har'
 
     function New-TmpDir {

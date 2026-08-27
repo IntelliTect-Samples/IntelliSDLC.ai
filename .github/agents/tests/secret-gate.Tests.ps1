@@ -1,15 +1,15 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = "Pester"; ModuleVersion = "5.0.0" }
 
-# Behavior tests for the secret-gate scaffold emitted by api-wrapper-scaffold
+# Behavior tests for the secret-gate scaffold emitted by web-api-discovery
 # (issue #52). Builds on PR #47 (PII fake markers) + PR #49 (codegen) + PR #51
 # (tests-templates).
 
 BeforeAll {
     $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:ScriptsDir   = Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/scripts"
-    $script:GenJs        = Join-Path $script:ScriptsDir "generate-wrapper.js"
-    $script:SgTmplDir    = Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/secret-gate"
+    $script:ScriptsDir   = Join-Path $script:RepoRoot "templates/web-api-discovery/scripts"
+    $script:GenJs        = Join-Path $script:ScriptsDir "codegen/generate-wrapper.js"
+    $script:SgTmplDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/secret-gate"
     $script:RestHar      = Join-Path $script:RepoRoot ".github/agents/tests/fixtures/har/rest-3endpoints.har"
     $script:GitleaksCmd  = Get-Command gitleaks -ErrorAction SilentlyContinue
 

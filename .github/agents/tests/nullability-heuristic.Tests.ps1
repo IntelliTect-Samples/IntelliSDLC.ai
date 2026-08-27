@@ -6,8 +6,8 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:TestJs     = Join-Path $script:ScriptsDir 'nullability.test.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:TestJs     = Join-Path $script:ScriptsDir 'codegen/nullability.test.js'
 }
 
 Describe 'nullability heuristic for generated record properties' {

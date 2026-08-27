@@ -1,14 +1,14 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for the api-wrapper-scaffold auth detector (issue #40).
+# Behavior tests for the web-api-discovery auth detector (issue #40).
 # Exercises detect-auth.js and its exported classifyAuth function against
 # 8 hand-crafted synthetic HAR fixtures (one per supported AuthModel + ambiguous).
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:DetectJs   = Join-Path $script:ScriptsDir 'detect-auth.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:DetectJs   = Join-Path $script:ScriptsDir 'har/detect-auth.js'
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures/har'
 
     function Invoke-Detect {

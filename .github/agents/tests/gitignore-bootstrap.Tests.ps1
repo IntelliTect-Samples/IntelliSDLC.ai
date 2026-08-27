@@ -6,11 +6,11 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:TestJs     = Join-Path $script:ScriptsDir 'gitignore-bootstrap.test.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:TestJs     = Join-Path $script:ScriptsDir 'codegen/gitignore-bootstrap.test.js'
 }
 
-Describe 'api-wrapper-scaffold consumer .gitignore bootstrap (issue #119)' {
+Describe 'web-api-discovery consumer .gitignore bootstrap (issue #119)' {
     It 'test file exists at the canonical path' {
         Test-Path -LiteralPath $script:TestJs | Should -BeTrue
     }

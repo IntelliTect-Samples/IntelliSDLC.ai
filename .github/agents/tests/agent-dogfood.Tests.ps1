@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Structural Pester tests for the api-wrapper-scaffold dogfood (issue #58 / epic #34).
+    Structural Pester tests for the web-api-discovery dogfood (issue #58 / epic #34).
 
 .DESCRIPTION
     These tests DO NOT run the dogfood -- the dogfood is a manual / out-of-band

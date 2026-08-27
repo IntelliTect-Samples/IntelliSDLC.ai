@@ -5,9 +5,9 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:GenJs      = Join-Path $script:ScriptsDir 'generate-wrapper.js'
-    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture-cdp.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:GenJs      = Join-Path $script:ScriptsDir 'codegen/generate-wrapper.js'
+    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-cdp.js'
     $script:RestHar    = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/rest-3endpoints.har'
     $script:GqlHar     = Join-Path $script:RepoRoot '.github/agents/tests/fixtures/har/graphql.har'
 
@@ -415,7 +415,7 @@ Describe 'verb-passthrough (issue #100)' {
 
 Describe 'Client.cs.tmpl SendRawAsync verb support (issue #100)' {
     BeforeAll {
-        $tmpl = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/csharp/Client.cs.tmpl'
+        $tmpl = Join-Path $script:RepoRoot 'templates/web-api-discovery/csharp/Client.cs.tmpl'
         $script:ClientTmpl = Get-Content -Raw $tmpl
     }
 

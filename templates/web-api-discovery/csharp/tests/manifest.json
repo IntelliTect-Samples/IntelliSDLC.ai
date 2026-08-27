@@ -1,0 +1,53 @@
+{
+  "$schema": "../manifest.schema.json",
+  "description": "Manifest of xUnit + Pester .tmpl files emitted into each generated wrapper's tests/<TestProjectName>/ directory. The web-api-discovery codegen pipeline (scripts/codegen/tests-emit.js) substitutes the tokens below and emits one ClientTests.<Group>.cs per resource group (with [Fact] bodies injected via the {{Facts}} token). Tests in .github/agents/tests/tests-templates.Tests.ps1 enforce manifest <-> body parity.",
+  "tokens": {
+    "ProjectName": "PascalCase wrapper name, e.g. ExampleEx. Matches the wrapper csproj.",
+    "Namespace": "Root .NET namespace of the wrapper, e.g. Example. Test code lives under {Namespace}.Tests.",
+    "TestProjectName": "PascalCase test-project name. Default is '<ProjectName>.Tests'.",
+    "Facts": "Pre-rendered block of [Fact] methods (emitted by tests-emit.js per resource group). Empty string in manifest-parity tests.",
+    "ExpectedMethods": "Multi-line PowerShell string literal list of generated method names (e.g. '        \"GetMeAsync\",'). Baked into Mcp.Tests.ps1 so the smoke suite knows exactly which tools to expect."
+  },
+  "templates": [
+    {
+      "file": "Tests.csproj.tmpl",
+      "requiredTokens": [
+        "ProjectName",
+        "TestProjectName"
+      ]
+    },
+    {
+      "file": "FixtureLoader.cs.tmpl",
+      "requiredTokens": [
+        "Namespace"
+      ]
+    },
+    {
+      "file": "ClientTests.cs.tmpl",
+      "requiredTokens": [
+        "Namespace",
+        "ProjectName",
+        "Facts"
+      ]
+    },
+    {
+      "file": "MockHandler.cs.tmpl",
+      "requiredTokens": [
+        "Namespace"
+      ]
+    },
+    {
+      "file": "pester/Mcp.Tests.ps1.tmpl",
+      "requiredTokens": [
+        "ExpectedMethods",
+        "ProjectName"
+      ]
+    },
+    {
+      "file": "pester/run-pester.ps1.tmpl",
+      "requiredTokens": [
+        "TestProjectName"
+      ]
+    }
+  ]
+}

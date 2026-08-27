@@ -8,8 +8,8 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:Skill      = Join-Path $script:RepoRoot '.github/skills/api-wrapper-scaffold/SKILL.md'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:Skill      = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
     $script:SkillText  = Get-Content -LiteralPath $script:Skill -Raw
 
     function Invoke-NodeTest {
@@ -27,36 +27,36 @@ BeforeAll {
 
 Describe 'Operator profile (.har-profile.json)' {
     It 'all behavioral assertions pass' {
-        Invoke-NodeTest -FileName 'har-profile.test.js' -SuccessPattern 'All har-profile tests passed'
+        Invoke-NodeTest -FileName 'har/har-profile.test.js' -SuccessPattern 'All har-profile tests passed'
     }
 }
 
 Describe 'Literal-value scrubbing' {
     It 'unit assertions pass' {
-        Invoke-NodeTest -FileName 'har-literals.test.js' -SuccessPattern 'All har-literals tests passed'
+        Invoke-NodeTest -FileName 'har/har-literals.test.js' -SuccessPattern 'All har-literals tests passed'
     }
 
     It 'end-to-end scrub assertions pass' {
-        Invoke-NodeTest -FileName 'literal-scrub.test.js' -SuccessPattern 'All literal-scrub tests passed'
+        Invoke-NodeTest -FileName 'har/literal-scrub.test.js' -SuccessPattern 'All literal-scrub tests passed'
     }
 }
 
 Describe 'HAR reference catalogue tooling' {
     It 'extractor and verifier assertions pass' {
-        Invoke-NodeTest -FileName 'har-reference.test.js' -SuccessPattern 'All har-reference tests passed'
+        Invoke-NodeTest -FileName 'har/har-reference.test.js' -SuccessPattern 'All har-reference tests passed'
     }
 
     It 'ships both scripts at the canonical path' {
-        foreach ($name in 'har-profile.js', 'har-literals.js', 'har-secrets.js',
-                          'extract-har-reference.js', 'verify-har-reference.js') {
+        foreach ($name in 'har/har-profile.js', 'har/har-literals.js', 'har/har-secrets.js',
+                          'har/extract-har-reference.js', 'har/verify-har-reference.js') {
             Test-Path -LiteralPath (Join-Path $script:ScriptsDir $name) |
                 Should -BeTrue -Because "$name is referenced by SKILL.md"
         }
     }
 
     It 'every script parses' {
-        foreach ($name in 'har-profile.js', 'har-literals.js', 'har-secrets.js',
-                          'extract-har-reference.js', 'verify-har-reference.js') {
+        foreach ($name in 'har/har-profile.js', 'har/har-literals.js', 'har/har-secrets.js',
+                          'har/extract-har-reference.js', 'har/verify-har-reference.js') {
             & node --check (Join-Path $script:ScriptsDir $name) 2>&1 | Out-Null
             $LASTEXITCODE | Should -Be 0 -Because "$name must parse"
         }

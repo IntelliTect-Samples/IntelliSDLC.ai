@@ -6,8 +6,8 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:TestJs     = Join-Path $script:ScriptsDir 'envelope.test.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:TestJs     = Join-Path $script:ScriptsDir 'codegen/envelope.test.js'
 }
 
 Describe 'envelope detection / unwrap heuristic' {
