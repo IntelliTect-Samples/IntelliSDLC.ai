@@ -146,24 +146,60 @@ Describe 'New-IssueAgentPrompt' {
 }
 
 Describe 'New-PlanAgentPrompt' {
-    It 'delegates to @plan with the description as a seed' {
-        New-PlanAgentPrompt -Description 'users need CSV export' | Should -Be '@plan users need CSV export'
+    It 'seeds @plan with the description on the first line' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        ($prompt -split "`n")[0] | Should -Be '@plan users need CSV export'
+    }
+
+    It 'tells the session to create the GitHub issue via @plan' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt | Should -Match '1\. @plan: .*create the GitHub issue'
+    }
+
+    It 'tells the session to implement the new issue via @dev-loop once it exists' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt | Should -Match '2\. .*@dev-loop gh issue <number>'
     }
 
     It 'trims surrounding whitespace from the description' {
-        New-PlanAgentPrompt -Description '  users need CSV export  ' | Should -Be '@plan users need CSV export'
+        $prompt = New-PlanAgentPrompt -Description '  users need CSV export  '
+
+        ($prompt -split "`n")[0] | Should -Be '@plan users need CSV export'
     }
 
-    It 'yields the bare @plan for an empty description' {
-        New-PlanAgentPrompt -Description '' | Should -Be '@plan'
+    It 'seeds a bare @plan for an empty description' {
+        $prompt = New-PlanAgentPrompt -Description ''
+
+        ($prompt -split "`n")[0] | Should -Be '@plan'
     }
 
-    It 'yields the bare @plan for a whitespace-only description' {
-        New-PlanAgentPrompt -Description "  `t " | Should -Be '@plan'
+    It 'seeds a bare @plan for a whitespace-only description' {
+        $prompt = New-PlanAgentPrompt -Description "  `t "
+
+        ($prompt -split "`n")[0] | Should -Be '@plan'
+    }
+
+    It 'keeps the create-then-implement steps for a seedless description' {
+        $seedless = New-PlanAgentPrompt -Description ''
+        $seeded = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        # Everything after the seed line is identical in both forms.
+        ($seedless -split "`n`n", 2)[1] | Should -Be ($seeded -split "`n`n", 2)[1]
     }
 
     It 'passes a description containing a single quote through verbatim' {
-        New-PlanAgentPrompt -Description "it's broken" | Should -Be "@plan it's broken"
+        $prompt = New-PlanAgentPrompt -Description "it's broken"
+
+        ($prompt -split "`n")[0] | Should -Be "@plan it's broken"
+    }
+
+    It 'keeps a multi-line description intact ahead of the steps' {
+        $prompt = New-PlanAgentPrompt -Description "first line`nsecond line"
+
+        $prompt | Should -BeLike "@plan first line`nsecond line`n`nTwo steps*"
     }
 }
 
