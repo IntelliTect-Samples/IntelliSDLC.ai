@@ -414,6 +414,35 @@ function Test-BuildRequired {
     return $newestSource -gt $assembly.LastWriteTimeUtc
 }
 
+$script:TransientStatusLength = 0
+
+function Write-TransientStatus {
+    <#
+    .SYNOPSIS
+        Writes an in-place status message that a later Write-TransientStatus or
+        Clear-TransientStatus call will overwrite, instead of scrolling the console.
+    .DESCRIPTION
+        Returns the cursor to the start of the line (`) and pads with spaces to
+        erase any leftover characters from a longer previous message.
+    #>
+    param([string]$Message, [string]$ForegroundColor = 'DarkGray')
+
+    $pad = ' ' * [Math]::Max(0, $script:TransientStatusLength - $Message.Length)
+    Write-Host -NoNewline "`r$Message$pad" -ForegroundColor $ForegroundColor
+    $script:TransientStatusLength = $Message.Length
+}
+
+function Clear-TransientStatus {
+    <#
+    .SYNOPSIS
+        Blanks out the line written by Write-TransientStatus, leaving no trace of it.
+    #>
+    if ($script:TransientStatusLength -gt 0) {
+        Write-Host -NoNewline ("`r" + (' ' * $script:TransientStatusLength) + "`r")
+        $script:TransientStatusLength = 0
+    }
+}
+
 $script:HelpFlags = @('--help', '-h', '-?')
 
 function ConvertTo-ForwardedArgument {
@@ -589,12 +618,16 @@ Write-Host ''
 $dotnetArgs = @('run', '--project', $selectedProject.FullName)
 
 # Skip compilation when no source file is newer than the last build output.
+Write-TransientStatus 'Checking whether a build is required...'
 if (Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot) {
+    Clear-TransientStatus
     Write-Host 'Source changes detected - building.' -ForegroundColor DarkGray
 }
 else {
     $dotnetArgs += '--no-build'
-    Write-Host 'No source changes detected - skipping build.' -ForegroundColor DarkGray
+    Write-TransientStatus 'No build required.'
+    Start-Sleep -Milliseconds 800
+    Clear-TransientStatus
 }
 
 # Add launch profile if applicable
