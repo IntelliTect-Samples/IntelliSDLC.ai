@@ -354,13 +354,32 @@ function Get-GitCommonDir {
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
 
+    # GIT_DIR / GIT_COMMON_DIR / GIT_WORK_TREE take precedence over -C, so a
+    # leaked one (a git hook's environment, an IDE integration) would silently
+    # resolve some *other* repository -- verified: with GIT_DIR set, a path
+    # outside any repository still reported that repository's common dir.
+    # Cleared for this call only, then restored.
+    $overrides = 'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE'
+    $saved = @{}
+    foreach ($name in $overrides) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
+
     try {
+        # Remove-Item, not [Environment]::SetEnvironmentVariable($name, $null):
+        # the latter hands the child process an *empty* GIT_DIR rather than
+        # deleting it, and git then fails with "not a git repository: ''".
+        foreach ($name in $overrides) { Remove-Item "Env:\$name" -ErrorAction SilentlyContinue }
+
         $output = git -C $Path rev-parse --path-format=absolute --git-common-dir 2>$null
         if ($LASTEXITCODE -ne 0) { return '' }
     }
     catch {
         Write-Verbose "Could not resolve the git common dir for '$Path', falling back: $_"
         return ''
+    }
+    finally {
+        foreach ($name in $overrides) {
+            if ($null -ne $saved[$name]) { Set-Item "Env:\$name" -Value $saved[$name] }
+        }
     }
 
     return ($output | Select-Object -First 1)

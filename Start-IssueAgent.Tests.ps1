@@ -231,6 +231,32 @@ Describe 'Get-GitCommonDir' {
         }
     }
 
+    It 'ignores a leaked GIT_DIR, which git honors over -C' {
+        # Reproduced before fixing: with GIT_DIR set, git reported that
+        # repository's common dir even for a path outside any repository.
+        $expected = Get-GitCommonDir -Path $PSScriptRoot
+        # Guards against the assertion below passing vacuously by comparing one
+        # broken (empty) result against another.
+        $expected | Should -Not -BeNullOrEmpty
+
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('launch-dir-' + [guid]::NewGuid().ToString('N'))
+        $savedGitDir = [Environment]::GetEnvironmentVariable('GIT_DIR')
+
+        try {
+            git init -q -b main $tempRoot 2>&1 | Out-Null
+            $env:GIT_DIR = Join-Path $tempRoot '.git'
+
+            Get-GitCommonDir -Path $PSScriptRoot | Should -Be $expected
+
+            # The caller's environment is left exactly as it was found.
+            $env:GIT_DIR | Should -Be (Join-Path $tempRoot '.git')
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('GIT_DIR', $savedGitDir)
+            if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
     It 'returns an empty string outside a repository rather than throwing' {
         Get-GitCommonDir -Path ([IO.Path]::GetTempPath()) | Should -BeNullOrEmpty
     }
