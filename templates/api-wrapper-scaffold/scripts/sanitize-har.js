@@ -134,6 +134,7 @@ const {
     KNOWN_SECRET_FIELD_NAMES,
     KNOWN_SECRET_HEADER_NAMES,
     isKnownSecretField,
+    replaceMultipartSecretFields,
 } = require(path.join(__dirname, 'har-secrets.js'));
 
 // Escaped alternation of known secret field names, used to catch them by
@@ -180,6 +181,15 @@ function scrubString(s, subs, salt, depth) {
     const level = depth || 0;
     let out = scrubKnownFields(s, subs, salt);
 
+    // Multipart bodies carry the field name in a header and the value on its
+    // own line, so the `name=value` and `"name":"value"` forms above never
+    // see them.
+    out = replaceMultipartSecretFields(out, (name, value) => {
+        const key = `field:${name.toLowerCase()}:${value}`;
+        if (!subs[key]) subs[key] = fakeFor('field', value, salt);
+        return subs[key];
+    });
+
     // Reach INSIDE percent-encoded parameters. A form body carrying
     // `variables=<percent-encoded JSON>` hides per-request tokens where no
     // flat pattern over the wire body can match them, and where the inner key
@@ -210,6 +220,22 @@ function scrubCookieHeader(value, subs, salt) {
         if (!subs[key]) subs[key] = fakeFor('cookie', tok, salt);
         return `${name}=${subs[key]}`;
     });
+}
+
+// The HAR spec lets `cookies[]` and the `Cookie` header diverge, and the
+// 16-char-or-known-name heuristic only ever ran over header text. A session
+// cookie present only in the structured array was missed by the scrubber and
+// by every gate downstream of it.
+function scrubCookieArray(cookies, subs, salt) {
+    if (!Array.isArray(cookies)) return cookies;
+    for (const c of cookies) {
+        if (!c || typeof c.value !== 'string' || typeof c.name !== 'string') continue;
+        if (c.value.length < 16 && !isKnownSecretField(c.name)) continue;
+        const key = `cookie:${c.name.toLowerCase()}:${c.value}`;
+        if (!subs[key]) subs[key] = fakeFor('cookie', c.value, salt);
+        c.value = subs[key];
+    }
+    return cookies;
 }
 
 function scrubHeaders(headers, subs, salt) {
@@ -249,6 +275,8 @@ function walk(node, subs, salt) {
         for (const k of Object.keys(node)) {
             if (k === 'headers') {
                 node[k] = scrubHeaders(node[k], subs, salt);
+            } else if (k === 'cookies') {
+                node[k] = scrubCookieArray(node[k], subs, salt);
             } else {
                 node[k] = walk(node[k], subs, salt);
             }

@@ -244,6 +244,13 @@ one sweep covers URLs, headers, request bodies and response bodies together.
 You need both, because key-name scrubbing can only ever redact a value whose
 name somebody anticipated. Two whole classes escape it:
 
+- **A field whose name and value are not adjacent.** A multipart body puts
+  the name in a `Content-Disposition` header and the value on its own line
+  after a blank line, so neither `name=value` nor `"name":"value"` matches --
+  and the tokens on a name list are short and non-hex by nature, so no shape
+  pattern catches them either. The value survives the scrub *and* every
+  verifier: a silent bypass, which is worse than no scrub, because the file
+  looks checked. Scrub multipart fields by name explicitly.
 - **A secret nested inside an encoded JSON parameter.** A form body carries
   `variables=<percent-encoded JSON>` and the per-request tokens live *inside*
   that JSON. No flat pattern over the wire body matches them -- the body is
@@ -261,7 +268,19 @@ name somebody anticipated. Two whole classes escape it:
 
 Implementation rules that mattered in practice:
 
-- Replace both the raw literal **and** its percent-encoded spelling. The same
+- Replace the raw literal, its percent-encoded spelling, **and its
+  JSON-escaped spelling**. The pass runs over the serialized document, where a
+  quote is a backslash-escaped quote and a non-ASCII character may be a
+  backslash-u escape -- and a JSON body stored as a string inside the HAR is
+  escaped a second time. A literal containing any of those never appears raw
+  in the text being scanned, and names -- the most common literal after an
+  id -- routinely contain them.
+- **Apply the longest literal first**, whatever order the operator declared
+  them in. A short literal that runs first consumes its own substring out of a
+  longer one: replacing a surname inside a full name strands the given name
+  next to a sentinel, and the longer literal records no hit, so nothing
+  reports the partial name that just leaked.
+- Also replace both spellings The same
   applies to values the typed-PII pass already found: detection reads the
   decoded `queryString` pair while the URL carries `phone=%2B1...`, and
   replacing only the raw spelling leaves the encoded copy readable.
@@ -273,6 +292,10 @@ Implementation rules that mattered in practice:
   not a quietly empty map. Say why in a comment: a future maintainer meeting
   an awkward required input will otherwise be tempted to helpfully add a
   default.
+- **No finding may quote the value it found** -- not the literal ones, and not
+  the shape-based ones either. A leak report that prints the matched email or
+  bearer token relocates the leak into the CI log that reports it. Name the
+  sentinel, name the field, or emit a short non-reversible fingerprint.
 - The verifier accepts the same literals as forbidden values and must **not**
   echo the offending value in its failure message. That just relocates the
   leak into the CI log that reports it -- name the sentinel instead.
@@ -301,7 +324,9 @@ required literal deserves the same treatment before it meets a real capture.
   percent-decoded view of the file.
 - Every fake in output reverses via the table.
 - No known secret name carries a readable value, at any nesting depth,
-  including inside a decoded JSON parameter.
+  including inside a decoded JSON parameter and inside a multipart body.
+- A cookie is checked in the structured `cookies[]` array as well as in the
+  `Cookie` header -- the HAR spec lets them diverge.
 - No forbidden literal survives.
 
 ### Phase 3.5 -- HAR Reference Catalogue
@@ -397,6 +422,11 @@ behaviours:
   makes the reference searchable for a field name.
 - Refuses to run without a selector, and **fails loudly when nothing
   matches** rather than writing an empty reference.
+- Re-checks its own output for forbidden literals **before writing**, and
+  fails rather than writing. Its post-processing can reveal a literal the
+  scrub never saw -- decoding a parameter to emit `params[]` peels a layer of
+  encoding off it. Printing a warning and exiting `0` is not a gate: an
+  automated caller reads the exit code, sees success, and commits the file.
 - Takes the literal -> sentinel map from the capture-time profile
   (see Phase 3).
 
@@ -404,9 +434,14 @@ behaviours:
 and in CI. It fails on:
 
 - a truncated request body;
-- an unredacted credential header or parameter;
+- an unredacted credential header, parameter, or multipart field;
 - a secret nested inside a JSON-valued parameter;
-- any caller-supplied forbidden literal.
+- any caller-supplied forbidden literal;
+- a **shape-detected** secret -- a JWT, a long hex token, a bearer header, an
+  email. The other gates only catch what somebody named or declared; a
+  per-session token belongs to neither set. Share one pattern list with the
+  gate on the scrubbed HAR: the reference is the file that actually ships, so
+  it must be checked at least as hard as the intermediate it came from.
 
 Both ship with tests, each pinned to a failure that actually shipped.
 

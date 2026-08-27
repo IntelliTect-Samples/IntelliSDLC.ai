@@ -8,16 +8,23 @@
  * parsing the artifact, not by reading the description of it -- so this script
  * parses every committed reference and asserts on its content.
  *
- * Four gates:
+ * Five gates:
  *
  *   1. A truncated request body. Only responses may be capped; a reference
  *      whose request bodies were shortened cannot be replayed or diffed, and
  *      it looks authoritative anyway.
- *   2. An unredacted credential header or parameter (the key-name control).
+ *   2. An unredacted credential header or parameter (the key-name control),
+ *      including a multipart field, where the name lives in a header and the
+ *      value on its own line.
  *   3. A secret nested inside a JSON-valued parameter -- the class that
  *      escapes any flat scan, because the wire body is percent-encoded.
  *   4. A forbidden literal from the operator profile (the literal-value
  *      control), reported by SENTINEL only.
+ *   5. A shape-detected secret -- a JWT, a long hex token, a bearer header,
+ *      an email. Gates 2-4 only catch what somebody named or declared; a
+ *      per-session token belongs to neither set, and the reference is the
+ *      file that actually ships. Same list verify-scrub.js uses, so the
+ *      committed artifact is gated at least as hard as the intermediate.
  *
  * No failure message ever echoes an offending value: that would relocate the
  * leak into the CI log that reports it.
@@ -42,6 +49,7 @@ const path = require('path');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
+const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 
 const DEFAULT_DIR = path.join('docs', 'har-reference');
 
@@ -128,6 +136,10 @@ function main() {
         harSecrets.walkForUnredactedSecrets(har, (name, where) => {
             report(`${where}: credential '${name}' is readable in the clear`);
         });
+
+        for (const leak of harShapes.findLeaks(raw)) {
+            report(harShapes.describeLeak(leak));
+        }
 
         for (const hit of harLiterals.findLiteralHits(raw, literals)) {
             report(`forbidden literal ${hit.sentinel} appears ${hit.count} time(s) unscrubbed`);

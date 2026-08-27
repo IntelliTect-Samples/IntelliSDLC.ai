@@ -37,6 +37,41 @@ function isKnownSecretField(key) {
     return typeof key === 'string' && KNOWN_SECRET_FIELD_NAMES.has(key.toLowerCase());
 }
 
+// A multipart field puts its name in a Content-Disposition header and its
+// value on its own line after a blank line:
+//
+//   ------Boundary
+//   Content-Disposition: form-data; name="lsd"
+//
+//   AVliveCsrfToken123
+//   ------Boundary--
+//
+// So neither `name=value` nor `"name":"value"` matches, and the tokens on the
+// name list are short and non-hex by nature -- that is why they are on a name
+// list at all -- so no shape pattern catches them either. Without this the
+// value survives the scrub AND every verifier: a silent bypass, which is
+// worse than no scrub, because the file looks checked.
+const MULTIPART_FIELD_RE =
+    /(Content-Disposition:[^\r\n]*?\bname="([^"]+)"[^\r\n]*(?:\r?\n(?!\r?\n)[^\r\n]*)*\r?\n\r?\n)([\s\S]*?)(?=\r?\n--)/gi;
+
+/**
+ * Visit each multipart field whose name is a known secret.
+ *
+ * `replacer(name, value)` returns a replacement value, or null/undefined to
+ * leave it alone (which is how a detector uses this without mutating).
+ * Returns the rewritten text.
+ */
+function replaceMultipartSecretFields(text, replacer) {
+    if (typeof text !== 'string' || !text.includes('Content-Disposition')) return text;
+    return text.replace(MULTIPART_FIELD_RE, (match, head, name, value) => {
+        if (!isKnownSecretField(name) || !isPlausibleSecretValue(value) || isRedacted(value)) {
+            return match;
+        }
+        const replacement = replacer(name, value);
+        return replacement === null || replacement === undefined ? match : head + replacement;
+    });
+}
+
 function isKnownSecretHeader(name) {
     return typeof name === 'string' && KNOWN_SECRET_HEADER_NAMES.has(name.toLowerCase());
 }
@@ -97,6 +132,13 @@ function walkForUnredactedSecrets(node, report, where, seen) {
             continue;
         }
         if (isUnredactedSecret(key, value)) report(key, location);
+        // A multipart body is one opaque string, so there is no structured
+        // pair to walk -- detect the field in the text itself. The replacer
+        // returns null, so this reports without mutating.
+        replaceMultipartSecretFields(value, (name) => {
+            report(name, `${location} (multipart field)`);
+            return null;
+        });
         const nested = decodeNestedJson(value);
         if (nested) {
             walkForUnredactedSecrets(nested, report, `${location} (inside encoded '${key}')`, visited);
@@ -112,4 +154,5 @@ module.exports = {
     isRedacted,
     isUnredactedSecret,
     walkForUnredactedSecrets,
+    replaceMultipartSecretFields,
 };

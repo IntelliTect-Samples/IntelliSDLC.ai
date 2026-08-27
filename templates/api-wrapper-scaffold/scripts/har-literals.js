@@ -39,8 +39,23 @@ const MIN_SECRET_LENGTH = 4;
  */
 function encodedForms(literal) {
     const once = encodeURIComponent(literal);
+    // The pass runs over the SERIALIZED document, where a quote is `\"`, a
+    // backslash is `\\` and a non-ASCII character may be `\uXXXX`. A literal
+    // containing any of those never appears raw in the text being scanned --
+    // and names, the most common literal after an id, routinely contain them.
+    const jsonEscaped = JSON.stringify(literal).slice(1, -1);
+    const jsonAscii = JSON.stringify(literal)
+        .slice(1, -1)
+        .replace(/[\u0080-\uffff]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+    // Escaped twice: a JSON response body is stored in the HAR as a STRING, so
+    // serializing the HAR escapes its quotes a second time. A literal inside a
+    // JSON body therefore reaches the pass as `\\\"Countess\\\"`.
+    const jsonEscapedTwice = JSON.stringify(jsonEscaped).slice(1, -1);
     const candidates = [
         literal,
+        jsonEscaped,
+        jsonEscapedTwice,
+        jsonAscii,
         once,
         once.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()),
         once.replace(/%20/g, '+'),
@@ -48,6 +63,19 @@ function encodedForms(literal) {
     ];
     return Array.from(new Set(candidates.filter((c) => c.length > 0)))
         .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Longest literal first, regardless of declaration order.
+ *
+ * If a short literal runs first it consumes its own substring out of a longer
+ * one -- replacing `Lovelace` inside `Ada Lovelace` strands `Ada ` next to a
+ * sentinel, and the longer literal records no hit, so nothing reports the
+ * partial name that just leaked. The operator should not have to know that
+ * declaration order is load-bearing.
+ */
+function byDescendingLength(literals) {
+    return (literals || []).slice().sort((a, b) => b.literal.length - a.literal.length);
 }
 
 function countAndReplace(text, needle, replacement) {
@@ -67,7 +95,7 @@ function countAndReplace(text, needle, replacement) {
 function applyLiteralPass(text, literals) {
     let out = text;
     const hits = [];
-    for (const { literal, sentinel } of literals || []) {
+    for (const { literal, sentinel } of byDescendingLength(literals)) {
         let count = 0;
         for (const form of encodedForms(literal)) {
             const r = countAndReplace(out, form, sentinel);
@@ -85,7 +113,7 @@ function applyLiteralPass(text, literals) {
  */
 function findLiteralHits(text, literals) {
     const hits = [];
-    for (const { literal, sentinel } of literals || []) {
+    for (const { literal, sentinel } of byDescendingLength(literals)) {
         let count = 0;
         for (const form of encodedForms(literal)) {
             count += countAndReplace(text, form, '').count;
@@ -159,6 +187,7 @@ function isPlausibleSecretValue(value) {
 module.exports = {
     MIN_SECRET_LENGTH,
     encodedForms,
+    byDescendingLength,
     applyLiteralPass,
     findLiteralHits,
     decodeNestedJson,
