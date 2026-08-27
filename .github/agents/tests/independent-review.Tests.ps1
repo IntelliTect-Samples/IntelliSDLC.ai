@@ -67,6 +67,10 @@ Describe 'CLAUDE.md carries the independent-review step' {
         # override is the one item that stops self-review, so it belongs here
         # and not only in the paragraph above.
         $script:ClaudeText | Should -Match '(?i)-\s+it\s+ran\s+under\s+an\s+explicit\s+model\s+override'
+        # The bullet must stand on its own. A positional pointer would rot the
+        # moment the section is reordered -- the same failure this file guards
+        # against for the skip-permission paragraph.
+        $script:ClaudeText | Should -Not -Match '(?i)per\s+the\s+paragraph\s+above'
     }
 
     It 'names the trigger for the skip permission instead of a bare pronoun' {
