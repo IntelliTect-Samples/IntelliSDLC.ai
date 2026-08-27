@@ -80,6 +80,48 @@ A pre-commit hook (`.githooks/pre-commit`) enforces rules 1 and 2 automatically.
 git config core.hooksPath .githooks
 ```
 
+## Independent Code Review -- Reviewer != Author Model
+
+**The invariant: before a PR merges, the diff must have been reviewed by a model
+that did not write it.** That is the requirement. GitHub Copilot review is *one
+way of satisfying* it -- not the requirement itself, and not the only transport.
+
+**Substitution rule.** Run the review with a **different model than the authoring
+model** (e.g. Opus authored -> Sonnet reviews) whenever either is true:
+
+1. **Copilot review is not available** for the repository or organization, or
+2. **The dev loop is running inside Claude Code** -- always, because an
+   independent reviewer is available immediately by spawning a review subagent
+   on a different model, with no dependency on a GitHub-side feature.
+
+In that case, **you may skip the Copilot-specific instructions in
+`.github/agents/dev-loop.agent.md`**: the `gh pr edit --add-reviewer "@copilot"`
+call, the `submittedAt` polling, and the `resolveReviewThread` GraphQL loop are
+Copilot's *transport*, not the requirement. What must still happen is exactly
+what those steps exist to produce:
+
+- an independent reviewer read the full diff,
+- its findings were triaged (accepted or rejected with a rationale validated
+  against the code -- a review is advisory, never auto-applied),
+- every accepted Critical / Important finding was fixed using behavior-first
+  testing, and
+- the reviewer re-read the updated diff and reported no new accepted
+  Critical / Important findings.
+
+**Detection -- do not guess.** The Copilot reviewer request *appearing to
+succeed is not evidence that it worked*: `gh pr edit --add-reviewer "@copilot"`
+exits 0 and `POST /pulls/<n>/requested_reviewers` returns `200` even when
+Copilot code review is disabled, and nothing registers. After requesting,
+confirm it:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<pr-number>/requested_reviewers
+```
+
+An **empty** result means Copilot review is not enabled -- fall through to the
+different-model path immediately rather than polling for a review that will
+never arrive.
+
 ## Key References
 
 - **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) -- code style, testing conventions, branching strategy, commit format, and workflow.
@@ -148,12 +190,13 @@ Always run `dotnet build` and `dotnet test` after every code change. Fix all err
 Follow the full dev loop for any feature:
 
 ```
-Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Copilot Review+Dry Run]* → Merge → Cleanup
+Sync Instructions → Brainstorm+Issue → Worktree → Plan → [TDD → Refactor → Functional Test → Code Review+Fix → PR+Independent Review+Dry Run]* → Merge → Cleanup
 ```
 
 Use `@dev-loop` to orchestrate the full cycle. Phases 3-7 use an expanding loop -- each
 phase is a quality gate, and any failure routes back to Phase 3 (TDD). The loop exits
-only when Copilot review passes with zero issues and the dry run succeeds.
+only when an independent review (a reviewer that is not the authoring model)
+passes with zero issues and the dry run succeeds.
 See `.github/copilot-instructions.md` -> **Skills & Agents** for the complete reference.
 
 - **Sync instructions first:** Before starting any dev loop, check whether the shared
