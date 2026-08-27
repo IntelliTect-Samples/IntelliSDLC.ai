@@ -52,8 +52,18 @@ BeforeAll {
     # "ended cleanly, cleanup failed" -- while reading as though it covered the
     # crash.
     function New-LostSession {
-        param([Parameter(Mandatory)][string]$Root, [int]$Entries = 2, [switch]$Crashed)
-        $sessionDir = Join-Path $Root '2026-01-01-120000'
+        param(
+            [Parameter(Mandatory)][string]$Root,
+            [int]$Entries = 2,
+            [switch]$Crashed,
+            # Sessions resolve newest-last by directory name, so a test that
+            # needs to tell "the pointer was followed" from "the newest-on-disk
+            # fallback found the same thing" must create two, with different
+            # stamps. A single-session fixture cannot distinguish them.
+            [string]$Stamp = '2026-01-01-120000',
+            [int]$OwnerPid = $script:DeadPid
+        )
+        $sessionDir = Join-Path $Root $Stamp
         New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
         $lines = 1..$Entries | ForEach-Object {
             @{
@@ -74,7 +84,7 @@ BeforeAll {
             snapshotHarPath = Join-Path $sessionDir 'raw.snapshot.har'
             startedUtc      = '2026-01-01T12:00:00Z'
             port            = 49999
-            pid             = $script:DeadPid
+            pid             = $OwnerPid
         }
         # A crashed driver leaves NO endedUtc -- that is the whole difficulty.
         if (-not $Crashed) { $session.endedUtc = '2026-01-01T12:05:00Z' }
@@ -268,36 +278,43 @@ Describe 'capture-har.js snapshot recovery' {
         $script:R.Output | Should -Match 'no longer running'
     }
 
-    It 'ignores a current-session pointer whose recorder crashed mid-recording' {
+    It 'abandons a current-session pointer whose recorder crashed, for the newer capture' {
         # The hard case: a driver killed before its own cleanup leaves the
         # pointer behind AND never writes endedUtc, so "has it ended?" cannot
         # distinguish it from a live recording -- only "is its driver alive?"
-        # can. Following it pins every later status/stop to a dead session while
-        # newer captures are ignored.
-        $crashed = New-LostSession -Root $script:Tmp -Crashed
+        # can.
+        #
+        # TWO sessions, deliberately: with only one on disk, the pointer branch
+        # and the newest-on-disk fallback resolve the same directory, and the
+        # test would pass even if the pointer logic were deleted outright.
+        $crashed = New-LostSession -Root $script:Tmp -Crashed -Stamp '2020-01-01-120000'
+        $newer = New-LostSession -Root $script:Tmp -Stamp '2030-01-01-120000'
         @{ sessionDir = $crashed } | ConvertTo-Json |
             Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
 
         $r = Invoke-CaptureHar status --dir $script:Tmp
         $r.ExitCode | Should -Be 0
-        ($r.StdOut | ConvertFrom-Json).recording | Should -BeFalse `
+        $status = $r.StdOut | ConvertFrom-Json
+        $status.sessionDir | Should -Be $newer `
+            -Because 'a dead pointer must not hide the capture the operator actually wants'
+        $status.recording | Should -BeFalse `
             -Because 'a crashed recorder must never be reported as still recording'
     }
 
-    It 'still follows the pointer while a recording is genuinely live' {
-        # The mirror of the test above: liveness is judged by the driver pid, so
-        # a live session must still be resolved from the pointer. Without this,
-        # "ignore stale pointers" could regress into "ignore all pointers".
-        $live = New-LostSession -Root $script:Tmp -Crashed
-        $session = Get-Content -LiteralPath (Join-Path $live 'session.json') -Raw | ConvertFrom-Json
-        $session.pid = $PID          # this Pester process is demonstrably alive
-        $session | ConvertTo-Json -Depth 8 |
-            Set-Content -LiteralPath (Join-Path $live 'session.json') -Encoding utf8
+    It 'follows the pointer to a live recording even when a newer capture exists' {
+        # The mirror: liveness is judged by the driver pid, so a live session
+        # must still win over a newer-but-finished one. Without this, "ignore
+        # stale pointers" could regress into "ignore all pointers" and every
+        # stop would target the wrong capture.
+        $live = New-LostSession -Root $script:Tmp -Crashed -Stamp '2020-01-01-120000' -OwnerPid $PID
+        New-LostSession -Root $script:Tmp -Stamp '2030-01-01-120000' | Out-Null
         @{ sessionDir = $live } | ConvertTo-Json |
             Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
 
-        $r = Invoke-CaptureHar status --dir $script:Tmp
-        ($r.StdOut | ConvertFrom-Json).recording | Should -BeTrue
+        $status = (Invoke-CaptureHar status --dir $script:Tmp).StdOut | ConvertFrom-Json
+        $status.sessionDir | Should -Be $live `
+            -Because 'the running recording is the one a stop must reach'
+        $status.recording | Should -BeTrue
     }
 
     It 'reports a failure when neither a HAR nor a snapshot exists' {
