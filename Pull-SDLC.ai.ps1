@@ -215,7 +215,18 @@ $script:UpstreamManagedPaths = @(
     # their next sync -- Get-UpstreamOps filters the diff by this pathspec, so
     # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1'
+    'Consolidate-Tasks.Tests.ps1',
+    # The issue-dispatch launcher (issue #256). Managed so consumers actually
+    # receive it -- added to the upstream root without a manifest entry, it was
+    # invisible to Get-UpstreamOps and never reached a single consuming project
+    # (issue #263). Deliberately NOT on $script:MetaScriptPaths: that subset is
+    # only for scripts fetched via `iwr` to perform the bootstrap, whose presence
+    # must not be read as "consumer already has managed content" (issue #152).
+    # Also not on $script:AlwaysLocalPaths -- unlike run.ps1 (issue #222) the
+    # launcher is upstream-owned and consumers do not customize it.
+    'Start-IssueAgent.ps1',
+    'Start-IssueAgent.Tests.ps1',
+    'start-issue-agent.sh'
     # NOTE: run.ps1, run.Tests.ps1, and .github/workflows/copilot-setup-steps.yml
     # are intentionally NOT on this list. They are consumer-owned (see
     # $script:AlwaysLocalPaths) and seeded via the same-name scaffold (see

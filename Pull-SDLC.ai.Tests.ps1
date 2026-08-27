@@ -4106,3 +4106,162 @@ Describe 'Invoke-PullSDLC cleans up the scratch sync worktree (issue #240)' {
     }
 }
 
+
+Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
+    # The launcher scripts were added to the upstream repo root in #256 but
+    # never reached consuming projects: Get-UpstreamOps filters the upstream
+    # diff by $script:UpstreamManagedPaths, so a root-level file absent from
+    # that list is invisible to the sync. Same failure class as #148/F2.
+
+    $script:launcherPaths = @(
+        'Start-IssueAgent.ps1'
+        'Start-IssueAgent.Tests.ps1'
+        'start-issue-agent.sh'
+    )
+
+    It 'treats <_> as upstream-managed' -ForEach $script:launcherPaths {
+        Test-IsUpstreamManagedPath -Path $_ |
+            Should -BeTrue -Because 'the sync only replays paths on the managed list'
+    }
+
+    It 'does not treat <_> as consumer-owned' -ForEach $script:launcherPaths {
+        Test-IsAlwaysLocalPath -Path $_ |
+            Should -BeFalse -Because 'the launcher is upstream-owned, unlike run.ps1 (issue #222)'
+    }
+
+    It 'keeps the launcher off the bootstrap meta-script list' {
+        # $script:MetaScriptPaths is only for scripts the user downloads via
+        # `iwr` to PERFORM the bootstrap; their presence must not be read as
+        # "consumer already has managed content" (issue #152). The launcher is
+        # not part of bootstrap, so it stays off that list.
+        # Listed literally: the discovery-time $launcherPaths above is not in
+        # scope during the run phase.
+        $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.ps1'
+        $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.Tests.ps1'
+        $script:MetaScriptPaths | Should -Not -Contain 'start-issue-agent.sh'
+    }
+
+    It 'leaves every root-level script either upstream-managed or explicitly consumer-owned' {
+        # The generic regression net: any *.ps1 / *.sh added to the upstream
+        # repo root must be a deliberate choice on one list or the other.
+        # Without this, the next root script slips downstream unnoticed the
+        # same way Start-IssueAgent.ps1 did.
+        $rootScripts = Get-ChildItem -LiteralPath $PSScriptRoot -File |
+            Where-Object { $_.Extension -in '.ps1', '.sh' } |
+            Select-Object -ExpandProperty Name
+
+        $rootScripts | Should -Not -BeNullOrEmpty -Because 'the upstream repo root ships scripts'
+
+        $orphans = @($rootScripts | Where-Object {
+                -not (Test-IsUpstreamManagedPath -Path $_) -and
+                -not (Test-IsAlwaysLocalPath -Path $_)
+            })
+
+        $orphans | Should -BeNullOrEmpty -Because @'
+every root-level script must be on $script:UpstreamManagedPaths (replayed to
+consumers) or $script:AlwaysLocalPaths (consumer-owned, e.g. run.ps1). A script
+on neither list silently never reaches any consuming project.
+'@
+    }
+}
+
+Describe 'Issue #263: launcher reaches a consumer already anchored past its introduction' {
+    # The delivery case that actually matters: consumers synced past the commit
+    # that introduced the launcher (9fefd70) while it was still unmanaged. Their
+    # anchor->tip diff shows no change for the file, so the diff-replay alone
+    # never emits an add. The HEAD->tip reconcile pass (Invoke-PullSDLC) is what
+    # closes the gap -- this test pins that behavior so the fix is not merely
+    # correct for fresh consumers.
+
+    BeforeAll {
+        function New-LauncherRetroFixture {
+            <#
+            .SYNOPSIS
+                Upstream ships the launcher at commit 1 and an unrelated change
+                at commit 2. The consumer is anchored at commit 1 but its tree
+                never received the launcher. Returns
+                @{ Upstream; Consumer; LauncherCommit }.
+            #>
+            param([Parameter(Mandatory)][string]$Root)
+
+            $upstream = Join-Path $Root 'upstream'
+            $consumer = Join-Path $Root 'consumer'
+            New-Item -ItemType Directory -Path $upstream -Force | Out-Null
+            New-Item -ItemType Directory -Path $consumer -Force | Out-Null
+
+            Push-Location $upstream
+            try {
+                git init -q -b main
+                git config user.email u@u.u
+                git config user.name u
+                git config core.autocrlf false
+                Set-Content -LiteralPath 'CLAUDE.md' -Value "upstream claude`n" -NoNewline
+                Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# upstream pull script`n" -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "upstream seed"
+
+                # Commit 1: the launcher lands upstream (mirrors #256).
+                Set-Content -LiteralPath 'Start-IssueAgent.ps1' -Value "# upstream launcher`n" -NoNewline
+                Set-Content -LiteralPath 'Start-IssueAgent.Tests.ps1' -Value "# upstream launcher tests`n" -NoNewline
+                Set-Content -LiteralPath 'start-issue-agent.sh' -Value "# upstream launcher sh`n" -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "feat(start-issue-agent): add launcher"
+                $launcherCommit = (git rev-parse HEAD).Trim()
+
+                # Commit 2: unrelated upstream movement after the anchor.
+                Set-Content -LiteralPath 'CLAUDE.md' -Value "upstream claude v2`n" -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "docs: tweak"
+            } finally { Pop-Location }
+
+            Push-Location $consumer
+            try {
+                git init -q -b main
+                git config user.email c@c.c
+                git config user.name c
+                git config core.autocrlf false
+                # The consumer holds the managed files as of commit 1 -- except
+                # the launcher, which the sync never delivered.
+                Set-Content -LiteralPath 'CLAUDE.md' -Value "upstream claude`n" -NoNewline
+                Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# upstream pull script`n" -NoNewline
+                Set-Content -LiteralPath $script:SdlcSyncStateFile `
+                    -Value ("{`n  `"lastSyncCommit`": `"$launcherCommit`"`n}`n") -NoNewline
+                git add -A | Out-Null
+                git commit -q -m "chore: sync IntelliSDLC.ai"
+                git remote add sdlc.ai $upstream
+                git fetch sdlc.ai --quiet 2>$null | Out-Null
+            } finally { Pop-Location }
+
+            return @{
+                Upstream       = $upstream
+                Consumer       = $consumer
+                LauncherCommit = $launcherCommit
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:retroRoot = Join-Path $TestDrive ("retro-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'delivers the launcher even though it predates the recorded anchor' {
+        $fx = New-LauncherRetroFixture -Root $script:retroRoot
+        Push-Location $fx.Consumer
+        try {
+            # Sanity: the anchor->tip diff genuinely does NOT carry the launcher,
+            # so a pass would be meaningless without the reconcile pass.
+            $windowOps = @(Get-UpstreamOps -Anchor $fx.LauncherCommit -Ref 'sdlc.ai/main' `
+                    -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer)
+            $windowOps.Path | Should -Not -Contain 'Start-IssueAgent.ps1' `
+                -Because 'the launcher was added at or before the anchor'
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -CommitOnMain
+            $rc | Should -Be 0
+
+            $tracked = git ls-files
+            $tracked | Should -Contain 'Start-IssueAgent.ps1'
+            $tracked | Should -Contain 'Start-IssueAgent.Tests.ps1'
+            $tracked | Should -Contain 'start-issue-agent.sh'
+        } finally { Pop-Location }
+    }
+}
