@@ -118,7 +118,7 @@ Then run the guided importer (it prints commands and waits for the user
 to confirm each step; it never invokes proxies or decompilers itself):
 
 ```pwsh
-node templates/web-api-discovery/scripts/codegen/import-mobile-app.js \
+node templates/web-api-discovery/scripts/capture/import-mobile-app.js \
   --platform=<ios|android|both> --mode=<proxy|decompile|both>
 ```
 

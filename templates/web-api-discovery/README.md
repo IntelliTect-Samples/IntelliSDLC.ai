@@ -18,7 +18,8 @@ templates/web-api-discovery/
 │   │   │                            #   5s crash snapshot (Start-HarRecording)
 │   │   ├── Start-HarRecording.ps1   # front door: record a session to a raw HAR
 │   │   ├── Stop-HarRecording.ps1    # end a recording (automation / AI path)
-│   │   └── capture-cdp.js           # predecessor; superseded by capture-har.js
+│   │   ├── capture-cdp.js           # predecessor; superseded by capture-har.js
+│   │   └── import-mobile-app.js     # guided mobile-app capture; validates the artifact
 │   ├── har/             # scrub, extract, and catalogue a captured HAR
 │   │   ├── sanitize-har.js          # token/PII redaction with deterministic faker
 │   │   ├── verify-scrub.js          # double-check pass; fails CI on leak
@@ -34,8 +35,7 @@ templates/web-api-discovery/
 │       ├── tests-emit.js            # xUnit + Pester scaffold
 │       ├── sln-emit.js              # deterministic .slnx
 │       ├── secret-gate-emit.js      # gitleaks hook + workflows
-│       ├── sdlc-integration.js      # optional IntelliSDLC.ai seed
-│       └── import-mobile-app.js     # mobile-app API discovery
+│       └── sdlc-integration.js      # optional IntelliSDLC.ai seed
 ├── csharp/              # C# code templates -- token-substituted at scaffold time
 │   ├── Client.cs.tmpl
 │   ├── Authenticator.cs.tmpl

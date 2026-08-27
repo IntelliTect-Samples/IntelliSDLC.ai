@@ -9,7 +9,7 @@
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
     $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
-    $script:ImportJs   = Join-Path $script:ScriptsDir 'codegen/import-mobile-app.js'
+    $script:ImportJs   = Join-Path $script:ScriptsDir 'capture/import-mobile-app.js'
     $script:DetectJs   = Join-Path $script:ScriptsDir 'har/detect-auth.js'
     $script:CsharpDir  = Join-Path $script:RepoRoot 'templates/web-api-discovery/csharp'
     $script:ManifestPath = Join-Path $script:CsharpDir 'manifest.json'
