@@ -4146,6 +4146,22 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
         # repo root must be a deliberate choice on one list or the other.
         # Without this, the next root script slips downstream unnoticed the
         # same way Start-IssueAgent.ps1 did.
+        #
+        # Upstream-only. This test file is itself upstream-managed, so it also
+        # runs from a CONSUMER's repo root, where $PSScriptRoot holds that
+        # project's own scripts (build.ps1, deploy.sh, ...). Those are on
+        # neither list and correctly so -- asserting there would fail every
+        # consumer that runs the suite. The check is meaningful only where the
+        # manifest is authored. Test-IsUpstreamRepo matches on repo name, so it
+        # holds across org renames, the ssh.github.com alias, and CI clones.
+        # Evaluated in the body rather than a discovery-time -Skip: because the
+        # script under test is dot-sourced in BeforeAll (run phase).
+        $originUrl = (& git -C $PSScriptRoot remote get-url origin 2>$null)
+        if (-not (Test-IsUpstreamRepo -RemoteUrl $originUrl)) {
+            Set-ItResult -Skipped -Because 'this invariant only applies in the upstream repo, where the manifest is authored'
+            return
+        }
+
         $rootScripts = Get-ChildItem -LiteralPath $PSScriptRoot -File |
             Where-Object { $_.Extension -in '.ps1', '.sh' } |
             Select-Object -ExpandProperty Name
