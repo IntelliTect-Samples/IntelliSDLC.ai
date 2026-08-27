@@ -117,7 +117,8 @@ produce:
   against the code -- a review is advisory, never auto-applied),
 - every accepted Critical / Important finding was fixed using behavior-first
   testing,
-- it ran under an explicit model override, per the paragraph above, and
+- it ran under an explicit model override, so the reviewer was demonstrably
+  not the authoring model, and
 - the reviewer re-read the updated diff and reported no new accepted
   Critical / Important findings.
 
