@@ -39,10 +39,20 @@ BeforeAll {
         }
     }
 
+    # A pid that cannot exist: Windows pids are multiples of 4 well below this,
+    # so process.kill(pid, 0) reports ESRCH -- i.e. "that driver is gone".
+    $script:DeadPid = 999999
+
     # A session directory as it looks after the driver was lost: a snapshot log
     # with entries, a session.json, and no raw.har.
+    #
+    # -Crashed models the case that actually matters and is easy to get wrong:
+    # a driver killed MID-RECORDING never gets to write endedUtc, so a fixture
+    # that hardcodes endedUtc quietly tests a different, far rarer scenario --
+    # "ended cleanly, cleanup failed" -- while reading as though it covered the
+    # crash.
     function New-LostSession {
-        param([Parameter(Mandatory)][string]$Root, [int]$Entries = 2)
+        param([Parameter(Mandatory)][string]$Root, [int]$Entries = 2, [switch]$Crashed)
         $sessionDir = Join-Path $Root '2026-01-01-120000'
         New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
         $lines = 1..$Entries | ForEach-Object {
@@ -56,15 +66,20 @@ BeforeAll {
             } | ConvertTo-Json -Depth 8 -Compress
         }
         Set-Content -LiteralPath (Join-Path $sessionDir 'raw.snapshot.ndjson') -Value $lines -Encoding utf8
-        @{
+        $session = @{
             uri             = 'https://example.com'
             sessionDir      = $sessionDir
             harPath         = Join-Path $sessionDir 'raw.har'
             snapshotLog     = Join-Path $sessionDir 'raw.snapshot.ndjson'
             snapshotHarPath = Join-Path $sessionDir 'raw.snapshot.har'
             startedUtc      = '2026-01-01T12:00:00Z'
-            endedUtc        = '2026-01-01T12:05:00Z'
-        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
+            port            = 49999
+            pid             = $script:DeadPid
+        }
+        # A crashed driver leaves NO endedUtc -- that is the whole difficulty.
+        if (-not $Crashed) { $session.endedUtc = '2026-01-01T12:05:00Z' }
+        $session | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
         return $sessionDir
     }
 }
@@ -116,11 +131,21 @@ Describe 'capture-har.js' {
         $r.Output | Should -Match 'no capture session found'
     }
 
-    It 'never kills a browser process' {
+    It 'never terminates a process' {
         # Killing a browser discards the recording AND can destroy unrelated
         # signed-in windows on the developer's machine.
+        #
+        # The invariant is "terminates nothing", not "never names an API called
+        # kill": `process.kill(pid, 0)` sends no signal and is the standard way
+        # to ask whether a pid is alive. So ban the terminating forms, and
+        # require every process.kill call to pass signal 0.
         $source = Get-Content -LiteralPath $script:CaptureJs -Raw
-        $source | Should -Not -Match 'process\.kill|taskkill|SIGKILL|\bkill\('
+        $source | Should -Not -Match 'SIGKILL|SIGTERM|taskkill|pkill|\.destroy\(\)'
+
+        $killCalls = [regex]::Matches($source, 'process\.kill\(([^)]*)\)')
+        foreach ($call in $killCalls) {
+            $call.Groups[1].Value | Should -Match ',\s*0\s*$' -Because 'a liveness probe must send signal 0, never a terminating signal'
+        }
     }
 
     It 'applies no HAR glob -- the capture is unfiltered' {
@@ -233,32 +258,46 @@ Describe 'capture-har.js snapshot recovery' {
         $r.Output | Should -Not -Match 'failed capture'
     }
 
-    It 'gives up quickly on a session whose recorder is gone' {
+    It 'gives up quickly on a session whose recorder crashed mid-recording' {
         # A dead driver never answers the sentinel. Waiting the full 60s timeout
         # for it is indistinguishable from a healthy but slow stop.
-        $sessionDir = New-LostSession -Root $script:Tmp
-        $session = Get-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Raw | ConvertFrom-Json
-        $session.PSObject.Properties.Remove('endedUtc')
-        # A port nothing is listening on == the recorder is gone.
-        $session | Add-Member -NotePropertyName port -NotePropertyValue 49999 -Force
-        $session | ConvertTo-Json -Depth 8 |
-            Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
+        $sessionDir = New-LostSession -Root $script:Tmp -Crashed
 
         $elapsed = Measure-Command { $script:R = Invoke-CaptureHar stop --session $sessionDir }
         $elapsed.TotalSeconds | Should -BeLessThan 30
         $script:R.Output | Should -Match 'no longer running'
     }
 
-    It 'ignores a stale current-session pointer left by a dead recorder' {
-        # Following it forever would pin every later stop/status to a dead
-        # session while newer captures are ignored.
-        $stale = New-LostSession -Root $script:Tmp          # already ended
-        @{ sessionDir = $stale } | ConvertTo-Json |
+    It 'ignores a current-session pointer whose recorder crashed mid-recording' {
+        # The hard case: a driver killed before its own cleanup leaves the
+        # pointer behind AND never writes endedUtc, so "has it ended?" cannot
+        # distinguish it from a live recording -- only "is its driver alive?"
+        # can. Following it pins every later status/stop to a dead session while
+        # newer captures are ignored.
+        $crashed = New-LostSession -Root $script:Tmp -Crashed
+        @{ sessionDir = $crashed } | ConvertTo-Json |
             Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
 
         $r = Invoke-CaptureHar status --dir $script:Tmp
         $r.ExitCode | Should -Be 0
-        ($r.StdOut | ConvertFrom-Json).recording | Should -BeFalse
+        ($r.StdOut | ConvertFrom-Json).recording | Should -BeFalse `
+            -Because 'a crashed recorder must never be reported as still recording'
+    }
+
+    It 'still follows the pointer while a recording is genuinely live' {
+        # The mirror of the test above: liveness is judged by the driver pid, so
+        # a live session must still be resolved from the pointer. Without this,
+        # "ignore stale pointers" could regress into "ignore all pointers".
+        $live = New-LostSession -Root $script:Tmp -Crashed
+        $session = Get-Content -LiteralPath (Join-Path $live 'session.json') -Raw | ConvertFrom-Json
+        $session.pid = $PID          # this Pester process is demonstrably alive
+        $session | ConvertTo-Json -Depth 8 |
+            Set-Content -LiteralPath (Join-Path $live 'session.json') -Encoding utf8
+        @{ sessionDir = $live } | ConvertTo-Json |
+            Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
+
+        $r = Invoke-CaptureHar status --dir $script:Tmp
+        ($r.StdOut | ConvertFrom-Json).recording | Should -BeTrue
     }
 
     It 'reports a failure when neither a HAR nor a snapshot exists' {

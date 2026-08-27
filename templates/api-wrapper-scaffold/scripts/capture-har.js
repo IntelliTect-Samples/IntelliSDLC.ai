@@ -116,6 +116,31 @@ const CDP_PROBE_MS = 1500;
  * profile-already-in-use case into an immediate, actionable message instead
  * of a three-minute hang.
  */
+/**
+ * Is the driver that owns this session still running?
+ *
+ * Signal 0 sends nothing: it is the POSIX and Node idiom for "does this pid
+ * exist and may I signal it". Nothing here ever terminates a process -- that
+ * would discard the recording and, for a browser, could destroy unrelated
+ * signed-in windows.
+ *
+ * Asking about the DRIVER pid rather than the debugging port matters: the
+ * browser is a separate child process, and nothing in this design kills it, so
+ * a crashed driver can leave a browser still answering on the port. Trusting
+ * the port there reports a dead session as live. A port can also be answered
+ * by an unrelated browser that happens to hold the same number.
+ */
+function isDriverAlive(session) {
+    if (!session || !session.pid) return false;
+    try {
+        process.kill(session.pid, 0);
+        return true;
+    } catch (e) {
+        // EPERM means it exists but belongs to someone else; only ESRCH means gone.
+        return e.code === 'EPERM';
+    }
+}
+
 async function probeCdp(port) {
     try {
         const controller = new AbortController();
@@ -625,8 +650,12 @@ function resolveSession(args) {
         // not ended. A driver killed before its own cleanup leaves the file
         // behind, and following it forever would pin every later status/stop
         // to a dead session while newer captures are ignored.
+        // `!endedUtc` alone is NOT enough: a driver killed mid-recording never
+        // writes endedUtc either, which is precisely the case that leaves the
+        // pointer behind. The pointer is trustworthy only while its driver is
+        // still running.
         const pointed = readJson(path.join(current.sessionDir, SESSION_FILE));
-        if (pointed && !pointed.endedUtc) return current.sessionDir;
+        if (pointed && !pointed.endedUtc && isDriverAlive(pointed)) return current.sessionDir;
     }
     if (!fs.existsSync(capturesDir)) return null;
     const candidates = fs.readdirSync(capturesDir)
@@ -660,10 +689,10 @@ async function stop(args) {
     if (!session.endedUtc) {
         // A driver that already died will never answer the sentinel, and
         // waiting the full timeout for it looks identical to a healthy stop
-        // that is merely slow. Probing its port first turns a silent 60-second
-        // hang into an immediate, explained fall-through to recovery.
-        const alive = await probeCdp(session.port);
-        if (!alive) {
+        // that is merely slow. Ask about the driver process, not the debugging
+        // port: a crashed driver can leave an orphaned browser answering that
+        // port, and believing it would reinstate the silent 60-second hang.
+        if (!isDriverAlive(session)) {
             process.stderr.write(
                 `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
                 '  Nothing can write the real HAR now; recovering the snapshot instead.\n');
@@ -724,8 +753,13 @@ function status(args) {
         uri: session.uri,
         mode: session.mode,
         cdpEndpoint: session.cdpEndpoint,
-        recording: !session.endedUtc,
+        // A crashed driver never writes endedUtc, so its absence does not mean
+        // "still recording" -- only a live driver does. Reporting a dead
+        // session as recording sends the operator to wait for a HAR that
+        // nothing will ever write.
+        recording: !session.endedUtc && isDriverAlive(session),
         endedBy: session.endedBy,
+        driverLost: !session.endedUtc && !isDriverAlive(session),
         summary: session.summary || summarize(session.harPath)
     }, null, 2) + '\n');
     return 0;
