@@ -13,7 +13,8 @@
         <description>`, permission mode `plan`. No `gh`/`git remote` call is
         made -- `@plan` (.github/agents/plan.agent.md) runs its own discovery
         dialogue, resolves the repo itself, and files the issue as its primary
-        output.
+        output. `-New -` reads the description from stdin so a bash heredoc
+        works; see .PARAMETER New.
 
     Where the session lands depends on the current shell (identical in both
     modes):
@@ -82,6 +83,26 @@
     bare valueless `-New` is a PowerShell binding error, since -New takes a
     string.
 
+    Pass `-New -` to read the description from stdin instead. This exists for
+    bash, which has no equivalent of PowerShell's `@'...'@` here-string: a
+    heredoc feeds stdin, not an argument, so `-New -` is what lets a bare
+    heredoc work --
+
+        ./start-issue-agent.sh -New - <<'END'
+        Review this console log, is it what you expect? Please investigate:
+        <transcript pasted here>
+        END
+
+    From PowerShell prefer the native here-string, which needs no stdin:
+
+        ./Start-IssueAgent.ps1 -New @'
+        ...multi-line description...
+        '@
+
+    Reading stdin always opens a new tab/window even inside Windows Terminal:
+    an inline `claude` in the current pane would inherit the drained stdin and
+    would not be interactive. Empty stdin is an error, not a seedless session.
+
 .PARAMETER Repo
     Explicit `owner/repo` to pass to `gh issue view --repo`. If omitted, it is
     resolved from `git remote get-url origin` in the current directory.
@@ -114,6 +135,20 @@
 
 .EXAMPLE
     ./Start-IssueAgent.ps1 -New "spike: cache gh issue lookups" -PermissionMode auto
+
+.EXAMPLE
+    # PowerShell: a multi-line description via a native here-string.
+    ./Start-IssueAgent.ps1 -New @'
+    Review this console log, is it what you expect? Please investigate:
+    <transcript pasted here>
+    '@
+
+.EXAMPLE
+    # bash: the same, via a heredoc on stdin.
+    ./start-issue-agent.sh -New - <<'END'
+    Review this console log, is it what you expect? Please investigate:
+    <transcript pasted here>
+    END
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Issue')]
 param(
@@ -254,7 +289,10 @@ function New-PlanAgentName {
         [int]$MaxLength = 0
     )
 
-    $trimmed = $Description.Trim()
+    # A description may be many lines (a pasted transcript via -New -), but a
+    # tab title / resume-picker entry is one line: collapse every whitespace
+    # run -- newlines included -- to a single space before capping.
+    $trimmed = ($Description -replace '\s+', ' ').Trim()
     $fullName = if ($trimmed) { "new: $trimmed" } else { 'new issue' }
 
     return Limit-DisplayName -Value $fullName -MaxLength $MaxLength
@@ -324,6 +362,48 @@ function New-PlanAgentPrompt {
     if (-not $trimmed) { return '@plan' }
 
     return "@plan $trimmed"
+}
+
+function Read-DescriptionFromStdin {
+    <#
+    .SYNOPSIS
+        Reads the -New description from stdin (the `-New -` form).
+    .DESCRIPTION
+        Exists for bash, which has no equivalent of PowerShell's `@'...'@`
+        here-string: a heredoc feeds stdin rather than an argument, so
+        `-New -` is what lets a bare heredoc carry a multi-line description.
+
+        CRLF is normalized to LF and trailing newlines are trimmed, so the
+        prompt does not end in blank lines. Stdin that is not redirected, or
+        that is empty/whitespace-only, is an error rather than a silent
+        seedless session -- a blank `@plan` prompt would look like the
+        description was accepted when it was lost.
+
+        -Reader / -IsInputRedirected are test seams (same pattern as
+        Publish-Evidence.ps1's -GhInvoker); both default to the real console.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [scriptblock]$Reader = { [Console]::In.ReadToEnd() },
+        [bool]$IsInputRedirected = [Console]::IsInputRedirected
+    )
+
+    if (-not $IsInputRedirected) {
+        throw "-New - reads the description from stdin, but stdin is not redirected. " +
+        "Pipe it in (bash: ./start-issue-agent.sh -New - <<'END' ... END), or pass the " +
+        "description inline as -New '<description>'."
+    }
+
+    $text = [string](& $Reader)
+    $text = ($text -replace "`r`n", "`n").TrimEnd("`n")
+
+    if (-not $text.Trim()) {
+        throw "-New - read an empty description from stdin. Supply the description on " +
+        "stdin, or pass it inline as -New '<description>'."
+    }
+
+    return $text
 }
 
 function Get-DefaultPermissionMode {
@@ -424,6 +504,10 @@ function Get-ClaudeLaunchMode {
           - -ForceNewTab, or not already inside Windows Terminal -> a new
             wt.exe tab if wt.exe is available, else a plain new console
             window.
+          - -StdinConsumed forces the same: the description was read from a
+            redirected stdin (the `-New -` form), so an inline `claude` in
+            the current pane would inherit that drained stdin and would not
+            be interactive.
           - Otherwise (already inside Windows Terminal, no override) ->
             reuse the current pane.
     #>
@@ -435,10 +519,11 @@ function Get-ClaudeLaunchMode {
         [switch]$ForceNewTab,
         [Parameter(Mandatory)][bool]$InWindowsTerminal,
         [Parameter(Mandatory)][bool]$WtAvailable,
-        [Parameter(Mandatory)][bool]$InClaudeCodeSession
+        [Parameter(Mandatory)][bool]$InClaudeCodeSession,
+        [bool]$StdinConsumed = $false
     )
 
-    if ($ForceNewTab -or $InClaudeCodeSession -or -not $InWindowsTerminal) {
+    if ($ForceNewTab -or $InClaudeCodeSession -or $StdinConsumed -or -not $InWindowsTerminal) {
         if ($WtAvailable) { return 'NewTab' }
         return 'NewWindow'
     }
@@ -465,7 +550,8 @@ function Start-ClaudeIssueSession {
         [Parameter(Mandatory)][string]$Prompt,
         [Parameter(Mandatory)][string]$PermissionMode,
         [Parameter(Mandatory)][string]$WorkingDirectory,
-        [switch]$NewTab
+        [switch]$NewTab,
+        [switch]$StdinConsumed
     )
 
     $claudeArgs = @(
@@ -480,7 +566,8 @@ function Start-ClaudeIssueSession {
     $mode = Get-ClaudeLaunchMode -ForceNewTab:$NewTab `
         -InWindowsTerminal ([bool]$env:WT_SESSION) `
         -WtAvailable ([bool](Get-Command wt.exe -ErrorAction SilentlyContinue)) `
-        -InClaudeCodeSession ([bool]$env:CLAUDECODE)
+        -InClaudeCodeSession ([bool]$env:CLAUDECODE) `
+        -StdinConsumed ([bool]$StdinConsumed)
 
     switch ($mode) {
         'CurrentPane' {
@@ -533,10 +620,18 @@ if (-not $PSBoundParameters.ContainsKey('PermissionMode')) {
     $PermissionMode = Get-DefaultPermissionMode -ParameterSetName $PSCmdlet.ParameterSetName
 }
 
+$stdinConsumed = $false
+
 if ($PSCmdlet.ParameterSetName -eq 'New') {
     # No gh/git call at all -- @plan resolves the repo and files the issue itself.
-    $name = New-PlanAgentName -Description $New -MaxLength $maxNameLength
-    $prompt = New-PlanAgentPrompt -Description $New
+    $description = $New
+    if ($New -eq '-') {
+        $description = Read-DescriptionFromStdin
+        $stdinConsumed = $true
+    }
+
+    $name = New-PlanAgentName -Description $description -MaxLength $maxNameLength
+    $prompt = New-PlanAgentPrompt -Description $description
 }
 else {
     if ($IssueNumber -le 0) {
@@ -554,4 +649,4 @@ $startDir = $PSScriptRoot
 
 Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
 Start-ClaudeIssueSession -Name $name -Prompt $prompt -PermissionMode $PermissionMode `
-    -WorkingDirectory $startDir -NewTab:$NewTab
+    -WorkingDirectory $startDir -NewTab:$NewTab -StdinConsumed:$stdinConsumed
