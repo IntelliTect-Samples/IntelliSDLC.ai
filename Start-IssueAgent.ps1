@@ -10,11 +10,15 @@
         already exists. Prompt: `@dev-loop gh issue <n>`, permission mode
         `auto`.
       - `-New <description>`: there is no issue yet. Prompt: `@plan
-        <description>`, permission mode `plan`. No `gh`/`git remote` call is
-        made -- `@plan` (.github/agents/plan.agent.md) runs its own discovery
-        dialogue, resolves the repo itself, and files the issue as its primary
-        output. `-New -` reads the description from stdin so a bash heredoc
-        works; see .PARAMETER New.
+        <description>` plus an explicit two-step instruction -- create the
+        GitHub issue via `@plan`, then implement it via `@dev-loop gh issue
+        <number>` -- so -New lands in the same place as issue dispatch, one
+        step earlier. Permission mode `plan`, whose approval prompt is the
+        design gate before the session starts filing issues and writing code.
+        No `gh`/`git remote` call is made by this script -- `@plan`
+        (.github/agents/plan.agent.md) runs its own discovery dialogue,
+        resolves the repo itself, and files the issue. `-New -` reads the
+        description from stdin so a bash heredoc works; see .PARAMETER New.
 
     Where the session lands depends on the current shell (identical in both
     modes):
@@ -49,8 +53,9 @@
       4. Build the prompt: `@dev-loop gh issue <IssueNumber>`, telling the
          session to run the full dev loop starting from the existing issue
          -- no issue creation step needed; or, under -New, `@plan
-         <description>`, which starts at design and ends by creating the
-         issue.
+         <description>` followed by the two ordered steps (create the issue,
+         then `@dev-loop gh issue <number>` on it), so the session runs
+         design *and* implementation instead of stopping at the design.
       5. Launch `claude` with CLI options first, the derived prompt last:
          `claude --name <Name> --remote-control --permission-mode <mode> -- <prompt>`
          When opening a new wt.exe tab, this command (plus a `Set-Location`
@@ -74,14 +79,18 @@
     Mutually exclusive with -New.
 
 .PARAMETER New
-    Plan a brand-new issue instead of dispatching an existing one. The value
-    is a plain-English description of the idea, used to seed `@plan` -- a
-    seed, not a spec: @plan asks its own clarifying questions from there.
-    Mutually exclusive with -IssueNumber.
+    Plan *and implement* a brand-new issue instead of dispatching an existing
+    one. The value is a plain-English description of the idea, used to seed
+    `@plan` -- a seed, not a spec: @plan asks its own clarifying questions
+    from there. The session is then told, in the same prompt, to hand the
+    issue it just created to `@dev-loop`, so -New ends where issue dispatch
+    ends rather than at an unfiled design. Mutually exclusive with
+    -IssueNumber.
 
-    Pass `-New ''` for a seedless planning session (prompt: just `@plan`). A
-    bare valueless `-New` is a PowerShell binding error, since -New takes a
-    string.
+    Pass `-New ''` for a seedless session (a bare `@plan` seed; the two
+    create-then-implement steps still apply, and @plan opens the conversation
+    itself). A bare valueless `-New` is a PowerShell binding error, since
+    -New takes a string.
 
     Pass `-New -` to read the description from stdin instead. This exists for
     bash, which has no equivalent of PowerShell's `@'...'@` here-string: a
@@ -345,12 +354,26 @@ function New-PlanAgentPrompt {
         Builds the initial prompt handed to a -New (plan a brand-new issue)
         claude session.
     .DESCRIPTION
-        `@plan` (.github/agents/plan.agent.md) runs its own Socratic discovery
-        -- purpose, constraints, success criteria -- proposes approaches, gets
-        the design approved, and only then creates the GitHub issue. The
-        description is therefore a seed, not a spec: nothing else needs to be
-        inlined here. An empty/whitespace description yields the bare `@plan`,
-        letting the agent open the conversation itself.
+        -New has the same destination as the issue-dispatch path -- an issue
+        being implemented -- it just starts one step earlier, so the prompt
+        spells out both steps explicitly:
+
+          1. `@plan` (.github/agents/plan.agent.md) runs its own Socratic
+             discovery -- purpose, constraints, success criteria -- proposes
+             approaches, gets the design approved, and creates the GitHub
+             issue as its primary output.
+          2. `@dev-loop gh issue <number>` picks up that brand-new issue and
+             runs the full quality cycle, exactly as `-IssueNumber` would have.
+
+        Naming step 2 in the initial prompt is what makes -New converge:
+        `@plan` on its own ends at "hand off to @dev-loop" and waits, so a
+        seed-only prompt left the session parked after the issue was filed --
+        or, more often, parked in design dialogue having filed nothing.
+
+        The description is a seed, not a spec: @plan asks its own clarifying
+        questions from there, so nothing else needs to be inlined. An
+        empty/whitespace description drops the seed line and keeps the same
+        two steps, letting the agent open the conversation itself.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
@@ -358,10 +381,20 @@ function New-PlanAgentPrompt {
     [OutputType([string])]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Description)
 
+    # The seed line ("@plan <description>", or a bare "@plan" with no
+    # description) followed by the same two ordered steps either way -- the
+    # steps are what make the session converge, so they are never conditional.
     $trimmed = $Description.Trim()
-    if (-not $trimmed) { return '@plan' }
+    $seed = if ($trimmed) { "@plan $trimmed" } else { '@plan' }
 
-    return "@plan $trimmed"
+    $steps = @(
+        'Two steps, in order:'
+        '1. @plan: run the design dialogue and create the GitHub issue as its output.'
+        ('2. As soon as that issue exists, continue in this same session with ' +
+        '`@dev-loop gh issue <number>` for the issue you just created, and run the full dev loop.')
+    ) -join "`n"
+
+    return "$seed`n`n$steps"
 }
 
 function Read-DescriptionFromStdin {
@@ -411,8 +444,11 @@ function Get-DefaultPermissionMode {
     .SYNOPSIS
         The `claude --permission-mode` default for a given parameter set.
     .DESCRIPTION
-        -New opens a design conversation, so it defaults to 'plan'; issue
-        dispatch runs the full dev loop and defaults to 'auto'. Only consulted
+        -New opens with a design conversation, so it defaults to 'plan':
+        plan mode's approval prompt is the gate the user passes through
+        before the session creates the issue and starts implementing it.
+        Issue dispatch has no design left to approve and defaults to 'auto'
+        (pass -PermissionMode auto to skip the gate under -New too). Only consulted
         when -PermissionMode was left unbound -- an explicit -PermissionMode
         always wins.
     #>

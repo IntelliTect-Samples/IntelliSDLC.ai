@@ -2,7 +2,8 @@
 # Forwards to Start-IssueAgent.ps1 so the same logic runs from bash or pwsh.
 # Usage: ./start-issue-agent.sh <issue-number> [-Repo owner/repo] [-PermissionMode auto|...] [-NewTab]
 #        ./start-issue-agent.sh -New "<description of the new issue>" [-Repo owner/repo] [-PermissionMode ...] [-NewTab]
-#          (-New plans a brand-new issue via @plan instead of dispatching an existing one.)
+#          (-New has @plan create the issue, then hands it to @dev-loop -- instead of
+#           dispatching an issue that already exists.)
 #
 # For a multi-line description, use `-New -` and a heredoc -- bash has no
 # equivalent of PowerShell's @'...'@ here-string, and a heredoc feeds stdin
