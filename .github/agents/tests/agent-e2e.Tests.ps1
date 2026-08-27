@@ -19,6 +19,11 @@ BeforeAll {
     function New-OutDir {
         $d = Join-Path ([IO.Path]::GetTempPath()) ("agentE2E-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Force $d | Out-Null
+        # run-agent reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255) and refuses to
+        # run without one, so each test project declares its own.
+        $profile = @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json
+        Set-Content -LiteralPath (Join-Path $d '.har-profile.json') -Value $profile -Encoding utf8
         return $d
     }
 }

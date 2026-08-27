@@ -172,6 +172,12 @@ Describe 'sanitize-har.js with PII pipeline' {
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-sani-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
         $script:OutHar  = Join-Path $script:Tmp 'out.har'
         $script:Subs    = Join-Path $script:Tmp 'subs.json'
         $script:PiiSubs = Join-Path $script:Tmp '.substitutions.json'
@@ -184,7 +190,7 @@ Describe 'sanitize-har.js with PII pipeline' {
     }
 
     It 'removes all planted PII originals from the scrubbed HAR' {
-        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --salt 'test-salt'
+        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --profile $script:Profile
         $LASTEXITCODE | Should -Be 0
         $content = Get-Content -LiteralPath $script:OutHar -Raw
         $content | Should -Not -Match 'alice\.johnson@contoso\.com'
@@ -198,7 +204,7 @@ Describe 'sanitize-har.js with PII pipeline' {
     }
 
     It 'writes a substitutions store with the required schema' {
-        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --salt 'test' --fixed-time '2026-01-01T00:00:00Z'
+        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --profile $script:Profile --fixed-time '2026-01-01T00:00:00Z'
         Test-Path -LiteralPath $script:PiiSubs | Should -BeTrue
         $raw = Get-Content -LiteralPath $script:PiiSubs -Raw
         $raw | Should -Match '"version":\s*1'
@@ -212,7 +218,7 @@ Describe 'sanitize-har.js with PII pipeline' {
     }
 
     It 'substitutions store contains NO plaintext originals (security-critical)' {
-        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --salt 'test'
+        & node $script:SanitizeJs --in $script:Planted --out $script:OutHar --subs $script:Subs --pii-subs $script:PiiSubs --profile $script:Profile
         $raw = Get-Content -LiteralPath $script:PiiSubs -Raw
         $raw | Should -Not -Match 'alice\.johnson@contoso\.com'
         $raw | Should -Not -Match 'john\.actual@gmail\.com'
@@ -228,8 +234,8 @@ Describe 'sanitize-har.js with PII pipeline' {
     It 'is deterministic: identical inputs produce byte-identical .substitutions.json' {
         $a = Join-Path $script:Tmp 'a.substitutions.json'
         $b = Join-Path $script:Tmp 'b.substitutions.json'
-        & node $script:SanitizeJs --in $script:Planted --out (Join-Path $script:Tmp 'a.har') --subs (Join-Path $script:Tmp 'as.json') --pii-subs $a --salt 'test' --fixed-time '2026-01-01T00:00:00Z'
-        & node $script:SanitizeJs --in $script:Planted --out (Join-Path $script:Tmp 'b.har') --subs (Join-Path $script:Tmp 'bs.json') --pii-subs $b --salt 'test' --fixed-time '2026-01-01T00:00:00Z'
+        & node $script:SanitizeJs --in $script:Planted --out (Join-Path $script:Tmp 'a.har') --subs (Join-Path $script:Tmp 'as.json') --pii-subs $a --profile $script:Profile --fixed-time '2026-01-01T00:00:00Z'
+        & node $script:SanitizeJs --in $script:Planted --out (Join-Path $script:Tmp 'b.har') --subs (Join-Path $script:Tmp 'bs.json') --pii-subs $b --profile $script:Profile --fixed-time '2026-01-01T00:00:00Z'
         (Get-FileHash $a).Hash | Should -Be (Get-FileHash $b).Hash
     }
 }
@@ -239,6 +245,12 @@ Describe 'verify-scrub.js typed-PII pass' {
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-verify-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
     }
 
     AfterEach {
@@ -283,7 +295,7 @@ Describe 'verify-scrub.js typed-PII pass' {
 
     It 'passes when output of sanitize-har is fed back in' {
         $out = Join-Path $script:Tmp 'sanitized.har'
-        & node $script:SanitizeJs --in $script:Planted --out $out --subs (Join-Path $script:Tmp 's.json') --pii-subs (Join-Path $script:Tmp '.substitutions.json') --salt 'test'
+        & node $script:SanitizeJs --in $script:Planted --out $out --subs (Join-Path $script:Tmp 's.json') --pii-subs (Join-Path $script:Tmp '.substitutions.json') --profile $script:Profile
         & node $script:VerifyJs --in $out 2>&1 | Out-Null
         $LASTEXITCODE | Should -Be 0
     }
@@ -294,6 +306,12 @@ Describe 'backwards compatibility with PR #37' {
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-bc-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        # sanitize-har reads its salt and literal -> sentinel map from the
+        # operator's gitignored .har-profile.json (issue #255); there is no
+        # default salt, so each fixture project declares its own.
+        $script:Profile = Join-Path $script:Tmp '.har-profile.json'
+        Set-Content -LiteralPath $script:Profile -Encoding utf8 -Value (
+            @{ salt = 'pester-test-salt'; literals = @{} } | ConvertTo-Json)
         $script:LegacyIn  = Join-Path $script:Tmp 'legacy.har'
         $script:LegacyOut = Join-Path $script:Tmp 'legacy-out.har'
         New-LegacyHar -Path $script:LegacyIn
@@ -306,13 +324,13 @@ Describe 'backwards compatibility with PR #37' {
     }
 
     It 'still scrubs JWTs from a PR #37-style fixture' {
-        & node $script:SanitizeJs --in $script:LegacyIn --out $script:LegacyOut --subs (Join-Path $script:Tmp 's.json') --salt 'test'
+        & node $script:SanitizeJs --in $script:LegacyIn --out $script:LegacyOut --subs (Join-Path $script:Tmp 's.json') --profile $script:Profile
         $LASTEXITCODE | Should -Be 0
         (Get-Content -LiteralPath $script:LegacyOut -Raw) | Should -Not -Match 'eyJhbGciOiJIUzI1NiJ9'
     }
 
     It 'still scrubs 64-char hex tokens from a PR #37-style fixture' {
-        & node $script:SanitizeJs --in $script:LegacyIn --out $script:LegacyOut --subs (Join-Path $script:Tmp 's.json') --salt 'test'
+        & node $script:SanitizeJs --in $script:LegacyIn --out $script:LegacyOut --subs (Join-Path $script:Tmp 's.json') --profile $script:Profile
         (Get-Content -LiteralPath $script:LegacyOut -Raw) | Should -Not -Match ('a' * 64)
     }
 

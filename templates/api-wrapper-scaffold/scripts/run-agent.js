@@ -8,7 +8,7 @@
  *
  * Usage:
  *   node run-agent.js --har <path> --out <dir> --project <Name> --namespace <Ns>
- *                     [--base-url <https://x>] [--salt <salt>]
+ *                     [--base-url <https://x>] [--profile <path>]
  *                     [--authors <s>] [--description <s>]
  *                     [--repository-url <s>] [--package-tags <s>]
  *                     [--fixed-time <iso8601>]
@@ -32,6 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const sdlc = require('./sdlc-integration.js');
+const harProfile = require('./har-profile.js');
 
 function parseArgs(argv) {
     const out = {};
@@ -53,7 +54,7 @@ function usage(msg) {
     if (msg) process.stderr.write(`run-agent: ${msg}\n`);
     process.stderr.write(
         'usage: node run-agent.js --har <path> --out <dir> --project <Name> --namespace <Ns> ' +
-        '[--base-url <https://x>] [--salt <salt>] [--authors <s>] [--description <s>] ' +
+        '[--base-url <https://x>] [--profile <path>] [--authors <s>] [--description <s>] ' +
         '[--repository-url <s>] [--package-tags <s>] [--fixed-time <iso8601>]\n');
     process.exit(2);
 }
@@ -123,7 +124,19 @@ function main() {
     const detect   = path.join(scriptsDir, 'detect-auth.js');
     const generate = path.join(scriptsDir, 'generate-wrapper.js');
 
-    const salt = args.salt || 'run-agent-default-salt';
+    // The salt and the literal -> sentinel map come from the operator's
+    // gitignored profile. There is no fallback: a default salt would make the
+    // faker table predictable across projects, and a default literal map would
+    // mean the literal-value scrub control silently does nothing.
+    let profile;
+    try {
+        profile = harProfile.loadProfile({ profilePath: args.profile, startDir: outDir });
+    } catch (e) {
+        process.stderr.write(`run-agent: ${e.message}
+`);
+        process.exit(2);
+    }
+
     const fixedTime = args['fixed-time'] || '2026-01-01T00:00:00.000Z';
 
     // Stage 1: sanitize the HAR (legacy regex + typed PII pipeline).
@@ -132,13 +145,13 @@ function main() {
         '--in', har,
         '--out', scrubbedHar,
         '--subs', legacySubs,
-        '--salt', salt,
+        '--profile', profile.path,
         '--pii-subs', piiSubs,
         '--fixed-time', fixedTime,
     ]);
 
     // Stage 2: verify-scrub confirms no plaintext PII / token leaked.
-    runStage('verify-scrub', process.execPath, [verify, '--in', scrubbedHar]);
+    runStage('verify-scrub', process.execPath, [verify, '--in', scrubbedHar, '--profile', profile.path]);
 
     // Stage 3: detect-auth -- emits {authModel, evidence[]} to stdout.
     process.stdout.write('==> Stage: detect-auth\n');

@@ -6,8 +6,25 @@
  * and plausible email addresses. Exits non-zero on any hit so it can be
  * wired into pre-commit and CI workflows.
  *
+ * Three checks, matching the three ways a value escapes a scrub:
+ *
+ *   1. Shape patterns -- JWTs, long hex, bearer tokens, emails, PII.
+ *   2. Known secret names, INCLUDING inside percent-encoded parameters. A
+ *      form body carrying `variables=<percent-encoded JSON>` hides tokens
+ *      where no flat pattern reaches them.
+ *   3. Forbidden literals from the operator profile -- the operator's own
+ *      identifiers, which escape (1) and (2) whenever they travel under a
+ *      name nobody anticipated.
+ *
+ * Check 3 needs `.har-profile.json`, which is gitignored and therefore
+ * absent in CI. When no profile is found the literal check is reported as
+ * skipped rather than silently passing; checks 1 and 2 still gate.
+ *
+ * No failure message ever echoes the offending value -- that would merely
+ * relocate the leak into the log that reports it.
+ *
  * Usage:
- *   node verify-scrub.js --in <scrubbed.har>
+ *   node verify-scrub.js --in <scrubbed.har> [--profile <path>]
  *
  * Exit codes:
  *   0 -- clean
@@ -18,6 +35,10 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
+const harProfile = require(path.join(__dirname, 'har-profile.js'));
+const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -130,10 +151,61 @@ function findLeaks(text) {
     return leaks;
 }
 
+// Percent-decode every escape sequence in place, so a secret nested inside an
+// encoded parameter is scanned by the same patterns as one on the wire. Two
+// passes, because a value inside an already-encoded parameter is encoded twice.
+function decodedShadow(text) {
+    let out = text;
+    for (let pass = 0; pass < 2; pass++) {
+        out = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+            try { return decodeURIComponent(m); } catch { return m; }
+        });
+    }
+    return out;
+}
+
+/**
+ * Walk the parsed HAR for a known secret name whose value is still readable.
+ * Reports the NAME only -- the value is what we are trying not to spread.
+ */
+function findNamedSecretLeaks(node, leaks, seen) {
+    if (node === null || typeof node !== 'object') return leaks;
+    if (seen.has(node)) return leaks;
+    seen.add(node);
+
+    if (Array.isArray(node)) {
+        for (const item of node) findNamedSecretLeaks(item, leaks, seen);
+        return leaks;
+    }
+
+    // HAR name/value pairs: headers, cookies, queryString, postData.params.
+    if (typeof node.name === 'string' && typeof node.value === 'string') {
+        if (harSecrets.isUnredactedSecret(node.name, node.value)) {
+            leaks.push({ kind: 'known-secret', sample: node.name });
+        }
+    }
+
+    for (const key of Object.keys(node)) {
+        const value = node[key];
+        if (typeof value === 'string') {
+            if (harSecrets.isUnredactedSecret(key, value)) {
+                leaks.push({ kind: 'known-secret', sample: key });
+            }
+            // A percent-encoded parameter can carry a whole JSON document
+            // whose inner keys never appear in the outer parameter list.
+            const nested = harLiterals.decodeNestedJson(value);
+            if (nested) findNamedSecretLeaks(nested, leaks, seen);
+        } else {
+            findNamedSecretLeaks(value, leaks, seen);
+        }
+    }
+    return leaks;
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) {
-        console.error('usage: node verify-scrub.js --in <har>');
+        console.error('usage: node verify-scrub.js --in <har> [--profile <path>]');
         process.exit(1);
     }
     let raw;
@@ -143,9 +215,41 @@ function main() {
         console.error(`verify-scrub: cannot read ${args.in}: ${e.message}`);
         process.exit(1);
     }
+
     const leaks = findLeaks(raw);
+
+    const shadow = decodedShadow(raw);
+    if (shadow !== raw) {
+        const seenSamples = new Set(leaks.map((l) => `${l.kind}:${l.sample}`));
+        for (const l of findLeaks(shadow)) {
+            if (!seenSamples.has(`${l.kind}:${l.sample}`)) leaks.push(l);
+        }
+    }
+
+    try {
+        findNamedSecretLeaks(JSON.parse(raw), leaks, new Set());
+    } catch {
+        // Not parseable as JSON -- the text-level checks above still apply.
+    }
+
+    // Forbidden literals. The profile is gitignored, so it is absent in CI;
+    // say so rather than reporting a check that never ran as a pass.
+    let literalStatus = 'skipped (no profile)';
+    try {
+        const profile = harProfile.loadProfile({ profilePath: args.profile });
+        for (const hit of harLiterals.findLiteralHits(raw, profile.literals)) {
+            leaks.push({ kind: 'forbidden-literal', sample: `${hit.sentinel} (x${hit.count})` });
+        }
+        literalStatus = `${profile.literals.length} literal(s)`;
+    } catch (e) {
+        if (args.profile) {
+            console.error(`verify-scrub: ${e.message}`);
+            process.exit(1);
+        }
+    }
+
     if (leaks.length === 0) {
-        console.log(`verify-scrub: ${args.in} -- 0 leaks`);
+        console.log(`verify-scrub: ${args.in} -- 0 leaks (literal check: ${literalStatus})`);
         process.exit(0);
     }
     console.error(`verify-scrub: ${leaks.length} leak(s) detected in ${args.in}:`);

@@ -466,6 +466,16 @@ function replaceAll(text, replacements) {
             re = new RegExp(escapeRe(v), 'g');
         }
         out = out.replace(re, r.replacement);
+
+        // The same value can appear percent-encoded in the very same entry:
+        // detection reads the decoded `queryString` pair, while the `url`
+        // carries `phone=%2B1...`. Replacing only the raw spelling leaves the
+        // encoded copy readable -- one value, several spellings, which is the
+        // failure literal-value scrubbing exists to close (see har-literals.js).
+        const encoded = encodeURIComponent(v);
+        if (encoded !== v && out.includes(encoded)) {
+            out = out.split(encoded).join(encodeURIComponent(r.replacement));
+        }
     }
     return out;
 }
