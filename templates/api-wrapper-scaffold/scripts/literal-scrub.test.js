@@ -249,5 +249,95 @@ function scrubbedPath(dir) {
         '9.c: the email buried in a large body was not scrubbed');
 }
 
+// --- 10. The non-echo contract covers SHAPE-detected leaks too. ---
+// The literal and known-name checks name a sentinel or a field. The shape
+// checks used to print up to 40 characters of the match, which for an email,
+// a phone number or an SSN is the entire secret -- straight into the CI log
+// that exists to report it.
+{
+    const dir = makeProject('no-echo-shapes', { literals: {} });
+    const leaky = path.join(dir, 'leaky.har');
+    const SECRETS = {
+        email: 'contact@realcompany.example',
+        ssn: '123-45-6789',
+        phone: '+14155559876',
+        hex64: 'a'.repeat(63) + 'b',
+    };
+    fs.writeFileSync(leaky, JSON.stringify({ log: { entries: [{ note: Object.values(SECRETS).join(' ') }] } }));
+
+    const r = runNode(verify, ['--in', leaky], dir);
+    assert.notStrictEqual(r.code, 0, '10.a: shape-detected leaks were not reported at all');
+
+    const all = r.stderr + r.stdout;
+    for (const [kind, value] of Object.entries(SECRETS)) {
+        assert.ok(!all.includes(value),
+            `10.b: verify-scrub echoed the ${kind} value into its own output:\n${all}`);
+        assert.ok(all.includes(kind), `10.c: the ${kind} leak was not named`);
+    }
+}
+
+// --- 11. Known-name secrets in a multipart body are found. ---
+// A multipart field puts the name in a Content-Disposition header and the
+// value on its own line, so neither `name=value` nor `"name":"value"` matches.
+// These tokens are deliberately short and non-hex -- which is why they are on
+// a name list at all -- so no shape pattern catches them either. Without a
+// multipart-aware pass the value survives the scrub AND every verifier: a
+// silent bypass, which is worse than no scrub at all.
+{
+    const dir = makeProject('multipart', { literals: {} });
+    const CSRF = 'AVliveCsrfToken123';
+    const body = [
+        '------WebKitFormBoundaryABC',
+        'Content-Disposition: form-data; name="lsd"',
+        '',
+        CSRF,
+        '------WebKitFormBoundaryABC',
+        'Content-Disposition: form-data; name="caption"',
+        '',
+        'keep this text',
+        '------WebKitFormBoundaryABC--',
+    ].join('\r\n');
+
+    const harIn = writeHar(dir, {
+        request: {
+            bodySize: body.length,
+            postData: { mimeType: 'multipart/form-data; boundary=----WebKitFormBoundaryABC', text: body },
+        },
+    });
+    const r = runNode(sanitize, ['--in', harIn], dir);
+    assert.strictEqual(r.code, 0, '11.a: sanitize failed: ' + r.stderr);
+
+    const out = fs.readFileSync(scrubbedPath(dir), 'utf8');
+    assert.ok(!out.includes(CSRF), '11.b: the multipart CSRF token survived the scrub:\n' + out);
+    assert.ok(out.includes('keep this text'), '11.c: an unrelated multipart field was damaged');
+
+    // And the verifier must not bless a multipart body that still carries one.
+    const stillLeaky = path.join(dir, 'still-leaky.har');
+    fs.writeFileSync(stillLeaky, JSON.stringify({
+        log: { entries: [{ request: { postData: { mimeType: 'multipart/form-data', text: body } } }] },
+    }));
+    const v = runNode(verify, ['--in', stillLeaky], dir);
+    assert.notStrictEqual(v.code, 0, '11.d: verify-scrub passed a multipart body carrying a live token');
+    assert.ok(!(v.stderr + v.stdout).includes(CSRF), '11.e: the failure echoed the token');
+}
+
+// --- 12. A cookie present only in the structured cookies[] array is scrubbed. ---
+// The HAR spec allows `cookies[]` and the `Cookie` header to diverge. The
+// 16-char length heuristic only ever ran over header text, so a token-shaped
+// value living only in the array was missed by the scrubber and every gate.
+{
+    const dir = makeProject('cookie-array', { literals: {} });
+    const SESSION = 'sessionvalue0123456789abcdef';
+    const harIn = writeHar(dir, {
+        request: { cookies: [{ name: 'app_session', value: SESSION }, { name: 'theme', value: 'dark' }] },
+    });
+    const r = runNode(sanitize, ['--in', harIn], dir);
+    assert.strictEqual(r.code, 0, '12.a: sanitize failed: ' + r.stderr);
+
+    const out = fs.readFileSync(scrubbedPath(dir), 'utf8');
+    assert.ok(!out.includes(SESSION), '12.b: a cookie in the cookies[] array survived:\n' + out);
+    assert.ok(out.includes('dark'), '12.c: a short non-secret cookie was needlessly redacted');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All literal-scrub tests passed');

@@ -287,5 +287,89 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
     assert.notStrictEqual(r.code, 0, '12: a missing reference directory should not report success');
 }
 
+// --- 13. Gate: a shape-detected secret with no known name and no literal. ---
+// The four name/literal gates only catch what somebody named or declared. A
+// per-session bearer token or a third party's email in a response body is
+// neither, and a committed reference is exactly where such a value would sit
+// unnoticed. The reference gate must be at least as strong as the gate on the
+// scrubbed HAR it came from.
+{
+    const dir = makeProject('gate-shapes');
+    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    fs.mkdirSync(refDir, { recursive: true });
+    const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsaXZlLXVzZXIifQ.s1gnatureV4lueHere_x';
+    fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
+        log: { entries: [entry({ response: { content: { size: 1, mimeType: 'application/json',
+            text: JSON.stringify({ token: JWT, notify: 'someone@thirdparty.example' }) } } })] },
+    }));
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 3, '13.a: a raw JWT in a committed reference was accepted');
+    assert.ok(!r.stderr.includes(JWT), '13.b: the failure echoed the token');
+    assert.ok(/jwt/i.test(r.stderr), '13.c: the failure does not name what kind of leak it found');
+}
+
+// --- 14. The extractor refuses to write a reference it knows still leaks. ---
+// Its own post-processing can REVEAL a literal: decoding a parameter to emit
+// `postData.params[]` peels one layer of encoding off, so a value the scrub
+// could not see becomes visible in the file being written. Reporting that on
+// stdout and exiting 0 is not a gate -- an automated caller reads the exit
+// code, sees success, and commits the reference.
+{
+    const dir = makeProject('extract-leaks');
+    const NAME = 'Ada Lovelace';
+    fs.writeFileSync(path.join(dir, '.har-profile.json'), JSON.stringify({
+        salt: 'reference-test-salt',
+        literals: { [NAME]: '<DisplayName>' },
+    }, null, 2));
+
+    // Encoded three times: deeper than the spellings the scrub pass covers, so
+    // it survives sanitize-har untouched. Decoding it once to emit
+    // postData.params[] brings it back within reach of the check.
+    const buried = encodeURIComponent(encodeURIComponent(encodeURIComponent(NAME)));
+    const body = 'doc_id=9&payload=' + buried;
+    const raw = writeRaw(dir, [entry({
+        request: {
+            url: 'https://example.invalid/graphql',
+            bodySize: body.length,
+            postData: { mimeType: 'application/x-www-form-urlencoded', text: body },
+        },
+    })]);
+    const out = path.join(dir, 'ref.har');
+
+    const r = runNode(extract, ['--in', raw, '--match', 'graphql', '--out', out], dir);
+    assert.strictEqual(r.code, 3, '14.a: an unscrubbed literal should fail the extraction, got ' + r.code);
+    assert.ok(!fs.existsSync(out), '14.b: a reference known to carry a literal was written anyway');
+    assert.ok(r.stderr.includes('<DisplayName>'), '14.c: the failure does not name the violated sentinel');
+    assert.ok(!r.stderr.includes(NAME), '14.d: the failure echoed the literal');
+}
+
+// --- 15. A literal containing JSON-escapable characters is still scrubbed. ---
+// The literal pass runs over the SERIALIZED document, where a quote is `\"`
+// and a non-ASCII character may be `\uXXXX`. Matching only the raw spelling
+// silently misses every literal that contains one -- and names, the most
+// common literal after an id, routinely do.
+{
+    const dir = makeProject('escaped-literal');
+    const NAME = 'Ada "Countess" Lovelace';
+    fs.writeFileSync(path.join(dir, '.har-profile.json'), JSON.stringify({
+        salt: 'reference-test-salt',
+        literals: { [NAME]: '<DisplayName>' },
+    }, null, 2));
+
+    const raw = writeRaw(dir, [entry({
+        request: { url: 'https://example.invalid/graphql' },
+        response: {
+            content: { size: 60, mimeType: 'application/json', text: JSON.stringify({ owner: NAME }) },
+        },
+    })]);
+    const out = path.join(dir, 'ref.har');
+    const r = runNode(extract, ['--in', raw, '--match', 'graphql', '--out', out], dir);
+    assert.strictEqual(r.code, 0, '15.a: extraction failed: ' + r.stderr);
+
+    const written = fs.readFileSync(out, 'utf8');
+    assert.ok(!written.includes('Countess'),
+        '15.b: a literal containing a quote survived the serialized-document pass:\n' + written);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-reference tests passed');

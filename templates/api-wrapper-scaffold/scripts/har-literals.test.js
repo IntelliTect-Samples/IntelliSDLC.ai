@@ -121,4 +121,39 @@ const LITERALS = [
     assert.deepStrictEqual(hits, [], '9.b: empty literal list reported hits');
 }
 
+// --- 10. A literal that contains another is replaced first, whatever the order. ---
+// Declaring the surname before the full name used to let the short literal
+// consume its substring, leaving `Ada ` stranded next to a sentinel -- a
+// partial-name leak that nothing reported, because the long literal recorded
+// no hit. Whose fault the ordering was does not matter: the operator should
+// not have to know.
+{
+    const declaredShortFirst = [
+        { literal: 'Lovelace', sentinel: '<Surname>' },
+        { literal: 'Ada Lovelace', sentinel: '<FullName>' },
+    ];
+    const { text, hits } = lit.applyLiteralPass('owner is Ada Lovelace, cc Lovelace', declaredShortFirst);
+
+    assert.ok(!text.includes('Ada '), `10.a: a name fragment survived:\n${text}`);
+    assert.ok(text.includes('<FullName>'), '10.b: the longer literal never matched');
+    assert.ok(text.includes('<Surname>'), '10.c: the standalone surname was not replaced');
+    assert.strictEqual(hits.find((h) => h.sentinel === '<FullName>').count, 1, '10.d: full name hit not counted');
+}
+
+// --- 11. Literals are matched in their JSON-escaped spelling too. ---
+// The pass runs over the SERIALIZED document, where a quote is `\\"`. Matching
+// only the raw spelling misses every literal containing one -- and names, the
+// most common literal after an id, routinely contain quotes or non-ASCII.
+{
+    const NAME = 'Ada "Countess" Lovelace';
+    const serialized = JSON.stringify({ owner: NAME });
+    const { text } = lit.applyLiteralPass(serialized, [{ literal: NAME, sentinel: '<DisplayName>' }]);
+    assert.ok(!text.includes('Countess'), `11.a: the JSON-escaped spelling was not matched:\n${text}`);
+
+    const UNICODE = 'Ada Lovelace — owner';
+    const escapedUnicode = '{"o":"Ada Lovelace \\u2014 owner"}';
+    const r2 = lit.applyLiteralPass(escapedUnicode, [{ literal: UNICODE, sentinel: '<Owner>' }]);
+    assert.ok(r2.text.includes('<Owner>'), '11.b: a \\uXXXX-escaped literal was not matched');
+}
+
 console.log('All har-literals tests passed');

@@ -243,18 +243,27 @@ function main() {
     capResponses(scrubbedEntries, maxResponseBytes);
     addDecodedParams(scrubbedEntries);
 
-    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
-    fs.writeFileSync(outPath, JSON.stringify(scrubbed, null, 2), 'utf8');
+    const serialized = JSON.stringify(scrubbed, null, 2);
     fs.rmSync(work, { recursive: true, force: true });
 
-    const literalSummary = harLiterals
-        .findLiteralHits(JSON.stringify(scrubbed), profile.literals)
-        .map((h) => h.sentinel);
+    // Check BEFORE writing. This script's own post-processing can reveal a
+    // literal the scrub never saw -- decoding a parameter to emit
+    // `postData.params[]` peels a layer of encoding off it. Reporting that on
+    // stdout and exiting 0 is not a gate: an automated caller reads the exit
+    // code, sees success, and commits the reference.
+    const literalHits = harLiterals.findLiteralHits(serialized, profile.literals);
+    if (literalHits.length > 0) {
+        fail(
+            `the extract still carries ${literalHits.map((h) => `${h.sentinel} (x${h.count})`).join(', ')} ` +
+            'after scrubbing. No reference written. This usually means the value appears in an ' +
+            'encoding the scrub pass does not cover -- widen it before keeping this capture.', 3);
+    }
+
+    fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+    fs.writeFileSync(outPath, serialized, 'utf8');
 
     console.log(
-        `extract-har-reference: wrote ${outPath} ` +
-        `(${selected.length} of ${all.length} entries` +
-        (literalSummary.length ? `; UNSCRUBBED LITERALS: ${literalSummary.join(', ')}` : '') + ')');
+        `extract-har-reference: wrote ${outPath} (${selected.length} of ${all.length} entries)`);
     // The endpoint is recoverable from the file. What you did to provoke it is
     // not -- and that is the half a reader is actually looking for.
     console.log(
