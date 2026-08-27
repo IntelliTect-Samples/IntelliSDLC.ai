@@ -94,21 +94,6 @@ model** (e.g. Opus authored -> Sonnet reviews) whenever either is true:
    independent reviewer is available immediately by spawning a review subagent
    on a different model, with no dependency on a GitHub-side feature.
 
-When the substitution rule applies, **you may skip the Copilot-specific
-instructions in `.github/agents/dev-loop.agent.md`**: the
-`gh pr edit --add-reviewer "@copilot"` call, the `submittedAt` polling, and the
-`resolveReviewThread` GraphQL loop are
-Copilot's *transport*, not the requirement. What must still happen is exactly
-what those steps exist to produce:
-
-- an independent reviewer read the full diff,
-- its findings were triaged (accepted or rejected with a rationale validated
-  against the code -- a review is advisory, never auto-applied),
-- every accepted Critical / Important finding was fixed using behavior-first
-  testing, and
-- the reviewer re-read the updated diff and reported no new accepted
-  Critical / Important findings.
-
 **Enforce the difference mechanically -- do not assume it.** A subagent spawned
 without an explicit model override **inherits the authoring model**, which would
 be self-review dressed up as independent review. Always pass an explicit model
@@ -119,6 +104,22 @@ invariant held; the reviewer's model name is.
 If the runtime genuinely offers **no model other than the authoring one**, stop
 and request a re-run with an eligible model rather than self-reviewing -- the
 same last-resort escape as the Phase 6 independence gate.
+
+When the substitution rule applies, **you may skip the Copilot-specific
+instructions in `.github/agents/dev-loop.agent.md`**: the
+`gh pr edit --add-reviewer "@copilot"` call, the `submittedAt` polling, and the
+`resolveReviewThread` GraphQL loop are Copilot's *transport*, not the
+requirement. What must still happen is exactly what those steps exist to
+produce:
+
+- an independent reviewer read the full diff,
+- its findings were triaged (accepted or rejected with a rationale validated
+  against the code -- a review is advisory, never auto-applied),
+- every accepted Critical / Important finding was fixed using behavior-first
+  testing,
+- it ran under an explicit model override, per the paragraph above, and
+- the reviewer re-read the updated diff and reported no new accepted
+  Critical / Important findings.
 
 **Detection -- do not guess.** The Copilot reviewer request *appearing to
 succeed is not evidence that it worked*: `gh pr edit --add-reviewer "@copilot"`
