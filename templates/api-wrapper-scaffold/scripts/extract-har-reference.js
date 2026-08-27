@@ -219,7 +219,17 @@ function main() {
     // the early failure paths are precisely the ones most likely to leave real
     // credentials on disk.
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'har-reference-'));
-    const discardWork = () => fs.rmSync(work, { recursive: true, force: true });
+    const discardWork = () => {
+        // A cleanup failure must never displace the error we are trying to
+        // report. On Windows a just-exited child can still hold a handle, and
+        // a throw from here inside the uncaughtException handler would be
+        // fatal, losing the original diagnostic entirely.
+        try {
+            fs.rmSync(work, { recursive: true, force: true });
+        } catch {
+            // Best effort; the caller's message is the one that matters.
+        }
+    };
     const failAndDiscard = (message, code) => {
         discardWork();
         fail(message, code);
@@ -229,9 +239,13 @@ function main() {
     // `failAndDiscard`, and this handler catches anything that throws -- a
     // full disk or a read-only temp directory on a constrained CI runner would
     // otherwise strand the unscrubbed staging on disk with nothing reported.
-    process.on('uncaughtException', (e) => {
-        failAndDiscard(`unexpected failure while staging: ${e.message}`);
-    });
+    // Scoped deliberately: removed the moment staging is over. Left
+    // registered it would catch a failure writing the FINAL reference and
+    // report it as a staging failure -- pointing the operator at the wrong
+    // half of the pipeline -- and would replace Node's stack trace with a
+    // one-line message for any unrelated bug later in the run.
+    const onStagingThrow = (e) => failAndDiscard(`unexpected failure while staging: ${e.message}`);
+    process.on('uncaughtException', onStagingThrow);
 
     const stagedIn = path.join(work, 'selected.har');
     const stagedOut = path.join(work, 'scrubbed.har');
@@ -263,6 +277,7 @@ function main() {
 
     const serialized = JSON.stringify(scrubbed, null, 2);
     discardWork();
+    process.removeListener('uncaughtException', onStagingThrow);
 
     // Check BEFORE writing. This script's own post-processing can reveal a
     // literal the scrub never saw -- decoding a parameter to emit

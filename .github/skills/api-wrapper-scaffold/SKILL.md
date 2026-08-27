@@ -250,7 +250,19 @@ name somebody anticipated. Two whole classes escape it:
   and the tokens on a name list are short and non-hex by nature, so no shape
   pattern catches them either. The value survives the scrub *and* every
   verifier: a silent bypass, which is worse than no scrub, because the file
-  looks checked. Scrub multipart fields by name explicitly.
+  looks checked. Scrub multipart fields by name explicitly, anchoring on the
+  boundary the body itself declares -- and find that delimiter anywhere in
+  the body, not on the first line. A leading CRLF or a MIME preamble is legal
+  and common enough that keying off line one blinds the control for the
+  *whole* body, which is a worse failure than mis-parsing one field.
+
+  > **Known limitation, accepted deliberately.** A split heuristic is not a
+  > MIME parser. A preamble containing a bare `--...` line, or a boundary
+  > token that also occurs inside a field value, will mis-scope the split for
+  > that body. Both need an uncommon shape and fail toward a missed redaction
+  > that the literal-value and shape controls still cover. Write a real
+  > parser if these start appearing in real captures; do not stack another
+  > heuristic on top.
 - **A secret nested inside an encoded JSON parameter.** A form body carries
   `variables=<percent-encoded JSON>` and the per-request tokens live *inside*
   that JSON. No flat pattern over the wire body matches them -- the body is
