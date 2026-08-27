@@ -218,6 +218,16 @@ function writeJson(file, value) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Numeric option with a default, without `||`'s falsy-zero trap: a caller who
+ * passes 0 means 0, and silently substituting the default turns an explicit
+ * instruction into a surprise.
+ */
+function numberOr(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot recorder
 // ---------------------------------------------------------------------------
@@ -276,6 +286,10 @@ class SnapshotRecorder {
  */
 function attachSnapshot(context, recorder) {
     context.on('response', async (response) => {
+      // The whole handler is guarded, not just the two calls known to be
+      // fragile: an unhandled rejection here would crash the driver mid-
+      // capture, which is the exact loss this recorder exists to prevent.
+      try {
         const request = response.request();
         const entry = {
             startedDateTime: new Date().toISOString(),
@@ -325,6 +339,11 @@ function attachSnapshot(context, recorder) {
         }
 
         recorder.add(entry);
+      } catch (e) {
+        // Losing one entry from a best-effort recovery artifact is a rounding
+        // error; losing the capture is not.
+        process.stderr.write(`capture-har: snapshot entry skipped: ${e.message}\n`);
+      }
     });
 }
 
@@ -398,8 +417,13 @@ async function start(args) {
     const sessionDir = path.join(capturesDir, stamp(new Date()));
     const harPath = path.join(sessionDir, RAW_HAR);
     const snapshotLog = path.join(sessionDir, SNAPSHOT_LOG);
+    // `|| DEFAULT` would swallow a deliberate 0. Port 0 stays unsupported --
+    // Chrome would pick a random one and the endpoint printed for an agent to
+    // attach to would be a lie -- but a 0-second snapshot interval means
+    // "flush as fast as the timer allows" and must be honoured.
     const port = Number(args.port) || DEFAULT_PORT;
-    const snapshotMs = (Number(args['snapshot-seconds']) || DEFAULT_SNAPSHOT_SECONDS) * 1000;
+    const snapshotSeconds = numberOr(args['snapshot-seconds'], DEFAULT_SNAPSHOT_SECONDS);
+    const snapshotMs = snapshotSeconds * 1000;
     const isolated = !!args.isolated;
     const profileDir = isolated
         ? fs.mkdtempSync(path.join(os.tmpdir(), 'har-capture-'))
@@ -487,6 +511,14 @@ async function start(args) {
     attachSnapshot(context, recorder);
     recorder.start();
 
+    // Armed BEFORE the first navigation. A window closed while `goto` is still
+    // in flight emits `close` on an emitter with no listeners, and Node drops
+    // it -- after which no ending can ever fire and the driver waits forever,
+    // holding the port and reporting `recording: true`.
+    let reason = null;
+    const settle = (r) => { if (!reason) reason = r; };
+    context.on('close', () => settle('window-closed'));
+
     session.pid = process.pid;
     session.startedUtc = new Date().toISOString();
     writeJson(path.join(sessionDir, SESSION_FILE), session);
@@ -512,13 +544,9 @@ async function start(args) {
         '   to the recovery snapshot -- it cannot write the real HAR.)\n\n');
 
     // Whichever ending arrives first wins. All of them route through the same
-    // clean close, because that close is what serializes the HAR.
+    // clean close, because that close is what serializes the HAR. (The
+    // window-closed ending is already armed, above.)
     const sentinel = path.join(sessionDir, STOP_SENTINEL);
-    let reason = null;
-    const settle = (r) => { if (!reason) reason = r; };
-
-    context.on('close', () => settle('window-closed'));
-
     const endings = [];
     endings.push((async () => {
         while (!reason && !fs.existsSync(sentinel)) await sleep(POLL_MS);
@@ -592,7 +620,14 @@ function resolveSession(args) {
     if (args.session) return path.resolve(args.session);
     const capturesDir = path.resolve(args.dir || DEFAULT_CAPTURES_DIR);
     const current = readJson(path.join(capturesDir, CURRENT_FILE));
-    if (current && current.sessionDir && fs.existsSync(current.sessionDir)) return current.sessionDir;
+    if (current && current.sessionDir && fs.existsSync(current.sessionDir)) {
+        // The pointer is only trustworthy while it names a session that has
+        // not ended. A driver killed before its own cleanup leaves the file
+        // behind, and following it forever would pin every later status/stop
+        // to a dead session while newer captures are ignored.
+        const pointed = readJson(path.join(current.sessionDir, SESSION_FILE));
+        if (pointed && !pointed.endedUtc) return current.sessionDir;
+    }
     if (!fs.existsSync(capturesDir)) return null;
     const candidates = fs.readdirSync(capturesDir)
         .map((n) => path.join(capturesDir, n))
@@ -613,7 +648,7 @@ async function stop(args) {
         process.stderr.write(`capture-har: ${sessionDir} has no ${SESSION_FILE}\n`);
         return 3;
     }
-    const minBytes = Number(args['min-bytes']) || DEFAULT_MIN_BYTES;
+    const minBytes = numberOr(args['min-bytes'], DEFAULT_MIN_BYTES);
 
     if (args['validate-only']) {
         process.stdout.write(JSON.stringify({ sessionDir, harPath: session.harPath, minBytes }, null, 2) + '\n');
@@ -623,12 +658,23 @@ async function stop(args) {
     // Idempotent: a session that already ended has flushed whatever it had and
     // retired its driver, so there is nothing to signal -- just report.
     if (!session.endedUtc) {
-        fs.writeFileSync(path.join(sessionDir, STOP_SENTINEL), '', 'utf8');
-        const deadline = Date.now() + STOP_TIMEOUT_MS;
-        while (Date.now() < deadline) {
-            const updated = readJson(sessionFile);
-            if (updated && updated.endedUtc) break;
-            await sleep(POLL_MS);
+        // A driver that already died will never answer the sentinel, and
+        // waiting the full timeout for it looks identical to a healthy stop
+        // that is merely slow. Probing its port first turns a silent 60-second
+        // hang into an immediate, explained fall-through to recovery.
+        const alive = await probeCdp(session.port);
+        if (!alive) {
+            process.stderr.write(
+                `capture-har: the recorder for ${sessionDir} is no longer running.\n` +
+                '  Nothing can write the real HAR now; recovering the snapshot instead.\n');
+        } else {
+            fs.writeFileSync(path.join(sessionDir, STOP_SENTINEL), '', 'utf8');
+            const deadline = Date.now() + STOP_TIMEOUT_MS;
+            while (Date.now() < deadline) {
+                const updated = readJson(sessionFile);
+                if (updated && updated.endedUtc) break;
+                await sleep(POLL_MS);
+            }
         }
     }
 
