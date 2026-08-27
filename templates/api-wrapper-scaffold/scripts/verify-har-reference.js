@@ -77,38 +77,6 @@ function checkRequestBodies(entries, report) {
     }
 }
 
-function checkSecrets(node, report, where, seen) {
-    if (node === null || typeof node !== 'object') return;
-    if (seen.has(node)) return;
-    seen.add(node);
-
-    if (Array.isArray(node)) {
-        for (const item of node) checkSecrets(item, report, where, seen);
-        return;
-    }
-
-    // HAR name/value pairs: headers, cookies, queryString, postData.params.
-    if (typeof node.name === 'string' && typeof node.value === 'string'
-        && harSecrets.isUnredactedSecret(node.name, node.value)) {
-        report(`${where}: credential '${node.name}' is readable in the clear`);
-    }
-
-    for (const key of Object.keys(node)) {
-        const value = node[key];
-        if (typeof value === 'string') {
-            if (harSecrets.isUnredactedSecret(key, value)) {
-                report(`${where}: credential '${key}' is readable in the clear`);
-            }
-            const nested = harLiterals.decodeNestedJson(value);
-            if (nested) {
-                checkSecrets(nested, report, `${where} (inside encoded '${key}')`, seen);
-            }
-        } else {
-            checkSecrets(value, report, where, seen);
-        }
-    }
-}
-
 function main() {
     const args = parseArgs(process.argv.slice(2));
     const dir = path.resolve(typeof args.dir === 'string' ? args.dir : DEFAULT_DIR);
@@ -157,7 +125,9 @@ function main() {
 
         const entries = (har.log && har.log.entries) || [];
         checkRequestBodies(entries, report);
-        checkSecrets(har, report, 'entry', new Set());
+        harSecrets.walkForUnredactedSecrets(har, (name, where) => {
+            report(`${where}: credential '${name}' is readable in the clear`);
+        });
 
         for (const hit of harLiterals.findLiteralHits(raw, literals)) {
             report(`forbidden literal ${hit.sentinel} appears ${hit.count} time(s) unscrubbed`);

@@ -165,44 +165,6 @@ function decodedShadow(text) {
     return out;
 }
 
-/**
- * Walk the parsed HAR for a known secret name whose value is still readable.
- * Reports the NAME only -- the value is what we are trying not to spread.
- */
-function findNamedSecretLeaks(node, leaks, seen) {
-    if (node === null || typeof node !== 'object') return leaks;
-    if (seen.has(node)) return leaks;
-    seen.add(node);
-
-    if (Array.isArray(node)) {
-        for (const item of node) findNamedSecretLeaks(item, leaks, seen);
-        return leaks;
-    }
-
-    // HAR name/value pairs: headers, cookies, queryString, postData.params.
-    if (typeof node.name === 'string' && typeof node.value === 'string') {
-        if (harSecrets.isUnredactedSecret(node.name, node.value)) {
-            leaks.push({ kind: 'known-secret', sample: node.name });
-        }
-    }
-
-    for (const key of Object.keys(node)) {
-        const value = node[key];
-        if (typeof value === 'string') {
-            if (harSecrets.isUnredactedSecret(key, value)) {
-                leaks.push({ kind: 'known-secret', sample: key });
-            }
-            // A percent-encoded parameter can carry a whole JSON document
-            // whose inner keys never appear in the outer parameter list.
-            const nested = harLiterals.decodeNestedJson(value);
-            if (nested) findNamedSecretLeaks(nested, leaks, seen);
-        } else {
-            findNamedSecretLeaks(value, leaks, seen);
-        }
-    }
-    return leaks;
-}
-
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) {
@@ -228,7 +190,9 @@ function main() {
     }
 
     try {
-        findNamedSecretLeaks(JSON.parse(raw), leaks, new Set());
+        harSecrets.walkForUnredactedSecrets(JSON.parse(raw), (name) => {
+            leaks.push({ kind: 'known-secret', sample: name });
+        });
     } catch {
         // Not parseable as JSON -- the text-level checks above still apply.
     }

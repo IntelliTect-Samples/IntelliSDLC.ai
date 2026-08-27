@@ -14,7 +14,7 @@
 
 'use strict';
 
-const { isPlausibleSecretValue } = require('./har-literals.js');
+const { isPlausibleSecretValue, decodeNestedJson } = require('./har-literals.js');
 
 // Request-signing / CSRF-adjacent body & query parameters, plus session
 // cookies too short to trip the 16-character cookie-value heuristic.
@@ -59,6 +59,51 @@ function isUnredactedSecret(name, value) {
     return !isRedacted(value);
 }
 
+/**
+ * Walk a parsed HAR for known secret names whose values are still readable,
+ * descending into percent-encoded JSON parameters on the way -- a form body
+ * carrying `variables=<encoded JSON>` hides tokens whose keys never appear in
+ * the outer parameter list.
+ *
+ * `report(name, where)` receives the offending NAME and a location label.
+ * It never receives the value: the value is what we are trying not to spread,
+ * and a failure message that quotes it relocates the leak into the log.
+ *
+ * Shared by verify-scrub.js and verify-har-reference.js so both gate on
+ * exactly the same definition of "readable credential".
+ */
+function walkForUnredactedSecrets(node, report, where, seen) {
+    const visited = seen || new Set();
+    const location = where || 'entry';
+    if (node === null || typeof node !== 'object') return;
+    if (visited.has(node)) return;
+    visited.add(node);
+
+    if (Array.isArray(node)) {
+        for (const item of node) walkForUnredactedSecrets(item, report, location, visited);
+        return;
+    }
+
+    // HAR name/value pairs: headers, cookies, queryString, postData.params.
+    if (typeof node.name === 'string' && typeof node.value === 'string'
+        && isUnredactedSecret(node.name, node.value)) {
+        report(node.name, location);
+    }
+
+    for (const key of Object.keys(node)) {
+        const value = node[key];
+        if (typeof value !== 'string') {
+            walkForUnredactedSecrets(value, report, location, visited);
+            continue;
+        }
+        if (isUnredactedSecret(key, value)) report(key, location);
+        const nested = decodeNestedJson(value);
+        if (nested) {
+            walkForUnredactedSecrets(nested, report, `${location} (inside encoded '${key}')`, visited);
+        }
+    }
+}
+
 module.exports = {
     KNOWN_SECRET_FIELD_NAMES,
     KNOWN_SECRET_HEADER_NAMES,
@@ -66,4 +111,5 @@ module.exports = {
     isKnownSecretHeader,
     isRedacted,
     isUnredactedSecret,
+    walkForUnredactedSecrets,
 };
