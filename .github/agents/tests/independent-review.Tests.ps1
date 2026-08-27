@@ -47,7 +47,8 @@ Describe 'CLAUDE.md carries the independent-review step' {
     }
 
     It 'names Copilot review as one way to satisfy the invariant, not the only one' {
-        $script:ClaudeText | Should -Match '(?i)Copilot\s+review\s+is\s+one\s+way|one\s+way\s+of\s+satisfying'
+        $script:ClaudeText | Should -Match '(?i)one\s+way\s+of\s+satisfying'
+        $script:ClaudeText | Should -Match '(?i)not\s+the\s+only\s+transport|not\s+the\s+requirement\s+itself'
     }
 
     It 'fires the substitution both when Copilot is unavailable and inside Claude Code' {
@@ -62,6 +63,19 @@ Describe 'CLAUDE.md carries the independent-review step' {
 
     It 'documents the requested_reviewers detection call' {
         $script:ClaudeText | Should -Match 'requested_reviewers'
+    }
+
+    It 'requires an explicit model override so the reviewer cannot inherit the author model' {
+        $script:ClaudeText | Should -Match '(?i)explicit\s+model\s+override'
+        $script:ClaudeText | Should -Match '(?i)inherits?\s+the\s+authoring\s+model'
+    }
+
+    It 'requires recording which model actually ran the review' {
+        $script:ClaudeText | Should -Match '(?i)record\s+which\s+model'
+    }
+
+    It 'keeps a last-resort escape when no other model exists' {
+        $script:ClaudeText | Should -Match '(?i)no\s+model\s+other\s+than\s+the\s+authoring\s+one'
     }
 }
 
@@ -108,8 +122,13 @@ Describe 'dev-loop.agent.md Phase 7 detects an unregistered Copilot request' {
     }
 
     It 'states exit criteria in invariant terms rather than naming only Copilot' {
-        $script:Phase7 | Should -Match '(?i)Exit\s+criteria.*'
-        $script:Phase7 | Should -Match '(?i)independent\s+review'
+        # Anchor to the exit-criteria paragraph itself -- 'independent review'
+        # appears earlier in Phase 7, so an unscoped match would pass even if
+        # this line still demanded a Copilot review.
+        $exit = [regex]::Match($script:Phase7, '(?is)\*\*Exit\s+criteria:\*\*.*?(?:(?:\r?\n){2}|\s*$)').Value
+        $exit | Should -Not -BeNullOrEmpty
+        $exit | Should -Match '(?i)independent\s+review'
+        $exit | Should -Not -Match '(?i)latest\s+Copilot\s+review'
     }
 }
 
@@ -125,6 +144,30 @@ Describe 'dev-loop.agent.md Phase 8 merge precondition uses the invariant' {
     It 'requires an independent review rather than a Copilot review specifically' {
         $script:Phase8 | Should -Match '(?i)independent\s+review'
         $script:Phase8 | Should -Not -Match '(?i)latest\s+Copilot\s+review\s+introduced\s+zero\s+new\s+threads'
+    }
+
+    It 'qualifies thread resolution as Copilot-transport-only so it is not vacuously required' {
+        $script:Phase8 | Should -Match '(?i)review\s+threads\s+resolved\s+\*\*when\s+the\s+review'
+    }
+}
+
+Describe 'dev-loop-phase-gate skill stays in sync with the invariant' {
+    BeforeAll {
+        $script:GateSkill = Join-Path $script:RepoRoot '.github/skills/dev-loop-phase-gate/SKILL.md'
+        $script:GateText  = Get-Content -LiteralPath $script:GateSkill -Raw
+    }
+
+    It 'labels the Phase 7 checklist as Independent Review' {
+        $script:GateText | Should -Match '(?i)After\s+Phase\s+7\s+\(PR\s+\+\s+Independent\s+Review\)'
+    }
+
+    It 'no longer requires a Copilot review specifically' {
+        $script:GateText | Should -Not -Match '(?i)Latest\s+Copilot\s+review\s+introduced\s+zero\s+new\s+threads'
+    }
+
+    It 'checks the invariant and the recorded reviewing model' {
+        $script:GateText | Should -Match '(?i)not\*{0,2}\s+the\s+authoring\s+model'
+        $script:GateText | Should -Match '(?i)reviewing\s+model\s+is\s+recorded'
     }
 }
 

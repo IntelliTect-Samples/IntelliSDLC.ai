@@ -81,12 +81,15 @@ npx tsc && npx vitest run
 - [ ] All tests pass after review fixes
 - [ ] Review report produced in structured format
 
-### After Phase 7 (PR + Copilot Review)
+### After Phase 7 (PR + Independent Review)
 
 - [ ] PR created with `Closes #<issue-number>`
 - [ ] CI workflows are green
-- [ ] All review threads resolved
-- [ ] Latest Copilot review introduced zero new threads
+- [ ] An independent review (a reviewer that is **not** the authoring model)
+      read the latest diff and surfaced no new accepted Critical / Important
+      findings
+- [ ] All review threads resolved (when the review used the Copilot transport)
+- [ ] The reviewing model is recorded, and differs from the authoring model
 - [ ] Dry run passes (if applicable)
 
 ## Failure Routing

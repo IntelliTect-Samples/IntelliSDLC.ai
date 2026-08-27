@@ -94,6 +94,17 @@ model** (e.g. Opus authored -> Sonnet reviews) whenever either is true:
    independent reviewer is available immediately by spawning a review subagent
    on a different model, with no dependency on a GitHub-side feature.
 
+**Enforce the difference mechanically -- do not assume it.** A subagent spawned
+without an explicit model override **inherits the authoring model**, which would
+be self-review dressed up as independent review. Always pass an explicit model
+override when launching the reviewer, and **record which model actually ran the
+review** in the loop summary. "I spawned a review subagent" is not evidence the
+invariant held; the reviewer's model name is.
+
+If the runtime genuinely offers **no model other than the authoring one**, stop
+and request a re-run with an eligible model rather than self-reviewing -- the
+same last-resort escape as the Phase 6 independence gate.
+
 In that case, **you may skip the Copilot-specific instructions in
 `.github/agents/dev-loop.agent.md`**: the `gh pr edit --add-reviewer "@copilot"`
 call, the `submittedAt` polling, and the `resolveReviewThread` GraphQL loop are
