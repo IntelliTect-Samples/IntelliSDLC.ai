@@ -126,6 +126,39 @@ function findLeaks(text) {
 }
 
 
+// Percent-decode every escape sequence in place, so a secret nested inside an
+// encoded parameter is scanned by the same patterns as one on the wire. Two
+// passes, because a value inside an already-encoded parameter is encoded twice.
+function decodedShadow(text) {
+    let out = text;
+    for (let pass = 0; pass < 2; pass++) {
+        out = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
+            try { return decodeURIComponent(m); } catch { return m; }
+        });
+    }
+    return out;
+}
+
+/**
+ * Scan `text` AND a percent-decoded view of it.
+ *
+ * An email inside a `variables=<percent-encoded JSON>` blob is spelled
+ * `%40`, so a scan of the wire text alone never sees it. Both verifiers use
+ * this, so the gate on the committed reference is not weaker than the gate on
+ * the intermediate it came from.
+ */
+function findLeaksDeep(text) {
+    const leaks = findLeaks(text);
+    const shadow = decodedShadow(text);
+    if (shadow === text) return leaks;
+
+    const seen = new Set(leaks.map((l) => `${l.kind}:${l.fingerprint}`));
+    for (const l of findLeaks(shadow)) {
+        if (!seen.has(`${l.kind}:${l.fingerprint}`)) leaks.push(l);
+    }
+    return leaks;
+}
+
 /**
  * A short, non-reversible tag for a matched value: enough to distinguish two
  * findings and to confirm one is gone, without ever printing the value.
@@ -142,6 +175,8 @@ function describeLeak(leak) {
 module.exports = {
     LEAK_PATTERNS,
     findLeaks,
+    findLeaksDeep,
+    decodedShadow,
     fingerprint,
     describeLeak,
     luhnValid,

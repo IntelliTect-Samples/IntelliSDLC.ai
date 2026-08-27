@@ -321,6 +321,57 @@ function scrubbedPath(dir) {
     assert.ok(!(v.stderr + v.stdout).includes(CSRF), '11.e: the failure echoed the token');
 }
 
+// --- 11b. Awkward multipart shapes: an embedded `--` line, and no closing boundary. ---
+// A "stop at the first line starting with --" match truncates on a value that
+// contains one -- wrapped base64 routinely does -- leaving the tail of the
+// real secret in the clear. A final part with no closing boundary was skipped
+// outright. Both are silent, because the scrubber and the detector share one
+// definition of where a field ends.
+{
+    const dir = makeProject('multipart-edges', { literals: {} });
+    const WRAPPED = 'AVfirstHalfOfToken\r\n--notABoundary\r\nAVsecondHalfOfToken';
+    const bodyWithEmbeddedDashes = [
+        '------B',
+        'Content-Disposition: form-data; name="fb_dtsg"',
+        '',
+        WRAPPED,
+        '------B--',
+    ].join('\r\n');
+
+    const harA = writeHar(dir, {
+        request: {
+            bodySize: bodyWithEmbeddedDashes.length,
+            postData: { mimeType: 'multipart/form-data; boundary=----B', text: bodyWithEmbeddedDashes },
+        },
+    });
+    const rA = runNode(sanitize, ['--in', harA], dir);
+    assert.strictEqual(rA.code, 0, '11b.a: sanitize failed: ' + rA.stderr);
+    const outA = fs.readFileSync(scrubbedPath(dir), 'utf8');
+    assert.ok(!outA.includes('AVsecondHalfOfToken'),
+        '11b.b: the tail of the token past an embedded -- line survived:\n' + outA);
+    assert.ok(!outA.includes('AVfirstHalfOfToken'), '11b.c: the head of the token survived');
+
+    // A final field whose closing boundary never arrived (a trimmed capture).
+    const dir2 = makeProject('multipart-unterminated', { literals: {} });
+    const unterminated = [
+        '------B',
+        'Content-Disposition: form-data; name="lsd"',
+        '',
+        'AVunterminatedToken',
+    ].join('\r\n');
+    const harB = writeHar(dir2, {
+        request: {
+            bodySize: unterminated.length,
+            postData: { mimeType: 'multipart/form-data; boundary=----B', text: unterminated },
+        },
+    });
+    const rB = runNode(sanitize, ['--in', harB], dir2);
+    assert.strictEqual(rB.code, 0, '11b.d: sanitize failed: ' + rB.stderr);
+    const outB = fs.readFileSync(scrubbedPath(dir2), 'utf8');
+    assert.ok(!outB.includes('AVunterminatedToken'),
+        '11b.e: a final field with no closing boundary was skipped entirely:\n' + outB);
+}
+
 // --- 12. A cookie present only in the structured cookies[] array is scrubbed. ---
 // The HAR spec allows `cookies[]` and the `Cookie` header to diverge. The
 // 16-char length heuristic only ever ran over header text, so a token-shaped

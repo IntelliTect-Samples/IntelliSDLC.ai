@@ -371,5 +371,60 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
         '15.b: a literal containing a quote survived the serialized-document pass:\n' + written);
 }
 
+// --- 16. Gate: a shape secret hidden inside a percent-encoded parameter. ---
+// The scrubbed-HAR gate scans a percent-decoded view of the file. The
+// reference gate must too, or the file that actually ships is checked more
+// weakly than the intermediate it came from.
+{
+    const dir = makeProject('gate-encoded-shape');
+    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    fs.mkdirSync(refDir, { recursive: true });
+    const nested = encodeURIComponent(JSON.stringify({ notify: 'someone@thirdparty.example' }));
+    fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
+        log: {
+            entries: [entry({
+                request: {
+                    postData: { mimeType: 'application/x-www-form-urlencoded', text: 'variables=' + nested },
+                },
+            })],
+        },
+    }));
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 3, '16.a: a percent-encoded email in a reference was accepted');
+    assert.ok(!r.stderr.includes('thirdparty'), '16.b: the failure echoed the address');
+}
+
+// --- 17. No exit path strands the unscrubbed staging directory. ---
+// The temp working directory holds the SELECTED, UNSCRUBBED entries, written
+// before the scrub runs. The failure paths after that point are exactly the
+// ones most likely to leave real credentials in the OS temp directory -- and
+// they are hard to provoke from outside, so the invariant is checked two
+// ways: a real run leaves nothing behind, and no exit between creating the
+// directory and discarding it skips the cleanup.
+{
+    const dir = makeProject('cleanup');
+    const countStaging = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('har-reference-')).length;
+    const before = countStaging();
+
+    const raw = writeRaw(dir, [entry({ request: { url: 'https://example.invalid/graphql' } })]);
+    const r = runNode(extract, ['--in', raw, '--match', 'graphql', '--out', path.join(dir, 'ref.har')], dir);
+    assert.strictEqual(r.code, 0, '17.a: extraction failed: ' + r.stderr);
+    assert.strictEqual(countStaging(), before, '17.b: a successful run left its staging directory behind');
+
+    // The window runs from creating the staging directory to the point it is
+    // discarded on the success path. `failAndDiscard`'s own definition sits
+    // inside it, so exclude the one bare `fail(` it legitimately contains.
+    const source = fs.readFileSync(extract, 'utf8');
+    const guarded = source.slice(
+        source.indexOf('const work = fs.mkdtempSync'),
+        source.indexOf('const serialized = JSON.stringify'));
+    const definitionBody = guarded.slice(
+        guarded.indexOf('const failAndDiscard'), guarded.indexOf('};', guarded.indexOf('const failAndDiscard')));
+    const bareFails = (guarded.replace(definitionBody, '').match(/(?<!AndDiscard)\bfail\(/g) || []);
+    assert.deepStrictEqual(bareFails, [],
+        '17.c: an exit path between creating and discarding the staging directory calls bare fail(), '
+        + 'which strands the unscrubbed entries in the temp directory');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-reference tests passed');

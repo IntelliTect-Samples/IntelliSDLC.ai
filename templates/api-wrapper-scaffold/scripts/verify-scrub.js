@@ -54,19 +54,6 @@ function parseArgs(argv) {
     return out;
 }
 
-// Percent-decode every escape sequence in place, so a secret nested inside an
-// encoded parameter is scanned by the same patterns as one on the wire. Two
-// passes, because a value inside an already-encoded parameter is encoded twice.
-function decodedShadow(text) {
-    let out = text;
-    for (let pass = 0; pass < 2; pass++) {
-        out = out.replace(/(?:%[0-9A-Fa-f]{2})+/g, (m) => {
-            try { return decodeURIComponent(m); } catch { return m; }
-        });
-    }
-    return out;
-}
-
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) {
@@ -81,15 +68,9 @@ function main() {
         process.exit(1);
     }
 
-    const leaks = findLeaks(raw);
-
-    const shadow = decodedShadow(raw);
-    if (shadow !== raw) {
-        const seen = new Set(leaks.map((l) => `${l.kind}:${l.fingerprint}`));
-        for (const l of findLeaks(shadow)) {
-            if (!seen.has(`${l.kind}:${l.fingerprint}`)) leaks.push(l);
-        }
-    }
+    // Scans the file AND a percent-decoded view of it, so a shape-matched
+    // secret nested inside an encoded parameter is caught too.
+    const leaks = harShapes.findLeaksDeep(raw);
 
     try {
         harSecrets.walkForUnredactedSecrets(JSON.parse(raw), (name) => {

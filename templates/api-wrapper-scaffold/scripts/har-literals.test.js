@@ -156,4 +156,26 @@ const LITERALS = [
     assert.ok(r2.text.includes('<Owner>'), '11.b: a \\uXXXX-escaped literal was not matched');
 }
 
+// --- 12. A later literal must not match inside an earlier one's sentinel. ---
+// Sentinels are readable words, so `Name` occurs inside `<DisplayName>`. A
+// second pass matching there yields `<Display<ShortHandle>>` -- a marker that
+// no longer reads as a redaction, and a hit count inflated by a match that
+// was never in the capture.
+{
+    const { text, hits } = lit.applyLiteralPass(
+        '"owner":"Ada Lovelace","short":"Name"',
+        [{ literal: 'Ada Lovelace', sentinel: '<DisplayName>' }, { literal: 'Name', sentinel: '<ShortHandle>' }]);
+
+    assert.strictEqual(text, '"owner":"<DisplayName>","short":"<ShortHandle>"',
+        `12.a: a sentinel was corrupted by a later literal:\n${text}`);
+    assert.strictEqual(hits.find((h) => h.sentinel === '<ShortHandle>').count, 1,
+        '12.b: the hit count counted a match inside a sentinel');
+}
+
+// --- 13. No placeholder machinery leaks into the output. ---
+{
+    const { text } = lit.applyLiteralPass('id=100000123456789', LITERALS);
+    assert.ok(!/har-literal:/.test(text), `13: an internal placeholder survived into the output:\n${text}`);
+}
+
 console.log('All har-literals tests passed');

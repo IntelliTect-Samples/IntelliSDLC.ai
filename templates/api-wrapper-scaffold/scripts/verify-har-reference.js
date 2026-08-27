@@ -137,7 +137,7 @@ function main() {
             report(`${where}: credential '${name}' is readable in the clear`);
         });
 
-        for (const leak of harShapes.findLeaks(raw)) {
+        for (const leak of harShapes.findLeaksDeep(raw)) {
             report(harShapes.describeLeak(leak));
         }
 
