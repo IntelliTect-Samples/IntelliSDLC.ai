@@ -214,7 +214,16 @@ function main() {
     // Scrub by delegating to sanitize-har.js rather than reimplementing it,
     // so a reference is scrubbed by exactly the tool the rest of the pipeline
     // is gated on.
+    // Everything below runs with a temp working directory holding the
+    // UNSCRUBBED selected entries. Every exit from here on must remove it --
+    // the early failure paths are precisely the ones most likely to leave real
+    // credentials on disk.
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'har-reference-'));
+    const discardWork = () => fs.rmSync(work, { recursive: true, force: true });
+    const failAndDiscard = (message, code) => {
+        discardWork();
+        fail(message, code);
+    };
     const stagedIn = path.join(work, 'selected.har');
     const stagedOut = path.join(work, 'scrubbed.har');
     fs.writeFileSync(stagedIn, JSON.stringify(trimmed, null, 2), 'utf8');
@@ -229,14 +238,14 @@ function main() {
     ], { encoding: 'utf8' });
     if (scrub.status !== 0) {
         process.stderr.write(scrub.stderr || '');
-        fail('sanitize-har failed; no reference written');
+        failAndDiscard('sanitize-har failed; no reference written');
     }
 
     let scrubbed;
     try {
         scrubbed = JSON.parse(fs.readFileSync(stagedOut, 'utf8'));
     } catch (e) {
-        fail(`cannot read the scrubbed intermediate: ${e.message}`);
+        failAndDiscard(`cannot read the scrubbed intermediate: ${e.message}`);
     }
 
     const scrubbedEntries = (scrubbed.log && scrubbed.log.entries) || [];
@@ -244,7 +253,7 @@ function main() {
     addDecodedParams(scrubbedEntries);
 
     const serialized = JSON.stringify(scrubbed, null, 2);
-    fs.rmSync(work, { recursive: true, force: true });
+    discardWork();
 
     // Check BEFORE writing. This script's own post-processing can reveal a
     // literal the scrub never saw -- decoding a parameter to emit

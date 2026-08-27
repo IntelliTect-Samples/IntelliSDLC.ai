@@ -92,18 +92,39 @@ function countAndReplace(text, needle, replacement) {
  *   A failure report that quotes the offending value merely relocates the
  *   leak into the log that reports it.
  */
+// Text already replaced by an earlier literal is off-limits to later ones.
+// Sentinels are readable words -- `<DisplayName>`, `<AccountId>` -- so an
+// operator who also declares a short literal like `Name` would otherwise see
+// the second pass match INSIDE the first pass's sentinel, producing
+// `<Display<ShortHandle>>`: a corrupted marker that no longer reads as a
+// redaction, plus a silently inflated hit count. So each replacement parks a
+// placeholder that cannot occur in captured text, and the sentinels are
+// restored once every literal has run.
+// U+0001 / U+0002: control characters that cannot appear unescaped in a JSON
+// document, so a placeholder cannot collide with captured text or a sentinel.
+const PLACEHOLDER_OPEN = String.fromCharCode(1) + 'har-literal:';
+const PLACEHOLDER_CLOSE = String.fromCharCode(2);
+
 function applyLiteralPass(text, literals) {
+    const ordered = byDescendingLength(literals);
     let out = text;
     const hits = [];
-    for (const { literal, sentinel } of byDescendingLength(literals)) {
+
+    for (const [index, { literal, sentinel }] of ordered.entries()) {
+        const placeholder = `${PLACEHOLDER_OPEN}${index}${PLACEHOLDER_CLOSE}`;
         let count = 0;
         for (const form of encodedForms(literal)) {
-            const r = countAndReplace(out, form, sentinel);
+            const r = countAndReplace(out, form, placeholder);
             out = r.text;
             count += r.count;
         }
         if (count > 0) hits.push({ sentinel, count });
     }
+
+    for (const [index, { sentinel }] of ordered.entries()) {
+        out = countAndReplace(out, `${PLACEHOLDER_OPEN}${index}${PLACEHOLDER_CLOSE}`, sentinel).text;
+    }
+
     return { text: out, hits };
 }
 

@@ -51,8 +51,21 @@ function isKnownSecretField(key) {
 // list at all -- so no shape pattern catches them either. Without this the
 // value survives the scrub AND every verifier: a silent bypass, which is
 // worse than no scrub, because the file looks checked.
-const MULTIPART_FIELD_RE =
-    /(Content-Disposition:[^\r\n]*?\bname="([^"]+)"[^\r\n]*(?:\r?\n(?!\r?\n)[^\r\n]*)*\r?\n\r?\n)([\s\S]*?)(?=\r?\n--)/gi;
+// Parsed by splitting on the body's OWN declared boundary, not by scanning for
+// the next line that happens to start with `--`. A lazy "stop at the first
+// `\n--`" match truncates on a value that contains such a line -- wrapped
+// base64 routinely does -- leaving the tail of the real secret in the clear;
+// and because the scrubber and the detector share one definition, neither
+// notices. Anchoring on the declared boundary removes both blind spots.
+const NAME_ATTR_RE = /\bname="((?:[^"\\]|\\.)*)"/i;
+
+function detectBoundary(text) {
+    const firstLine = text.slice(0, text.indexOf('\n') + 1 || undefined).trim();
+    if (firstLine.startsWith('--') && firstLine.length > 2) {
+        return firstLine.replace(/--$/, '');
+    }
+    return null;
+}
 
 /**
  * Visit each multipart field whose name is a known secret.
@@ -63,13 +76,40 @@ const MULTIPART_FIELD_RE =
  */
 function replaceMultipartSecretFields(text, replacer) {
     if (typeof text !== 'string' || !text.includes('Content-Disposition')) return text;
-    return text.replace(MULTIPART_FIELD_RE, (match, head, name, value) => {
-        if (!isKnownSecretField(name) || !isPlausibleSecretValue(value) || isRedacted(value)) {
-            return match;
-        }
-        const replacement = replacer(name, value);
-        return replacement === null || replacement === undefined ? match : head + replacement;
-    });
+
+    const boundary = detectBoundary(text);
+    if (!boundary) return text;
+
+    // Split on the declared boundary. The delimiters are preserved by
+    // rebuilding with the same separator, so an untouched body is returned
+    // byte-identical.
+    const segments = text.split(boundary);
+    for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        const headerEnd = segment.search(/\r?\n\r?\n/);
+        if (headerEnd < 0) continue;
+
+        const headers = segment.slice(0, headerEnd);
+        if (!/Content-Disposition/i.test(headers)) continue;
+        const nameMatch = NAME_ATTR_RE.exec(headers);
+        if (!nameMatch || !isKnownSecretField(nameMatch[1])) continue;
+
+        const separator = /\r?\n\r?\n/.exec(segment.slice(headerEnd))[0];
+        const valueStart = headerEnd + separator.length;
+        // The value runs to the end of the segment; a trailing CRLF belongs to
+        // the delimiter, not to the value. A final part with no closing
+        // boundary still parses -- the segment simply ends at end of input.
+        const rest = segment.slice(valueStart);
+        const trailing = /\r?\n$/.exec(rest);
+        const value = trailing ? rest.slice(0, rest.length - trailing[0].length) : rest;
+
+        if (!isPlausibleSecretValue(value) || isRedacted(value)) continue;
+        const replacement = replacer(nameMatch[1], value);
+        if (replacement === null || replacement === undefined) continue;
+
+        segments[i] = segment.slice(0, valueStart) + replacement + (trailing ? trailing[0] : '');
+    }
+    return segments.join(boundary);
 }
 
 function isKnownSecretHeader(name) {
