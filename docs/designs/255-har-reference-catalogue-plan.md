@@ -137,42 +137,42 @@ New SKILL.md section (**Phase 3.5 -- HAR Reference Catalogue**) specifying:
 
 ## Acceptance Criteria
 
-- [ ] `sanitize-har.js` redacts a secret nested inside a percent-encoded JSON
+- [x] `sanitize-har.js` redacts a secret nested inside a percent-encoded JSON
       form parameter whose own name is not in any secret list.
-- [ ] `sanitize-har.js` replaces a caller-supplied literal in a URL, a header,
+- [x] `sanitize-har.js` replaces a caller-supplied literal in a URL, a header,
       a request body and a response body, in both raw and percent-encoded form.
-- [ ] `sanitize-har.js` has no default literal map and refuses to invent one.
-- [ ] `verify-scrub.js` fails on a forbidden literal and its message does
+- [x] `sanitize-har.js` has no default literal map and refuses to invent one.
+- [x] `verify-scrub.js` fails on a forbidden literal and its message does
       **not** contain the offending value.
-- [ ] `verify-scrub.js` does not flag `"1"` / `"0"`-class placeholder values.
-- [ ] `extract-har-reference.js` never truncates a request body, caps response
+- [x] `verify-scrub.js` does not flag `"1"` / `"0"`-class placeholder values.
+- [x] `extract-har-reference.js` never truncates a request body, caps response
       bodies, emits decoded `postData.params[]`, exits non-zero with no
       selector, and exits non-zero when the selector matches nothing.
-- [ ] `verify-har-reference.js` fails on each of its four gate conditions and
+- [x] `verify-har-reference.js` fails on each of its four gate conditions and
       passes on a clean reference directory.
-- [ ] SKILL.md documents the catalogue convention, the catalogue-row rule, the
+- [x] SKILL.md documents the catalogue convention, the catalogue-row rule, the
       key-name-vs-literal-value distinction, the placeholder exemption, and
       "verify the artifact, not the report of it".
-- [ ] Instruction text stays generic (no consuming-project or domain names).
+- [x] Instruction text stays generic (no consuming-project or domain names).
 
 ## Implementation Checklist
 
-- [ ] Task 1 -- `har-profile.js`: discovery, parse, hard-fail-when-absent,
+- [x] Task 1 -- `har-profile.js`: discovery, parse, hard-fail-when-absent,
       no-defaults guard. Node tests.
-- [ ] Task 2 -- `har-literals.js`: percent-encoded-aware literal pass over the
+- [x] Task 2 -- `har-literals.js`: percent-encoded-aware literal pass over the
       serialized entry + nested-JSON decode helper. Node tests.
-- [ ] Task 3 -- wire profile + nested-JSON walk + literal pass (applied last)
+- [x] Task 3 -- wire profile + nested-JSON walk + literal pass (applied last)
       into `sanitize-har.js`; retire `--salt`; derive default paths.
-- [ ] Task 4 -- `verify-scrub.js`: forbidden-literal check that never echoes the
+- [x] Task 4 -- `verify-scrub.js`: forbidden-literal check that never echoes the
       value, nested-JSON walk, placeholder-length exemption.
-- [ ] Task 5 -- `extract-har-reference.js` + node tests (never truncate request
+- [x] Task 5 -- `extract-har-reference.js` + node tests (never truncate request
       bodies, cap responses, decoded `postData.params[]`, exit 2 / exit 3).
-- [ ] Task 6 -- `verify-har-reference.js` + node tests (four gate conditions).
-- [ ] Task 7 -- update `run-agent.js`, `Invoke-SanitizeHar.ps1`, and the three
+- [x] Task 6 -- `verify-har-reference.js` + node tests (four gate conditions).
+- [x] Task 7 -- update `run-agent.js`, `Invoke-SanitizeHar.ps1`, and the three
       existing scrub test files for the retired `--salt`.
-- [ ] Task 8 -- SKILL.md: new "Phase 3.5 -- HAR Reference Catalogue" section;
+- [x] Task 8 -- SKILL.md: new "Phase 3.5 -- HAR Reference Catalogue" section;
       rewrite Phase 3 scrub guidance around the two-control model; add the
       A.5 / C.17 cautionary notes and the profile convention.
-- [ ] Task 9 -- Pester wrappers in `.github/agents/tests/` for the new node tests
+- [x] Task 9 -- Pester wrappers in `.github/agents/tests/` for the new node tests
       plus a SKILL.md structure test.
-- [ ] Task 10 -- full Pester + node suites green; Phase 5b evidence captured.
+- [x] Task 10 -- full Pester + node suites green; Phase 5b evidence captured.

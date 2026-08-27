@@ -70,7 +70,8 @@ what will be generated before asking (3).
 
 The skill executes phases 1-11 strictly in order. Failure in any phase
 halts the run with a clear remediation message; nothing is "partially"
-generated.
+generated. Phase 3.5 (HAR Reference Catalogue) runs whenever a capture is
+worth keeping, which is most of the time.
 
 ### Phase 1 -- Discover
 
@@ -220,14 +221,213 @@ of these has cost real diagnosis time when skipped.
   same fake. Faker types are format-preserving (phone stays phone, IATA
   stays 3 letters).
 - Persist hash -> fake mapping to `.har-substitutions.json` (git-ignored).
-- `verify-scrub` asserts two invariants:
-  - No original PII value appears in scrubbed output.
-  - Every fake in output reverses via the table.
 - Output written to `samples/har/`.
 - **Before the scrubbed HAR is written, verify the capture path itself is
   covered by `.gitignore`.** `samples/har-original/` (the unscrubbed
   capture) must never be committable even transiently; treat a missing
   gitignore rule as a hard stop for the phase, not a warning.
+
+#### Scrubbing is two controls, not one
+
+This is the part that is easy to get wrong, because the first control looks
+sufficient right up until it isn't.
+
+**Control 1 -- key-name scrubbing.** Shape patterns (JWT, long hex, email)
+plus the known-secret field and header lists in Phase 8. It redacts a value
+because of the name it travels under.
+
+**Control 2 -- literal-value scrubbing.** A pass over the specific
+identifiers the operator knows they are exposing -- their account id,
+display name, email -- applied **last**, over the **serialized** entry, so
+one sweep covers URLs, headers, request bodies and response bodies together.
+
+You need both, because key-name scrubbing can only ever redact a value whose
+name somebody anticipated. Two whole classes escape it:
+
+- **A secret nested inside an encoded JSON parameter.** A form body carries
+  `variables=<percent-encoded JSON>` and the per-request tokens live *inside*
+  that JSON. No flat pattern over the wire body matches them -- the body is
+  percent-encoded -- and the inner key never appears in the form's own
+  parameter list. The scrubber must decode parameter values and walk the
+  decoded document. (It writes a value back only when scrubbing changed it,
+  so untouched parameters keep their original bytes and a reference still
+  diffs cleanly against a fresh capture.)
+- **The same value under several names, one of them undocumented.** An
+  account identifier observed as a nested object field, as a permalink query
+  parameter, and as an undocumented `target_id=` -- one value, three names.
+  The display name leaked the same way through response bodies. No extension
+  of a key list catches this reliably, because the failure is that *you do
+  not know all the names*.
+
+Implementation rules that mattered in practice:
+
+- Replace both the raw literal **and** its percent-encoded spelling. The same
+  applies to values the typed-PII pass already found: detection reads the
+  decoded `queryString` pair while the URL carries `phone=%2B1...`, and
+  replacing only the raw spelling leaves the encoded copy readable.
+- **Never default or commit the literals.** They are the operator's own
+  account identifiers, and baking a real identifier into a committed script
+  is exactly what account hygiene forbids. They live in a gitignored
+  `.har-profile.json` alongside the salt, auto-discovered by every HAR
+  script, and an absent profile is a **hard failure that names the file** --
+  not a quietly empty map. Say why in a comment: a future maintainer meeting
+  an awkward required input will otherwise be tempted to helpfully add a
+  default.
+- The verifier accepts the same literals as forbidden values and must **not**
+  echo the offending value in its failure message. That just relocates the
+  leak into the CI log that reports it -- name the sentinel instead.
+- The profile is gitignored and therefore absent in CI, where the literal
+  check cannot run. Report it as **skipped**, never as a silent pass.
+
+#### Do not over-redact placeholders
+
+A verifier that flags `client_mutation_id: "1"` or `actor_id: "0"` trains its
+readers to ignore it, and an ignored gate is worse than no gate. Exempt
+values below a plausible minimum length from the name-based checks; counters
+and placeholders are not credentials. Shape-based patterns are unaffected --
+they already imply length.
+
+#### Keep the scan linear
+
+Capture bodies run to hundreds of KB. An unbounded `[chars]+@` local part
+backtracks quadratically over a long run that never reaches an `@`: bounding
+it to RFC 5321's limits turned a 68-second scrub of a 200 KB body into a
+60-millisecond one. Any pattern with an unbounded quantifier before a
+required literal deserves the same treatment before it meets a real capture.
+
+`verify-scrub` asserts:
+
+- No original PII value appears in scrubbed output, **including** in a
+  percent-decoded view of the file.
+- Every fake in output reverses via the table.
+- No known secret name carries a readable value, at any nesting depth,
+  including inside a decoded JSON parameter.
+- No forbidden literal survives.
+
+### Phase 3.5 -- HAR Reference Catalogue
+
+A HAR captured to solve one bug gets thrown away, and six weeks later
+somebody re-drives the same flow by hand to answer the same question. The
+capture is the single most valuable artifact of the session -- it is the only
+thing in the repo that is **ground truth about someone else's API** -- and it
+is worth keeping permanently.
+
+The payoff is concrete: when a provider rotates an id or changes a payload,
+the correct fix is **re-capture and diff against the stored reference**. One
+publishing outage was diagnosed exactly that way -- the generated client sent
+26 provider flags where the capture had 32, and the six missing flags
+corresponded one-for-one to six "missing required variable" errors. That diff
+is only possible because the capture was kept.
+
+#### 1. A per-provider directory of committed, scrubbed references
+
+```
+docs/har-reference/
+├── README.md              <- the catalogue (see 3)
+├── <provider-a>/
+│   ├── README.md          <- provider scrub policy + re-capture recipe
+│   └── <provider-a>-<action>-<yyyy-MM-dd>.har
+└── <provider-b>/
+```
+
+**Raw captures are never committed.** They run to hundreds of MB and carry
+live credentials. Only trimmed, scrubbed extracts go in-tree.
+
+#### 2. Filenames carry provider AND action
+
+`<provider>-<action>-<yyyy-MM-dd>.har`
+
+The provider appears in the **filename** as well as the directory. That looks
+redundant and is not: the directory is invisible the moment the file is
+opened in an editor tab, attached to an issue, pasted into a diff, or
+downloaded. `<action>` names the operation a **human performed** to record it
+(`login-flow-2fa`, `composer-story-create`, `video-upload`). The date
+disambiguates re-captures of the same operation, which is the normal case
+when an API drifts.
+
+#### 3. A catalogue mapping each capture to what the human did
+
+This is the highest-value half of the convention, and the half a filename
+cannot carry. A file named `<provider>-video-upload-<date>.har` **cannot**
+say:
+
+- that the first finalize call came back `400` and succeeded on a
+  byte-identical retry;
+- that the capture contains *two* upload cycles and *five* transcode polls,
+  not one;
+- that two trailing entries are a *failed* edit that established a platform
+  limitation;
+- that every video required a separate cover upload reusing the video's own
+  upload id.
+
+Those are exactly what someone opening the file is looking for, and they
+otherwise survive only in whichever issue thread happened to mention them.
+
+`docs/har-reference/README.md` carries:
+
+- a table per provider: **file | actions the user performed | entry count |
+  capture date**;
+- a per-file detail section: the entry-by-entry sequence, what the capture
+  *proves*, and the failure modes it caught;
+- the excerpt fragments (partial captures that are not full HAR documents)
+  mapped the same way;
+- a pointer to the scrub policy and the verification command.
+
+> **The rule that makes it stick:** adding a capture has a final step --
+> *add the catalogue row, naming what you did*. The endpoint is recoverable
+> from the file. What you did to provoke it is not.
+
+Cataloguing is not clerical work: doing it forced a re-read of the files
+rather than the prose about them, and surfaced four facts nobody had written
+down -- including that two `202` responses meant "retry", not "failure", and
+that an identical retry after a `400` succeeded.
+
+#### 4. Tooling: extract, then verify
+
+Two scripts, because the manual version of each shipped a defect (see 5).
+
+**`extract-har-reference.js`** selects entries from a raw capture by URL
+and/or body pattern, scrubs them, and writes the reference. Non-negotiable
+behaviours:
+
+- **Request bodies are NEVER truncated.** Only response bodies are capped,
+  and a capped response records what was dropped.
+- Emits **decoded** `postData.params[]` alongside the scrubbed wire `text`.
+  A percent-encoded form body is not greppable; the decoded copy is what
+  makes the reference searchable for a field name.
+- Refuses to run without a selector, and **fails loudly when nothing
+  matches** rather than writing an empty reference.
+- Takes the literal -> sentinel map from the capture-time profile
+  (see Phase 3).
+
+**`verify-har-reference.js`** is a gate, runnable over the whole directory
+and in CI. It fails on:
+
+- a truncated request body;
+- an unredacted credential header or parameter;
+- a secret nested inside a JSON-valued parameter;
+- any caller-supplied forbidden literal.
+
+Both ship with tests, each pinned to a failure that actually shipped.
+
+#### 5. The two defects that motivated the tooling
+
+Both are the kind of thing that passes review:
+
+- **(a) Request bodies truncated to nothing.** An extraction capped *all*
+  bodies at a fixed size. Response bodies survived usefully; request bodies
+  -- the half that says what the client actually sent -- were cut to
+  fragments. The resulting file looked authoritative and proved nothing: it
+  could be neither replayed nor diffed.
+- **(b) A commit message that overclaimed.** The same commit stated
+  "structure and ALL keys preserved verbatim", which was false for the
+  truncated file. The defect was found by checking the artifact, not by
+  reading the description of it.
+
+> **Verify the artifact, not the report of it.** Confirm a committed
+> reference by parsing it and asserting on its content -- never by trusting
+> the generation step's own report of what it did. The same rule applies to
+> any capture-derived probe (see "Verifying with capture-derived probes").
 
 ### Phase 4 -- Classify Auth
 
@@ -475,6 +675,13 @@ Require every capture-derived probe to:
 - `samples/har-original/` is gitignored. The CI workflow includes a
   belt-and-suspenders step that fails if any file under that path is
   present in the commit tree.
+- `.har-profile.json` is gitignored. It carries the operator's salt and
+  their literal -> sentinel map -- their own account identifiers -- and is
+  an operator secret, not project configuration.
+- CI runs `verify-har-reference.js` over `docs/har-reference/` so a
+  committed reference is gated on every PR, not only when it was written.
+  The literal check reports as skipped there (the profile is gitignored and
+  absent in CI); the truncation, credential and nested-secret gates all run.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
   secrets, in addition to its pattern-based JWT/hex/UUID/email scrubbing --
   all of these have been observed in plaintext in real captures and are
@@ -510,8 +717,12 @@ node templates/api-wrapper-scaffold/scripts/run-agent.js `
   [--base-url <https://x>] `
   [--authors <s>] [--description <s>] `
   [--repository-url <s>] [--package-tags <s>] `
-  [--salt <s>] [--fixed-time <iso8601>]
+  [--profile <path>] [--fixed-time <iso8601>]
 ```
+
+`--profile` defaults to the nearest `.har-profile.json` at or above `--out`.
+There is no default salt and no default literal map: without a profile the
+run stops and names the file it needs.
 
 `run-agent.js` prints a clear stage banner (`==> Stage: <name>`) before each
 step and chains them in order:
@@ -637,6 +848,13 @@ The skill's final user-visible output is:
 - **Do not** ship a project that fails `dotnet build`.
 - **Do not** commit anything in `samples/har-original/` -- this is a
   hard CI failure on the generated project.
+- **Do not** commit a `.har-profile.json`. It holds the operator's real
+  identifiers; it is gitignored for the same reason `samples/har-original/`
+  is.
+- **Do not** give the literal map or the salt a default value so the tooling
+  "just runs". An absent profile must fail loudly and name the file.
+- **Do not** trust a generation step's report of what it wrote. Verify a
+  committed reference by parsing it and asserting on its content.
 - **Do not** hardcode the user's real cookies / tokens / OAuth secrets
   anywhere except DPAPI / user-secrets.
 - **Do not** generate per-endpoint POST/PUT/DELETE wrappers without the
