@@ -678,8 +678,17 @@ Require every capture-derived probe to:
 - `.har-profile.json` is gitignored. It carries the operator's salt and
   their literal -> sentinel map -- their own account identifiers -- and is
   an operator secret, not project configuration.
-- CI runs `verify-har-reference.js` over `docs/har-reference/` so a
-  committed reference is gated on every PR, not only when it was written.
+- `.har-substitutions.json` is gitignored **by name**. The legacy
+  substitution map is keyed by `<kind>:<original>`, so its *keys* are the
+  secrets, and it is written beside the scrubbed HAR -- inside a committed
+  directory. Ignoring only the directory is not enough. (The typed-PII store
+  `.substitutions.json` is different: it records hash prefixes, not values,
+  and is safe to commit.)
+- CI runs `verify-har-reference.js` over `docs/har-reference/` when that
+  directory exists, so a committed reference is gated on every PR, not only
+  when it was written. (The script exits non-zero on a missing or empty
+  reference directory: being pointed at nothing is a wiring mistake, not a
+  pass.)
   The literal check reports as skipped there (the profile is gitignored and
   absent in CI); the truncation, credential and nested-secret gates all run.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
