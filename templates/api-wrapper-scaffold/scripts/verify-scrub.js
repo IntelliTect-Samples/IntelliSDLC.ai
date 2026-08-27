@@ -81,7 +81,8 @@ const LEAK_PATTERNS = [
     },
     {
         name: 'email',
-        re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+        // Bounded to stay linear over long non-matching runs (see pii.js).
+        re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g,
         // Fake emails always use the @example.invalid domain.
         isFake: (m) => /@example\.invalid$/i.test(m)
     },

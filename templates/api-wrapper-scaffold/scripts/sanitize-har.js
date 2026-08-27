@@ -117,7 +117,9 @@ const PATTERNS = [
     // a request header, so the header-name based scrub never sees them.
     { kind: 'upload-handle', re: /\b1:[A-Za-z0-9+/=_-]{6,}:[\w./+-]+:[A-Za-z0-9+/=_-]{4,}:e:\d+:[A-Za-z0-9+/=_-]{4,}\b/g },
     { kind: 'jwt',    re: /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
-    { kind: 'email',  re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g },
+    // Bounded local part / domain: an unbounded `[chars]+@` backtracks
+    // quadratically over a long non-matching run (see pii.js RE.email).
+    { kind: 'email',  re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g },
     { kind: 'uuid',   re: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g },
     { kind: 'hex64',  re: /\b[0-9a-fA-F]{64}\b/g },
     { kind: 'hex32',  re: /\b[0-9a-fA-F]{32}\b/g },
