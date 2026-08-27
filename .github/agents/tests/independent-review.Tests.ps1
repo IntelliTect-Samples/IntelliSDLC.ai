@@ -61,6 +61,14 @@ Describe 'CLAUDE.md carries the independent-review step' {
         $script:ClaudeText | Should -Match 'dev-loop\.agent\.md'
     }
 
+    It 'names the trigger for the skip permission instead of a bare pronoun' {
+        # A pronoun ('In that case') silently detaches from its antecedent the
+        # moment a paragraph is inserted above it, which is exactly what
+        # happened once the enforcement caveat landed in between.
+        $script:ClaudeText | Should -Match '(?i)When\s+the\s+substitution\s+rule\s+applies,\s+\*\*you\s+may\s+skip'
+        $script:ClaudeText | Should -Not -Match '(?i)In\s+that\s+case,\s+\*\*you\s+may\s+skip'
+    }
+
     It 'documents the requested_reviewers detection call' {
         $script:ClaudeText | Should -Match 'requested_reviewers'
     }
