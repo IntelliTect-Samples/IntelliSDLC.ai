@@ -8,12 +8,12 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:ImportJs   = Join-Path $script:ScriptsDir 'import-mobile-app.js'
-    $script:DetectJs   = Join-Path $script:ScriptsDir 'detect-auth.js'
-    $script:CsharpDir  = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/csharp'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:ImportJs   = Join-Path $script:ScriptsDir 'codegen/import-mobile-app.js'
+    $script:DetectJs   = Join-Path $script:ScriptsDir 'har/detect-auth.js'
+    $script:CsharpDir  = Join-Path $script:RepoRoot 'templates/web-api-discovery/csharp'
     $script:ManifestPath = Join-Path $script:CsharpDir 'manifest.json'
-    $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/api-wrapper-scaffold/SKILL.md'
+    $script:SkillPath  = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
     $script:FixturesDir = Join-Path $PSScriptRoot 'fixtures/har'
 
     function Invoke-Import {
@@ -172,7 +172,7 @@ Describe 'detect-auth.js --source-label integration' {
     }
 }
 
-Describe 'api-wrapper-scaffold SKILL.md mobile-discovery section' {
+Describe 'web-api-discovery SKILL.md mobile-discovery section' {
 
     BeforeAll {
         $script:SkillText = Get-Content -LiteralPath $script:SkillPath -Raw

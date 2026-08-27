@@ -7,8 +7,8 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:TestJs     = Join-Path $script:ScriptsDir 'scrubber-hex-isfake.test.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:TestJs     = Join-Path $script:ScriptsDir 'har/scrubber-hex-isfake.test.js'
 }
 
 Describe 'sanitize-har / verify-scrub hex-fake marker' {

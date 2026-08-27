@@ -203,24 +203,41 @@ Describe 'templates/ sync (issue #270)' {
     }
 
     It 'withholds the toolkit own node tests' {
-        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/har-literals.test.js' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/har/har-literals.test.js' |
             Should -BeTrue
     }
 
     It 'ships the scripts those tests cover' {
-        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/capture-har.js' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/capture-har.js' |
             Should -BeFalse
-        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/scripts/Start-HarRecording.ps1' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/Start-HarRecording.ps1' |
             Should -BeFalse
+    }
+
+    It 'names paths that actually exist -- the carve-out is only meaningful over real files' {
+        # Test-IsUpstreamPrivatePath is a pure path predicate, so the four
+        # assertions above would keep passing against a tree that had been
+        # renamed or regrouped out from under them (issue #279). Pin the paths
+        # to the working tree so a move breaks this test instead of silently
+        # hollowing out the coverage.
+        foreach ($rel in @(
+                'templates/web-api-discovery/scripts/har/har-literals.test.js',
+                'templates/web-api-discovery/scripts/capture/capture-har.js',
+                'templates/web-api-discovery/scripts/capture/Start-HarRecording.ps1',
+                'templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl',
+                'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl')) {
+            Test-Path -LiteralPath (Join-Path $PSScriptRoot $rel) |
+                Should -BeTrue -Because "$rel is named by the templates/ sync carve-out tests"
+        }
     }
 
     It 'ships a tests/ directory under templates/ -- those are emitted templates, not our tests' {
         # The generator writes these into the consumer's own solution; treating
         # them like the toolkit's internal tests would emit a project that
         # cannot build its test assembly.
-        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/csharp/tests/ClientTests.cs.tmpl' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl' |
             Should -BeFalse
-        Test-IsUpstreamPrivatePath -Path 'templates/api-wrapper-scaffold/csharp/tests/Tests.csproj.tmpl' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl' |
             Should -BeFalse
     }
 
@@ -3646,7 +3663,7 @@ Describe 'Test-IsUpstreamPrivatePath' {
     }
 
     It 'is true for a fixtures directory nested under a named skill' {
-        Test-IsUpstreamPrivatePath -Path '.github/skills/api-wrapper-scaffold/fixtures/bearer.har' | Should -BeTrue
+        Test-IsUpstreamPrivatePath -Path '.github/skills/web-api-discovery/fixtures/bearer.har' | Should -BeTrue
     }
 
     It 'is false for a shipped agent definition' {

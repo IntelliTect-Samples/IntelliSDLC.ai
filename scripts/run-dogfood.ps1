@@ -1,9 +1,9 @@
 <#
 .SYNOPSIS
-    One-shot dogfood reproducer for the api-wrapper-scaffold agent against tripit.com.
+    One-shot dogfood reproducer for the web-api-discovery agent against tripit.com.
 
 .DESCRIPTION
-    Runs the api-wrapper-scaffold agent end-to-end against TripIt and diffs the
+    Runs the web-api-discovery agent end-to-end against TripIt and diffs the
     generated wrapper against a hand-written reference project. If the supplied
     Playwright storageState is still valid (cheap HTTPS 200/JSON probe against
     api.tripit.com), a live capture is invoked via capture-cdp.js. Otherwise a
@@ -258,7 +258,7 @@ function Write-DogfoodReport {
 # =====================================================================
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
-$scriptsDir = Join-Path $repoRoot 'templates/api-wrapper-scaffold/scripts'
+$scriptsDir = Join-Path $repoRoot 'templates/web-api-discovery/scripts'
 $runAgent   = Join-Path $scriptsDir 'run-agent.js'
 
 if (-not (Test-Path $runAgent)) {

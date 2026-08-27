@@ -12,10 +12,10 @@
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture-har.js'
-    $script:StartPs1   = Join-Path $script:ScriptsDir 'Start-HarRecording.ps1'
-    $script:StopPs1    = Join-Path $script:ScriptsDir 'Stop-HarRecording.ps1'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-har.js'
+    $script:StartPs1   = Join-Path $script:ScriptsDir 'capture/Start-HarRecording.ps1'
+    $script:StopPs1    = Join-Path $script:ScriptsDir 'capture/Stop-HarRecording.ps1'
 
     function Invoke-CaptureHar {
         param([Parameter(ValueFromRemainingArguments)][string[]]$CaptureArgs)

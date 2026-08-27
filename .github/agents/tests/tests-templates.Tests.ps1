@@ -2,13 +2,13 @@
 #Requires -Modules @{ ModuleName = "Pester"; ModuleVersion = "5.0.0" }
 
 # Behavior tests for the xUnit + Pester test scaffolds emitted by
-# api-wrapper-scaffold codegen (issue #50). Builds on PR #49 (codegen pipeline).
+# web-api-discovery codegen (issue #50). Builds on PR #49 (codegen pipeline).
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/scripts"
-    $script:GenJs      = Join-Path $script:ScriptsDir "generate-wrapper.js"
-    $script:TmplDir    = Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/csharp/tests"
+    $script:ScriptsDir = Join-Path $script:RepoRoot "templates/web-api-discovery/scripts"
+    $script:GenJs      = Join-Path $script:ScriptsDir "codegen/generate-wrapper.js"
+    $script:TmplDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/csharp/tests"
     $script:RestHar    = Join-Path $script:RepoRoot ".github/agents/tests/fixtures/har/rest-3endpoints.har"
 
     function New-OutDir {

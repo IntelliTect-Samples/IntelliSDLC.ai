@@ -1,17 +1,17 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for issue #92 -- the api-wrapper-scaffold skill must always
+# Behavior tests for issue #92 -- the web-api-discovery skill must always
 # prompt for both mobile-app discovery and the IntelliSDLC.ai pull, and the
 # SDLC prompt must be anchored to a `git init` step performed by the agent.
 
 BeforeAll {
     $script:RepoRoot  = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:SkillPath = Join-Path $script:RepoRoot '.github/skills/api-wrapper-scaffold/SKILL.md'
+    $script:SkillPath = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
     $script:SkillText = Get-Content -LiteralPath $script:SkillPath -Raw
 }
 
-Describe 'api-wrapper-scaffold SKILL.md mandatory prompts (issue #92)' {
+Describe 'web-api-discovery SKILL.md mandatory prompts (issue #92)' {
 
     Context 'Hard Gate' {
         It 'requires confirmation of mobile-app inclusion before mutating the filesystem' {

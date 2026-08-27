@@ -1,17 +1,17 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for the api-wrapper-scaffold capture/scrub script templates
+# Behavior tests for the web-api-discovery capture/scrub script templates
 # (issue #36). These exercise sanitize-har.js, verify-scrub.js, and
 # Invoke-SanitizeHar.ps1 against a synthetic HAR fixture.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
-    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/api-wrapper-scaffold/scripts'
-    $script:SanitizeJs = Join-Path $script:ScriptsDir 'sanitize-har.js'
-    $script:VerifyJs   = Join-Path $script:ScriptsDir 'verify-scrub.js'
-    $script:WrapperPs1 = Join-Path $script:ScriptsDir 'Invoke-SanitizeHar.ps1'
-    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture-cdp.js'
+    $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
+    $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'
+    $script:VerifyJs   = Join-Path $script:ScriptsDir 'har/verify-scrub.js'
+    $script:WrapperPs1 = Join-Path $script:ScriptsDir 'har/Invoke-SanitizeHar.ps1'
+    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-cdp.js'
 
     function New-FixtureHar {
         param(

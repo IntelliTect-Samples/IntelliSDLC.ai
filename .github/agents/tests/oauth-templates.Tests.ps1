@@ -6,7 +6,7 @@
 
 BeforeAll {
     $script:RepoRoot     = Resolve-Path (Join-Path $PSScriptRoot "..\..\..\") | Select-Object -ExpandProperty Path
-    $script:CsharpDir    = Join-Path $script:RepoRoot "templates/api-wrapper-scaffold/csharp"
+    $script:CsharpDir    = Join-Path $script:RepoRoot "templates/web-api-discovery/csharp"
     $script:ManifestPath = Join-Path $script:CsharpDir "manifest.json"
 
     $script:Tokens = [ordered]@{
