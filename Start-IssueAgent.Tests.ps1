@@ -139,6 +139,103 @@ Describe 'Get-ConsoleWidth' {
     }
 }
 
+Describe 'Get-LaunchDirectory' {
+    BeforeAll {
+        # Paths only -- nothing here touches the filesystem. git always reports
+        # forward slashes, including on Windows, so that is what is fed in.
+        $script:RepoRoot = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'launch-dir-repo')
+        $script:ScriptRoot = [IO.Path]::Combine($script:RepoRoot, '.worktrees', '42-some-branch')
+        $script:ExpectedRoot = [IO.Path]::GetFullPath($script:RepoRoot)
+    }
+
+    It 'resolves the main worktree root from the common git dir' {
+        $commonDir = ($script:RepoRoot -replace '\\', '/') + '/.git'
+
+        Get-LaunchDirectory -GitCommonDir $commonDir -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ExpectedRoot
+    }
+
+    It 'ignores where the script itself lives -- a worktree copy still yields the main root' {
+        $commonDir = ($script:RepoRoot -replace '\\', '/') + '/.git'
+
+        $fromWorktree = Get-LaunchDirectory -GitCommonDir $commonDir -ScriptRoot $script:ScriptRoot
+        $fromRoot = Get-LaunchDirectory -GitCommonDir $commonDir -ScriptRoot $script:RepoRoot
+
+        # git reports the same common dir from either tree, so both land on the
+        # main worktree root -- that is the whole point of the resolution.
+        $fromWorktree | Should -Be $fromRoot
+    }
+
+    It 'trims the trailing newline git leaves on its output' {
+        $commonDir = ($script:RepoRoot -replace '\\', '/') + "/.git`n"
+
+        Get-LaunchDirectory -GitCommonDir $commonDir -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ExpectedRoot
+    }
+
+    It 'falls back to the script root when git reported nothing (not a repo / git missing)' {
+        Get-LaunchDirectory -GitCommonDir '' -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ScriptRoot
+    }
+
+    It 'falls back to the script root for a null common dir' {
+        Get-LaunchDirectory -GitCommonDir $null -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ScriptRoot
+    }
+
+    It 'falls back to the script root for a bare repo (no main worktree to launch in)' {
+        Get-LaunchDirectory -GitCommonDir 'C:/git/some-repo.git' -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ScriptRoot
+    }
+
+    It 'falls back to the script root for a --separate-git-dir checkout' {
+        Get-LaunchDirectory -GitCommonDir 'C:/gitdirs/some-repo' -ScriptRoot $script:ScriptRoot |
+            Should -Be $script:ScriptRoot
+    }
+}
+
+Describe 'Get-GitCommonDir' {
+    It 'reports a .git common dir for a real repository' {
+        # This test file lives in a git repo (the checkout under test), so the
+        # real git call is the assertion -- it guards the --path-format flag and
+        # the exit-code handling that the pure resolver above cannot cover.
+        $commonDir = Get-GitCommonDir -Path $PSScriptRoot
+
+        $commonDir | Should -Not -BeNullOrEmpty
+        (Split-Path $commonDir.Trim() -Leaf) | Should -Be '.git'
+    }
+
+    It 'resolves a linked worktree to its main worktree root -- the #275 defect' {
+        # A real throwaway repo with a real linked worktree: the pure resolver
+        # above cannot prove that git actually reports the main worktree's .git
+        # from inside a linked one, and that is the whole premise of the fix.
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('launch-dir-' + [guid]::NewGuid().ToString('N'))
+        $mainTree = Join-Path $tempRoot 'main'
+        $linkedTree = Join-Path $tempRoot 'linked'
+
+        try {
+            git init -q -b main $mainTree 2>&1 | Out-Null
+            git -C $mainTree -c user.email=test@example.com -c user.name=Test commit -q --allow-empty -m init 2>&1 | Out-Null
+            git -C $mainTree worktree add -q -b feature $linkedTree main 2>&1 | Out-Null
+
+            # Both sides come from git, so neither is skewed by 8.3 short paths
+            # or casing in the temp directory.
+            $expected = [IO.Path]::GetFullPath(
+                (git -C $mainTree rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1))
+
+            Get-LaunchDirectory -GitCommonDir (Get-GitCommonDir -Path $linkedTree) -ScriptRoot $linkedTree |
+                Should -Be $expected
+        }
+        finally {
+            if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'returns an empty string outside a repository rather than throwing' {
+        Get-GitCommonDir -Path ([IO.Path]::GetTempPath()) | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'New-IssueAgentPrompt' {
     It 'delegates to @dev-loop by issue number, without inlining the issue body' {
         New-IssueAgentPrompt -IssueNumber 42 | Should -Be '@dev-loop gh issue 42'
