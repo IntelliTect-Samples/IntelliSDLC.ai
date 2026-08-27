@@ -220,5 +220,34 @@ function scrubbedPath(dir) {
     assert.strictEqual(v.code, 0, '8.c: verify-scrub still sees a leak:\n' + v.stderr);
 }
 
+// --- 9. A large body scrubs in linear time, and still gives up its secrets. ---
+// Media and GraphQL captures routinely carry bodies in the hundreds of KB.
+// An unbounded `[chars]+@` local part backtracks quadratically over a long
+// non-matching run, which turns a 200 KB body into a 30-second scan and a
+// real capture into an unusable one.
+{
+    const dir = makeProject('large-body', { literals: {} });
+    const filler = 'x'.repeat(200000);
+    const body = JSON.stringify({ blob: filler, contact: 'owner@example.com' });
+    const harIn = writeHar(dir, {
+        request: {
+            bodySize: body.length,
+            postData: { mimeType: 'application/json', text: body },
+        },
+    });
+
+    const started = Date.now();
+    const r = runNode(sanitize, ['--in', harIn], dir);
+    const elapsedMs = Date.now() - started;
+
+    assert.strictEqual(r.code, 0, '9.a: sanitize failed: ' + r.stderr);
+    assert.ok(elapsedMs < 30000,
+        '9.b: scrubbing a 200 KB body took ' + elapsedMs + 'ms -- that is quadratic, not linear');
+
+    const out = fs.readFileSync(scrubbedPath(dir), 'utf8');
+    assert.ok(!out.includes('owner@example.com'),
+        '9.c: the email buried in a large body was not scrubbed');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All literal-scrub tests passed');

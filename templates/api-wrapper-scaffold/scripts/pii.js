@@ -83,7 +83,11 @@ function fieldType(key) {
 // Email is already handled by sanitize-har.js's legacy pattern, but we also
 // detect it here so detectPii() reports it for the substitutions store.
 const RE = {
-    email:        /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
+    // RFC 5321 caps the local part at 64 characters and the domain at 255.
+    // The bounds are not pedantry: an unbounded `[chars]+@` backtracks
+    // quadratically over a long run that never reaches an `@`, and capture
+    // bodies are routinely hundreds of KB.
+    email:        /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g,
     phone:        /\+\d{10,15}\b/g,
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
     creditDigits: /\b\d{13,19}\b/g,
