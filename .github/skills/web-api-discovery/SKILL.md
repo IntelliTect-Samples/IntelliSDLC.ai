@@ -84,30 +84,33 @@ run**, not a partial one. Take this path whenever the user asked to record,
 capture, or catalogue traffic and never asked for a client.
 
 ```powershell
-# 1. Record. Browse (or drive the CDP endpoint it prints), then ENTER --
-#    or Stop-HarRecording from an agent. Writes a raw HAR; nothing else.
-Start-HarRecording https://example.com
-
-# 2. Extract the reference. This scrubs as it selects, and re-checks its own
-#    output for forbidden literals before writing -- it fails rather than
-#    writing a leaky reference. Needs a selector; fails loudly on no match.
-node templates/web-api-discovery/scripts/har/extract-har-reference.js `
-    --in .har-captures/<capture>.har --match <pattern>
-
-# 3. Gate it. Runnable over the whole directory, so it also works from CI.
-#    Run it locally -- no workflow in this repo invokes it for you today.
-node templates/web-api-discovery/scripts/har/verify-har-reference.js `
-    --dir docs/har-reference
+# Record, scrub, verify, digest and catalogue -- one command. Browse (or drive
+# the CDP endpoint it prints), then press ENTER; closing the browser window or
+# calling Stop-HarRecording from an agent does the same thing.
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com
 ```
 
-**Step 2 is not optional.** The raw capture carries live credentials; it is
-gitignored precisely because it must never be committed. The reference
-produced by step 2 is the artifact that ships.
+A consuming project usually dot-sources or aliases that path once; the rest of
+this document calls it `Invoke-HarCapture`.
 
-`sanitize-har.js` / `verify-scrub.js` are the *other* scrub path -- they clean
-a whole HAR to feed `run-agent.js`, and are chained automatically there. The
-capture-only path does not need them: `extract-har-reference.js` scrubs the
-entries it selects.
+That is the whole capture-only path. `Invoke-HarCapture` emits the catalogue
+as objects, so the result composes rather than needing to be parsed:
+
+```powershell
+Invoke-HarCapture https://example.com | ConvertTo-Json -Depth 4
+Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+```
+
+**Two directories, and the difference is the safety story.** The raw capture
+carries live session cookies and is confined to the gitignored
+`.har-captures/` **by construction** -- no option redirects it. `-OutputPath`
+(default `docs/har-reference/`) receives only artifacts that have already been
+scrubbed and verified.
+
+The mechanical phases -- scrub via `sanitize-har.js`, gate via
+`verify-scrub.js`, then a session digest -- run inside the recording process on
+every ending. **Cataloguing is a required phase, not an optional flourish**,
+and it is AI work: see Phase 3.5.
 
 ## Inputs (asked one at a time)
 
@@ -119,7 +122,7 @@ entries it selects.
 | 4 | Auth model | autodetect | `{{AuthModel}}` | One of: `cookie`, `cookie+csrf`, `bearer`, `sso-google`, `sso-microsoft`, `sso-facebook`, `oauth2-pkce`, `autodetect`. |
 | 5 | OAuth client_id / client_secret | none | -- | Only asked when (4) is `oauth2-pkce`. Stored in user-secrets, never on disk in plaintext. |
 | 6 | Seed IntelliSDLC.ai? | yes | -- | If yes, the agent runs `git init` and pulls upstream instructions (Phases 10.5 + 11). |
-| 7 | Pre-captured Playwright `storageState.json`? | none | -- | When present, the capture phase skips interactive login and replays the storage state. Required for non-interactive dogfood runs. |
+| 7 | Pre-captured Playwright storage state? | none | -- | Saved as `.har-storage-state.json` at or above the working directory, where the recorder discovers it. When present, the capture phase skips interactive login. Required for non-interactive dogfood runs. |
 | -- | .NET root namespace | `{{ProjectName}}` | `{{Namespace}}` | Asked only when the user wants to override the default. |
 | -- | IdP friendly name | derived from `{{AuthModel}}` | `{{IdpName}}` | `Google` / `Microsoft` / `Facebook` -- substituted into the generated README's re-auth section. |
 
@@ -203,43 +206,59 @@ must not proceed without explicit user acknowledgement.
 The operator's entire surface is a URL:
 
 ```powershell
-Start-HarRecording https://example.com    # browse, then press ENTER
+Invoke-HarCapture https://example.com    # browse, then press ENTER
 ```
 
 `templates/web-api-discovery/scripts/capture/capture-har.js` owns the browser
-context; `Start-HarRecording.ps1` / `Stop-HarRecording.ps1` are its PowerShell
+context; `Invoke-HarCapture.ps1` / `Stop-HarRecording.ps1` are its PowerShell
 front doors. It opens system Chrome on a **dedicated capture profile** that
 stays signed in between sessions -- never the operator's daily profile, which
 holds live sessions this must not disturb -- and records every request. Pass
-`-Isolated` for bundled Chromium with a throwaway profile (CI), optionally with
-`-StorageState`.
+`-Isolated` for bundled Chromium with a throwaway profile (CI).
 
-**A human ends the recording with ENTER. An AI ends it with
-`Stop-HarRecording`.** Both perform the same close, and that close is what
-writes the HAR. Ctrl+C is trapped and does the same thing rather than killing
-the capture.
+| Parameter | Notes |
+|---|---|
+| `-Uri` | positional, mandatory |
+| `-OutputPath` | default `docs/har-reference/`; receives the **scrubbed** artifacts and the catalogue |
+| `-Describe` | optional intent hint that helps the AI segment; never the source of action names |
+| `-Profile`, `-Isolated` | which signed-in identity to record as |
+| `-Port` | default 9333; a busy port falls forward to the next free one |
 
-**Never end a recording by closing the browser window.** Playwright serializes
-`recordHar` during a close the driver performs; when the window goes first,
-Chrome exits before that can happen and **no HAR is written at all**. This is
-measured, not theoretical. A snapshot of finished requests is therefore flushed
-every few seconds to `raw.snapshot.ndjson`, and a lost driver is recovered into
-`raw.snapshot.har` -- a genuine recovery artifact, with best-effort response
-bodies and no timings. Prefer a clean re-capture whenever one is affordable.
+**Every ending is safe.** ENTER, closing the browser window, and
+`Stop-HarRecording` all produce a full HAR and all run the same
+scrub/verify/digest tail. Ctrl+C asks whether you meant to finish or to
+cancel; cancelling keeps the raw capture and skips post-processing, so a
+mis-keyed Ctrl+C costs nothing. Nothing is ever killed.
 
-**Driving the browser as an AI.** `Start-HarRecording` prints a CDP endpoint.
-`chromium.connectOverCDP(endpoint).contexts()[0]` **is** the recording context,
-so anything the agent does there lands in the same HAR -- there is no second
-context and no second capture. Detaching (`browser.close()` on the CDP side)
-does *not* end the recording; only ENTER, `Stop-HarRecording`, or the window
-does.
+That safety is why **two recorders run and exactly one survives**. Playwright
+serializes `recordHar` only during a close the driver performs, so a window
+close would otherwise write nothing at all. A second recorder appends every
+finished *and failed* request to an incremental log; on a clean driver close
+`recordHar` wins and the log is deleted, and on a window close the log is
+assembled into `raw.har`. Either way `raw.har` exists and is a genuine HAR 1.2
+document -- with real timings, uncapped bodies, and base64 for anything that is
+not valid UTF-8. `recordHar` is preferred where both exist only because it
+knows things a client-side recorder cannot observe (`serverIPAddress`,
+`connection`, real header sizes, `cache`, page timings).
+
+**Preflight.** `.har-profile.json` is resolved before the browser launches. On
+a TTY the recorder offers to scaffold one; without a TTY it fails with the
+`HOWTO`. Discovering an absent profile after a browsing session is spent costs
+the session; here it costs seconds. A `.har-storage-state.json` at or above the
+working directory is discovered the same way, and its absence is not an error.
+
+**Driving the browser as an AI.** `Invoke-HarCapture` prints a CDP endpoint,
+and writes it to `session.json` -- read it there rather than assuming 9333,
+because a busy port moves it. `chromium.connectOverCDP(endpoint).contexts()[0]`
+**is** the recording context, so anything the agent does there lands in the
+same HAR. Detaching (`browser.close()` on the CDP side) does *not* end the
+recording.
 
 A persistent profile is single-instance, so a second recording against the same
-profile cannot start while one is live. The script detects this and says so
-rather than hanging; end the running capture, or use `--port <other> --isolated`.
+profile cannot start while one is live. The recorder detects this and names the
+running capture rather than hanging; end it, or use `-Isolated`.
 
 - Capture is **unfiltered**: no HAR glob, ever, on a first pass.
-- If a `storageState.json` was supplied, load it and skip interactive login.
 - Polite crawl: respect robots.txt, throttle to ~1 req/sec on automated
   traversal, descriptive User-Agent.
 - The raw capture is gitignored and never committed. Phase 3.5 turns it into a
@@ -250,27 +269,22 @@ rather than hanging; end the running capture, or use `--port <other> --isolated`
 Lessons from hand-driven capture sessions against production sites -- each
 of these has cost real diagnosis time when skipped.
 
-- **The HAR is written by the driver's close, and by nothing else.** Playwright
-  buffers the whole session and serializes it during a client-initiated
-  `context.close()`. Two endings therefore produce nothing at all: killing the
-  driver process, and **closing the browser window** -- Chrome exits first and
-  the close never runs. Instruct the human to press **ENTER** in the recording
-  terminal; `Stop-HarRecording` is the equivalent for an agent. (Earlier
-  guidance here said to close the window: that is correct for the
-  `playwright open --save-har` CLI, whose own process closes the context on
-  exit, and wrong for a driver that owns the context. It cost a capture to
-  learn.) Before moving on to Phase 3, verify the HAR exists and is non-trivial
-  in size; never analyze a HAR that was never flushed.
+- **Any ending is safe, but only because two recorders run.** Playwright
+  serializes `recordHar` only during a close the DRIVER performs, so a window
+  close on its own would write nothing at all -- that is measured, not
+  theoretical, and it cost a capture to learn. The incremental recorder exists
+  to make that ending survivable, and it is a real fallback rather than a
+  degraded stub: failed requests, real timings, uncapped bodies, base64 for
+  non-UTF-8. Verify `raw.har` exists and is non-trivial in size before Phase 3
+  regardless; never analyze a HAR that was never flushed.
 - **Never terminate the browser to end a capture.** Killing Chrome processes
-  can also destroy unrelated signed-in work elsewhere on the developer's
-  machine, and it discards the recording besides. Always end a capture by
-  asking the human to press ENTER in the recording terminal. If more than one
-  capture may be live (a prior run wasn't ended, or a second terminal is open),
-  **disambiguate before the human acts** -- `node capture-har.js status` names
-  what is recording and where, and the launch itself refuses to start a second
-  capture against a profile that is already in use. A human acting on the wrong
-  window produces no capture, and the loss is silent until they've already done
-  the work.
+  can destroy unrelated signed-in work elsewhere on the developer's machine,
+  and it discards the recording besides. End a capture with ENTER, the window,
+  or `Stop-HarRecording`. If more than one capture may be live (a prior run
+  wasn't ended, or a second terminal is open), **disambiguate before the human
+  acts** -- `node capture-har.js status` names what is recording and where, and
+  a launch against a profile already in use refuses and names the running
+  capture.
 - **The first capture is always unfiltered.** Do not scope `--save-har-glob`
   to a guessed path on the first pass, even when the target mutation looks
   like it obviously belongs to one API family (e.g. GraphQL). Media upload
@@ -301,9 +315,9 @@ of these has cost real diagnosis time when skipped.
   is usually best discarded rather than flushed and parsed.
 - **Building an authenticated capture context from stored secrets.** Rather
   than making the human log in inside the capture browser every time,
-  construct a Playwright `storageState.json` from already-stored
-  credentials and pass it via `--load-storage` / the skill's Input 7. Two
-  gotchas:
+  construct a Playwright storage state from already-stored credentials and
+  save it as `.har-storage-state.json` at or above the working directory,
+  where the recorder discovers it (the skill's Input 7). Two gotchas:
   - **Secret key casing is not consistent** across secret stores (e.g.
     `Facebook:datr` vs. `Facebook:Workspaces:<alias>:Datr`). Look secrets
     up case-insensitively.
@@ -444,6 +458,19 @@ required literal deserves the same treatment before it meets a real capture.
 
 ### Phase 3.5 -- HAR Reference Catalogue
 
+**This phase is REQUIRED whenever a capture was taken.** It is not a
+tidy-up step to reach if time allows: the catalogue is the lookup index an AI
+consults when a new development request arrives, and a capture that never got
+catalogued is a capture nobody will find. `Invoke-HarCapture` writes a
+scaffold of `Observed` rows and reports the phase as pending until an AI has
+done this work.
+
+The prompt that drives it is a file, not prose to be reconstructed:
+[`templates/web-api-discovery/scripts/capture/catalogue-prompt.md`](../../../templates/web-api-discovery/scripts/capture/catalogue-prompt.md).
+The recorder reads it when it shells out to the `claude` CLI for an
+interactive human run, and an agent that drove the capture itself follows the
+same file. Do not restate its steps elsewhere.
+
 A HAR captured to solve one bug gets thrown away, and six weeks later
 somebody re-drives the same flow by hand to answer the same question. The
 capture is the single most valuable artifact of the session -- it is the only
@@ -514,6 +541,33 @@ otherwise survive only in whichever issue thread happened to mention them.
 > **The rule that makes it stick:** adding a capture has a final step --
 > *add the catalogue row, naming what you did*. The endpoint is recoverable
 > from the file. What you did to provoke it is not.
+
+#### 3a. Observed, not exercised
+
+Cataloguing is **post-hoc AI analysis**, not a narrative dictated up front.
+One browse decomposes into discrete actions -- Create Post, Edit Post, Delete
+Post -- each a candidate API operation. The AI segments the session by
+examining the traffic (using the timing gaps in `digest.json` as boundary
+evidence), names and describes each action, and extracts one reference HAR per
+action.
+
+It must **additionally** record the endpoints it saw but nobody drove. Those
+are capabilities the API has, worth knowing even without a worked example:
+a later request may need exactly one of them, and "we have seen this endpoint
+exist" is a materially different starting point from nothing.
+
+Those rows stay at `Status: "Observed"` with a description of what they appear
+to do and what would exercise them. They are never promoted to `Exercised` --
+a row claiming a worked example that does not exist is worse than no row --
+and never deleted. Each provider's `README.md` carries them under a separate
+**"Observed, not exercised"** heading so a reader can tell the two apart
+without opening the JSON.
+
+The digest carries **shapes, never values**: entries grouped by host, method,
+path template and status, with timing gaps, content types and top-level
+payload keys. That is what lets an AI segment a multi-hundred-megabyte capture
+without re-parsing it, and it is why the digest can live under `-OutputPath`
+alongside the scrubbed artifacts.
 
 Cataloguing is not clerical work: doing it forced a re-read of the files
 rather than the prose about them, and surfaced four facts nobody had written
@@ -937,14 +991,15 @@ PowerShell convenience wrapper:
   silently; otherwise it re-launches the Playwright browser for
   re-authentication.
 - `scripts/capture/capture-har.js` (the Node-based Playwright recorder behind
-  `Start-HarRecording`) is used **only** for the Phase 2 recording flow
+  `Invoke-HarCapture`) is used **only** for the Phase 2 recording flow
   during initial scaffold generation. It is **not** used for runtime
   authentication -- the wrapper consumer never needs Node.js installed.
   `scripts/capture/capture-cdp.js` is its predecessor: a single launch-and-wait
-  helper with no stop, no snapshot, and no CDP attach. Prefer
+  helper with no stop, no incremental recorder, and no CDP attach. Prefer
   `capture-har.js` for anything new.
-- `--storage-state <path>` is still supported on the recorder so
-  non-interactive runs (CI, dogfood) skip interactive login during Phase 2.
+- A `.har-storage-state.json` at or above the working directory is discovered
+  automatically, so non-interactive runs (CI, dogfood) skip interactive login
+  during Phase 2 without an option to pass.
 
 ### Phase 10 -- Generated README
 

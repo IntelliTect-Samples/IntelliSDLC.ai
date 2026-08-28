@@ -13,19 +13,23 @@ Thumbs.db
 # Git worktrees managed by Cleanup-Worktree.ps1.
 .worktrees/
 
-# Raw HAR captures (see Start-HarRecording). A raw capture runs to hundreds of
+# Raw HAR captures (see Invoke-HarCapture). A raw capture runs to hundreds of
 # megabytes and carries live session cookies -- only trimmed, scrubbed extracts
 # under docs/har-reference/ are ever committed.
 #
-# `raw.har` is listed literally as well as by suffix: the recorder names the
-# file exactly `raw.har`, which `*.raw.har` does NOT match (that pattern needs
-# a `.raw.har` suffix). The .har-captures/ rule hides the difference only while
-# the capture directory is the default one -- point -CapturesDirectory
-# elsewhere and an unignored, credential-bearing capture is one `git add -A`
-# away from being committed.
+# The recorder confines raw captures to .har-captures/ by construction: there
+# is no option that moves them, so the directory rule below is the real guard
+# rather than a hope about how the tool is invoked.
+#
+# The by-name rules remain anyway, as defence in depth for a capture copied out
+# of the tree by hand. `raw.har` is listed literally as well as by suffix: the
+# recorder names the file exactly `raw.har`, which `*.raw.har` does NOT match
+# (that pattern needs a `.raw.har` suffix).
 .har-captures/
 raw.har
 *.raw.har
+raw.ndjson
+*.raw.ndjson
 raw.snapshot.har
 raw.snapshot.ndjson
 *.snapshot.har
@@ -34,7 +38,10 @@ raw.snapshot.ndjson
 # The operator's HAR profile: real account identifiers and the scrub salt.
 .har-profile.json
 
-# Playwright storage state -- a serialized signed-in session.
+# Playwright storage state -- a serialized signed-in session. The recorder
+# discovers .har-storage-state.json by walking upward, so that exact name has
+# to be ignored by name as well as by suffix.
+.har-storage-state.json
 *.storage-state.json
 
 testResults.xml

@@ -1,62 +1,35 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Behavior tests for the HAR session recorder (issue #270): capture-har.js and
-# its two PowerShell front doors.
+# Behavior tests for the HAR capture pipeline (issues #270, #281):
+# capture-har.js and its two PowerShell front doors.
 #
 # None of these launch a browser. The recorder's browser handling is verified
 # by hand against a real site; what is pinned here is everything a regression
-# could silently break -- argument contracts, the failure reporting that stops
-# an empty capture being analyzed as data, and the snapshot recovery that makes
-# an unexpected ending survivable.
-
-BeforeDiscovery {
-    $script:DiscoveryRepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') |
-        Select-Object -ExpandProperty Path
-}
-
-Describe 'Ending a recording -- the docs must not contradict each other' {
-    # SKILL.md states, as a measured finding, that closing the browser window
-    # first means Playwright never serializes recordHar and NO HAR is written.
-    # Stop-HarRecording.ps1's docstring said the opposite -- that closing the
-    # window "ends the recording and writes the HAR" and a human does not
-    # normally need the script. A human following that loses the capture.
-    BeforeAll {
-        $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') |
-            Select-Object -ExpandProperty Path
-        $script:StopText = Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot `
-            'templates/web-api-discovery/scripts/capture/Stop-HarRecording.ps1')
-        $script:SkillMd = Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot `
-            '.github/skills/web-api-discovery/SKILL.md')
-    }
-
-    It 'SKILL.md still warns that closing the window writes no HAR' {
-        $script:SkillMd | Should -Match '(?i)Never end a recording by closing the browser window'
-    }
-
-    It 'Stop-HarRecording does not tell the reader that closing the window writes the HAR' {
-        # \s+ between words, not literal spaces: the sentence wraps across
-        # lines in the docstring, so a literal-space pattern silently never
-        # matches and the guard is dead.
-        $script:StopText |
-            Should -Not -Match '(?i)closing\s+the\s+browser\s+window\s+ends\s+the\s+recording\s+and\s+writes\s+the\s+HAR' `
-            -Because 'SKILL.md records the opposite as measured: no HAR is written at all'
-    }
-
-    It 'Stop-HarRecording names ENTER as the human path' {
-        $script:StopText | Should -Match '(?i)ENTER'
-    }
-}
+# could silently break -- argument contracts, the containment that keeps a
+# credential-bearing raw capture out of a committable directory, the object
+# surface, and the failure reporting that stops an empty capture being
+# analyzed as data.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
     $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
-    $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-har.js'
-    $script:StartPs1   = Join-Path $script:ScriptsDir 'capture/Start-HarRecording.ps1'
-    $script:StopPs1    = Join-Path $script:ScriptsDir 'capture/Stop-HarRecording.ps1'
+    $script:CaptureDir = Join-Path $script:ScriptsDir 'capture'
+    $script:CaptureJs  = Join-Path $script:CaptureDir 'capture-har.js'
+    $script:CaptureTestJs = Join-Path $script:CaptureDir 'capture-har.test.js'
+    $script:InvokePs1  = Join-Path $script:CaptureDir 'Invoke-HarCapture.ps1'
+    $script:StopPs1    = Join-Path $script:CaptureDir 'Stop-HarRecording.ps1'
+    $script:ConvertPs1 = Join-Path $script:CaptureDir 'ConvertFrom-HarCatalogue.ps1'
+    $script:PromptMd   = Join-Path $script:CaptureDir 'catalogue-prompt.md'
+    $script:SkillMd    = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
 
+    # The raw capture location is FIXED and no flag can move it. It resolves
+    # against the WORKING DIRECTORY, so the only way a test contains one is by
+    # choosing where node runs -- which is exactly the containment being
+    # asserted, exercised rather than bypassed.
     function Invoke-CaptureHar {
         param([Parameter(ValueFromRemainingArguments)][string[]]$CaptureArgs)
+        Push-Location -LiteralPath $script:Tmp
         # Keep the streams apart: --validate-only writes machine-readable JSON
         # on stdout and human notes on stderr, and a test that merges them
         # cannot assert on either.
@@ -68,6 +41,7 @@ BeforeAll {
         }
         finally {
             Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
+            Pop-Location
         }
         [pscustomobject]@{
             StdOut   = $out
@@ -81,7 +55,7 @@ BeforeAll {
     # so process.kill(pid, 0) reports ESRCH -- i.e. "that driver is gone".
     $script:DeadPid = 999999
 
-    # A session directory as it looks after the driver was lost: a snapshot log
+    # A session directory as it looks after the driver was lost: a record log
     # with entries, a session.json, and no raw.har.
     #
     # -Crashed models the case that actually matters and is easy to get wrong:
@@ -99,10 +73,12 @@ BeforeAll {
             # fallback found the same thing" must create two, with different
             # stamps. A single-session fixture cannot distinguish them.
             [string]$Stamp = '2026-01-01-120000',
-            [int]$OwnerPid = $script:DeadPid
+            [int]$OwnerPid = $script:DeadPid,
+            [string]$OutputPath
         )
         $sessionDir = Join-Path $Root $Stamp
         New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
+        if (-not $OutputPath) { $OutputPath = Join-Path $Root 'out' }
         $lines = 1..$Entries | ForEach-Object {
             @{
                 startedDateTime = "2026-01-01T12:00:0${_}Z"
@@ -113,22 +89,41 @@ BeforeAll {
                 timings         = @{}
             } | ConvertTo-Json -Depth 8 -Compress
         }
-        Set-Content -LiteralPath (Join-Path $sessionDir 'raw.snapshot.ndjson') -Value $lines -Encoding utf8
+        Set-Content -LiteralPath (Join-Path $sessionDir 'raw.ndjson') -Value $lines -Encoding utf8
         $session = @{
-            uri             = 'https://example.com'
-            sessionDir      = $sessionDir
-            harPath         = Join-Path $sessionDir 'raw.har'
-            snapshotLog     = Join-Path $sessionDir 'raw.snapshot.ndjson'
-            snapshotHarPath = Join-Path $sessionDir 'raw.snapshot.har'
-            startedUtc      = '2026-01-01T12:00:00Z'
-            port            = 49999
-            pid             = $OwnerPid
+            uri        = 'https://example.com'
+            sessionDir = $sessionDir
+            harPath    = Join-Path $sessionDir 'raw.har'
+            recordLog  = Join-Path $sessionDir 'raw.ndjson'
+            outputPath = $OutputPath
+            startedUtc = '2026-01-01T12:00:00Z'
+            port       = 49999
+            pid        = $OwnerPid
         }
         # A crashed driver leaves NO endedUtc -- that is the whole difficulty.
         if (-not $Crashed) { $session.endedUtc = '2026-01-01T12:05:00Z' }
         $session | ConvertTo-Json -Depth 8 |
             Set-Content -LiteralPath (Join-Path $sessionDir 'session.json') -Encoding utf8
         return $sessionDir
+    }
+}
+
+Describe 'capture-har.js behavior suite' {
+    # The pure functions -- entry construction, log assembly, digest,
+    # containment, catalogue delegation -- are pinned by the zero-dep Node
+    # suite beside the script, following the convention the rest of the
+    # toolkit's JS uses.
+
+    It 'test file exists at the canonical path' {
+        Test-Path -LiteralPath $script:CaptureTestJs | Should -BeTrue
+    }
+
+    It 'all behavioral assertions pass' {
+        $out = & node $script:CaptureTestJs 2>&1
+        $exit = $LASTEXITCODE
+        if ($exit -ne 0) { Write-Information ($out -join "`n") -InformationAction Continue }
+        $exit | Should -Be 0
+        ($out -join "`n") | Should -Match 'All capture-har tests passed'
     }
 }
 
@@ -155,22 +150,63 @@ Describe 'capture-har.js' {
     }
 
     It 'resolves a session without launching a browser under --validate-only' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --validate-only
         $r.ExitCode | Should -Be 0
         $r.Output | Should -Match 'no browser launched'
         $r.Output | Should -Match 'cdpEndpoint'
     }
 
     It 'rejects a start with no URI' {
-        $r = Invoke-CaptureHar start --dir $script:Tmp
+        $r = Invoke-CaptureHar start
         $r.ExitCode | Should -Be 2
     }
 
-    It 'fails when the storage state file does not exist' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp `
-            --storage-state (Join-Path $script:Tmp 'nope.json')
-        $r.ExitCode | Should -Be 1
-        $r.Output | Should -Match 'storage-state file not found'
+    It 'refuses --dir on start rather than silently ignoring it' {
+        # --dir was how a raw capture got redirected out of the gitignored
+        # tree. Accepting and ignoring it would leave the operator believing
+        # the raw had moved -- worse than rejecting it.
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp --validate-only
+        $r.ExitCode | Should -Be 2
+        $r.Output | Should -Match '(?i)confined to \.har-captures'
+    }
+
+    It 'refuses --storage-state, which is now auto-discovered' {
+        $r = Invoke-CaptureHar start --uri 'https://example.com' `
+            --storage-state (Join-Path $script:Tmp 'state.json') --validate-only
+        $r.ExitCode | Should -Be 2
+        $r.Output | Should -Match '(?i)discovered automatically'
+    }
+
+    It 'writes the raw capture under the captures root, never under --output-path' {
+        # The leak .gitignore documented in its own comment, closed by
+        # construction rather than by a check.
+        $outputPath = Join-Path $script:Tmp 'docs/har-reference'
+        $r = Invoke-CaptureHar start --uri 'https://example.com' `
+            --output-path $outputPath --validate-only
+        $r.ExitCode | Should -Be 0
+        $session = $r.StdOut | ConvertFrom-Json
+        $session.harPath | Should -BeLike (Join-Path $script:Tmp '.har-captures*')
+        $session.harPath | Should -Not -BeLike '*har-reference*'
+        $session.outputPath | Should -BeLike '*har-reference*'
+    }
+
+    It 'falls forward to a free port instead of failing on a busy one' {
+        # A busy port used to be a hard error because it doubled as the
+        # "a capture is already running" detector. Those are different
+        # concerns; only a profile in use is a real conflict.
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $busy = $listener.LocalEndpoint.Port
+        try {
+            $r = Invoke-CaptureHar start --uri 'https://example.com' --port $busy --validate-only
+            $r.ExitCode | Should -Be 0
+            $session = $r.StdOut | ConvertFrom-Json
+            $session.port | Should -Not -Be $busy
+            $session.requestedPort | Should -Be $busy
+            $session.cdpEndpoint | Should -Match ":$($session.port)$" `
+                -Because 'an agent reads the endpoint rather than assuming 9333'
+        }
+        finally { $listener.Stop() }
     }
 
     It 'reports that there is nothing to stop rather than inventing a session' {
@@ -215,15 +251,13 @@ Describe 'capture-har.js --profile' {
     }
 
     It 'gives a bare name its own capture profile' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp `
-            --profile 'work' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile 'work' --validate-only
         $r.ExitCode | Should -Be 0
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'har-capture[\\/]profile-work$'
     }
 
     It 'folds an awkward name to a safe directory name' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp `
-            --profile 'My Account!' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile 'My Account!' --validate-only
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'profile-my-account-$'
     }
 
@@ -231,19 +265,18 @@ Describe 'capture-har.js --profile' {
         # The integration point for a project that keys profiles off its own
         # concept: it computes the directory, we record as that identity.
         $external = Join-Path $script:Tmp 'someapp/profile-alias-1a2b3c4d'
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp `
-            --profile $external --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile $external --validate-only
         $r.ExitCode | Should -Be 0
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Be ([IO.Path]::GetFullPath($external))
     }
 
     It 'defaults to the shared capture profile when none is named' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --validate-only
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'har-capture[\\/]profile$'
     }
 }
 
-Describe 'capture-har.js snapshot recovery' {
+Describe 'capture-har.js assembling a lost recording' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("har-rec-" + [guid]::NewGuid())
@@ -256,42 +289,36 @@ Describe 'capture-har.js snapshot recovery' {
         }
     }
 
-    It 'recovers a HAR from the snapshot when the driver was lost' {
+    It 'assembles raw.har itself when the driver was lost' {
+        # Exit 5 no longer means "degraded artifact" -- it means "assembled
+        # from the incremental log rather than recordHar". The file is a
+        # genuine HAR either way, which is what makes closing the window safe.
         $sessionDir = New-LostSession -Root $script:Tmp -Entries 3
-        $r = Invoke-CaptureHar stop --session $sessionDir
+        $r = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp
 
-        # Exit 5 == "only the recovery snapshot survives": distinct from 0 so a
-        # caller cannot mistake a degraded artifact for a clean capture.
-        $r.ExitCode | Should -Be 5
-        $snapshotHar = Join-Path $sessionDir 'raw.snapshot.har'
-        Test-Path -LiteralPath $snapshotHar | Should -BeTrue
+        $r.ExitCode | Should -BeIn @(5, 6)
+        $rawHar = Join-Path $sessionDir 'raw.har'
+        Test-Path -LiteralPath $rawHar | Should -BeTrue
 
-        $har = Get-Content -LiteralPath $snapshotHar -Raw | ConvertFrom-Json
+        $har = Get-Content -LiteralPath $rawHar -Raw | ConvertFrom-Json
         $har.log.version | Should -Be '1.2'
         $har.log.entries.Count | Should -Be 3
         $har.log.entries[0].request.url | Should -Match 'example\.com'
     }
 
-    It 'labels the recovered file as a recovery artifact, not a capture' {
+    It 'does not write a separate raw.snapshot.har any more' {
+        # Two artifacts invited someone to analyze the weaker one. There is
+        # now exactly one: raw.har.
         $sessionDir = New-LostSession -Root $script:Tmp
-        Invoke-CaptureHar stop --session $sessionDir | Out-Null
-        $har = Get-Content -LiteralPath (Join-Path $sessionDir 'raw.snapshot.har') -Raw | ConvertFrom-Json
-        $har.log.comment | Should -Match 'RECOVERY ARTIFACT'
-        $har.log.creator.name | Should -Match 'snapshot'
+        Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp | Out-Null
+        Test-Path -LiteralPath (Join-Path $sessionDir 'raw.snapshot.har') | Should -BeFalse
     }
 
-    It 'salvages the rest when the final snapshot line was truncated' {
-        # An abrupt ending mid-write leaves a partial line. Losing the whole
-        # recovery to one bad line would defeat the artifact's purpose.
-        $sessionDir = New-LostSession -Root $script:Tmp -Entries 2
-        $log = Join-Path $sessionDir 'raw.snapshot.ndjson'
-        Add-Content -LiteralPath $log -Value '{"startedDateTime":"2026-01-01T12:00:09Z","req' -Encoding utf8
-
-        $r = Invoke-CaptureHar stop --session $sessionDir
-        $r.ExitCode | Should -Be 5
-        $har = Get-Content -LiteralPath (Join-Path $sessionDir 'raw.snapshot.har') -Raw | ConvertFrom-Json
-        $har.log.entries.Count | Should -Be 2
-        $har.log.comment | Should -Match 'truncated'
+    It 'does not label the assembled capture a degraded recovery artifact' {
+        $sessionDir = New-LostSession -Root $script:Tmp
+        Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp | Out-Null
+        $text = Get-Content -LiteralPath (Join-Path $sessionDir 'raw.har') -Raw
+        $text | Should -Not -Match 'RECOVERY ARTIFACT'
     }
 
     It 'honours an explicit --min-bytes 0 instead of substituting the default' {
@@ -301,8 +328,7 @@ Describe 'capture-har.js snapshot recovery' {
         Set-Content -LiteralPath (Join-Path $sessionDir 'raw.har') `
             -Value '{"log":{"version":"1.2","entries":[]}}' -Encoding utf8
 
-        $r = Invoke-CaptureHar stop --session $sessionDir --min-bytes 0
-        $r.ExitCode | Should -Be 0
+        $r = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp --min-bytes 0
         $r.Output | Should -Not -Match 'failed capture'
     }
 
@@ -311,7 +337,7 @@ Describe 'capture-har.js snapshot recovery' {
         # for it is indistinguishable from a healthy but slow stop.
         $sessionDir = New-LostSession -Root $script:Tmp -Crashed
 
-        $elapsed = Measure-Command { $script:R = Invoke-CaptureHar stop --session $sessionDir }
+        $elapsed = Measure-Command { $script:R = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp }
         $elapsed.TotalSeconds | Should -BeLessThan 30
         $script:R.Output | Should -Match 'no longer running'
     }
@@ -355,11 +381,11 @@ Describe 'capture-har.js snapshot recovery' {
         $status.recording | Should -BeTrue
     }
 
-    It 'reports a failure when neither a HAR nor a snapshot exists' {
+    It 'reports a failure when neither recorder produced anything' {
         $sessionDir = New-LostSession -Root $script:Tmp
-        Remove-Item -LiteralPath (Join-Path $sessionDir 'raw.snapshot.ndjson') -Force
+        Remove-Item -LiteralPath (Join-Path $sessionDir 'raw.ndjson') -Force
 
-        $r = Invoke-CaptureHar stop --session $sessionDir
+        $r = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp
         $r.ExitCode | Should -Be 4
         $r.Output | Should -Match 'lost entirely'
     }
@@ -368,31 +394,31 @@ Describe 'capture-har.js snapshot recovery' {
         $sessionDir = New-LostSession -Root $script:Tmp
         Set-Content -LiteralPath (Join-Path $sessionDir 'raw.har') -Value '{}' -Encoding utf8
 
-        $r = Invoke-CaptureHar stop --session $sessionDir --min-bytes 1024
+        $r = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp --min-bytes 1024
         $r.ExitCode | Should -Be 4
         $r.Output | Should -Match 'failed capture'
     }
+
 }
 
 Describe 'raw captures are gitignored' {
     # A raw capture carries live session cookies. These assert what git will
     # ACTUALLY do, because the natural-looking pattern `*.raw.har` does not
     # match the file the recorder writes (`raw.har`), and the .har-captures/
-    # directory rule hides that until someone redirects the output.
+    # directory rule hides that until someone looks closely.
 
     It 'ignores the capture the recorder writes, wherever it is written' {
         foreach ($p in @(
                 '.har-captures/2026-01-01-120000/raw.har',
                 'somewhere/else/raw.har',
-                'somewhere/else/raw.snapshot.har',
-                'somewhere/else/raw.snapshot.ndjson')) {
+                'somewhere/else/raw.ndjson')) {
             & git -C $script:RepoRoot check-ignore -q -- $p
             $LASTEXITCODE | Should -Be 0 -Because "$p holds live credentials and must never be committable"
         }
     }
 
     It 'ignores the operator profile and any serialized session' {
-        foreach ($p in @('.har-profile.json', 'anywhere/creds.storage-state.json')) {
+        foreach ($p in @('.har-profile.json', '.har-storage-state.json', 'anywhere/creds.storage-state.json')) {
             & git -C $script:RepoRoot check-ignore -q -- $p
             $LASTEXITCODE | Should -Be 0 -Because "$p holds real account identifiers or a live session"
         }
@@ -404,11 +430,79 @@ Describe 'raw captures are gitignored' {
     }
 }
 
-Describe 'Start-HarRecording.ps1 / Stop-HarRecording.ps1' {
+Describe 'Invoke-HarCapture.ps1' {
+
+    It 'exists at the canonical path' {
+        Test-Path -LiteralPath $script:InvokePs1 | Should -BeTrue
+    }
+
+    It 'replaced Start-HarRecording outright -- no alias, no shim' {
+        Test-Path -LiteralPath (Join-Path $script:CaptureDir 'Start-HarRecording.ps1') | Should -BeFalse
+    }
+
+    It 'parses without syntax errors' {
+        foreach ($f in @($script:InvokePs1, $script:StopPs1, $script:ConvertPs1)) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors)
+            $errors | Should -BeNullOrEmpty -Because "$f must parse"
+        }
+    }
+
+    It 'exposes exactly the six documented parameters' {
+        # Six, down from eight: -StorageState is auto-discovered and
+        # -ValidateOnly stays on capture-har.js where it is the test seam.
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:InvokePs1, [ref]$null, [ref]$errors)
+        $names = $ast.ParamBlock.Parameters |
+            ForEach-Object { $_.Name.VariablePath.UserPath } |
+            Sort-Object
+        $names | Should -Be @('Describe', 'Isolated', 'OutputPath', 'Port', 'Profile', 'Uri')
+    }
+
+    It 'takes the URI positionally, so the parameter name is optional' {
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:InvokePs1, [ref]$null, [ref]$errors)
+        $uri = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Uri' }
+        $uri | Should -Not -BeNullOrEmpty
+        $attr = $uri.Attributes | Where-Object { $_.TypeName.Name -eq 'Parameter' }
+        ($attr.NamedArguments | Where-Object { $_.ArgumentName -eq 'Position' }) | Should -Not -BeNullOrEmpty
+    }
+
+    It 'keeps status out of the pipeline -- no Write-Host anywhere in capture/' {
+        # PSAvoidUsingWriteHost: Write-Host cannot be captured, redirected or
+        # suppressed, and a ConvertTo-Json of the result must be pure data.
+        $analyzer = Get-Module -ListAvailable -Name PSScriptAnalyzer
+        if (-not $analyzer) { Set-ItResult -Skipped -Because 'PSScriptAnalyzer is not installed' ; return }
+        Import-Module PSScriptAnalyzer -ErrorAction Stop
+        $findings = Invoke-ScriptAnalyzer -Path $script:CaptureDir -Recurse `
+            -IncludeRule PSAvoidUsingWriteHost
+        $findings | Should -BeNullOrEmpty -Because ($findings | Out-String)
+    }
+
+    It 'is clean under the full default rule set' {
+        $analyzer = Get-Module -ListAvailable -Name PSScriptAnalyzer
+        if (-not $analyzer) { Set-ItResult -Skipped -Because 'PSScriptAnalyzer is not installed' ; return }
+        Import-Module PSScriptAnalyzer -ErrorAction Stop
+        $findings = Invoke-ScriptAnalyzer -Path $script:CaptureDir -Recurse -Severity Error, Warning
+        $findings | Should -BeNullOrEmpty -Because ($findings | Out-String)
+    }
+}
+
+Describe 'The catalogue object surface' {
 
     BeforeEach {
-        $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("har-rec-" + [guid]::NewGuid())
+        $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("har-cat-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        $script:CataloguePath = Join-Path $script:Tmp 'catalogue.json'
+        @(
+            @{ Action = 'composer-story-create'; Description = 'Created a post'; Methods = @('POST')
+               Endpoints = @('api.example.com/v1/posts'); EntryCount = 3; Status = 'Exercised'
+               HarFile = 'example.com/example.com-composer-story-create-2026-01-01.har'
+               CapturedUtc = '2026-01-01T12:00:00Z' }
+            @{ Action = 'get-v1-notifications'; Description = $null; Methods = @('GET')
+               Endpoints = @('api.example.com/v1/notifications'); EntryCount = 1; Status = 'Observed'
+               HarFile = $null; CapturedUtc = '2026-01-01T12:00:00Z' }
+        ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $script:CataloguePath -Encoding utf8
     }
 
     AfterEach {
@@ -417,41 +511,116 @@ Describe 'Start-HarRecording.ps1 / Stop-HarRecording.ps1' {
         }
     }
 
-    It 'both exist at the canonical path' {
-        Test-Path -LiteralPath $script:StartPs1 | Should -BeTrue
-        Test-Path -LiteralPath $script:StopPs1 | Should -BeTrue
-    }
-
-    It 'parse without syntax errors' {
-        foreach ($f in @($script:StartPs1, $script:StopPs1)) {
-            $errors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errors)
-            $errors | Should -BeNullOrEmpty
+    It 'emits one typed object per catalogue entry' {
+        $rows = & $script:ConvertPs1 -Path $script:CataloguePath
+        $rows.Count | Should -Be 2
+        foreach ($row in $rows) {
+            $row.PSObject.TypeNames | Should -Contain 'IntelliSDLC.HarCapture.CatalogueEntry'
         }
     }
 
-    It 'takes the URI positionally, so the parameter name is optional' {
-        $errors = $null
-        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:StartPs1, [ref]$null, [ref]$errors)
-        $uri = $ast.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'Uri' }
-        $uri | Should -Not -BeNullOrEmpty
-        $attr = $uri.Attributes | Where-Object { $_.TypeName.Name -eq 'Parameter' }
-        ($attr.NamedArguments | Where-Object { $_.ArgumentName -eq 'Position' }) | Should -Not -BeNullOrEmpty
+    It 'carries every documented property' {
+        $row = (& $script:ConvertPs1 -Path $script:CataloguePath)[0]
+        foreach ($name in @('Action', 'Description', 'Methods', 'Endpoints',
+                            'EntryCount', 'Status', 'HarFile', 'CapturedUtc')) {
+            $row.PSObject.Properties.Name | Should -Contain $name
+        }
     }
 
-    It 'passes -ValidateOnly through without launching a browser' {
-        & $script:StartPs1 'https://example.com' -ValidateOnly -CapturesDirectory $script:Tmp | Out-Null
-        $LASTEXITCODE | Should -Be 0
+    It 'survives ConvertTo-Json as pure data, with no status text in the pipeline' {
+        # Per powershell.instructions.md -> Output & Streams: status goes to
+        # Write-Information so the pipeline carries objects and nothing else.
+        $json = & $script:ConvertPs1 -Path $script:CataloguePath | ConvertTo-Json -Depth 4
+        { $json | ConvertFrom-Json } | Should -Not -Throw
+        $parsed = $json | ConvertFrom-Json
+        $parsed.Count | Should -Be 2
+        $parsed[0].Action | Should -Be 'composer-story-create'
     }
 
-    It 'tells the operator to press ENTER, not to close the window' {
-        # Closing the window is the one ending that cannot write a HAR.
-        $start = Get-Content -LiteralPath $script:StartPs1 -Raw
-        $start | Should -Match 'ENTER'
-        $start | Should -Not -Match 'CLOSE THE BROWSER WINDOW'
+    It 'survives ConvertTo-Csv' {
+        $csv = & $script:ConvertPs1 -Path $script:CataloguePath | ConvertTo-Csv -NoTypeInformation
+        $csv[0] | Should -Match 'Action'
     }
 
-    It 'documents Stop as the automation path' {
+    It 'filters on Status, so Observed rows are addressable' {
+        $observed = & $script:ConvertPs1 -Path $script:CataloguePath | Where-Object Status -eq 'Observed'
+        $observed.Count | Should -Be 1
+        $observed.Action | Should -Be 'get-v1-notifications'
+    }
+
+    It 'renders through PowerShell formatting rather than hand-rolled text' {
+        $formatXml = Join-Path $script:CaptureDir 'HarCapture.Format.ps1xml'
+        Test-Path -LiteralPath $formatXml | Should -BeTrue
+        [xml]$doc = Get-Content -LiteralPath $formatXml -Raw
+        $doc.Configuration.ViewDefinitions.View.ViewSelectedBy.TypeName |
+            Should -Contain 'IntelliSDLC.HarCapture.CatalogueEntry'
+    }
+}
+
+Describe 'The catalogue phase is never silently dropped' {
+
+    It 'ships the prompt as a file, so the shell-out and an agent read the same thing' {
+        Test-Path -LiteralPath $script:PromptMd | Should -BeTrue
+        $text = Get-Content -LiteralPath $script:PromptMd -Raw
+        $text | Should -Match 'digest\.json'
+        $text | Should -Match 'extract-har-reference\.js'
+        $text | Should -Match 'verify-har-reference\.js'
+        $text | Should -Match '(?i)Observed, not exercised'
+    }
+
+    It 'SKILL.md points an agent at that same prompt' {
+        $skill = Get-Content -LiteralPath $script:SkillMd -Raw
+        $skill | Should -Match 'catalogue-prompt\.md'
+    }
+}
+
+Describe 'Stop-HarRecording.ps1' {
+
+    It 'exists at the canonical path' {
+        Test-Path -LiteralPath $script:StopPs1 | Should -BeTrue
+    }
+
+    It 'documents itself as the automation path' {
         (Get-Content -LiteralPath $script:StopPs1 -Raw) | Should -Match 'AI driving the session|automation'
+    }
+
+    It 'says it waits for post-processing' {
+        # Reporting a capture as done while the scrub is still running names
+        # files that do not exist yet.
+        (Get-Content -LiteralPath $script:StopPs1 -Raw) | Should -Match '(?i)post-process'
+    }
+
+    It 'no longer tells the reader that closing the window loses the capture' {
+        # Both recorders now run and exactly one survives, so a window close
+        # yields a full HAR. The old warning is false.
+        #
+        # \s+ between words, not literal spaces: the sentence wraps across
+        # lines in the docstring, so a literal-space pattern silently never
+        # matches and the guard is dead.
+        $stop = Get-Content -LiteralPath $script:StopPs1 -Raw
+        $stop | Should -Not -Match '(?i)no\s+HAR\s+is\s+written\s+at\s+all'
+    }
+}
+
+Describe 'The repository no longer references the deleted command' {
+
+    It 'has zero references to Start-HarRecording outside git history' {
+        # 19 across 9 files at the time of writing (issue #281). A stale
+        # reference sends a reader to a command that does not exist.
+        Push-Location $script:RepoRoot
+        try {
+            # Excluded: docs/designs holds historical plans, and this file
+            # necessarily names the command it asserts is gone.
+            $hits = & git grep -n -I 'Start-HarRecording' -- . `
+                ':!docs/designs/*' ':!.github/agents/tests/har-recording.Tests.ps1' 2>$null
+        }
+        finally { Pop-Location }
+        $hits | Should -BeNullOrEmpty -Because ($hits -join "`n")
+    }
+
+    It 'SKILL.md documents the one-command capture' {
+        $skill = Get-Content -LiteralPath $script:SkillMd -Raw
+        $skill | Should -Match 'Invoke-HarCapture'
+        $skill | Should -Match '(?i)catalogue'
     }
 }

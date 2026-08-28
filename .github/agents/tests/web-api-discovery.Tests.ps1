@@ -88,7 +88,7 @@ Describe 'web-api-discovery SKILL.md' {
         # runnable commands, not merely assert it in the intro.
         $script:SkillText | Should -Match '(?i)### Capture-only run'
         # The commands that path is made of, in order.
-        $script:SkillText | Should -Match 'Start-HarRecording'
+        $script:SkillText | Should -Match 'Invoke-HarCapture'
         $script:SkillText | Should -Match 'extract-har-reference\.js'
         $script:SkillText | Should -Match 'verify-har-reference\.js'
     }
@@ -128,7 +128,10 @@ Describe 'web-api-discovery SKILL.md' {
             $script:SkillText,
             '(?ms)^### Capture-only run\s*$.*?(?=^## )').Value
         $section | Should -Not -BeNullOrEmpty -Because 'the section must be findable'
-        $paths = [regex]::Matches($section, 'templates/[A-Za-z0-9._/-]+\.js') |
+        # .ps1 as well as .js: the capture-only path is now a single
+        # PowerShell front door, and matching only .js would silently find
+        # nothing -- the same hollowing-out this test exists to catch.
+        $paths = [regex]::Matches($section, 'templates/[A-Za-z0-9._/-]+\.(?:js|ps1)') |
             ForEach-Object { $_.Value } | Select-Object -Unique
         @($paths).Count | Should -BeGreaterThan 0 -Because 'the run is made of real commands'
         foreach ($p in $paths) {

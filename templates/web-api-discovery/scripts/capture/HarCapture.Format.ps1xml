@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Console rendering for capture catalogue entries.
+
+    The catalogue is emitted as objects, never as text, so the pipeline stays
+    pure data and ConvertTo-Json / ConvertTo-Csv work on the same result. What
+    a human sees at the console is PowerShell's own formatting engine applied
+    to those objects, which is why this file exists instead of a Write-Host
+    table hand-rolled in the script.
+
+    Endpoints and Methods are joined for display only. The underlying
+    properties stay arrays.
+-->
+<Configuration>
+  <ViewDefinitions>
+    <View>
+      <Name>IntelliSDLC.HarCapture.CatalogueEntry</Name>
+      <ViewSelectedBy>
+        <TypeName>IntelliSDLC.HarCapture.CatalogueEntry</TypeName>
+      </ViewSelectedBy>
+      <TableControl>
+        <TableHeaders>
+          <TableColumnHeader>
+            <Label>Status</Label>
+            <Width>10</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Action</Label>
+            <Width>32</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Methods</Label>
+            <Width>12</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Entries</Label>
+            <Alignment>Right</Alignment>
+            <Width>7</Width>
+          </TableColumnHeader>
+          <TableColumnHeader>
+            <Label>Endpoints</Label>
+          </TableColumnHeader>
+        </TableHeaders>
+        <TableRowEntries>
+          <TableRowEntry>
+            <TableColumnItems>
+              <TableColumnItem>
+                <PropertyName>Status</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>Action</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>$_.Methods -join ','</ScriptBlock>
+              </TableColumnItem>
+              <TableColumnItem>
+                <PropertyName>EntryCount</PropertyName>
+              </TableColumnItem>
+              <TableColumnItem>
+                <ScriptBlock>$_.Endpoints -join ', '</ScriptBlock>
+              </TableColumnItem>
+            </TableColumnItems>
+          </TableRowEntry>
+        </TableRowEntries>
+      </TableControl>
+    </View>
+    <View>
+      <Name>IntelliSDLC.HarCapture.CatalogueEntry.List</Name>
+      <ViewSelectedBy>
+        <TypeName>IntelliSDLC.HarCapture.CatalogueEntry</TypeName>
+      </ViewSelectedBy>
+      <ListControl>
+        <ListEntries>
+          <ListEntry>
+            <ListItems>
+              <ListItem>
+                <PropertyName>Action</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Description</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Status</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Methods</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Endpoints</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>EntryCount</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>HarFile</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>CapturedUtc</PropertyName>
+              </ListItem>
+            </ListItems>
+          </ListEntry>
+        </ListEntries>
+      </ListControl>
+    </View>
+  </ViewDefinitions>
+</Configuration>

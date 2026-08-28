@@ -13,11 +13,16 @@ user's chosen output directory.
 templates/web-api-discovery/
 ├── README.md            # this file
 ├── scripts/             # Node + PowerShell tooling, grouped by concern
-│   ├── capture/         # record a live session to a raw HAR
-│   │   ├── capture-har.js           # session recorder: start/stop, CDP attach,
-│   │   │                            #   5s crash snapshot (Start-HarRecording)
-│   │   ├── Start-HarRecording.ps1   # front door: record a session to a raw HAR
+│   ├── capture/         # record, scrub and catalogue a live session
+│   │   ├── capture-har.js           # recorder + post-process: start/stop, CDP
+│   │   │                            #   attach, incremental fallback recorder,
+│   │   │                            #   scrub, verify, digest
+│   │   ├── capture-har.test.js      # zero-dep behavior suite for the above
+│   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
 │   │   ├── Stop-HarRecording.ps1    # end a recording (automation / AI path)
+│   │   ├── ConvertFrom-HarCatalogue.ps1  # catalogue.json -> typed objects
+│   │   ├── HarCapture.Format.ps1xml # console rendering for those objects
+│   │   ├── catalogue-prompt.md      # the AI prompt for the catalogue phase
 │   │   ├── capture-cdp.js           # predecessor; superseded by capture-har.js
 │   │   └── import-mobile-app.js     # guided mobile-app capture; validates the artifact
 │   ├── har/             # scrub, extract, and catalogue a captured HAR
