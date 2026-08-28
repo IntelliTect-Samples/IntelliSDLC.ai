@@ -93,6 +93,32 @@ Describe 'web-api-discovery SKILL.md' {
         $script:SkillText | Should -Match 'verify-har-reference\.js'
     }
 
+    It 'does not claim CI gates the reference unless a workflow actually runs it' {
+        # SKILL.md promised "CI runs verify-har-reference.js ... so a committed
+        # reference is gated on every PR" while no workflow invoked it, so a
+        # reader could skip the local gate believing CI would catch a leaky
+        # reference (issue #283). Tie the claim to the pipeline: this flips on
+        # its own the moment the workflow step lands, so the doc can be made
+        # unconditional then and not a moment sooner.
+        $workflows = @(
+            Get-ChildItem -Path (Join-Path $script:RepoRoot '.github/workflows') -Filter '*.yml' -ErrorAction SilentlyContinue
+            Get-ChildItem -Path (Join-Path $script:RepoRoot 'templates') -Recurse -Filter '*.yml.tmpl' -ErrorAction SilentlyContinue
+        )
+        $wired = @($workflows | Where-Object {
+            (Get-Content -LiteralPath $_.FullName -Raw) -match 'verify-har-reference'
+        })
+
+        if ($wired.Count -eq 0) {
+            # Nothing runs it. The skill must not state that CI does.
+            $script:SkillText |
+                Should -Not -Match '(?i)CI runs `?verify-har-reference' `
+                -Because 'no workflow invokes verify-har-reference.js (see #283)'
+        } else {
+            # Wired up: the claim is now true and should be stated plainly.
+            $script:SkillText | Should -Match '(?i)verify-har-reference'
+        }
+    }
+
     It 'names scripts that exist for every path in the capture-only run' {
         # A heading-presence assertion only proves the author wrote the
         # heading. Pin the commands to the tree so a later move breaks this

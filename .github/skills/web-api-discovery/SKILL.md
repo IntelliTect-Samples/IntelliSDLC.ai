@@ -832,11 +832,19 @@ Require every capture-derived probe to:
   directory. Ignoring only the directory is not enough. (The typed-PII store
   `.substitutions.json` is different: it records hash prefixes, not values,
   and is safe to commit.)
-- CI runs `verify-har-reference.js` over `docs/har-reference/` when that
-  directory exists, so a committed reference is gated on every PR, not only
-  when it was written. (The script exits non-zero on a missing or empty
-  reference directory: being pointed at nothing is a wiring mistake, not a
-  pass.)
+- A committed reference **must** be gated in CI by `verify-har-reference.js`
+  over `docs/har-reference/` when that directory exists, so it is checked on
+  every PR and not only when it was written. (The script exits non-zero on a
+  missing or empty reference directory: being pointed at nothing is a wiring
+  mistake, not a pass.)
+
+  > **Not wired yet -- see #283.** No workflow in this repo, and no workflow
+  > this skill emits, currently invokes `verify-har-reference.js`. Until that
+  > lands, run it locally before committing a reference and do not assume CI
+  > will catch a leak. The gitleaks secret-scan workflow is not a substitute:
+  > it matches credential shapes by its own ruleset and knows nothing about
+  > truncated request bodies, the forbidden-literal list, or secrets nested
+  > inside a JSON-valued parameter.
   The literal check reports as skipped there (the profile is gitignored and
   absent in CI); the truncation, credential and nested-secret gates all run.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
