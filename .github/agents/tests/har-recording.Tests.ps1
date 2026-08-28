@@ -131,9 +131,13 @@ BeforeAll {
             # stamps. A single-session fixture cannot distinguish them.
             [string]$Stamp = '2026-01-01-120000',
             [int]$OwnerPid = $script:DeadPid,
-            [string]$OutputPath
+            [string]$OutputPath,
+            # Sessions live at <capturesRoot>/<host>/<stamp>. The fixture must
+            # mirror that: seeded flat, the newest-on-disk fallback finds
+            # nothing and every status/stop test resolves no session at all.
+            [string]$HostFolder = 'example.com'
         )
-        $sessionDir = Join-Path $Root $Stamp
+        $sessionDir = Join-Path (Join-Path $Root $HostFolder) $Stamp
         New-Item -ItemType Directory -Path $sessionDir -Force | Out-Null
         if (-not $OutputPath) { $OutputPath = Join-Path $Root 'out' }
         $lines = 1..$Entries | ForEach-Object {
@@ -274,14 +278,43 @@ Describe 'capture-har.js' {
     It 'writes the raw capture under the captures root, never under --output-path' {
         # The leak .gitignore documented in its own comment, closed by
         # construction rather than by a check.
-        $outputPath = Join-Path $script:Tmp 'docs/har-reference'
+        $outputPath = Join-Path $script:Tmp 'refs'
         $r = Invoke-CaptureHar start --uri 'https://example.com' `
             --output-path $outputPath --validate-only
         $r.ExitCode | Should -Be 0
         $session = $r.StdOut | ConvertFrom-Json
         $session.harPath | Should -BeLike (Join-Path $script:Tmp '.har-captures*')
-        $session.harPath | Should -Not -BeLike '*har-reference*'
-        $session.outputPath | Should -BeLike '*har-reference*'
+        $session.harPath | Should -Not -BeLike "$outputPath*"
+    }
+
+    It 'keys both output roots on the captured host' {
+        # scrubbed.har, digest.json and catalogue.json are fixed filenames, so
+        # before this a second capture silently overwrote the first.
+        $outputPath = Join-Path $script:Tmp 'refs'
+        $r = Invoke-CaptureHar start --uri 'https://app.example.com/login' `
+            --output-path $outputPath --validate-only
+        $r.ExitCode | Should -Be 0
+        $session = $r.StdOut | ConvertFrom-Json
+        $session.harPath | Should -BeLike '*.har-captures*app.example.com*raw.har'
+        $session.outputPath | Should -Be (Join-Path $outputPath 'app.example.com')
+    }
+
+    It 'names the folder from the host alone, never the rest of the URL' {
+        # A magic-link or password-reset URL carries its token in the path or
+        # the query, and the output path is the committable directory.
+        $r = Invoke-CaptureHar start --uri 'https://app.example.com/reset/PATHTOK?t=QUERYTOK' `
+            --validate-only
+        $r.ExitCode | Should -Be 0
+        $session = $r.StdOut | ConvertFrom-Json
+        $session.outputPath | Should -BeLike '*app.example.com'
+        $session.outputPath | Should -Not -Match 'PATHTOK|QUERYTOK'
+        $session.harPath | Should -Not -Match 'PATHTOK|QUERYTOK'
+    }
+
+    It 'renders a port with an underscore, since a dash is legal in a hostname' {
+        $r = Invoke-CaptureHar start --uri 'https://localhost:5001/' --validate-only
+        $r.ExitCode | Should -Be 0
+        ($r.StdOut | ConvertFrom-Json).outputPath | Should -BeLike '*localhost_5001'
     }
 
     It 'falls forward to a free port instead of failing on a busy one' {
@@ -503,6 +536,7 @@ Describe 'raw captures are gitignored' {
 
     It 'ignores the capture the recorder writes, wherever it is written' {
         foreach ($p in @(
+                '.har-captures/app.example.com/2026-01-01-120000/raw.har',
                 '.har-captures/2026-01-01-120000/raw.har',
                 'somewhere/else/raw.har',
                 'somewhere/else/raw.ndjson')) {
@@ -519,8 +553,16 @@ Describe 'raw captures are gitignored' {
     }
 
     It 'does not ignore a scrubbed reference bound for the catalogue' {
-        & git -C $script:RepoRoot check-ignore -q -- 'docs/har-reference/example.com/example.com-login-2026-01-01.har'
-        $LASTEXITCODE | Should -Not -Be 0
+        # The output path is now a host-named folder in the working directory,
+        # so the scrubbed artifacts must stay visible to git there too.
+        foreach ($p in @(
+                'docs/har-reference/example.com/example.com-login-2026-01-01.har',
+                'app.example.com/scrubbed.har',
+                'app.example.com/catalogue.json',
+                'app.example.com/acme/acme-login-2026-01-01.har')) {
+            & git -C $script:RepoRoot check-ignore -q -- $p
+            $LASTEXITCODE | Should -Not -Be 0 -Because "$p is a scrubbed artifact and must be committable"
+        }
     }
 }
 
