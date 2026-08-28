@@ -205,6 +205,34 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
     assert.ok(r.stdout.includes(dir), '7.b: the verifier did not default to the current directory');
 }
 
+// --- 7b. The walk skips the raw captures and the dependency tree. ---
+{
+    // The verifier walks the current directory by default, and .har-captures/
+    // sits right there holding the UNSCRUBBED capture. Walking into it reports
+    // the raw's secrets as violations of the reference -- gating the one file
+    // that is deliberately never committed, and burying the real findings.
+    // node_modules is excluded for size rather than secrecy.
+    const dir = path.join(tmp, 'default-path');
+    const raw = { log: { entries: [entry({
+        request: {
+            url: 'https://example.invalid/login',
+            headers: [{ name: 'authorization', value: 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXZhbHVl' }]
+        }
+    })] } };
+    for (const sub of [path.join('.har-captures', 'example.invalid', '2026-01-01-120000'),
+                       path.join('node_modules', 'something')]) {
+        const d = path.join(dir, sub);
+        fs.mkdirSync(d, { recursive: true });
+        fs.writeFileSync(path.join(d, 'raw.har'), JSON.stringify(raw));
+    }
+
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 0,
+        '7b.a: the verifier walked into .har-captures/ or node_modules:\n' + r.stderr);
+    assert.ok(!/har-captures|node_modules/.test(r.stderr + r.stdout),
+        '7b.b: the excluded directories must not appear in the report at all');
+}
+
 // --- 8. Gate: a truncated request body. ---
 {
     const dir = makeProject('gate-truncated');

@@ -701,8 +701,22 @@ Describe 'Invoke-HarCapture.ps1' {
             Get-HarUriFolder -Uri $u | Should -Be $fromNode -Because "the two implementations must agree on $u"
         }
 
-        Get-HarUriFolder -Uri 'not-a-url' | Should -BeNullOrEmpty `
-            -Because 'a URI the recorder rejects must not yield a folder here either'
+        # The refusals matter as much as the agreements: 'http://../evil'
+        # parses with a host of '..' and would walk the capture out of its own
+        # directory, and file:/data:/about: parse with no host at all.
+        foreach ($bad in @(
+                'not-a-url',
+                'http://../evil',
+                'http://./x',
+                'file:///etc/passwd',
+                'data:text/plain,x',
+                'about:blank')) {
+            Get-HarUriFolder -Uri $bad | Should -BeNullOrEmpty `
+                -Because "$bad must not yield a capture folder"
+
+            & node -e 'try { require(require("path").resolve(process.argv[1])).uriFolder(process.argv[2]); process.exit(0) } catch (e) { process.exit(9) }' $script:CaptureJs $bad
+            $LASTEXITCODE | Should -Be 9 -Because "the recorder must refuse $bad too"
+        }
     }
 
     It 'forwards the level from Stop-HarRecording too' {
