@@ -1236,6 +1236,34 @@ function Get-UpstreamPrivatePruneOps {
     return $ops.ToArray()
 }
 
+function Get-SafeCrlfArg {
+    <#
+    .SYNOPSIS
+        Returns `-c core.safecrlf=false` when the repo expresses no preference,
+        otherwise an empty array.
+    .DESCRIPTION
+        Git's default emits "in the working copy of 'X', CRLF will be replaced by
+        LF the next time Git touches it" once per file whenever a consumer whose
+        .gitattributes declares `text eol=lf` stages a managed file -- managed
+        files are written byte-for-byte from the upstream blob, so this is
+        correct behavior and pure console noise. Suppressing it keeps the sync
+        output readable.
+
+        But `core.safecrlf=true` is a deliberate opt-in to *reject* irreversible
+        conversions, and `warn` is an explicit request to see them. Forcing the
+        value off would silently stage a file the consumer asked git to refuse,
+        so stand down whenever any value is configured and suppress only the
+        unconfigured default.
+    #>
+    [CmdletBinding()]
+    param([string]$RepoRoot = '.')
+    $configured = & git -C $RepoRoot config --get core.safecrlf 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($configured)) {
+        return @()
+    }
+    return @('-c', 'core.safecrlf=false')
+}
+
 function Invoke-UpstreamOp {
     <#
     .SYNOPSIS
@@ -2681,7 +2709,15 @@ function Invoke-PullSDLC {
             if (Test-Path -LiteralPath $p) { $addPaths += $p }
         }
         if ($addPaths.Count -gt 0) {
-            $addArgs = @('add', '-A', '--') + $addPaths
+            # Suppress git's cosmetic "CRLF will be replaced by LF the next time
+            # Git touches it" round-trip notice, which would otherwise print once
+            # per managed file. `add` is the only command here that converts
+            # content, so it is the only one that can emit it -- `status` and
+            # `commit` never do. See Get-SafeCrlfArg: it stands down if the
+            # consumer configured core.safecrlf themselves. This silences the
+            # notice only; genuine git errors still surface on stderr, which is
+            # why the call is not redirected with 2>&1.
+            $addArgs = @(Get-SafeCrlfArg) + @('add', '-A', '--') + $addPaths
             & git @addArgs | Out-Null
         }
         $pending = git status --porcelain

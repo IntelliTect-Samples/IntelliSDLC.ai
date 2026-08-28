@@ -4335,3 +4335,100 @@ Describe 'Issue #263: launcher reaches a consumer already anchored past its intr
         } finally { Pop-Location }
     }
 }
+
+Describe 'Line endings (issue #274)' {
+
+    It 'stores every tracked file with LF in the object database' {
+        # Consumers replay upstream blobs byte-for-byte (Invoke-UpstreamOp writes
+        # `git show` output with WriteAllBytes), so a CRLF-stored blob here lands
+        # verbatim in their working tree and trips their own `text eol=lf` rules
+        # on `git add` -- emitting "CRLF will be replaced by LF" on every sync.
+        # `git ls-files --eol` reports the index encoding directly.
+        Push-Location $PSScriptRoot
+        try {
+            $offenders = @(git ls-files --eol | Where-Object { $_ -match '^i/(crlf|mixed)' })
+        } finally { Pop-Location }
+        $offenders | Should -BeNullOrEmpty -Because 'the root .gitattributes pins `* text=auto eol=lf`; run `git add --renormalize .` if this fails'
+    }
+}
+
+Describe 'Sync commit suppresses CRLF round-trip notices (issue #274)' {
+
+    BeforeEach {
+        $script:fixtureRoot = Join-Path $TestDrive ("crlf-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'does not print "CRLF will be replaced by LF" when staging a CRLF working file' {
+        # Upstream stores CRLF (autocrlf=false, no attributes) -- the historical
+        # state this repo shipped for years, and still reachable via any managed
+        # path a consumer normalizes but upstream does not.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                git config core.autocrlf false
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                [System.IO.File]::WriteAllText((Join-Path $PWD 'CLAUDE.md'), "line one`r`nline two`r`n")
+                [System.IO.File]::WriteAllText((Join-Path $PWD '.github/agents/a.md'), "alpha`r`nbeta`r`n")
+            } `
+            -Tweak {
+                [System.IO.File]::WriteAllText((Join-Path $PWD 'CLAUDE.md'), "line one`r`nline two`r`nline three`r`n")
+            }
+
+        # The consumer normalizes all text to LF -- the exact configuration that
+        # makes git emit the round-trip notice when a CRLF working file is staged.
+        # Note `text`, not `text=auto`: auto-detection deliberately preserves CRLF
+        # for a file already stored CRLF in the index, so it would never warn.
+        Push-Location $fx.Consumer
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $PWD '.gitattributes'), "* text eol=lf`n")
+            git add .gitattributes | Out-Null
+            git commit -q -m 'consumer normalizes to LF'
+        } finally { Pop-Location }
+
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json | Out-Null; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $output = (Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch *>&1) | Out-String
+
+        $output | Should -Not -Match 'CRLF will be replaced by LF' -Because 'the round-trip notice is cosmetic noise in the sync output'
+        # The suppression must not hide the sync itself.
+        Push-Location $fx.Consumer
+        try { (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to' } finally { Pop-Location }
+    }
+
+    It 'respects a consumer that explicitly opted into core.safecrlf' {
+        # `core.safecrlf=true` is a deliberate opt-in to *reject* irreversible
+        # conversions. Blanket-forcing it to false would silently stage a file
+        # the consumer asked git to refuse, so the suppression must stand down
+        # whenever the consumer has expressed any preference.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                git config core.autocrlf false
+                [System.IO.File]::WriteAllText((Join-Path $PWD 'CLAUDE.md'), "line one`r`nline two`r`n")
+            } `
+            -Tweak {
+                [System.IO.File]::WriteAllText((Join-Path $PWD 'CLAUDE.md'), "line one`r`nline two`r`nline three`r`n")
+            }
+
+        Push-Location $fx.Consumer
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $PWD '.gitattributes'), "* text eol=lf`n")
+            git config core.safecrlf true
+            git add .gitattributes | Out-Null
+            git commit -q -m 'consumer opts into strict safecrlf'
+        } finally { Pop-Location }
+
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json | Out-Null; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        @(Get-SafeCrlfArg -RepoRoot $fx.Consumer) |
+            Should -BeNullOrEmpty -Because 'an explicit core.safecrlf must never be overridden by the sync'
+
+        # The upstream fixture leaves core.safecrlf unset, so the suppression
+        # still applies there -- proving the guard discriminates rather than
+        # disabling the feature outright.
+        @(Get-SafeCrlfArg -RepoRoot $fx.Upstream) |
+            Should -Be @('-c', 'core.safecrlf=false') -Because 'the unconfigured default is the noisy case worth suppressing'
+    }
+}
