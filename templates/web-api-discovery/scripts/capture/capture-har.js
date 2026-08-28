@@ -430,6 +430,12 @@ function cookiesOf(headers) {
  */
 function buildEntry(observed) {
     const { request, response, failure, timing, body } = observed;
+    // Whether a body was READABLE is different from whether it was EMPTY, and
+    // only the caller knows which. Absent the flag, a present body implies it
+    // was readable.
+    const bodyAvailable = observed.bodyAvailable === undefined
+        ? body !== null && body !== undefined
+        : observed.bodyAvailable;
     const reqHeaders = request.headers || {};
     const resHeaders = (response && response.headers) || {};
     const postBuf = request.postDataBuffer || null;
@@ -468,7 +474,10 @@ function buildEntry(observed) {
             headersSize: response
                 ? headerBytes(resHeaders, `HTTP/1.1 ${response.status}`)
                 : -1,
-            bodySize: body ? body.length : (response ? 0 : -1)
+            // -1 is HAR's "not available". Reporting 0 for a body we could
+            // not read -- a redirect, a stream, one already discarded -- is a
+            // claim the recorder cannot support.
+            bodySize: body ? body.length : (response && bodyAvailable ? 0 : -1)
         },
         cache: {},
         timings: phases
@@ -547,10 +556,16 @@ function attachRecorder(context, recorder) {
         try {
             const response = await request.response().catch(() => null);
             let body = null;
+            // Tracked separately from `body` because "could not read it" and
+            // "it was empty" are different facts, and only this layer knows
+            // which one happened.
+            let bodyAvailable = false;
             if (response) {
                 // Best-effort: a redirect, a streamed response, or one already
                 // discarded must not cost the entry itself.
-                body = await response.body().catch(() => null);
+                body = await response.body().then(
+                    (b) => { bodyAvailable = true; return b; },
+                    () => null);
             }
             const reqHeaders = await request.allHeaders().catch(() => ({}));
             recorder.add(buildEntry({
@@ -570,7 +585,8 @@ function attachRecorder(context, recorder) {
                 } : null,
                 failure,
                 timing: request.timing ? request.timing() : null,
-                body
+                body,
+                bodyAvailable
             }));
         } catch (e) {
             process.stderr.write(`capture-har: entry skipped: ${e.message}\n`);
@@ -661,6 +677,15 @@ function payloadShape(text) {
 }
 
 /**
+ * Scheme and host, discarding path, query and fragment -- the parts that carry
+ * tokens. Returns null rather than guessing when the value is not a URL.
+ */
+function originOf(uri) {
+    if (!uri) return null;
+    try { return new URL(uri).origin; } catch (e) { return null; }
+}
+
+/**
  * A compact description of a capture that an AI can segment from without
  * re-parsing a multi-hundred-megabyte HAR.
  */
@@ -716,7 +741,12 @@ function buildDigest(har, meta = {}) {
 
     return {
         capturedUtc: meta.capturedUtc || new Date().toISOString(),
-        uri: meta.uri || null,
+        // ORIGIN only. The operator types this URL, and a magic-link,
+        // password-reset or signed start URL carries its token in the query or
+        // the path. The digest is written to the committable output path, so
+        // echoing the URL back verbatim would put a live credential exactly
+        // where the design promises only scrubbed artifacts land.
+        uri: originOf(meta.uri),
         describe: meta.describe || null,
         entryCount: entries.length,
         hosts: [...new Set(entries.map((e) => {
@@ -827,8 +857,22 @@ function postProcess(session) {
     }
 
     // Phase B input -- the digest an AI segments from.
+    //
+    // Derived from the SCRUBBED capture, never the raw one. The digest and the
+    // catalogue are written to the output path, which the design promises
+    // receives only scrubbed, verified artifacts -- and a URL path segment
+    // carrying an operator identifier survives grouping untouched, because
+    // path templating collapses ids, not secrets. Scrubbing the input is the
+    // control; the template heuristic is not and cannot be.
+    //
+    // So a failed scrub stops the pipeline here. Reporting a digest built from
+    // an unscrubbed capture is worse than reporting none: it looks safe.
+    if (!state.scrubbed || !state.scrubbed.path) {
+        state.completedUtc = new Date().toISOString();
+        return state;
+    }
     try {
-        const har = JSON.parse(fs.readFileSync(session.harPath, 'utf8'));
+        const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
         // capturedUtc is when the RECORDING happened, not when it was
         // processed. A catalogue row dated to the scrub would answer "how old
         // is this evidence of their API" with the wrong number -- and that

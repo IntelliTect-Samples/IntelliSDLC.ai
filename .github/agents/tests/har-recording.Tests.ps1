@@ -468,6 +468,19 @@ Describe 'Invoke-HarCapture.ps1' {
         ($attr.NamedArguments | Where-Object { $_.ArgumentName -eq 'Position' }) | Should -Not -BeNullOrEmpty
     }
 
+    It 'reads the catalogue from its own -OutputPath, not the newest session on disk' {
+        # Captures now coexist on different ports, so "newest directory under
+        # .har-captures" is not this run's session: a second capture started in
+        # another terminal and finished first would win the sort, and this
+        # invocation would emit a different site's catalogue as its own.
+        # Resolving from -OutputPath is the fix, and it means the script has no
+        # reason to look under the captures root at all.
+        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
+        $text | Should -Not -Match "Select-Object\s+-Last\s+1" `
+            -Because 'picking the last session directory is the race this fixes'
+        $text | Should -Match 'catalogue\.json'
+    }
+
     It 'keeps status out of the pipeline -- no Write-Host anywhere in capture/' {
         # PSAvoidUsingWriteHost: Write-Host cannot be captured, redirected or
         # suppressed, and a ConvertTo-Json of the result must be pure data.
