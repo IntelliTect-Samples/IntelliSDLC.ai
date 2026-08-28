@@ -31,7 +31,7 @@
     IntelliSDLC.HarCapture.CatalogueEntry
 
 .EXAMPLE
-    ConvertFrom-HarCatalogue.ps1 -Path docs/har-reference/catalogue.json |
+    ConvertFrom-HarCatalogue.ps1 -Path ./app.example.com/catalogue.json |
         Where-Object Status -eq Exercised
 #>
 

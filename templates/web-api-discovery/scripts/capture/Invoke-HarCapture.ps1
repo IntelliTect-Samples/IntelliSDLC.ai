@@ -44,12 +44,25 @@
       -OutputPath      scrubbed, verified artifacts only: the per-action
                        reference HARs, the session digest, and the catalogue.
 
+    Both are keyed on the captured site's HOST, so captures against different
+    sites never overwrite each other:
+
+      .har-captures/app.example.com/<timestamp>/raw.har
+      ./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+
+    The host alone, never the full URL: a magic-link or password-reset URL
+    carries its token in the path or the query, and the second of these
+    directories is the committable one.
+
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
 
 .PARAMETER OutputPath
-    Where the scrubbed artifacts and the catalogue are written.
-    Default docs/har-reference/. The raw capture never goes here.
+    The parent of the host-named folder the scrubbed artifacts and the
+    catalogue are written to. Default: the current directory, so a capture of
+    https://app.example.com lands in ./app.example.com/. Passing -OutputPath
+    D:\refs writes D:\refs\app.example.com\ instead -- the host folder is
+    always appended. The raw capture never goes here.
 
 .PARAMETER Describe
     An optional hint about what you intend to do, which helps the cataloguing
@@ -144,6 +157,19 @@ if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
     $InformationPreference = 'Continue'
 }
 
+# Ask the recorder what it will name this capture's folder, rather than
+# rebuilding the rule here. Two implementations of "which folder does this URI
+# map to" is one implementation too many: they would disagree the first time
+# either changed, and this one decides where the catalogue is looked for.
+#
+# Done BEFORE the browser launches so an unusable URI fails in a second rather
+# than after a full recording session.
+$uriFolder = & node -e 'process.stdout.write(require(require("path").resolve(process.argv[1])).uriFolder(process.argv[2]))' $captureJs $Uri 2>$null
+if ($LASTEXITCODE -ne 0 -or -not $uriFolder) {
+    Write-Error "cannot derive a capture folder from '$Uri' -- it must be a URL, e.g. https://example.com"
+    return
+}
+
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
 if ($Describe) { $captureArgs += @('--describe', $Describe) }
@@ -185,8 +211,10 @@ switch ($exit) {
 # a different site's catalogue as though it were its own. The recorder's
 # current.json pointer is no help either -- it is deleted when recording ends,
 # before node returns here.
+# The URI-named subfolder comes from the recorder itself (see $uriFolder above),
+# so this path and the one the recorder wrote to cannot drift apart.
 $cataloguePath = Join-Path (
-    $(if ($OutputPath) { $OutputPath } else { Join-Path 'docs' 'har-reference' })) 'catalogue.json'
+    Join-Path $(if ($OutputPath) { $OutputPath } else { '.' }) $uriFolder) 'catalogue.json'
 Write-Verbose "catalogue: $cataloguePath"
 
 if (-not (Test-Path -LiteralPath $cataloguePath)) {
