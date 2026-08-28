@@ -51,6 +51,63 @@ BeforeAll {
         }
     }
 
+    # Run a PowerShell front door against a STUB node, and report what it
+    # forwarded and what it wrote to each stream.
+    #
+    # The front doors were previously asserted by grepping their own source for
+    # '--log-level' and 'VerbosePreference'. That passes just as happily when
+    # the condition is inverted, so it pins the spelling rather than the
+    # behavior. Standing a fake `node` in front of the real one on PATH is what
+    # makes "which arguments did node receive" and "did -InformationAction
+    # actually suppress anything" observable without launching a browser.
+    #
+    # node.cmd rather than a .ps1: PATHEXT makes `& node` resolve a .cmd, and
+    # the front door's own `Get-Command node` preflight finds it too.
+    function Invoke-FrontDoor {
+        param(
+            [Parameter(Mandatory)][string]$Script,
+            [hashtable]$Arguments = @{}
+        )
+        $stubDir = Join-Path $script:Tmp ('stub-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+        $argsFile = Join-Path $stubDir 'args.txt'
+        Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
+            '@echo off'
+            "echo %* > `"$argsFile`""
+            'exit /b 0'
+        )
+
+        # Streams are redirected to FILES, not to -InformationVariable: the
+        # common variable parameters collect records even when the matching
+        # action is SilentlyContinue, so a test built on them cannot tell
+        # "suppressed" from "emitted". What reaches stream 6 can.
+        $infoFile = Join-Path $stubDir 'info.txt'
+        $warnFile = Join-Path $stubDir 'warn.txt'
+
+        $savedPath = $env:PATH
+        $env:PATH = "$stubDir;$savedPath"
+        try {
+            & $Script @Arguments 6> $infoFile 3> $warnFile 2>$null | Out-Null
+        }
+        finally {
+            $env:PATH = $savedPath
+        }
+
+        # Get-Content -Raw returns $null for an empty file, and a stream a
+        # command never wrote to is exactly that -- coalesce so the caller can
+        # always .Trim() what comes back.
+        function Read-Stream([string]$Path) {
+            $text = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw } else { $null }
+            if ($null -eq $text) { '' } else { $text }
+        }
+
+        [pscustomobject]@{
+            Args        = (Read-Stream $argsFile).Trim()
+            Information = (Read-Stream $infoFile).Trim()
+            Warning     = (Read-Stream $warnFile).Trim()
+        }
+    }
+
     # A pid that cannot exist: Windows pids are multiples of 4 well below this,
     # so process.kill(pid, 0) reports ESRCH -- i.e. "that driver is gone".
     $script:DeadPid = 999999
@@ -522,25 +579,59 @@ Describe 'Invoke-HarCapture.ps1' {
         # -Verbose is free with [CmdletBinding()]. A -LogLevel switch would be
         # a second way to say the same thing, and the six-parameter assertion
         # above is what stops one appearing.
-        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
-        $text | Should -Match '--log-level'
-        $text | Should -Match 'VerbosePreference'
+        #
+        # Asserted on the arguments node actually RECEIVES, not on the source
+        # text: a grep for 'VerbosePreference' passes just as happily when the
+        # condition is inverted.
+        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }).Args |
+            Should -Not -Match '--log-level'
+
+        (Invoke-FrontDoor -Script $script:InvokePs1 `
+            -Arguments @{ Uri = 'https://example.com'; Verbose = $true }).Args |
+            Should -Match '--log-level verbose'
     }
 
-    It 'lets a caller silence the status lines with -InformationAction' {
-        # -InformationAction Continue pinned on every call site meant the
+    It 'treats -Verbose:$false as off, not as "the switch was mentioned"' {
+        # $PSBoundParameters.ContainsKey('Verbose') is true for -Verbose:$false
+        # too. Reading the preference rather than the binding is what keeps an
+        # explicit opt-out from turning the level up.
+        (Invoke-FrontDoor -Script $script:InvokePs1 `
+            -Arguments @{ Uri = 'https://example.com'; Verbose = $false }).Args |
+            Should -Not -Match '--log-level'
+    }
+
+    It 'lets a caller take over the information stream with -InformationAction' {
+        # `-InformationAction Continue` pinned on every call site meant the
         # common parameter did nothing: the stream was uncontrollable by the
         # very mechanism the convention points callers at.
-        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
-        $text | Should -Not -Match 'Write-Information[^\r\n]*-InformationAction' `
-            -Because 'pinning the action defeats the caller''s own -InformationAction'
-        $text | Should -Match 'InformationPreference'
+        #
+        # `Ignore` is the assertable end of that, not `SilentlyContinue`:
+        # Write-Information writes the record to stream 6 either way and
+        # SilentlyContinue only stops the HOST rendering it, so a redirect
+        # cannot see the difference. Only Ignore drops the record -- and only
+        # if the script stopped overriding the caller.
+        $loud = Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }
+        $loud.Information | Should -Match 'press ENTER' `
+            -Because 'status is on by default -- that is what the pinning bought'
+
+        $quiet = Invoke-FrontDoor -Script $script:InvokePs1 `
+            -Arguments @{ Uri = 'https://example.com'; InformationAction = 'Ignore' }
+        $quiet.Information | Should -BeNullOrEmpty
+    }
+
+    It 'keeps warnings audible when the status lines are silenced' {
+        # Silencing chatter must not silence the report that the run produced
+        # no catalogue.
+        $quiet = Invoke-FrontDoor -Script $script:InvokePs1 `
+            -Arguments @{ Uri = 'https://example.com'; InformationAction = 'Ignore' }
+        $quiet.Warning | Should -Match 'no catalogue'
     }
 
     It 'forwards the level from Stop-HarRecording too' {
-        $text = Get-Content -LiteralPath $script:StopPs1 -Raw
-        $text | Should -Match '--log-level'
-        $text | Should -Match 'VerbosePreference'
+        (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{}).Args |
+            Should -Not -Match '--log-level'
+        (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{ Verbose = $true }).Args |
+            Should -Match '--log-level verbose'
     }
 
     It 'keeps status out of the pipeline -- no Write-Host anywhere in capture/' {
