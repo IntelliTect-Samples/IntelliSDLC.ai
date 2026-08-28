@@ -540,6 +540,48 @@ test('postProcess writes nothing to the output path when the scrub fails', () =>
     });
 });
 
+test('postProcess writes nothing to the output path when the scrub does not VERIFY', () => {
+    // The dangerous middle case: sanitize-har.js runs and writes a file, but
+    // verify-scrub.js then finds a leak in it. Gating on "a scrubbed file
+    // exists" instead of "the scrub verified clean" lets that file, plus a
+    // digest and catalogue derived from it, land in the committable output
+    // path -- and exit 6 arrives only AFTER they are already on disk, so
+    // `git add -A` beats the warning.
+    //
+    // The verdict is injected rather than provoked. The two stages apply
+    // deliberately different detectors, so a value they disagree about exists
+    // -- but pinning THIS behavior to whichever value currently splits them
+    // would test sanitize-har.js's pattern list, not the decision under test,
+    // and would silently stop covering it the day that list grows.
+    //
+    // sanitize still runs for real, so scrubbed.har is genuinely written and
+    // the assertion "nothing was left behind" has something to be wrong about.
+    withSandbox('pp-unverified', [okEntry], (session, paths) => {
+        const state = capture.postProcess(session, {
+            run: (script, argv) => script.endsWith('verify-scrub.js')
+                ? { ok: false, status: 3, stdout: '', stderr: 'leak detected' }
+                : capture.runNode(script, argv)
+        });
+
+        assert.strictEqual(state.scrubbed.verified, false);
+        assert.ok(!fs.existsSync(path.join(paths.outputPath, 'digest.json')),
+            'no digest may be derived from a capture that failed the leak gate');
+        assert.ok(!fs.existsSync(path.join(paths.outputPath, 'catalogue.json')));
+        assert.ok(state.errors.length, 'and the failure must be reported');
+    });
+});
+
+test('postProcess still produces artifacts when the scrub verifies', () => {
+    // The mirror of the gate above. Without it, "withhold on failure" could
+    // regress into "withhold always" and every test above would still pass.
+    withSandbox('pp-verified', [okEntry], (session, paths) => {
+        const state = capture.postProcess(session);
+        assert.strictEqual(state.scrubbed.verified, true);
+        assert.ok(fs.existsSync(path.join(paths.outputPath, 'digest.json')));
+        assert.ok(fs.existsSync(path.join(paths.outputPath, 'catalogue.json')));
+    });
+});
+
 test('postProcess does not clobber a catalogue an earlier AI pass already filled in', () => {
     withSandbox('pp-keep', [okEntry], (session, paths) => {
         fs.mkdirSync(paths.outputPath, { recursive: true });

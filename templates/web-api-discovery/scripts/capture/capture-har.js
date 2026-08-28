@@ -836,20 +836,25 @@ function runNode(script, argv, cwd) {
  * cancel. Recording success dominates: a scrub failure is reported and exits
  * 6, but it never reports a good capture as lost, and the raw is always kept.
  */
-function postProcess(session) {
+function postProcess(session, opts = {}) {
+    // The runner is injectable so a test can exercise the "sanitized, but the
+    // leak gate rejected it" branch without having to find a value that the
+    // two real detectors happen to disagree about. What is under test there is
+    // this function's decision, not sanitize-har.js's pattern list.
+    const run = opts.run || runNode;
     const harDir = path.join(__dirname, '..', 'har');
     const state = { startedUtc: new Date().toISOString(), errors: [] };
     fs.mkdirSync(session.outputPath, { recursive: true });
 
     // Phase A -- scrub, then verify. Both reused, never reimplemented.
     const scrubbed = path.join(session.outputPath, SCRUBBED_HAR);
-    const sanitize = runNode(path.join(harDir, 'sanitize-har.js'),
+    const sanitize = run(path.join(harDir, 'sanitize-har.js'),
         ['--in', session.harPath, '--out', scrubbed]);
     if (!sanitize.ok) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false };
     } else {
-        const verify = runNode(path.join(harDir, 'verify-scrub.js'), ['--in', scrubbed]);
+        const verify = run(path.join(harDir, 'verify-scrub.js'), ['--in', scrubbed]);
         state.scrubbed = { path: scrubbed, verified: verify.ok };
         if (!verify.ok) {
             state.errors.push(`verify-scrub: ${verify.stderr.trim() || `exit ${verify.status}`}`);
@@ -865,9 +870,18 @@ function postProcess(session) {
     // path templating collapses ids, not secrets. Scrubbing the input is the
     // control; the template heuristic is not and cannot be.
     //
-    // So a failed scrub stops the pipeline here. Reporting a digest built from
-    // an unscrubbed capture is worse than reporting none: it looks safe.
-    if (!state.scrubbed || !state.scrubbed.path) {
+    // So a scrub that did not VERIFY stops the pipeline here -- gating on
+    // "a scrubbed file exists" would not be enough. sanitize-har.js and
+    // verify-scrub.js apply deliberately different detectors, and a value the
+    // first misses and the second catches is precisely the case the two-stage
+    // design exists for. Falling through on it would derive a digest and a
+    // catalogue from a capture already known to be leaking, and write all
+    // three into the committable output path -- where `git add -A` beats the
+    // exit-6 warning that arrives afterwards.
+    //
+    // Reporting a digest built from an unverified capture is worse than
+    // reporting none: it looks safe.
+    if (!state.scrubbed || !state.scrubbed.verified) {
         state.completedUtc = new Date().toISOString();
         return state;
     }
@@ -1485,6 +1499,7 @@ module.exports = {
     buildCatalogueScaffold,
     decideCatalogueRunner,
     postProcess,
+    runNode,
     IncrementalRecorder
 };
 

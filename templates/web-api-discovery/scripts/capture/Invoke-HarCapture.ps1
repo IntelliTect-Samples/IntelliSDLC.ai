@@ -167,4 +167,17 @@ if (-not (Test-Path -LiteralPath $cataloguePath)) {
     return
 }
 
-& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath
+$rows = @(& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath)
+
+# Say so when the catalogue is still a scaffold. The Status column already
+# distinguishes the two, but an operator who does not read it would otherwise
+# take a list of provisional rows for a finished catalogue. Derived from the
+# rows themselves rather than from session state, so it survives the catalogue
+# being filled in by any of the three runners.
+if ($rows.Count -and -not ($rows | Where-Object Status -eq 'Exercised')) {
+    Write-Information (
+        'Every row is still Observed -- the catalogue needs its AI pass. See ' +
+        (Join-Path $PSScriptRoot 'catalogue-prompt.md')) -InformationAction Continue
+}
+
+$rows
