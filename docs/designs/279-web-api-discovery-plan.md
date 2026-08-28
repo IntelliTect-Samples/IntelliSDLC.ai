@@ -53,9 +53,14 @@ templates/web-api-discovery/scripts/
 
 | folder | source files |
 |---|---|
-| `capture/` | `capture-har.js`, `capture-cdp.js`, `Start-HarRecording.ps1`, `Stop-HarRecording.ps1` |
+| `capture/` | `capture-har.js`, `capture-cdp.js`, `Start-HarRecording.ps1`, `Stop-HarRecording.ps1`, `import-mobile-app.js` |
 | `har/` | `sanitize-har.js`, `verify-scrub.js`, `Invoke-SanitizeHar.ps1`, `pii.js`, `pii-enrich.js`, `har-secrets.js`, `har-shapes.js`, `har-literals.js`, `har-profile.js`, `extract-har-reference.js`, `verify-har-reference.js`, `detect-auth.js` |
-| `codegen/` | `generate-wrapper.js`, `generate-wrapper-helpers.js`, `tests-emit.js`, `sln-emit.js`, `secret-gate-emit.js`, `sdlc-integration.js`, `run-agent.js`, `import-mobile-app.js` |
+| `codegen/` | `generate-wrapper.js`, `generate-wrapper-helpers.js`, `tests-emit.js`, `sln-emit.js`, `secret-gate-emit.js`, `sdlc-integration.js`, `run-agent.js` |
+
+> **Revised during review.** `import-mobile-app.js` moved from `codegen/` to
+> `capture/`: it generates nothing -- it prints proxy/decompile instructions
+> and validates that the expected capture artifact exists. That makes the
+> folders 5/12/7 rather than the issue's 4/12/8 tally.
 
 | folder | co-located tests |
 |---|---|

@@ -64,15 +64,51 @@ Describe 'web-api-discovery SKILL.md' {
         $script:SkillText | Should -Match '(?i)Hard Gate -- generation'
     }
 
+    It 'does not let the agent stub re-impose the generation gate on a capture' {
+        # The stub is the actual invocation entry point. It restated the old
+        # single-tier gate -- "project name + namespace + output directory,
+        # auth model, and a tracking GitHub issue before any filesystem
+        # mutation" -- which re-blocks the capture-only path SKILL.md was
+        # tiered to unblock, and told the agent to ask all seven inputs up
+        # front regardless of what was asked for (issue #279).
+        $agentText = Get-Content -LiteralPath $script:AgentPath -Raw
+        # (?s) matters: the old text wrapped across lines between these two
+        # phrases, so a dot without it can never match and the guard is dead.
+        $agentText | Should -Not -Match '(?si)auth model.{0,80}before any filesystem mutation'
+        # The seven inputs may still be named -- but only scoped to the
+        # generation tier, never as an unconditional opening interrogation.
+        $agentText | Should -Match '(?i)generation tier.{0,30}ask the skill''s seven inputs'
+        # It must route to the tier that matches the request.
+        $agentText | Should -Match '(?i)capture-only'
+    }
+
     It 'documents a capture-only run that stops at the reference' {
         # "A capture that stops at the catalogue is a legitimate, common
         # outcome" (issue #279). The skill must say so as a named path with
         # runnable commands, not merely assert it in the intro.
         $script:SkillText | Should -Match '(?i)### Capture-only run'
-        # The two commands that path is made of, in order.
+        # The commands that path is made of, in order.
         $script:SkillText | Should -Match 'Start-HarRecording'
         $script:SkillText | Should -Match 'extract-har-reference\.js'
         $script:SkillText | Should -Match 'verify-har-reference\.js'
+    }
+
+    It 'names scripts that exist for every path in the capture-only run' {
+        # A heading-presence assertion only proves the author wrote the
+        # heading. Pin the commands to the tree so a later move breaks this
+        # test instead of leaving the section quietly naming nothing --
+        # exactly the failure this regrouping introduced elsewhere (#279).
+        $section = [regex]::Match(
+            $script:SkillText,
+            '(?ms)^### Capture-only run\s*$.*?(?=^## )').Value
+        $section | Should -Not -BeNullOrEmpty -Because 'the section must be findable'
+        $paths = [regex]::Matches($section, 'templates/[A-Za-z0-9._/-]+\.js') |
+            ForEach-Object { $_.Value } | Select-Object -Unique
+        @($paths).Count | Should -BeGreaterThan 0 -Because 'the run is made of real commands'
+        foreach ($p in $paths) {
+            Test-Path -LiteralPath (Join-Path $script:RepoRoot $p) |
+                Should -BeTrue -Because "$p is invoked by the Capture-only run"
+        }
     }
 
     It 'references the evidence-capture skill (Phase 5b)' {
