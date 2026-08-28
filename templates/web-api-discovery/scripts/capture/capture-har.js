@@ -882,6 +882,17 @@ function postProcess(session, opts = {}) {
     // Reporting a digest built from an unverified capture is worse than
     // reporting none: it looks safe.
     if (!state.scrubbed || !state.scrubbed.verified) {
+        // And take the scrubbed file with us. sanitize-har.js writes it before
+        // verify-scrub.js gets to judge it, so a rejected scrub leaves a file
+        // in the committable directory that is known to be leaking and named
+        // as though it were safe. The raw capture is kept -- it is the only
+        // copy of the recording -- but it lives in the gitignored tree where a
+        // credential-bearing file belongs.
+        if (state.scrubbed && state.scrubbed.path) {
+            try { fs.unlinkSync(state.scrubbed.path); } catch (e) { /* never written */ }
+            state.scrubbed.path = null;
+            state.scrubbed.removed = true;
+        }
         state.completedUtc = new Date().toISOString();
         return state;
     }

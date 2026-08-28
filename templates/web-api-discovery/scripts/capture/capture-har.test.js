@@ -567,6 +567,13 @@ test('postProcess writes nothing to the output path when the scrub does not VERI
         assert.ok(!fs.existsSync(path.join(paths.outputPath, 'digest.json')),
             'no digest may be derived from a capture that failed the leak gate');
         assert.ok(!fs.existsSync(path.join(paths.outputPath, 'catalogue.json')));
+        // sanitize writes scrubbed.har before verify judges it, so a rejected
+        // scrub would otherwise leave a known-leaking file in the committable
+        // directory, named as though it were the safe artifact.
+        assert.ok(!fs.existsSync(path.join(paths.outputPath, 'scrubbed.har')),
+            'a scrub the gate rejected must not be left in the output path');
+        assert.ok(fs.existsSync(paths.harPath),
+            'the raw capture is still kept -- it is the only copy of the recording');
         assert.ok(state.errors.length, 'and the failure must be reported');
     });
 });
