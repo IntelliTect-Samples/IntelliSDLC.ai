@@ -33,7 +33,7 @@
  * as skipped rather than silently passing. Gates 1-3 always run.
  *
  * Usage:
- *   node verify-har-reference.js [--dir docs/har-reference] [--profile <path>]
+ *   node verify-har-reference.js [--dir <references>] [--profile <path>]
  *
  * Exit codes:
  *   0 -- every reference is clean
@@ -51,7 +51,9 @@ const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 
-const DEFAULT_DIR = path.join('docs', 'har-reference');
+// Matches extract-har-reference.js: references live beside the capture output,
+// not under a second 'docs/har-reference' nested inside it.
+const DEFAULT_DIR = '.';
 
 function parseArgs(argv) {
     const out = {};
@@ -92,7 +94,7 @@ function main() {
     if (!fs.existsSync(dir)) {
         console.error(
             `verify-har-reference: ${dir} does not exist. A capture worth keeping belongs in ` +
-            `${DEFAULT_DIR}/<provider>/, indexed by ${path.join(DEFAULT_DIR, 'README.md')}; ` +
+            `<provider>/ beside the capture output, indexed by ${path.join(dir, 'README.md')}; ` +
             'pass --dir if this project keeps its references elsewhere.');
         process.exit(1);
     }
