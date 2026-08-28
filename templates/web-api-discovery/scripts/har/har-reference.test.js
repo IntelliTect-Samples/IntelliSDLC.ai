@@ -188,7 +188,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
     const r = runNode(extract, ['--in', raw, '--match', 'login', '--provider', 'acme', '--action', 'login-flow-2fa'], dir);
     assert.strictEqual(r.code, 0, '6.a: extraction failed: ' + r.stderr);
 
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     const files = fs.readdirSync(refDir).filter((f) => f.endsWith('.har'));
     assert.strictEqual(files.length, 1, '6.b: expected exactly one reference file, got ' + files.length);
     assert.ok(/^acme-login-flow-2fa-\d{4}-\d{2}-\d{2}\.har$/.test(files[0]),
@@ -202,13 +202,13 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
     const dir = path.join(tmp, 'default-path');
     const r = runNode(verifyRef, [], dir);
     assert.strictEqual(r.code, 0, '7.a: the verifier rejected a freshly extracted reference:\n' + r.stderr);
-    assert.ok(/docs[\\/]har-reference/.test(r.stdout), '7.b: the verifier did not default to docs/har-reference/');
+    assert.ok(r.stdout.includes(dir), '7.b: the verifier did not default to the current directory');
 }
 
 // --- 8. Gate: a truncated request body. ---
 {
     const dir = makeProject('gate-truncated');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
         log: {
@@ -231,7 +231,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 // --- 9. Gate: an unredacted credential header. ---
 {
     const dir = makeProject('gate-credential');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
         log: { entries: [entry({ request: { headers: [{ name: 'x-fb-lsd', value: 'AVliveToken' }] } })] },
@@ -245,7 +245,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 // --- 10. Gate: a secret nested inside a JSON-valued parameter. ---
 {
     const dir = makeProject('gate-nested');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     const nested = encodeURIComponent(JSON.stringify({ lsd: 'AVnestedLive' }));
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
@@ -269,7 +269,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 // --- 11. Gate: a forbidden literal, named by sentinel and never echoed. ---
 {
     const dir = makeProject('gate-literal');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
         log: { entries: [entry({ request: { url: 'https://example.invalid/u/' + ACCOUNT_ID } })] },
@@ -295,7 +295,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 // scrubbed HAR it came from.
 {
     const dir = makeProject('gate-shapes');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsaXZlLXVzZXIifQ.s1gnatureV4lueHere_x';
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({
@@ -377,7 +377,7 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 // weakly than the intermediate it came from.
 {
     const dir = makeProject('gate-encoded-shape');
-    const refDir = path.join(dir, 'docs', 'har-reference', 'acme');
+    const refDir = path.join(dir, 'acme');
     fs.mkdirSync(refDir, { recursive: true });
     const nested = encodeURIComponent(JSON.stringify({ notify: 'someone@thirdparty.example' }));
     fs.writeFileSync(path.join(refDir, 'acme-x-2026-08-26.har'), JSON.stringify({

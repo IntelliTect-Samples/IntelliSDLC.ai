@@ -11,7 +11,7 @@
  * Raw captures are never committed: they run to hundreds of MB and carry live
  * credentials. This script selects the entries that matter, scrubs them
  * through sanitize-har.js, and writes a trimmed extract to
- * docs/har-reference/<provider>/<provider>-<action>-<yyyy-MM-dd>.har.
+ * <provider>/<provider>-<action>-<yyyy-MM-dd>.har beside the capture output.
  *
  * Non-negotiable behaviours, each pinned to a defect that shipped:
  *
@@ -31,7 +31,7 @@
  *   --match               REQUIRED, repeatable. Case-insensitive regular
  *                         expression tested against the request URL and the
  *                         request/response bodies.
- *   --out                 default: docs/har-reference/<provider>/
+ *   --out                 default: <provider>/ in the current directory
  *                                  <provider>-<action>-<yyyy-MM-dd>.har
  *   --provider --action   name the output; --action names what a HUMAN did
  *                         to record it (login-flow-2fa, video-upload).
@@ -56,7 +56,11 @@ const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 
 const DEFAULT_MAX_RESPONSE_BYTES = 65536;
-const REFERENCE_ROOT = path.join('docs', 'har-reference');
+// The reference root is the CURRENT DIRECTORY. The cataloguer runs with its cwd
+// set to the capture's output path, which is already the host-named folder, so
+// anchoring on 'docs/har-reference' here appended a second copy of that path
+// underneath it -- contradicting what catalogue-prompt.md promises.
+const REFERENCE_ROOT = '.';
 
 function parseArgs(argv) {
     const out = { match: [] };
