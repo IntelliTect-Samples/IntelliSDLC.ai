@@ -184,21 +184,19 @@ function renderLines(lines, levelName) {
  * Every human-facing message goes to stderr. stdout carries machine output --
  * the `--validate-only` and `status` JSON -- and prose mixed into it is what
  * makes `Invoke-HarCapture ... | ConvertFrom-Json` fail on a verbose run.
+ *
+ * `lines` is the only primitive; the per-level helpers are one-line pairs
+ * through it, so the threshold is applied in exactly one place.
  */
-function emit(level, text) {
-    if (LINE_LEVELS[level] > currentLevel) return;
-    process.stderr.write(text.endsWith('\n') ? text : text + '\n');
-}
-
 const log = {
-    info: (text) => emit('info', text),
-    verbose: (text) => emit('verbose', text),
-    warn: (text) => emit('warn', text),
-    error: (text) => emit('error', text),
     lines: (pairs) => {
         const text = renderLines(pairs);
         if (text) process.stderr.write(text + '\n');
-    }
+    },
+    info: (text) => log.lines([['info', text]]),
+    verbose: (text) => log.lines([['verbose', text]]),
+    warn: (text) => log.lines([['warn', text]]),
+    error: (text) => log.lines([['error', text]])
 };
 
 // The options `start` accepts. Exported so a test can assert that the two
