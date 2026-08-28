@@ -583,8 +583,9 @@ Describe 'Invoke-HarCapture.ps1' {
         # Asserted on the arguments node actually RECEIVES, not on the source
         # text: a grep for 'VerbosePreference' passes just as happily when the
         # condition is inverted.
-        (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }).Args |
-            Should -Not -Match '--log-level'
+        $plain = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }).Args
+        $plain | Should -Match 'start --uri' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
+        $plain | Should -Not -Match '--log-level'
 
         (Invoke-FrontDoor -Script $script:InvokePs1 `
             -Arguments @{ Uri = 'https://example.com'; Verbose = $true }).Args |
@@ -595,9 +596,10 @@ Describe 'Invoke-HarCapture.ps1' {
         # $PSBoundParameters.ContainsKey('Verbose') is true for -Verbose:$false
         # too. Reading the preference rather than the binding is what keeps an
         # explicit opt-out from turning the level up.
-        (Invoke-FrontDoor -Script $script:InvokePs1 `
-            -Arguments @{ Uri = 'https://example.com'; Verbose = $false }).Args |
-            Should -Not -Match '--log-level'
+        $off = (Invoke-FrontDoor -Script $script:InvokePs1 `
+            -Arguments @{ Uri = 'https://example.com'; Verbose = $false }).Args
+        $off | Should -Match 'start --uri'
+        $off | Should -Not -Match '--log-level'
     }
 
     It 'lets a caller take over the information stream with -InformationAction' {
@@ -628,8 +630,9 @@ Describe 'Invoke-HarCapture.ps1' {
     }
 
     It 'forwards the level from Stop-HarRecording too' {
-        (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{}).Args |
-            Should -Not -Match '--log-level'
+        $plain = (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{}).Args
+        $plain | Should -Match 'stop --min-bytes'
+        $plain | Should -Not -Match '--log-level'
         (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{ Verbose = $true }).Args |
             Should -Match '--log-level verbose'
     }
