@@ -45,8 +45,9 @@
     Size below which the capture is treated as failed. Default 1024.
 
 .PARAMETER CapturesDirectory
-    Where captures live. Default .har-captures. This resolves an EXISTING
-    session; it cannot move where a new capture is written.
+    Where captures live. Default .har-captures, under which each capture sits
+    at <host>/<timestamp>/. This resolves an EXISTING session; it cannot move
+    where a new capture is written.
 
 .PARAMETER ValidateOnly
     Resolve and print what would be stopped, without stopping it.
