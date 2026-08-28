@@ -552,14 +552,15 @@ function attachRecorder(context, recorder) {
                 // discarded must not cost the entry itself.
                 body = await response.body().catch(() => null);
             }
+            const reqHeaders = await request.allHeaders().catch(() => ({}));
             recorder.add(buildEntry({
                 request: {
                     method: request.method(),
                     url: request.url(),
-                    headers: await request.allHeaders().catch(() => ({})),
+                    headers: reqHeaders,
                     httpVersion: 'HTTP/1.1',
                     postDataBuffer: request.postDataBuffer ? request.postDataBuffer() : null,
-                    postMimeType: (await request.allHeaders().catch(() => ({})))['content-type'] || ''
+                    postMimeType: reqHeaders['content-type'] || ''
                 },
                 response: response ? {
                     status: response.status(),
@@ -828,7 +829,15 @@ function postProcess(session) {
     // Phase B input -- the digest an AI segments from.
     try {
         const har = JSON.parse(fs.readFileSync(session.harPath, 'utf8'));
-        const digest = buildDigest(har, { uri: session.uri, describe: session.describe });
+        // capturedUtc is when the RECORDING happened, not when it was
+        // processed. A catalogue row dated to the scrub would answer "how old
+        // is this evidence of their API" with the wrong number -- and that
+        // question is most of why the date is in the filename convention.
+        const digest = buildDigest(har, {
+            uri: session.uri,
+            describe: session.describe,
+            capturedUtc: session.startedUtc
+        });
         const digestPath = path.join(session.outputPath, DIGEST_FILE);
         writeJson(digestPath, digest);
         state.digest = { path: digestPath };
