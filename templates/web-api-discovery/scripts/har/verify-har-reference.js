@@ -35,6 +35,15 @@
  * Usage:
  *   node verify-har-reference.js [--dir <references>] [--profile <path>]
  *
+ * PASS --dir IN CI. It defaults to the current directory, which is right when
+ * run from a capture's own output folder (where the cataloguer runs it) and
+ * wrong anywhere else: the walk is recursive, so from a repo root it sweeps in
+ * every unrelated .har in the tree -- test fixtures with deliberately planted
+ * secrets included -- and reports them as violations of a reference they have
+ * nothing to do with. It fails loudly rather than silently passing, but the
+ * findings are noise. `.har-captures`, `node_modules` and `.git` are skipped
+ * outright; nothing else is guessed at.
+ *
  * Exit codes:
  *   0 -- every reference is clean
  *   1 -- the reference directory is missing or a file cannot be parsed
