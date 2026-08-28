@@ -1,6 +1,13 @@
+# Normalize all text files to LF in the object database. Consumers replay
+# upstream blobs byte-for-byte (Pull-SDLC.ai.ps1 -> Invoke-UpstreamOp writes
+# `git show` output with WriteAllBytes), so any CRLF stored here lands in their
+# working tree and trips their own `text eol=lf` rules on `git add`, emitting
+# "CRLF will be replaced by LF" warnings during every sync.
+* text=auto eol=lf
+
 # Preserve LF for cross-platform hooks and templates emitted by
 # web-api-discovery (the rendered pre-commit hook must run under bash on
-# Linux / macOS / Git-for-Windows). Without this, Windows checkouts would
-# convert CRLF and break the shell shebang.
+# Linux / macOS / Git-for-Windows). Redundant under the global rule above, but
+# kept explicit so the requirement survives any future narrowing of it.
 *.tmpl text eol=lf
 .githooks/* text eol=lf
