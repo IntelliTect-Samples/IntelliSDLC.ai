@@ -8,10 +8,18 @@
 .DESCRIPTION
     PowerShell front door for `capture-har.js stop`.
 
-    A HUMAN does not normally need this: closing the browser window ends the
-    recording and writes the HAR. This exists for the case where nobody can
-    close a window -- an AI driving the session over CDP -- and as the recovery
-    path when the window is out of reach.
+    A HUMAN does not normally need this: they end the recording by pressing
+    ENTER in the console Start-HarRecording is waiting on, which performs the
+    same close this script asks for.
+
+    Do NOT end a recording by closing the browser window. Playwright
+    serializes recordHar during a close the DRIVER performs; when the window
+    goes first, Chrome exits before that can happen and no HAR is written at
+    all. That is measured, not theoretical -- see the skill's Phase 2.
+
+    This script exists for the case where nobody is holding that console --
+    an AI driving the session over CDP from another process -- and as the
+    recovery path when the console or window is out of reach.
 
     It asks the recording context to close and waits for the flush. It never
     kills a browser process: killing one discards the entire recording, and a
