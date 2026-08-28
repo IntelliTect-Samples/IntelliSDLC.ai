@@ -371,6 +371,46 @@ test('uriFolder refuses a URI it cannot parse', () => {
     assert.throws(() => capture.uriFolder('not-a-url'), /uri/i);
 });
 
+test('uriFolder refuses a host that would escape the directory it names', () => {
+    // `new URL('http://../evil')` PARSES, and its hostname is '..'. Left
+    // alone that walks the session out of .har-captures/ and the output out
+    // of its parent entirely -- the raw capture, which carries live session
+    // cookies, lands in the working tree. Parsing successfully is not the
+    // same as naming a directory safely.
+    assert.throws(() => capture.uriFolder('http://../evil'), /host/i);
+    assert.throws(() => capture.uriFolder('http://./x'), /host/i);
+});
+
+test('uriFolder refuses a URI with no host at all', () => {
+    // These parse, and their hostname is ''. An empty folder name collapses
+    // every hostless capture into one directory -- the exact collision this
+    // keying exists to remove -- and `file:///...` is a plausible paste, not
+    // an exotic input.
+    for (const uri of ['file:///etc/passwd', 'data:text/plain,x', 'about:blank']) {
+        assert.throws(() => capture.uriFolder(uri), /host/i, `${uri} must be refused`);
+    }
+});
+
+test('uriFolder sidesteps reserved Windows device names', () => {
+    // `con`, `nul`, `lpt1` and friends cannot be directories on Windows, and
+    // a capture of http://con/ would fail at mkdir with an error naming
+    // nothing the operator could act on.
+    assert.notStrictEqual(capture.uriFolder('http://con/'), 'con');
+    assert.match(capture.uriFolder('http://con/'), /^con/);
+    assert.notStrictEqual(capture.uriFolder('http://lpt1:8080/'), 'lpt1_8080');
+});
+
+test('uriFolder keeps distinct IPv6 hosts distinct', () => {
+    // Folding every one of `[`, `:` and `]` to `_` made addresses that differ
+    // only in their zero-groups converge. A colon maps to `-`, which is in
+    // the safe set, so the address stays readable and stays unique.
+    const a = capture.uriFolder('http://[::1]:8080/');
+    const b = capture.uriFolder('http://[fe80::1]:8080/');
+    assert.notStrictEqual(a, b);
+    assert.match(a, /^[a-z0-9._-]+$/);
+    assert.match(b, /^[a-z0-9._-]+$/);
+});
+
 // Build a captures root holding `<host>/<stamp>/session.json` for each entry.
 function seedSessions(root, entries) {
     for (const [host, sessionStamp] of entries) {

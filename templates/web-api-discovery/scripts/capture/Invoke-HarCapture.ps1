@@ -171,12 +171,27 @@ function Get-HarUriFolder {
     param([Parameter(Mandatory)][string]$Uri)
 
     $parsed = $null
-    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$parsed) -or -not $parsed.Host) {
-        return $null
-    }
-    $folder = if ($parsed.IsDefaultPort) { $parsed.Host } else { "$($parsed.Host)_$($parsed.Port)" }
-    return ($folder.ToLowerInvariant() -replace '[^a-z0-9._-]', '_')
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$parsed)) { return $null }
+
+    # Parsing is not enough: 'http://../evil' parses with a host of '..', and
+    # file:/data:/about: URIs parse with none. Both are refused for the same
+    # reasons capture-har.js refuses them -- the first would walk the capture
+    # out of its directory, the second collapses every hostless capture into
+    # one folder.
+    $hostName = $parsed.Host
+    if (-not $hostName -or $hostName -eq '.' -or $hostName -eq '..') { return $null }
+
+    # An IPv6 literal arrives bracketed; dropping the brackets and mapping the
+    # separator to '-' keeps distinct addresses distinct.
+    $bare = ($hostName -replace '^\[|\]$', '') -replace ':', '-'
+    $folder = if ($parsed.IsDefaultPort) { $bare } else { "${bare}_$($parsed.Port)" }
+    $folded = $folder.ToLowerInvariant() -replace '[^a-z0-9._-]', '_'
+
+    # Reserved Windows device names cannot be directories.
+    if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|_|$)') { return "${folded}_" }
+    return $folded
 }
+
 
 $uriFolder = Get-HarUriFolder -Uri $Uri
 if (-not $uriFolder) {

@@ -66,13 +66,24 @@ function parseArgs(argv) {
     return out;
 }
 
+// Directories the walk never descends into.
+//
+// `.har-captures` is the one that matters: it holds the UNSCRUBBED capture, and
+// it sits directly beside the reference the default `--dir .` scans. Walking
+// into it gates the one file that is deliberately never committed, reporting
+// its secrets as violations of the reference and burying every real finding
+// under them. The rest are excluded for size and noise.
+const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
+
 function listHarFiles(dir) {
     const found = [];
     for (const name of fs.readdirSync(dir)) {
         const full = path.join(dir, name);
         const stat = fs.statSync(full);
-        if (stat.isDirectory()) found.push(...listHarFiles(full));
-        else if (name.endsWith('.har')) found.push(full);
+        if (stat.isDirectory()) {
+            if (SKIP_DIRS.has(name)) continue;
+            found.push(...listHarFiles(full));
+        } else if (name.endsWith('.har')) found.push(full);
     }
     return found.sort();
 }

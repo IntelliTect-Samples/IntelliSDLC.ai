@@ -339,10 +339,33 @@ function uriFolder(uri) {
     } catch (e) {
         throw new Error(`cannot derive a capture folder: --uri ${JSON.stringify(uri)} is not a URL`);
     }
-    const withPort = url.port ? `${url.hostname}_${url.port}` : url.hostname;
-    // An IPv6 literal host arrives bracketed (`[::1]`); brackets and colons are
-    // illegal in a Windows path, so anything outside the safe set is folded.
-    return withPort.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+
+    // PARSING IS NOT ENOUGH. `new URL('http://../evil')` succeeds and its
+    // hostname is '..'; `file:///x`, `data:...` and `about:blank` succeed with
+    // an empty one. Used as a directory name, the first walks the raw capture
+    // OUT of .har-captures/ and into the working tree, and the second collapses
+    // every hostless capture into a single directory -- the very collision this
+    // keying removes. Both are rejected on the host itself, before it is folded
+    // into a name, so no later replacement can disguise them.
+    const host = url.hostname;
+    if (!host || host === '.' || host === '..') {
+        throw new Error(
+            `cannot derive a capture folder: --uri ${JSON.stringify(uri)} has no usable host ` +
+            '(a capture needs a real site, e.g. https://example.com)');
+    }
+
+    // An IPv6 literal arrives bracketed (`[::1]`). Dropping the brackets and
+    // mapping the separator to `-` -- which is already in the safe set -- keeps
+    // distinct addresses distinct; folding every one of `[`, `:` and `]` to `_`
+    // made addresses that differ only in their zero-groups converge.
+    const bare = host.replace(/^\[|\]$/g, '').replace(/:/g, '-');
+    const withPort = url.port ? `${bare}_${url.port}` : bare;
+    const folded = withPort.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+
+    // `con`, `nul`, `lpt1` and friends cannot be directories on Windows. A
+    // trailing `_` keeps the name recognisable while making it creatable.
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|_|$)/i.test(folded)) return `${folded}_`;
+    return folded;
 }
 
 /**
