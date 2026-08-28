@@ -1451,6 +1451,38 @@ function reportPostProcess(session) {
 }
 
 /**
+ * Every session under the captures root, as `{ dir, stamp }`.
+ *
+ * Sessions live at `<root>/<host>/<stamp>`, two levels down. Both callers used
+ * to read the root's direct children, and both would silently find nothing at
+ * this depth: the conflict scan would stop guarding the single-instance
+ * profile, and `stop`/`status` would report no session at all.
+ *
+ * The stamp is returned alongside the directory because it, not the path, is
+ * the ordering key -- the host sorts first in a joined path and would decide
+ * which capture counts as newest.
+ */
+function listSessionDirs(root) {
+    if (!fs.existsSync(root)) return [];
+    const found = [];
+    for (const host of fs.readdirSync(root)) {
+        const hostDir = path.join(root, host);
+        let stamps;
+        try {
+            if (!fs.statSync(hostDir).isDirectory()) continue;
+            stamps = fs.readdirSync(hostDir);
+        } catch (e) {
+            continue;   // current.json and anything else non-traversable
+        }
+        for (const sessionStamp of stamps) {
+            const dir = path.join(hostDir, sessionStamp);
+            if (fs.existsSync(path.join(dir, SESSION_FILE))) found.push({ dir, stamp: sessionStamp });
+        }
+    }
+    return found;
+}
+
+/**
  * Is a live capture already recording against this profile?
  *
  * The profile, not the port, is the real single-instance resource. Scanning
@@ -1458,10 +1490,8 @@ function reportPostProcess(session) {
  * which "port 9333 is busy" never could -- that port may belong to anything.
  */
 async function findProfileConflict(profileDir, root) {
-    if (!fs.existsSync(root)) return null;
-    for (const name of fs.readdirSync(root)) {
-        const file = path.join(root, name, SESSION_FILE);
-        const session = readJson(file);
+    for (const { dir } of listSessionDirs(root)) {
+        const session = readJson(path.join(dir, SESSION_FILE));
         if (!session || session.endedUtc) continue;
         if (session.profileDir !== profileDir) continue;
         if (isDriverAlive(session)) return session;
@@ -1494,12 +1524,13 @@ function resolveSession(args) {
         const pointed = readJson(path.join(current.sessionDir, SESSION_FILE));
         if (pointed && !pointed.endedUtc && isDriverAlive(pointed)) return current.sessionDir;
     }
-    if (!fs.existsSync(root)) return null;
-    const candidates = fs.readdirSync(root)
-        .map((n) => path.join(root, n))
-        .filter((p) => fs.existsSync(path.join(p, SESSION_FILE)))
-        .sort();
-    return candidates.length ? candidates[candidates.length - 1] : null;
+    const candidates = listSessionDirs(root);
+    if (!candidates.length) return null;
+    // Sort by STAMP, not by the joined path. The host now comes first in the
+    // path, so a path sort would answer with the alphabetically-last host
+    // rather than the most recent capture.
+    candidates.sort((a, b) => (a.stamp < b.stamp ? -1 : a.stamp > b.stamp ? 1 : 0));
+    return candidates[candidates.length - 1].dir;
 }
 
 async function stop(args) {
@@ -1671,6 +1702,8 @@ module.exports = {
     assembleFromLog,
     resolveSessionPaths,
     uriFolder,
+    resolveSession,
+    findProfileConflict,
     findFreePort,
     discoverStorageState,
     buildDigest,
