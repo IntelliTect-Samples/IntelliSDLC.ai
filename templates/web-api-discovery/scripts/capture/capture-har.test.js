@@ -371,6 +371,65 @@ test('uriFolder refuses a URI it cannot parse', () => {
     assert.throws(() => capture.uriFolder('not-a-url'), /uri/i);
 });
 
+// Build a captures root holding `<host>/<stamp>/session.json` for each entry.
+function seedSessions(root, entries) {
+    for (const [host, sessionStamp] of entries) {
+        const dir = path.join(root, host, sessionStamp);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'session.json'),
+            JSON.stringify({ sessionDir: dir, endedUtc: '2026-01-01T00:00:00Z' }), 'utf8');
+    }
+}
+
+test('the newest session is the newest in time, not the last host alphabetically', () => {
+    // Sessions used to be direct children of the captures root, so sorting the
+    // joined paths sorted by stamp. Now the host comes first in the path, and a
+    // path sort would answer "zeta.example.com" for a capture made days before
+    // the one under "alpha.example.com" -- silently stopping or cataloguing the
+    // wrong session.
+    const root = path.join(tmpRoot, 'newest-across-hosts', '.har-captures');
+    seedSessions(root, [
+        ['zeta.example.com', '2026-01-01-090000'],
+        ['alpha.example.com', '2026-06-01-090000']
+    ]);
+    assert.strictEqual(capture.resolveSession({ dir: root }),
+        path.join(root, 'alpha.example.com', '2026-06-01-090000'));
+});
+
+test('a session nested under its host is still found', () => {
+    const root = path.join(tmpRoot, 'nested-single', '.har-captures');
+    seedSessions(root, [['app.example.com', '2026-01-01-120000']]);
+    assert.strictEqual(capture.resolveSession({ dir: root }),
+        path.join(root, 'app.example.com', '2026-01-01-120000'));
+});
+
+test('resolveSession reports nothing when the captures root holds no session', () => {
+    const root = path.join(tmpRoot, 'empty-root', '.har-captures');
+    fs.mkdirSync(path.join(root, 'app.example.com'), { recursive: true });
+    assert.strictEqual(capture.resolveSession({ dir: root }), null);
+});
+
+test('a live capture under its host directory is still detected as a conflict', async () => {
+    // The single-instance profile guard scans the captures root. Left flat, it
+    // would find nothing at the new depth and stop guarding -- silently, which
+    // is the worst way for a guard to fail.
+    const root = path.join(tmpRoot, 'conflict', '.har-captures');
+    const dir = path.join(root, 'app.example.com', '2026-01-01-120000');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
+        sessionDir: dir,
+        profileDir: '/profiles/capture',
+        pid: process.pid          // this process is certainly alive
+    }), 'utf8');
+
+    const conflict = await capture.findProfileConflict('/profiles/capture', root);
+    assert.ok(conflict, 'a live session nested under its host must be detected');
+    assert.strictEqual(conflict.sessionDir, dir);
+
+    assert.strictEqual(await capture.findProfileConflict('/profiles/other', root), null,
+        'a different profile is not a conflict');
+});
+
 test('start rejects an attempt to redirect the raw capture directory', () => {
     // --dir was the redirect. `start` must not silently accept and ignore it
     // either: an operator who passes it believes the raw moved.
