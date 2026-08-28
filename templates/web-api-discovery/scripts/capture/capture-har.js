@@ -740,7 +740,7 @@ async function stop(args) {
         `  raw: ${summary.path}  (unscrubbed -- never commit it)\n` +
         (recovered ? '  NOTE: recovery snapshot, not a full HAR -- bodies best-effort, timings absent.\n' : '') +
         '  next: ask Claude to catalogue this capture, or run\n' +
-        `        node extract-har-reference.js --in "${summary.path}" --match <pattern>\n`);
+        `        node ${path.join(__dirname, '..', 'har', 'extract-har-reference.js')} --in "${summary.path}" --match <pattern>\n`);
     return recovered ? 5 : 0;
 }
 
