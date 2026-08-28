@@ -55,9 +55,10 @@ blocks the most common request this skill gets.
 1. **The target URL.** Establish it -- from the request, the repo, or context.
    *Confirm* here does not mean *interrogate*: ask the user only when the URL
    is genuinely ambiguous.
-2. **Where the capture lands.** Convention already answers this: raw captures
-   go to `.har-captures` (gitignored), the committable reference to
-   `docs/har-reference/`. Do not ask; follow the convention unless the user
+2. **Where the capture lands.** Convention already answers this: both roots
+   are keyed on the captured host, so raw captures go to
+   `.har-captures/<host>/<timestamp>/` (gitignored) and the committable
+   reference to `./<host>/`. Do not ask; follow the convention unless the user
    named a path.
 
 Nothing else is required. In particular, do **not** ask for a project name, a
@@ -108,8 +109,23 @@ Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
 **Two directories, and the difference is the safety story.** The raw capture
 carries live session cookies and is confined to the gitignored
 `.har-captures/` **by construction** -- no option redirects it. `-OutputPath`
-(default `docs/har-reference/`) receives only artifacts that have already been
-scrubbed and verified.
+(default: the current directory) receives only artifacts that have already
+been scrubbed and verified.
+
+**Both are keyed on the captured site's host**, so two captures never
+overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
+fixed filenames, and before this the second capture silently replaced the
+first:
+
+```
+.har-captures/app.example.com/2026-08-27-141500/raw.har   <- gitignored
+./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+```
+
+The **host alone** names the folder, never the full URL: a magic-link,
+password-reset or signed start URL carries its token in the path or the query,
+and the second directory is the committable one. A port joins with `_`
+(`localhost_5001`) because a dash is legal inside a hostname.
 
 The mechanical phases -- scrub via `sanitize-har.js`, gate via
 `verify-scrub.js`, then a session digest -- run inside the recording process on
@@ -223,7 +239,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 | Parameter | Notes |
 |---|---|
 | `-Uri` | positional, mandatory |
-| `-OutputPath` | default `docs/har-reference/`; receives the **scrubbed** artifacts and the catalogue |
+| `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
 | `-Describe` | optional intent hint that helps the AI segment; never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one |
@@ -491,13 +507,21 @@ is only possible because the capture was kept.
 #### 1. A per-provider directory of committed, scrubbed references
 
 ```
-docs/har-reference/
-├── README.md              <- the catalogue (see 3)
+<host>/                        <- e.g. app.example.com, the capture output path
+├── scrubbed.har               <- the whole session, scrubbed
+├── digest.json                <- what an AI segments from
+├── catalogue.json             <- the rows (see 3)
+├── README.md                  <- the catalogue (see 3)
 ├── <provider-a>/
-│   ├── README.md          <- provider scrub policy + re-capture recipe
+│   ├── README.md              <- provider scrub policy + re-capture recipe
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
+
+The provider directories sit beside the session artifacts, inside the
+host-named output folder. A provider is not always the host -- one site's
+traffic routinely spans several third-party APIs -- which is why both levels
+exist.
 
 **Raw captures are never committed.** They run to hundreds of MB and carry
 live credentials. Only trimmed, scrubbed extracts go in-tree.
@@ -532,7 +556,7 @@ say:
 Those are exactly what someone opening the file is looking for, and they
 otherwise survive only in whichever issue thread happened to mention them.
 
-`docs/har-reference/README.md` carries:
+The `README.md` in the host-named output folder carries:
 
 - a table per provider: **file | actions the user performed | entry count |
   capture date**;
@@ -891,10 +915,12 @@ Require every capture-derived probe to:
   `.substitutions.json` is different: it records hash prefixes, not values,
   and is safe to commit.)
 - A committed reference **must** be gated in CI by `verify-har-reference.js`
-  over `docs/har-reference/` when that directory exists, so it is checked on
-  every PR and not only when it was written. (The script exits non-zero on a
-  missing or empty reference directory: being pointed at nothing is a wiring
-  mistake, not a pass.)
+  over the directory holding it -- `--dir <host>/`, or wherever the project
+  keeps its references -- so it is checked on every PR and not only when it
+  was written. (The script exits non-zero on a missing or empty reference
+  directory: being pointed at nothing is a wiring mistake, not a pass. It
+  defaults to the current directory, so CI must pass `--dir` explicitly rather
+  than relying on where it happens to run.)
 
   > **Not wired yet -- see #283.** No workflow in this repo, and no workflow
   > this skill emits, currently invokes `verify-har-reference.js`. Until that

@@ -69,7 +69,7 @@ Describe 'SKILL.md documents the convention the tooling enforces' {
     }
 
     It 'specifies the directory and filename convention' {
-        $script:SkillText | Should -Match 'docs/har-reference/'
+        $script:SkillText | Should -Match '<host>/'
         $script:SkillText | Should -Match '<provider>-<action>-<yyyy-MM-dd>\.har'
     }
 
