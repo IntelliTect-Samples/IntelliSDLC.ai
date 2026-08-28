@@ -63,21 +63,35 @@ const HOWTO =
     `default: the values are yours, not the project's.`;
 
 /**
- * Walk upward from `startDir` looking for the nearest profile.
+ * Walk upward from `startDir` looking for the nearest `filename`.
  * Returns the resolved path, or null when none is found at or above
  * `startDir` (bounded by `stopAt`, when supplied).
+ *
+ * Generic because the profile is not the only operator-owned file discovered
+ * this way -- the serialized session (`.har-storage-state.json`) uses exactly
+ * the same walk, and a second hand-rolled copy of it would be a second place
+ * for the discovery rule to drift.
  */
-function findProfilePath(startDir, stopAt) {
+function findUpward(filename, startDir, stopAt) {
     let dir = path.resolve(startDir || process.cwd());
     const stop = stopAt ? path.resolve(stopAt) : null;
     for (;;) {
-        const candidate = path.join(dir, PROFILE_FILENAME);
+        const candidate = path.join(dir, filename);
         if (fs.existsSync(candidate)) return candidate;
         if (stop && dir === stop) return null;
         const parent = path.dirname(dir);
         if (parent === dir) return null;
         dir = parent;
     }
+}
+
+/**
+ * Walk upward from `startDir` looking for the nearest profile.
+ * Returns the resolved path, or null when none is found at or above
+ * `startDir` (bounded by `stopAt`, when supplied).
+ */
+function findProfilePath(startDir, stopAt) {
+    return findUpward(PROFILE_FILENAME, startDir, stopAt);
 }
 
 function parseLiterals(raw, profilePath) {
@@ -161,6 +175,7 @@ module.exports = {
     PROFILE_FILENAME,
     MIN_LITERAL_LENGTH,
     ProfileError,
+    findUpward,
     findProfilePath,
     loadProfile,
 };

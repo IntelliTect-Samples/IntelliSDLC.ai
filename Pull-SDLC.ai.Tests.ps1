@@ -210,7 +210,7 @@ Describe 'templates/ sync (issue #270)' {
     It 'ships the scripts those tests cover' {
         Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/capture-har.js' |
             Should -BeFalse
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/Start-HarRecording.ps1' |
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1' |
             Should -BeFalse
     }
 
@@ -223,7 +223,7 @@ Describe 'templates/ sync (issue #270)' {
         foreach ($rel in @(
                 'templates/web-api-discovery/scripts/har/har-literals.test.js',
                 'templates/web-api-discovery/scripts/capture/capture-har.js',
-                'templates/web-api-discovery/scripts/capture/Start-HarRecording.ps1',
+                'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1',
                 'templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl',
                 'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl')) {
             Test-Path -LiteralPath (Join-Path $PSScriptRoot $rel) |
