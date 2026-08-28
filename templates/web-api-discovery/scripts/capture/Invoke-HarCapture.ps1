@@ -157,15 +157,29 @@ if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
     $InformationPreference = 'Continue'
 }
 
-# Ask the recorder what it will name this capture's folder, rather than
-# rebuilding the rule here. Two implementations of "which folder does this URI
-# map to" is one implementation too many: they would disagree the first time
-# either changed, and this one decides where the catalogue is looked for.
+# Which folder this capture's artifacts land in. Mirrors uriFolder() in
+# capture-har.js -- HOST ONLY (never the path or query, which carry
+# magic-link and reset tokens), periods kept, port joined with `_` because a
+# dash is legal inside a hostname.
 #
-# Done BEFORE the browser launches so an unusable URI fails in a second rather
-# than after a full recording session.
-$uriFolder = & node -e 'process.stdout.write(require(require("path").resolve(process.argv[1])).uriFolder(process.argv[2]))' $captureJs $Uri 2>$null
-if ($LASTEXITCODE -ne 0 -or -not $uriFolder) {
+# Deliberately duplicated rather than shelled out to node: this script's whole
+# observable contract is the arguments it hands the recorder, and a second node
+# invocation would sit in the middle of that. The duplication is pinned instead
+# -- har-recording.Tests.ps1 asserts this function and uriFolder() agree on a
+# table of URIs, so the two cannot drift apart silently.
+function Get-HarUriFolder {
+    param([Parameter(Mandatory)][string]$Uri)
+
+    $parsed = $null
+    if (-not [uri]::TryCreate($Uri, [UriKind]::Absolute, [ref]$parsed) -or -not $parsed.Host) {
+        return $null
+    }
+    $folder = if ($parsed.IsDefaultPort) { $parsed.Host } else { "$($parsed.Host)_$($parsed.Port)" }
+    return ($folder.ToLowerInvariant() -replace '[^a-z0-9._-]', '_')
+}
+
+$uriFolder = Get-HarUriFolder -Uri $Uri
+if (-not $uriFolder) {
     Write-Error "cannot derive a capture folder from '$Uri' -- it must be a URL, e.g. https://example.com"
     return
 }

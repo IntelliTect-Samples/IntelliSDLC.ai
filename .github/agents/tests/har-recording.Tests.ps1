@@ -671,6 +671,40 @@ Describe 'Invoke-HarCapture.ps1' {
         $quiet.Warning | Should -Match 'no catalogue'
     }
 
+    It 'derives the capture folder exactly as the recorder does' {
+        # The rule lives in two runtimes: uriFolder() in capture-har.js decides
+        # where artifacts are WRITTEN, Get-HarUriFolder here decides where the
+        # catalogue is LOOKED FOR. If they ever disagree the front door reports
+        # "no catalogue" for a capture that succeeded, so the duplication is
+        # pinned rather than trusted.
+        #
+        # Dot-sourcing is not possible -- the script has a mandatory parameter
+        # and would run -- so the function is lifted out of the source text and
+        # re-defined here. That still pins the shipped implementation: an edit
+        # to it changes what this test executes.
+        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
+        $start = $text.IndexOf('function Get-HarUriFolder')
+        $start | Should -BeGreaterThan -1 -Because 'the front door must derive the folder itself'
+        $end = $text.IndexOf("`n}", $start)
+        . ([scriptblock]::Create($text.Substring($start, $end - $start + 2)))
+
+        foreach ($u in @(
+                'https://example.com',
+                'https://app.example.com/reset/PATHTOK?t=QUERYTOK',
+                'https://localhost:5001/',
+                'https://my-app.example.com/',
+                'HTTPS://APP.Example.COM/',
+                'http://example.com:8080/x',
+                'http://[::1]:8080/')) {
+            $fromNode = & node -e 'process.stdout.write(require(require("path").resolve(process.argv[1])).uriFolder(process.argv[2]))' $script:CaptureJs $u
+            $LASTEXITCODE | Should -Be 0 -Because "the recorder must accept $u"
+            Get-HarUriFolder -Uri $u | Should -Be $fromNode -Because "the two implementations must agree on $u"
+        }
+
+        Get-HarUriFolder -Uri 'not-a-url' | Should -BeNullOrEmpty `
+            -Because 'a URI the recorder rejects must not yield a folder here either'
+    }
+
     It 'forwards the level from Stop-HarRecording too' {
         $plain = (Invoke-FrontDoor -Script $script:StopPs1 -Arguments @{}).Args
         $plain | Should -Match 'stop --min-bytes'
