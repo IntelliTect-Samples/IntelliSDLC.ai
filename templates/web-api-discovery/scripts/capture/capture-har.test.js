@@ -201,6 +201,29 @@ test('buildEntry captures a binary request body via postDataBuffer', () => {
     assert.deepStrictEqual(Buffer.from(entry.request.postData.text, 'base64'), payload);
 });
 
+test('buildEntry distinguishes an empty body from one it could not read', () => {
+    // A redirect, a streamed response, or one already discarded yields no
+    // body. Reporting bodySize 0 there is a claim -- "the server sent nothing"
+    // -- that the recorder cannot support; -1 is HAR's "not available".
+    const unread = capture.buildEntry({
+        request: fakeRequest(),
+        response: fakeResponse(),
+        timing: null,
+        body: null,
+        bodyAvailable: false
+    });
+    assert.strictEqual(unread.response.bodySize, -1);
+
+    const empty = capture.buildEntry({
+        request: fakeRequest(),
+        response: fakeResponse({ headers: {} }),
+        timing: null,
+        body: Buffer.alloc(0),
+        bodyAvailable: true
+    });
+    assert.strictEqual(empty.response.bodySize, 0);
+});
+
 test('buildEntry reports honest sizes rather than -1', () => {
     const entry = capture.buildEntry({
         request: fakeRequest(),
@@ -429,6 +452,111 @@ test('the catalogue is dated to the recording, not to the processing run', () =>
     assert.strictEqual(digest.capturedUtc, '2026-01-01T12:00:00Z');
     // The scaffold inherits it rather than stamping its own clock.
     assert.strictEqual(capture.buildCatalogueScaffold(digest)[0].CapturedUtc, '2026-01-01T12:00:00Z');
+});
+
+test('the digest reduces the start URL to an origin, dropping any credential in it', () => {
+    // The operator types the URL, and a magic-link / password-reset / signed
+    // start URL carries its token in the query or the path. digest.json is
+    // written to the COMMITTABLE output path, so echoing that URL back
+    // verbatim would put a live credential exactly where the whole design
+    // promises only scrubbed artifacts land.
+    const digest = capture.buildDigest(
+        har([{ startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } }]),
+        { uri: 'https://app.example.com/reset?token=eyJhbGciOiJIUzI1NiJ9.secret' });
+    assert.strictEqual(digest.uri, 'https://app.example.com');
+    assert.doesNotMatch(JSON.stringify(digest), /eyJhbGciOiJIUzI1NiJ9|secret/);
+});
+
+// ---------------------------------------------------------------------------
+// postProcess -- the containment property, end to end
+// ---------------------------------------------------------------------------
+
+// postProcess shells to the real sanitize-har.js and verify-scrub.js, which
+// discover the operator profile by walking up from the working directory. So
+// these run inside a sandbox with a real profile: a stubbed scrub would prove
+// only that the stub works, and the property under test is precisely that the
+// real one ran.
+function withSandbox(name, entries, fn) {
+    const dir = tmpDir(name);
+    const sessionDir = path.join(dir, '.har-captures', '2026-01-01-120000');
+    const outputPath = path.join(dir, 'docs', 'har-reference');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.har-profile.json'), JSON.stringify({
+        salt: 'test-salt',
+        literals: { 'operator@example.com': '<UserEmail>' }
+    }), 'utf8');
+    const harPath = path.join(sessionDir, 'raw.har');
+    fs.writeFileSync(harPath, JSON.stringify(har(entries)), 'utf8');
+    const session = {
+        uri: 'https://app.example.com/start',
+        describe: null,
+        sessionDir,
+        harPath,
+        outputPath,
+        startedUtc: '2026-01-01T12:00:00Z'
+    };
+    const cwd = process.cwd();
+    process.chdir(dir);
+    try { return fn(session, { dir, outputPath, harPath }); } finally { process.chdir(cwd); }
+}
+
+const okEntry = {
+    startedDateTime: '2026-01-01T12:00:00Z', time: 5,
+    request: { method: 'GET', url: 'https://api.example.com/v1/thing', headers: [], queryString: [], cookies: [], headersSize: 10, bodySize: 0 },
+    response: { status: 200, statusText: 'OK', headers: [], cookies: [], redirectURL: '', headersSize: 10, bodySize: 2, content: { size: 2, mimeType: 'application/json', text: '{}' } },
+    cache: {}, timings: { send: 1, wait: 3, receive: 1 }
+};
+
+test('postProcess builds the digest from the SCRUBBED capture, not the raw one', () => {
+    // The raw carries the operator's own identifier. If the digest is computed
+    // from it, that identifier reaches docs/har-reference/ -- the directory
+    // the design promises receives only scrubbed, verified artifacts.
+    const leaky = JSON.parse(JSON.stringify(okEntry));
+    leaky.request.url = 'https://api.example.com/v1/users/operator@example.com/posts';
+
+    withSandbox('pp-scrubbed', [leaky], (session, paths) => {
+        const state = capture.postProcess(session);
+        assert.deepStrictEqual(state.errors, [], 'the scrub itself must succeed');
+        const digestText = fs.readFileSync(state.digest.path, 'utf8');
+        assert.doesNotMatch(digestText, /operator@example\.com/,
+            'the operator literal must not survive into the digest');
+        const catalogueText = fs.readFileSync(state.catalogue.path, 'utf8');
+        assert.doesNotMatch(catalogueText, /operator@example\.com/,
+            'nor into the catalogue, whose Endpoints come from the same groups');
+    });
+});
+
+test('postProcess writes nothing to the output path when the scrub fails', () => {
+    // Reporting a digest built from an unscrubbed capture would be worse than
+    // reporting no digest: it looks like a safe artifact.
+    withSandbox('pp-noscrub', [okEntry], (session, paths) => {
+        fs.unlinkSync(path.join(paths.dir, '.har-profile.json'));   // scrub cannot run
+        const state = capture.postProcess(session);
+        assert.ok(state.errors.length, 'a failed scrub must be reported');
+        assert.ok(!fs.existsSync(path.join(paths.outputPath, 'digest.json')),
+            'no digest may be derived from an unscrubbed capture');
+        assert.ok(!fs.existsSync(path.join(paths.outputPath, 'catalogue.json')));
+        assert.ok(fs.existsSync(paths.harPath), 'the raw capture is always kept');
+    });
+});
+
+test('postProcess does not clobber a catalogue an earlier AI pass already filled in', () => {
+    withSandbox('pp-keep', [okEntry], (session, paths) => {
+        fs.mkdirSync(paths.outputPath, { recursive: true });
+        const cataloguePath = path.join(paths.outputPath, 'catalogue.json');
+        fs.writeFileSync(cataloguePath, JSON.stringify([{
+            Action: 'composer-story-create', Description: 'named by a human',
+            Methods: ['POST'], Endpoints: ['api.example.com/v1/posts'],
+            EntryCount: 3, Status: 'Exercised', HarFile: 'x.har',
+            CapturedUtc: '2026-01-01T12:00:00Z'
+        }]), 'utf8');
+
+        const state = capture.postProcess(session);
+        const rows = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
+        assert.strictEqual(rows[0].Action, 'composer-story-create',
+            're-capturing must not erase actions already named and exercised');
+        assert.deepStrictEqual(state.catalogue.actions, ['composer-story-create']);
+    });
 });
 
 // ---------------------------------------------------------------------------

@@ -150,34 +150,21 @@ switch ($exit) {
     }
 }
 
-# The catalogue lives beside the other scrubbed artifacts. Resolving it from
-# the session rather than recomputing the default keeps one source of truth
-# for where the run actually wrote.
-$capturesRoot = Join-Path (Get-Location).Path '.har-captures'
-$sessionDir = Get-ChildItem -LiteralPath $capturesRoot -Directory -ErrorAction SilentlyContinue |
-    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'session.json') } |
-    Sort-Object Name |
-    Select-Object -Last 1
-
-if (-not $sessionDir) {
-    Write-Warning "no capture session found under $capturesRoot"
-    return
-}
-
-$session = Get-Content -LiteralPath (Join-Path $sessionDir.FullName 'session.json') -Raw | ConvertFrom-Json
-$cataloguePath = Join-Path $session.outputPath 'catalogue.json'
+# The catalogue is read from THIS invocation's output path, which we already
+# know -- never by globbing .har-captures/ for the newest session directory.
+#
+# That glob looks equivalent and is not: captures now coexist happily on
+# different ports, so a second capture started in another terminal and finished
+# first would be the lexicographically-last directory, and this run would emit
+# a different site's catalogue as though it were its own. The recorder's
+# current.json pointer is no help either -- it is deleted when recording ends,
+# before node returns here.
+$cataloguePath = Join-Path (
+    $(if ($OutputPath) { $OutputPath } else { Join-Path 'docs' 'har-reference' })) 'catalogue.json'
 
 if (-not (Test-Path -LiteralPath $cataloguePath)) {
     Write-Warning "no catalogue was written to $cataloguePath"
     return
-}
-
-if ($session.postProcess -and $session.postProcess.catalogue -and $session.postProcess.catalogue.pending) {
-    # Saying nothing here would let a caller read a scaffold of Observed rows
-    # as a finished catalogue.
-    Write-Information (
-        'The catalogue still needs an AI pass -- rows below are provisional. See ' +
-        (Join-Path $PSScriptRoot 'catalogue-prompt.md')) -InformationAction Continue
 }
 
 & (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath
