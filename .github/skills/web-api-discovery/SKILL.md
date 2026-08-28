@@ -84,10 +84,14 @@ run**, not a partial one. Take this path whenever the user asked to record,
 capture, or catalogue traffic and never asked for a client.
 
 ```powershell
-# Record, scrub, verify, digest and catalogue -- one command. Browse (or drive
-# the CDP endpoint it prints), then press ENTER; closing the browser window or
-# calling Stop-HarRecording from an agent does the same thing.
+# Record, scrub, verify, digest and catalogue -- one command. Browse, then
+# press ENTER; closing the browser window or calling Stop-HarRecording from an
+# agent does the same thing.
 templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com
+
+# -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
+# agent attaches to. Warnings and errors print at either level.
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com -Verbose
 ```
 
 A consuming project usually dot-sources or aliases that path once; the rest of

@@ -658,6 +658,110 @@ test('the catalogue prompt is a file, not a literal buried in the driver', () =>
 });
 
 // ---------------------------------------------------------------------------
+// Stage 6 -- console output is levelled (#288)
+//
+// The console is the product here. An operator who just wants to browse and
+// get a catalogue was reading a dozen lines of resolved paths, with the one
+// line that matters -- how to end the recording cleanly -- buried among them.
+//
+// The lines are built as (level, text) pairs by pure functions and rendered
+// through a threshold, so what an operator sees at each level is assertable
+// without launching a browser or spawning a process.
+// ---------------------------------------------------------------------------
+
+function fakeSession(overrides) {
+    return Object.assign({
+        uri: 'https://example.com/',
+        profileDir: '/tmp/profile-livetest-f76b1e97',
+        storageState: null,
+        externalProfile: false,
+        harPath: '/tmp/.har-captures/2026-08-27-210525/raw.har',
+        outputPath: '/tmp/docs/har-reference',
+        cdpEndpoint: 'http://localhost:9333',
+        port: 9333,
+        requestedPort: 9333
+    }, overrides);
+}
+
+test('setLogLevel rejects a value that is not a level', () => {
+    // Silently falling back to `normal` would make a typo look like a working
+    // --log-level, and the operator would blame the tool for ignoring them.
+    assert.throws(() => capture.setLogLevel('loud'), /log-level/);
+    capture.setLogLevel('normal');
+});
+
+test('log-level is an accepted start option', () => {
+    assert.ok(capture.START_OPTIONS.includes('log-level'),
+        'start must accept the level its PowerShell front door forwards');
+});
+
+test('the default banner names the site and how to end, not the paths', () => {
+    const text = capture.renderLines(capture.startBannerLines(fakeSession()), 'normal');
+    assert.match(text, /recording https:\/\/example\.com/);
+    assert.match(text, /press ENTER/);
+    assert.doesNotMatch(text, /profile:/, 'the profile path is a diagnostic');
+    assert.doesNotMatch(text, /raw:/, 'the raw path is a diagnostic');
+    assert.doesNotMatch(text, /cdp:/, 'the debugging endpoint is a diagnostic');
+});
+
+test('the verbose banner adds the resolved paths and the endpoint', () => {
+    const text = capture.renderLines(capture.startBannerLines(fakeSession()), 'verbose');
+    assert.match(text, /profile:\s+\/tmp\/profile-livetest/);
+    assert.match(text, /raw:\s+\/tmp\/\.har-captures/);
+    assert.match(text, /output:\s+\/tmp\/docs\/har-reference/);
+    assert.match(text, /cdp:\s+http:\/\/localhost:9333/);
+});
+
+test('the ENTER recommendation is one sentence, with no snapshot folklore', () => {
+    // The old block spent three lines on Ctrl+C and a "recovery snapshot" that
+    // no longer exists. Closing the window now yields a genuine raw.har, so
+    // the recommendation is a preference, not a warning.
+    const text = capture.renderLines(capture.startBannerLines(fakeSession()), 'verbose');
+    assert.doesNotMatch(text, /Ctrl\+C/);
+    assert.doesNotMatch(text, /(?:recovery|snapshot)/i);
+    const enterLines = text.split('\n').filter((l) => /ENTER/.test(l));
+    assert.strictEqual(enterLines.length, 1, 'exactly one line mentions ENTER');
+});
+
+test('the caveat about borrowing another tool\'s profile survives the default level', () => {
+    // This one is not a diagnostic: it tells the operator that some other tool
+    // is locked out for the duration, which they need before they browse.
+    const text = capture.renderLines(
+        capture.startBannerLines(fakeSession({ externalProfile: true })), 'normal');
+    assert.match(text, /another tool/i);
+});
+
+test('a default run still says which artifacts it produced', () => {
+    // Hiding these behind -Verbose would end a default run without naming the
+    // two files the operator acts on next.
+    const text = capture.renderLines(capture.postProcessLines(fakeSession({
+        postProcess: {
+            scrubbed: { path: '/tmp/out/scrubbed.har', verified: true },
+            digest: { path: '/tmp/out/digest.json' },
+            catalogue: { path: '/tmp/out/catalogue.json', delegatedTo: 'agent' },
+            errors: []
+        }
+    })), 'normal');
+    assert.match(text, /scrubbed:\s+\/tmp\/out\/scrubbed\.har/);
+    assert.match(text, /catalogue:\s+\/tmp\/out\/catalogue\.json/);
+    assert.doesNotMatch(text, /digest:/, 'the digest is an intermediate');
+    assert.doesNotMatch(text, /raw:/, 'the raw path is a diagnostic');
+});
+
+test('a leak-gate rejection is never levelled away', () => {
+    // The one report that must reach an operator who never types -Verbose:
+    // a scrub the gate refused, and the reason.
+    const text = capture.renderLines(capture.postProcessLines(fakeSession({
+        postProcess: {
+            scrubbed: { path: null, removed: true, verified: false },
+            errors: ['verify-scrub: bearer token survived the scrub']
+        }
+    })), 'normal');
+    assert.match(text, /REJECTED/);
+    assert.match(text, /bearer token survived/);
+});
+
+// ---------------------------------------------------------------------------
 
 run().then((passed) => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
