@@ -181,9 +181,22 @@ function Get-HarUriFolder {
     $hostName = $parsed.Host
     if (-not $hostName -or $hostName -eq '.' -or $hostName -eq '..') { return $null }
 
-    # An IPv6 literal arrives bracketed; dropping the brackets and mapping the
-    # separator to '-' keeps distinct addresses distinct.
-    $bare = ($hostName -replace '^\[|\]$', '') -replace ':', '-'
+    # .Host, NOT .IdnHost, is the wrong choice here: WHATWG punycodes an
+    # international host and .Host does not, so a capture of a non-ASCII site
+    # would be WRITTEN to xn--... and its catalogue LOOKED FOR under the
+    # unicode name. .IdnHost matches the recorder, and already drops the
+    # brackets from an IPv6 literal.
+    $bare = $parsed.IdnHost -replace '^\[|\]$', ''
+
+    # WHATWG folds an IPv4-mapped tail into hex groups (`::ffff:1.2.3.4` ->
+    # `::ffff:102:304`); .NET keeps it dotted. Match the recorder.
+    if ($bare -match '^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$') {
+        $hi = ([int]$Matches[2] -shl 8) -bor [int]$Matches[3]
+        $lo = ([int]$Matches[4] -shl 8) -bor [int]$Matches[5]
+        $bare = '{0}{1:x}:{2:x}' -f $Matches[1], $hi, $lo
+    }
+    $bare = $bare -replace ':', '-'
+
     $folder = if ($parsed.IsDefaultPort) { $bare } else { "${bare}_$($parsed.Port)" }
     $folded = $folder.ToLowerInvariant() -replace '[^a-z0-9._-]', '_'
 
@@ -191,6 +204,7 @@ function Get-HarUriFolder {
     if ($folded -match '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|_|$)') { return "${folded}_" }
     return $folded
 }
+
 
 
 $uriFolder = Get-HarUriFolder -Uri $Uri

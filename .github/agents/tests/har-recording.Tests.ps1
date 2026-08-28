@@ -695,11 +695,29 @@ Describe 'Invoke-HarCapture.ps1' {
                 'https://my-app.example.com/',
                 'HTTPS://APP.Example.COM/',
                 'http://example.com:8080/x',
-                'http://[::1]:8080/')) {
+                'http://[::1]:8080/',
+                # Two host-normalisation engines, assumed equivalent. .NET does
+                # not punycode `.Host` (only `.IdnHost` does) and renders an
+                # IPv4-mapped IPv6 tail dotted where WHATWG folds it to hex --
+                # so an international site would have had its capture written
+                # to one folder and its catalogue looked for in another.
+                'http://xn--fiq228c.example/x',
+                'http://中文.example/x',
+                'http://[::ffff:1.2.3.4]/x',
+                'http://example.com./x',
+                'http://user:pass@example.com/x')) {
             $fromNode = & node -e 'process.stdout.write(require(require("path").resolve(process.argv[1])).uriFolder(process.argv[2]))' $script:CaptureJs $u
             $LASTEXITCODE | Should -Be 0 -Because "the recorder must accept $u"
             Get-HarUriFolder -Uri $u | Should -Be $fromNode -Because "the two implementations must agree on $u"
         }
+
+        # Where the two engines cannot be reconciled, the front door must fail
+        # CLOSED rather than guess. .NET will not parse a percent-encoded
+        # hostname at all, while WHATWG decodes and punycodes it -- so this
+        # errors out before recording instead of writing the capture to one
+        # folder and looking for the catalogue in another.
+        Get-HarUriFolder -Uri 'http://%E4%B8%AD%E6%96%87.example/x' | Should -BeNullOrEmpty `
+            -Because 'an unreconcilable host must be refused up front, not guessed at'
 
         # The refusals matter as much as the agreements: 'http://../evil'
         # parses with a host of '..' and would walk the capture out of its own
