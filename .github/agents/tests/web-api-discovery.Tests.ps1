@@ -55,6 +55,26 @@ Describe 'web-api-discovery SKILL.md' {
         $script:SkillText | Should -Match '(?i)Confirmed (the target URL|a project name)'
     }
 
+    It 'scopes the wrapper-generation confirmations to the generation path' {
+        # The gate used to demand a project name, .NET namespace, output dir,
+        # auth model, and a wrapper-scope issue before ANY filesystem mutation.
+        # Recording writes a HAR, so a capture-only request was blocked behind
+        # five confirmations that are meaningless for it (issue #279).
+        $script:SkillText | Should -Match '(?i)Hard Gate -- recording'
+        $script:SkillText | Should -Match '(?i)Hard Gate -- generation'
+    }
+
+    It 'documents a capture-only run that stops at the reference' {
+        # "A capture that stops at the catalogue is a legitimate, common
+        # outcome" (issue #279). The skill must say so as a named path with
+        # runnable commands, not merely assert it in the intro.
+        $script:SkillText | Should -Match '(?i)### Capture-only run'
+        # The two commands that path is made of, in order.
+        $script:SkillText | Should -Match 'Start-HarRecording'
+        $script:SkillText | Should -Match 'extract-har-reference\.js'
+        $script:SkillText | Should -Match 'verify-har-reference\.js'
+    }
+
     It 'references the evidence-capture skill (Phase 5b)' {
         $script:SkillText | Should -Match 'evidence-capture'
         $script:SkillText | Should -Match 'Phase 5b'

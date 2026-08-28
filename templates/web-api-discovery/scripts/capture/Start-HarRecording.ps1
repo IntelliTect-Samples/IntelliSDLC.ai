@@ -30,7 +30,7 @@
     Nothing is scrubbed, extracted or catalogued automatically: which entries
     document which operation, what to name them, and which literal values must
     be redacted are judgement calls. Ask Claude to "catalogue that capture", or
-    drive extract-har-reference.js yourself.
+    drive ../har/extract-har-reference.js yourself.
 
     The raw capture carries live credentials and is never committed.
 

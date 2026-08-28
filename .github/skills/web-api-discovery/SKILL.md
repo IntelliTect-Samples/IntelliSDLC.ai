@@ -43,18 +43,70 @@ Do not invoke for:
 
 ## Hard Gate
 
-**Do not run any phase that mutates the user's filesystem until you have:**
+The gate is **tiered**. Recording, scrubbing, and cataloguing are a complete
+run on their own, so they are not held behind the confirmations that exist to
+scope a generated .NET project. Requiring a namespace before recording a HAR
+blocks the most common request this skill gets.
 
-1. Confirmed the target URL with the user.
-2. Confirmed a project name + .NET namespace + output directory.
-3. Confirmed the auth model (or accepted "let the detector decide").
-4. **Asked the user whether the target service has a mobile app to include**
+### Hard Gate -- recording (Phases 1-3.5)
+
+**Establish before recording:**
+
+1. **The target URL.** Establish it -- from the request, the repo, or context.
+   *Confirm* here does not mean *interrogate*: ask the user only when the URL
+   is genuinely ambiguous.
+2. **Where the capture lands.** Convention already answers this: raw captures
+   go to `.har-captures` (gitignored), the committable reference to
+   `docs/har-reference/`. Do not ask; follow the convention unless the user
+   named a path.
+
+Nothing else is required. In particular, do **not** ask for a project name, a
+.NET namespace, an auth model, or a tracking issue to record a session.
+
+### Hard Gate -- generation (Phase 6 onward)
+
+**Additionally, before emitting a wrapper project:**
+
+3. Confirmed a project name + .NET namespace + output directory.
+4. Confirmed the auth model (or accepted "let the detector decide").
+5. **Asked the user whether the target service has a mobile app to include**
    (Phase 1.5). The agent must ask -- the user may still answer no.
-5. **Asked the user whether to seed the project with the IntelliSDLC.ai
+6. **Asked the user whether to seed the project with the IntelliSDLC.ai
    instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
    must ask -- the user may still answer no.
-6. Created a GitHub issue (or referenced an existing one) that describes
+7. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
+
+### Capture-only run
+
+Stopping after Phase 3.5 with a scrubbed, verified reference is a **complete
+run**, not a partial one. Take this path whenever the user asked to record,
+capture, or catalogue traffic and never asked for a client.
+
+```powershell
+# 1. Record. Browse (or drive the CDP endpoint it prints), then ENTER --
+#    or Stop-HarRecording from an agent. Writes a raw HAR; nothing else.
+Start-HarRecording https://example.com
+
+# 2. Extract the reference. This scrubs as it selects, and re-checks its own
+#    output for forbidden literals before writing -- it fails rather than
+#    writing a leaky reference. Needs a selector; fails loudly on no match.
+node templates/web-api-discovery/scripts/har/extract-har-reference.js `
+    --in .har-captures/<capture>.har --match <pattern>
+
+# 3. Gate it. Also runs in CI over the whole directory.
+node templates/web-api-discovery/scripts/har/verify-har-reference.js `
+    --dir docs/har-reference
+```
+
+**Step 2 is not optional.** The raw capture carries live credentials; it is
+gitignored precisely because it must never be committed. The reference
+produced by step 2 is the artifact that ships.
+
+`sanitize-har.js` / `verify-scrub.js` are the *other* scrub path -- they clean
+a whole HAR to feed `run-agent.js`, and are chained automatically there. The
+capture-only path does not need them: `extract-har-reference.js` scrubs the
+entries it selects.
 
 ## Inputs (asked one at a time)
 
