@@ -418,6 +418,19 @@ test('the catalogue scaffold has one Observed row per group', () => {
     }
 });
 
+test('the catalogue is dated to the recording, not to the processing run', () => {
+    // Defaulting capturedUtc to "now" dates every row to the scrub instead of
+    // the capture, which answers "how old is this evidence of their API" with
+    // the wrong number -- and that question is most of why the date is in the
+    // filename convention at all.
+    const digest = capture.buildDigest(
+        har([{ startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } }]),
+        { capturedUtc: '2026-01-01T12:00:00Z' });
+    assert.strictEqual(digest.capturedUtc, '2026-01-01T12:00:00Z');
+    // The scaffold inherits it rather than stamping its own clock.
+    assert.strictEqual(capture.buildCatalogueScaffold(digest)[0].CapturedUtc, '2026-01-01T12:00:00Z');
+});
+
 // ---------------------------------------------------------------------------
 // Stage 7b -- who runs the catalogue phase
 // ---------------------------------------------------------------------------
