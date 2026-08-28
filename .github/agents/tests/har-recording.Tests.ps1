@@ -161,6 +161,43 @@ Describe 'capture-har.js' {
         $r.ExitCode | Should -Be 2
     }
 
+    It 'accepts --log-level on start, and rejects a value that is not a level' {
+        $ok = Invoke-CaptureHar start --uri 'https://example.com' --log-level verbose --validate-only
+        $ok.ExitCode | Should -Be 0
+        $bad = Invoke-CaptureHar start --uri 'https://example.com' --log-level loud --validate-only
+        $bad.ExitCode | Should -Be 2
+        $bad.Output | Should -Match '(?i)log-level'
+    }
+
+    It 'keeps stdout machine-readable at every level' {
+        # The banner used to be on stdout. Levelling it up without moving it
+        # would make `Invoke-HarCapture ... | ConvertFrom-Json` fail on exactly
+        # the verbose run an operator reaches for when something is wrong.
+        foreach ($level in 'normal', 'verbose') {
+            $r = Invoke-CaptureHar start --uri 'https://example.com' `
+                --log-level $level --validate-only
+            $r.ExitCode | Should -Be 0
+            { $r.StdOut | ConvertFrom-Json } | Should -Not -Throw `
+                -Because "stdout must be pure JSON at --log-level $level"
+        }
+    }
+
+    It 'reports a failed phase without -Verbose, and the raw path only with it' {
+        # The level must never gate a failure. This fixture has no
+        # .har-profile.json, so the scrub cannot run -- an operator who never
+        # types -Verbose still has to be told that, while the resolved raw
+        # path stays a diagnostic.
+        $sessionDir = New-LostSession -Root $script:Tmp
+        $quiet = Invoke-CaptureHar stop --session $sessionDir --dir $script:Tmp
+        $quiet.Output | Should -Match 'ERROR:'
+        $quiet.Output | Should -Not -Match 'raw:\s+\S'
+
+        $sessionDir2 = New-LostSession -Root $script:Tmp -Stamp '2026-01-01-130000'
+        $loud = Invoke-CaptureHar stop --session $sessionDir2 --dir $script:Tmp --log-level verbose
+        $loud.Output | Should -Match 'raw:\s+\S'
+        $loud.Output | Should -Match 'ERROR:'
+    }
+
     It 'refuses --dir on start rather than silently ignoring it' {
         # --dir was how a raw capture got redirected out of the gitignored
         # tree. Accepting and ignoring it would leave the operator believing
@@ -479,6 +516,31 @@ Describe 'Invoke-HarCapture.ps1' {
         $text | Should -Not -Match "Select-Object\s+-Last\s+1" `
             -Because 'picking the last session directory is the race this fixes'
         $text | Should -Match 'catalogue\.json'
+    }
+
+    It 'wires -Verbose to the recorder instead of adding a seventh parameter' {
+        # -Verbose is free with [CmdletBinding()]. A -LogLevel switch would be
+        # a second way to say the same thing, and the six-parameter assertion
+        # above is what stops one appearing.
+        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
+        $text | Should -Match '--log-level'
+        $text | Should -Match 'VerbosePreference'
+    }
+
+    It 'lets a caller silence the status lines with -InformationAction' {
+        # -InformationAction Continue pinned on every call site meant the
+        # common parameter did nothing: the stream was uncontrollable by the
+        # very mechanism the convention points callers at.
+        $text = Get-Content -LiteralPath $script:InvokePs1 -Raw
+        $text | Should -Not -Match 'Write-Information[^\r\n]*-InformationAction' `
+            -Because 'pinning the action defeats the caller''s own -InformationAction'
+        $text | Should -Match 'InformationPreference'
+    }
+
+    It 'forwards the level from Stop-HarRecording too' {
+        $text = Get-Content -LiteralPath $script:StopPs1 -Raw
+        $text | Should -Match '--log-level'
+        $text | Should -Match 'VerbosePreference'
     }
 
     It 'keeps status out of the pipeline -- no Write-Host anywhere in capture/' {

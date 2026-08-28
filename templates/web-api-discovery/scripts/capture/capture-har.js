@@ -79,6 +79,13 @@
  *   --no-wait        do not read ENTER from stdin (for non-interactive use;
  *                    the session then ends via `stop`, SIGINT, or the window).
  *   --validate-only  resolve and print paths without launching a browser.
+ *   --log-level      `normal` (default) says what is being recorded, how to
+ *                    end it, and which artifacts it produced. `verbose` adds
+ *                    the resolved paths, the profile and the CDP endpoint.
+ *                    Accepted on every command; Invoke-HarCapture sets it from
+ *                    PowerShell's own -Verbose rather than exposing a second
+ *                    switch for the same idea. All chatter goes to STDERR --
+ *                    stdout carries only the --validate-only and status JSON.
  *
  * Exit codes:
  *   0 -- recorded, scrubbed and catalogued
@@ -125,12 +132,81 @@ const PORT_SCAN_LIMIT = 64;
 // traffic that says "the human moved on to a different action".
 const ACTION_GAP_SECONDS = 5;
 
+// ---------------------------------------------------------------------------
+// Console levels
+// ---------------------------------------------------------------------------
+
+/**
+ * Two thresholds, matching the only two states PowerShell can be in: with
+ * `-Verbose` and without it. There is deliberately no `--quiet`: the caller
+ * already has `-InformationAction SilentlyContinue` and a third level would be
+ * a second way to say the same thing.
+ */
+const LOG_LEVELS = { normal: 1, verbose: 2 };
+
+/**
+ * The threshold at which each kind of message becomes visible. Warnings and
+ * errors sit at 0 so no level can suppress them -- a leak-gate rejection that
+ * an operator has to opt in to read is worse than no report at all.
+ */
+const LINE_LEVELS = { error: 0, warn: 0, info: 1, verbose: 2 };
+
+let currentLevel = LOG_LEVELS.normal;
+
+/**
+ * Reject an unrecognized level rather than falling back to `normal`. Silently
+ * substituting turns a typo into a working flag that ignores the operator.
+ */
+function setLogLevel(value) {
+    if (!Object.prototype.hasOwnProperty.call(LOG_LEVELS, value)) {
+        throw new Error(
+            `--log-level must be one of ${Object.keys(LOG_LEVELS).join(', ')} (got '${value}')`);
+    }
+    currentLevel = LOG_LEVELS[value];
+}
+
+/**
+ * Filter (level, text) pairs down to what one threshold shows, then join them.
+ *
+ * Building the console output as data and rendering it separately is what
+ * makes "what does an operator see without -Verbose" a question a test can ask
+ * without launching a browser or spawning a process.
+ */
+function renderLines(lines, levelName) {
+    const threshold = levelName === undefined ? currentLevel : LOG_LEVELS[levelName];
+    return lines
+        .filter(([level]) => LINE_LEVELS[level] <= threshold)
+        .map(([, text]) => text)
+        .join('\n');
+}
+
+/**
+ * Every human-facing message goes to stderr. stdout carries machine output --
+ * the `--validate-only` and `status` JSON -- and prose mixed into it is what
+ * makes `Invoke-HarCapture ... | ConvertFrom-Json` fail on a verbose run.
+ */
+function emit(level, text) {
+    if (LINE_LEVELS[level] > currentLevel) return;
+    process.stderr.write(text.endsWith('\n') ? text : text + '\n');
+}
+
+const log = {
+    info: (text) => emit('info', text),
+    verbose: (text) => emit('verbose', text),
+    warn: (text) => emit('warn', text),
+    error: (text) => emit('error', text),
+    lines: (pairs) => {
+        const text = renderLines(pairs);
+        if (text) process.stderr.write(text + '\n');
+    }
+};
+
 // The options `start` accepts. Exported so a test can assert that the two
 // dropped ones are genuinely gone: silently accepting and ignoring `--dir`
 // would leave an operator believing the raw capture had moved.
 const START_OPTIONS = [
     'uri', 'profile', 'isolated', 'port', 'output-path', 'describe',
-    'snapshot-seconds', 'no-wait', 'validate-only'
+    'snapshot-seconds', 'no-wait', 'validate-only', 'log-level'
 ];
 
 /**
@@ -219,7 +295,10 @@ function usage(msg) {
         'usage: node capture-har.js start --uri <url> [--isolated] [--port <n>]\n' +
         '                                 [--output-path <dir>] [--describe <text>]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
-        '       node capture-har.js status\n');
+        '       node capture-har.js status\n' +
+        '\n' +
+        '  --log-level normal|verbose  how much the console says (default normal).\n' +
+        '                              Invoke-HarCapture sets it from -Verbose.\n');
     return 2;
 }
 
@@ -530,7 +609,7 @@ class IncrementalRecorder {
             this.written += batch.length;
         } catch (e) {
             // A failed flush must never take the recording down with it.
-            process.stderr.write(`capture-har: incremental flush failed: ${e.message}\n`);
+            log.verbose(`capture-har: incremental flush failed: ${e.message}`);
         }
     }
 
@@ -589,7 +668,7 @@ function attachRecorder(context, recorder) {
                 bodyAvailable
             }));
         } catch (e) {
-            process.stderr.write(`capture-har: entry skipped: ${e.message}\n`);
+            log.verbose(`capture-har: entry skipped: ${e.message}`);
         }
     };
 
@@ -980,6 +1059,65 @@ function summarize(harPath) {
     return summary;
 }
 
+/**
+ * What the console says once a recording is under way.
+ *
+ * The split is by what the operator needs in order to browse versus what they
+ * need in order to debug. The site being recorded and how to end the recording
+ * are the first; every resolved path, the profile and the debugging endpoint
+ * are the second.
+ *
+ * The external-profile caveat is deliberately NOT a diagnostic: it says some
+ * other tool is locked out for the duration, which the operator has to know
+ * before they start rather than after they wonder why.
+ */
+function startBannerLines(session) {
+    const lines = [['info', `\ncapture-har: recording ${session.uri}`]];
+    if (session.externalProfile) {
+        lines.push(['info',
+            '  This profile belongs to another tool, which cannot use it\n' +
+            '  until the recording ends.']);
+    }
+    lines.push(['verbose', `  profile:  ${session.profileDir}`]);
+    if (session.storageState) lines.push(['verbose', `  session:  ${session.storageState}`]);
+    lines.push(['verbose', `  raw:      ${session.harPath}  (never committed)`]);
+    lines.push(['verbose', `  output:   ${session.outputPath}  (scrubbed artifacts only)`]);
+    lines.push(['verbose', `  cdp:      ${session.cdpEndpoint}` +
+        (session.port !== session.requestedPort ? `  (${session.requestedPort} was busy)` : '')]);
+    lines.push(['info', '\n  Browse, then press ENTER here -- that writes the most complete HAR.\n']);
+    return lines;
+}
+
+/**
+ * What the console says about the artifacts, once the phases have run.
+ *
+ * `scrubbed` and `catalogue` stay visible without -Verbose because they are
+ * what the operator acts on next; a default run that ended without naming them
+ * would send them hunting. `raw` and `digest` are a diagnostic and an
+ * intermediate.
+ *
+ * A rejected scrub says so at warn level, which no threshold suppresses. Going
+ * quiet about it would read as "no scrub was attempted" -- a different and far
+ * less alarming story than "one was attempted and the leak gate refused it".
+ */
+function postProcessLines(session) {
+    const pp = session.postProcess || {};
+    const lines = [['verbose', `  raw:       ${session.harPath}  (unscrubbed -- never commit it)`]];
+    if (pp.scrubbed && pp.scrubbed.path) {
+        lines.push(['info', `  scrubbed:  ${pp.scrubbed.path}  (verified)`]);
+    } else if (pp.scrubbed && pp.scrubbed.removed) {
+        lines.push(['warn',
+            '  scrubbed:  REJECTED by the leak gate and deleted; the raw capture is kept']);
+    }
+    if (pp.digest) lines.push(['verbose', `  digest:    ${pp.digest.path}`]);
+    if (pp.catalogue) {
+        lines.push(['info', `  catalogue: ${pp.catalogue.path}  (${pp.catalogue.delegatedTo})`]);
+        if (pp.catalogue.skippedReason) lines.push(['warn', `             ${pp.catalogue.skippedReason}`]);
+    }
+    for (const err of pp.errors || []) lines.push(['error', `  ERROR:     ${err}`]);
+    return lines;
+}
+
 function describeSummary(summary) {
     if (!summary.exists) return 'no HAR was written';
     const kb = (summary.bytes / 1024).toFixed(1);
@@ -1061,9 +1199,9 @@ async function start(args) {
                 return 1;
             }
             const created = scaffoldProfile(process.cwd());
-            process.stdout.write(
+            log.info(
                 `capture-har: wrote ${created}. Add your own identifiers to "literals"\n` +
-                '  before the scrub can redact them.\n');
+                '  before the scrub can redact them.');
         } else {
             process.stderr.write(`capture-har: ${preflight.message}\n`);
             return 1;
@@ -1092,6 +1230,7 @@ async function start(args) {
         recordLog: paths.recordLog,
         outputPath: paths.outputPath,
         profileDir,
+        externalProfile,
         storageState,
         mode: isolated ? 'isolated-chromium' : 'chrome-profile',
         cdpEndpoint: `http://localhost:${port}`,
@@ -1104,7 +1243,7 @@ async function start(args) {
         // stdout stays pure JSON so a caller can parse it; the human note goes
         // to stderr rather than corrupting that.
         process.stdout.write(JSON.stringify(session, null, 2) + '\n');
-        process.stderr.write('capture-har: --validate-only OK (no browser launched)\n');
+        log.info('capture-har: --validate-only OK (no browser launched)');
         return 0;
     }
 
@@ -1175,23 +1314,10 @@ async function start(args) {
 
     const page = context.pages()[0] || await context.newPage();
     await page.goto(args.uri, { waitUntil: 'domcontentloaded' }).catch((e) => {
-        process.stdout.write(`capture-har: initial navigation failed (${e.message}); recording anyway\n`);
+        log.warn(`capture-har: initial navigation failed (${e.message}); recording anyway`);
     });
 
-    process.stdout.write(
-        `\ncapture-har: recording ${args.uri}\n` +
-        (externalProfile
-            ? `  profile:  ${profileDir}\n` +
-              '            (not a capture profile -- whatever tool owns it cannot\n' +
-              '             use it until this recording ends)\n'
-            : '') +
-        (storageState ? `  session:  ${storageState}\n` : '') +
-        `  raw:      ${paths.harPath}  (never committed)\n` +
-        `  output:   ${paths.outputPath}  (scrubbed artifacts only)\n` +
-        `  cdp:      ${session.cdpEndpoint}` +
-        (port !== requestedPort ? `  (${requestedPort} was busy)` : '') + '\n' +
-        '\n  Browse. Then press ENTER here to end the recording, scrub it and\n' +
-        '  catalogue it. Closing the browser window does the same thing.\n\n');
+    log.lines(startBannerLines(session));
 
     // Whichever ending arrives first wins. (The window-closed ending is
     // already armed, above.)
@@ -1268,14 +1394,14 @@ async function start(args) {
     }
 
     if (cancelled) {
-        process.stdout.write(
+        log.info(
             `\ncapture-har: cancelled -- ${describeSummary(summary)}\n` +
             `  raw kept, not post-processed: ${paths.harPath}\n` +
-            '  Re-run post-processing by stopping this session again.\n');
+            '  Re-run post-processing by stopping this session again.');
         return 0;
     }
 
-    process.stdout.write(`\ncapture-har: stopped (${reason}) -- ${describeSummary(summary)}\n`);
+    log.info(`\ncapture-har: stopped (${reason}) -- ${describeSummary(summary)}`);
     session.postProcess = postProcess(session);
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
@@ -1285,23 +1411,7 @@ async function start(args) {
 }
 
 function reportPostProcess(session) {
-    const pp = session.postProcess || {};
-    const lines = [`  raw:       ${session.harPath}  (unscrubbed -- never commit it)`];
-    if (pp.scrubbed && pp.scrubbed.path) {
-        lines.push(`  scrubbed:  ${pp.scrubbed.path}  (verified)`);
-    } else if (pp.scrubbed && pp.scrubbed.removed) {
-        // Say that the file was removed rather than going quiet about it. The
-        // ERROR line below explains why, but silence here reads as "no scrub
-        // was attempted", which is a different and less alarming story.
-        lines.push('  scrubbed:  REJECTED by the leak gate and deleted; the raw capture is kept');
-    }
-    if (pp.digest) lines.push(`  digest:    ${pp.digest.path}`);
-    if (pp.catalogue) {
-        lines.push(`  catalogue: ${pp.catalogue.path}  (${pp.catalogue.delegatedTo})`);
-        if (pp.catalogue.skippedReason) lines.push(`             ${pp.catalogue.skippedReason}`);
-    }
-    for (const err of pp.errors || []) lines.push(`  ERROR:     ${err}`);
-    process.stdout.write(lines.join('\n') + '\n');
+    log.lines(postProcessLines(session));
 }
 
 /**
@@ -1448,16 +1558,16 @@ async function stop(args) {
         }
     }
 
-    process.stdout.write(`capture-har: ${describeSummary(summary)}\n`);
+    log.info(`capture-har: ${describeSummary(summary)}`);
     if (session.postProcess) {
         reportPostProcess(session);
     } else if (session.cancelled) {
-        process.stdout.write(`  raw kept, not post-processed: ${session.harPath}\n`);
+        log.info(`  raw kept, not post-processed: ${session.harPath}`);
     } else {
-        process.stdout.write(
+        log.warn(
             `  raw:       ${session.harPath}\n` +
             '  post-processing is still running in the recording process --\n' +
-            '  the scrubbed artifacts and the catalogue are not ready yet.\n');
+            '  the scrubbed artifacts and the catalogue are not ready yet.');
         return 6;
     }
 
@@ -1469,7 +1579,7 @@ function status(args) {
     const root = args.dir ? path.resolve(args.dir) : capturesRoot();
     const sessionDir = resolveSession(args);
     if (!sessionDir) {
-        process.stdout.write(`capture-har: no captures under ${root}\n`);
+        log.info(`capture-har: no captures under ${root}`);
         return 0;
     }
     const session = readJson(path.join(sessionDir, SESSION_FILE)) || {};
@@ -1496,6 +1606,16 @@ async function main() {
     const argv = process.argv.slice(2);
     const command = argv[0];
     const args = parseArgs(argv.slice(1));
+    // Applied before anything else runs, and to every command: the level has
+    // to be in force before the first message, and `stop` reports the same
+    // artifacts `start` does.
+    if (args['log-level'] !== undefined) {
+        try {
+            setLogLevel(args['log-level']);
+        } catch (e) {
+            return usage(e.message);
+        }
+    }
     switch (command) {
         case 'start': return await start(args);
         case 'stop': return await stop(args);
@@ -1506,6 +1626,11 @@ async function main() {
 
 module.exports = {
     START_OPTIONS,
+    LOG_LEVELS,
+    setLogLevel,
+    renderLines,
+    startBannerLines,
+    postProcessLines,
     buildEntry,
     assembleFromLog,
     resolveSessionPaths,

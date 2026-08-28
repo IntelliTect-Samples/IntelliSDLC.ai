@@ -84,6 +84,10 @@ $captureArgs = @('stop', '--min-bytes', $MinimumBytes)
 if ($Session) { $captureArgs += @('--session', $Session) }
 if ($CapturesDirectory) { $captureArgs += @('--dir', $CapturesDirectory) }
 if ($ValidateOnly) { $captureArgs += '--validate-only' }
+# One verbosity switch, forwarded rather than duplicated -- see Invoke-HarCapture.ps1.
+if ($VerbosePreference -ne 'SilentlyContinue') { $captureArgs += @('--log-level', 'verbose') }
+
+Write-Verbose "capture-har.js $($captureArgs -join ' ')"
 
 & node $captureJs @captureArgs
 exit $LASTEXITCODE

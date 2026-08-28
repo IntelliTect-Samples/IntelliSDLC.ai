@@ -21,6 +21,16 @@
     Stop-HarRecording from another process. Ctrl+C asks whether you meant to
     finish or to cancel.
 
+    HOW MUCH IT SAYS. By default the console names the site, how to end the
+    recording, and the artifacts the run produced. `-Verbose` adds the resolved
+    paths, the capture profile, the CDP endpoint and the per-phase detail --
+    including the recorder's own, because the level is forwarded to it. Nothing
+    a failure needs to report is ever gated by the level: a warning, a
+    leak-gate rejection and an error are printed at every level.
+
+    `-InformationAction SilentlyContinue` silences the status lines without
+    silencing the warnings.
+
     `Invoke-`, not `Start-`, because the command no longer merely starts
     something: by the time it returns, the capture has been scrubbed and
     verified and the catalogue exists.
@@ -120,21 +130,37 @@ if (-not (Test-Path -LiteralPath $captureJs)) {
     return
 }
 
+# Status goes to the information stream, never to the pipeline: per
+# powershell.instructions.md -> Output & Streams, chatter mixed into the output
+# is what makes `... | ConvertTo-Json` return prose instead of data. It is also
+# why there is no Write-Host here.
+#
+# The preference is set once rather than pinning `-InformationAction Continue`
+# on every call. Pinning made the messages visible but also made them
+# unsuppressable: the caller's own -InformationAction, the mechanism the
+# convention points them at, did nothing. Honouring an explicit binding gives
+# both -- on by default, and off when the caller says so.
+if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
+    $InformationPreference = 'Continue'
+}
+
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
 if ($Describe) { $captureArgs += @('--describe', $Describe) }
 if ($Profile) { $captureArgs += @('--profile', $Profile) }
 if ($Isolated) { $captureArgs += '--isolated' }
+# -Verbose is the only verbosity switch. capture-har.js prints its own console
+# output directly -- re-streaming it through PowerShell would buffer the ENTER
+# prompt and the Ctrl+C question in the very terminal the operator answers --
+# so the level is handed across instead of a second switch being invented.
+if ($VerbosePreference -ne 'SilentlyContinue') { $captureArgs += @('--log-level', 'verbose') }
 
-# Status goes to the information stream, never to the pipeline: per
-# powershell.instructions.md -> Output & Streams, chatter mixed into the output
-# is what makes `... | ConvertTo-Json` return prose instead of data. It is also
-# why there is no Write-Host here.
-Write-Information 'Recording. Browse, then press ENTER in this terminal to end the capture.' -InformationAction Continue
-Write-Information 'Closing the browser window does the same thing. Ctrl+C asks first.' -InformationAction Continue
+Write-Verbose "capture-har.js $($captureArgs -join ' ')"
+Write-Information 'Recording. Browse, then press ENTER in the recorder terminal -- that writes the most complete HAR.'
 
 & node $captureJs @captureArgs
 $exit = $LASTEXITCODE
+Write-Verbose "capture-har.js exited $exit"
 
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
 # from the incremental log rather than recordHar -- a full capture either way,
@@ -142,7 +168,7 @@ $exit = $LASTEXITCODE
 # phase is not, which must not be reported as success.
 switch ($exit) {
     0 { }
-    5 { Write-Information 'Capture assembled from the incremental record log.' -InformationAction Continue }
+    5 { Write-Information 'Recording ended by closing the window; press ENTER next time for a slightly richer HAR.' }
     6 { Write-Warning 'Recorded successfully, but scrub or catalogue failed. The raw capture is intact.' }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."
@@ -161,6 +187,7 @@ switch ($exit) {
 # before node returns here.
 $cataloguePath = Join-Path (
     $(if ($OutputPath) { $OutputPath } else { Join-Path 'docs' 'har-reference' })) 'catalogue.json'
+Write-Verbose "catalogue: $cataloguePath"
 
 if (-not (Test-Path -LiteralPath $cataloguePath)) {
     Write-Warning "no catalogue was written to $cataloguePath"
@@ -182,7 +209,7 @@ $rows = @(& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cata
 if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
     Write-Information (
         'Every row is still Observed -- the catalogue needs its AI pass. See ' +
-        (Join-Path $PSScriptRoot 'catalogue-prompt.md')) -InformationAction Continue
+        (Join-Path $PSScriptRoot 'catalogue-prompt.md'))
 }
 
 $rows
