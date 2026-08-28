@@ -1288,7 +1288,12 @@ function reportPostProcess(session) {
     const pp = session.postProcess || {};
     const lines = [`  raw:       ${session.harPath}  (unscrubbed -- never commit it)`];
     if (pp.scrubbed && pp.scrubbed.path) {
-        lines.push(`  scrubbed:  ${pp.scrubbed.path}` + (pp.scrubbed.verified ? '  (verified)' : '  (NOT verified)'));
+        lines.push(`  scrubbed:  ${pp.scrubbed.path}  (verified)`);
+    } else if (pp.scrubbed && pp.scrubbed.removed) {
+        // Say that the file was removed rather than going quiet about it. The
+        // ERROR line below explains why, but silence here reads as "no scrub
+        // was attempted", which is a different and less alarming story.
+        lines.push('  scrubbed:  REJECTED by the leak gate and deleted; the raw capture is kept');
     }
     if (pp.digest) lines.push(`  digest:    ${pp.digest.path}`);
     if (pp.catalogue) {
