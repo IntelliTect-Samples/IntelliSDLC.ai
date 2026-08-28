@@ -10,6 +10,44 @@
 # an empty capture being analyzed as data, and the snapshot recovery that makes
 # an unexpected ending survivable.
 
+BeforeDiscovery {
+    $script:DiscoveryRepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') |
+        Select-Object -ExpandProperty Path
+}
+
+Describe 'Ending a recording -- the docs must not contradict each other' {
+    # SKILL.md states, as a measured finding, that closing the browser window
+    # first means Playwright never serializes recordHar and NO HAR is written.
+    # Stop-HarRecording.ps1's docstring said the opposite -- that closing the
+    # window "ends the recording and writes the HAR" and a human does not
+    # normally need the script. A human following that loses the capture.
+    BeforeAll {
+        $script:RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') |
+            Select-Object -ExpandProperty Path
+        $script:StopText = Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot `
+            'templates/web-api-discovery/scripts/capture/Stop-HarRecording.ps1')
+        $script:SkillMd = Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot `
+            '.github/skills/web-api-discovery/SKILL.md')
+    }
+
+    It 'SKILL.md still warns that closing the window writes no HAR' {
+        $script:SkillMd | Should -Match '(?i)Never end a recording by closing the browser window'
+    }
+
+    It 'Stop-HarRecording does not tell the reader that closing the window writes the HAR' {
+        # \s+ between words, not literal spaces: the sentence wraps across
+        # lines in the docstring, so a literal-space pattern silently never
+        # matches and the guard is dead.
+        $script:StopText |
+            Should -Not -Match '(?i)closing\s+the\s+browser\s+window\s+ends\s+the\s+recording\s+and\s+writes\s+the\s+HAR' `
+            -Because 'SKILL.md records the opposite as measured: no HAR is written at all'
+    }
+
+    It 'Stop-HarRecording names ENTER as the human path' {
+        $script:StopText | Should -Match '(?i)ENTER'
+    }
+}
+
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
     $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
