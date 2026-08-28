@@ -94,7 +94,8 @@ Start-HarRecording https://example.com
 node templates/web-api-discovery/scripts/har/extract-har-reference.js `
     --in .har-captures/<capture>.har --match <pattern>
 
-# 3. Gate it. Also runs in CI over the whole directory.
+# 3. Gate it. Runnable over the whole directory, so it also works from CI.
+#    Run it locally -- no workflow in this repo invokes it for you today.
 node templates/web-api-discovery/scripts/har/verify-har-reference.js `
     --dir docs/har-reference
 ```

@@ -22,12 +22,22 @@ lives in the canonical skill:
 
 1. **Invoke the `web-api-discovery` skill.** Do not duplicate its
    contents here; read the skill file and follow it verbatim.
-2. **Honor the Hard Gate.** Confirm target URL, project name + namespace
-   + output directory, auth model (or `autodetect`), and a tracking
-   GitHub issue before any filesystem mutation.
-3. **Ask the skill's seven inputs one at a time**, in the order listed
-   in the skill's Inputs table. Echo back a one-line preview after
-   inputs 1 and 2 before continuing.
+2. **Pick the tier before you ask for anything.** The skill's Hard Gate is
+   tiered, and asking for the wrong tier's inputs is the most common way to
+   get this wrong.
+   - **Capture-only** -- the user asked to record, capture, or catalogue
+     traffic and did not ask for a client. Establish the target URL from
+     context (ask only if genuinely ambiguous), follow the location
+     convention, record, scrub, catalogue, and **stop**. Do not ask for a
+     project name, a .NET namespace, an auth model, or a tracking issue;
+     none of them apply to a run that ends at the reference.
+   - **Generation** -- the user asked for a wrapper, a client, or a project.
+     Honor the generation tier of the Hard Gate in full before emitting
+     anything.
+3. **In the generation tier, ask the skill's seven inputs one at a time**,
+   in the order listed in the skill's Inputs table. Echo back a one-line
+   preview after inputs 1 and 2 before continuing. A capture-only run does
+   not ask them.
 4. **Fail fast on pipeline errors.** The orchestrator (`run-agent.js`)
    prints a stage banner before each step; surface the failing stage
    and remediation message to the user without "partially generating"
