@@ -626,8 +626,8 @@ const okEntry = {
 
 test('postProcess builds the digest from the SCRUBBED capture, not the raw one', () => {
     // The raw carries the operator's own identifier. If the digest is computed
-    // from it, that identifier reaches docs/har-reference/ -- the directory
-    // the design promises receives only scrubbed, verified artifacts.
+    // from it, that identifier reaches the host-named output folder -- the
+    // directory the design promises receives only scrubbed, verified artifacts.
     const leaky = JSON.parse(JSON.stringify(okEntry));
     leaky.request.url = 'https://api.example.com/v1/users/operator@example.com/posts';
 
@@ -792,8 +792,8 @@ function fakeSession(overrides) {
         profileDir: '/tmp/profile-livetest-f76b1e97',
         storageState: null,
         externalProfile: false,
-        harPath: '/tmp/.har-captures/2026-08-27-210525/raw.har',
-        outputPath: '/tmp/docs/har-reference',
+        harPath: '/tmp/.har-captures/example.com/2026-08-27-210525/raw.har',
+        outputPath: '/tmp/example.com',
         cdpEndpoint: 'http://localhost:9333',
         port: 9333,
         requestedPort: 9333
@@ -824,8 +824,8 @@ test('the default banner names the site and how to end, not the paths', () => {
 test('the verbose banner adds the resolved paths and the endpoint', () => {
     const text = capture.renderLines(capture.startBannerLines(fakeSession()), 'verbose');
     assert.match(text, /profile:\s+\/tmp\/profile-livetest/);
-    assert.match(text, /raw:\s+\/tmp\/\.har-captures/);
-    assert.match(text, /output:\s+\/tmp\/docs\/har-reference/);
+    assert.match(text, /raw:\s+\/tmp\/\.har-captures\/example\.com\//);
+    assert.match(text, /output:\s+\/tmp\/example\.com/);
     assert.match(text, /cdp:\s+http:\/\/localhost:9333/);
 });
 
