@@ -75,8 +75,21 @@ const LEAK_PATTERNS = [
         // Luhn-valid credit-card-shaped digit runs. Fakes are Luhn-valid too
         // (so we can't use validity as the fake marker); instead, fakes always
         // start with the 4242 IIN test prefix.
+        // The lookarounds keep a digit run that is part of a DECIMAL NUMBER
+        // out of the card slot. `.` is a non-word character, so a bare
+        // /\b\d{13,19}\b/ matches between the decimal point and the first
+        // fractional digit -- and a HAR's own timing values routinely carry 14
+        // fractional digits of IEEE-754 noise ("time":168.01500000000001),
+        // ~10% of which are Luhn-valid by chance. That rejected real captures
+        // outright and told the operator they had leaked a card (issue #292).
+        //
+        //   (?<!\d\.)  drops a fractional part:      168.[01500000000001]
+        //   (?!\.\d)   drops a float's integer part: [1234567890123].45
+        //
+        // A genuine card followed by sentence punctuation is still caught: the
+        // lookahead requires a DIGIT after the dot, not merely a dot.
         name: 'credit-card',
-        re: /\b\d{13,19}\b/g,
+        re: /(?<!\d\.)\b\d{13,19}\b(?!\.\d)/g,
         isFake: (m) => /^4242/.test(m),
         precheck: (m) => luhnValid(m) && !isPlausibleRecentUnixMs(m)
     }
