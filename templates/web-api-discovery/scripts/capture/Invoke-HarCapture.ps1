@@ -174,7 +174,12 @@ $rows = @(& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cata
 # take a list of provisional rows for a finished catalogue. Derived from the
 # rows themselves rather than from session state, so it survives the catalogue
 # being filled in by any of the three runners.
-if ($rows.Count -and -not ($rows | Where-Object Status -eq 'Exercised')) {
+#
+# Keyed on Description, not Status: a real AI pass may legitimately conclude
+# that every group was observed and none exercised, and telling that operator
+# their catalogue never ran would be wrong. Describing a row is the one thing
+# the AI does that the scaffold never can.
+if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
     Write-Information (
         'Every row is still Observed -- the catalogue needs its AI pass. See ' +
         (Join-Path $PSScriptRoot 'catalogue-prompt.md')) -InformationAction Continue
