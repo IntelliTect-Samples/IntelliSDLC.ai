@@ -294,7 +294,8 @@ test('assembleFromLog salvages the rest when the final line was truncated', () =
 });
 
 // ---------------------------------------------------------------------------
-// Stage 3 -- raw captures are confined to .har-captures/
+// Stage 3 -- raw captures are confined to .har-captures/, and both roots are
+// keyed on the captured URI (issue #290)
 // ---------------------------------------------------------------------------
 
 test('the raw capture path ignores the output path entirely', () => {
@@ -302,15 +303,72 @@ test('the raw capture path ignores the output path entirely', () => {
     // directory elsewhere put an unignored, credential-bearing capture one
     // `git add -A` away from a commit. No flag can do that any more.
     const resolved = capture.resolveSessionPaths({
-        outputPath: path.join(tmpRoot, 'docs', 'har-reference'),
+        uri: 'https://app.example.com/login',
+        outputPath: path.join(tmpRoot, 'out'),
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
     assert.ok(resolved.harPath.startsWith(path.join(tmpRoot, '.har-captures')),
         'raw.har must live under the fixed captures root');
-    assert.ok(!resolved.harPath.includes('har-reference'),
+    assert.ok(!resolved.harPath.startsWith(resolved.outputPath),
         'the raw capture must never be written under the output path');
-    assert.ok(resolved.outputPath.includes('har-reference'));
+});
+
+test('both roots are keyed on the captured host', () => {
+    // Two captures against different sites used to collide: scrubbed.har,
+    // digest.json and catalogue.json are fixed filenames under one output
+    // directory, so the second silently overwrote the first.
+    const resolved = capture.resolveSessionPaths({
+        uri: 'https://app.example.com/login',
+        outputPath: path.join(tmpRoot, 'out'),
+        capturesRoot: path.join(tmpRoot, '.har-captures'),
+        stamp: '2026-01-01-120000'
+    });
+    assert.strictEqual(resolved.sessionDir,
+        path.join(tmpRoot, '.har-captures', 'app.example.com', '2026-01-01-120000'));
+    assert.strictEqual(resolved.outputPath,
+        path.join(tmpRoot, 'out', 'app.example.com'));
+});
+
+test('the output path defaults to a host-named folder in the current directory', () => {
+    const resolved = capture.resolveSessionPaths({
+        uri: 'https://app.example.com/',
+        capturesRoot: path.join(tmpRoot, '.har-captures'),
+        stamp: '2026-01-01-120000'
+    });
+    assert.strictEqual(resolved.outputPath,
+        path.join(path.resolve('.'), 'app.example.com'));
+});
+
+test('uriFolder keeps the host and discards path and query', () => {
+    // The operator types this URL. A magic-link, password-reset or signed
+    // start URL carries its token in the path or the query, and this name
+    // becomes a directory next to committable artifacts -- so only the host
+    // may survive. Same rationale as the digest's originOf().
+    const folder = capture.uriFolder('https://app.example.com/reset/TOKENPATH?t=TOKENQUERY');
+    assert.strictEqual(folder, 'app.example.com');
+    assert.ok(!folder.includes('TOKENPATH') && !folder.includes('TOKENQUERY'),
+        'no URL path or query component may reach the folder name');
+});
+
+test('uriFolder preserves periods and renders a port with an underscore', () => {
+    // Dashes are legal in hostnames, so a dash is a bad separator: it would be
+    // ambiguous with the host's own characters.
+    assert.strictEqual(capture.uriFolder('https://my-app.example.com/'), 'my-app.example.com');
+    assert.strictEqual(capture.uriFolder('https://localhost:5001/'), 'localhost_5001');
+});
+
+test('uriFolder lowercases the host and yields a path-legal name', () => {
+    assert.strictEqual(capture.uriFolder('HTTPS://APP.Example.COM/'), 'app.example.com');
+    // An IPv6 literal arrives bracketed; brackets and colons are illegal in a
+    // Windows path, so nothing outside [a-z0-9._-] may survive.
+    assert.match(capture.uriFolder('http://[::1]:8080/'), /^[a-z0-9._-]+$/);
+});
+
+test('uriFolder refuses a URI it cannot parse', () => {
+    // Falling back to a shared folder would silently re-introduce the
+    // collision this change exists to remove.
+    assert.throws(() => capture.uriFolder('not-a-url'), /uri/i);
 });
 
 test('start rejects an attempt to redirect the raw capture directory', () => {

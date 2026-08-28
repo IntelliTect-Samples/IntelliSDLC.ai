@@ -111,7 +111,7 @@ const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
 const CAPTURES_DIR = '.har-captures';
-const DEFAULT_OUTPUT_PATH = path.join('docs', 'har-reference');
+const DEFAULT_OUTPUT_PATH = '.';
 const DEFAULT_SNAPSHOT_SECONDS = 5;
 const STORAGE_STATE_FILENAME = '.har-storage-state.json';
 const CATALOGUE_PROMPT = 'catalogue-prompt.md';
@@ -315,22 +315,60 @@ function capturesRoot() {
 }
 
 /**
+ * The directory name that stands for the captured site.
+ *
+ * HOST ONLY, for the same reason the digest reduces the URI to its origin: the
+ * operator types this URL, and a magic-link, password-reset or signed start URL
+ * carries its token in the path or the query. This name becomes a directory
+ * sitting next to committable artifacts, so echoing any more of the URL would
+ * put a live credential exactly where the design promises only scrubbed
+ * artifacts land.
+ *
+ * The port is joined with `_` rather than `-`: a dash is legal inside a
+ * hostname, so it could not be told apart from the host's own characters.
+ * Periods are kept for the same reason -- they read as the host does.
+ *
+ * Throws rather than falling back to a shared name. An unparseable URI that
+ * quietly collapsed to one folder would re-introduce the cross-site collision
+ * this keying exists to remove.
+ */
+function uriFolder(uri) {
+    let url;
+    try {
+        url = new URL(uri);
+    } catch (e) {
+        throw new Error(`cannot derive a capture folder: --uri ${JSON.stringify(uri)} is not a URL`);
+    }
+    const withPort = url.port ? `${url.hostname}_${url.port}` : url.hostname;
+    // An IPv6 literal host arrives bracketed (`[::1]`); brackets and colons are
+    // illegal in a Windows path, so anything outside the safe set is folded.
+    return withPort.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+}
+
+/**
  * The two directories a capture writes to, and why they are different.
  *
  * `harPath` is under the fixed captures root, always. `outputPath` receives
  * only artifacts that have already been scrubbed and verified. Nothing an
  * operator passes can move the first, which is what makes the containment
  * structural rather than a rule somebody has to remember.
+ *
+ * Both are keyed on the captured host, so two captures against different sites
+ * never land on top of each other -- `scrubbed.har`, `digest.json` and
+ * `catalogue.json` are fixed filenames, and before this the second capture
+ * silently overwrote the first.
  */
 function resolveSessionPaths(opts = {}) {
     const root = opts.capturesRoot ? path.resolve(opts.capturesRoot) : capturesRoot();
-    const sessionDir = path.join(root, opts.stamp || stamp(new Date()));
+    const folder = uriFolder(opts.uri);
+    const sessionDir = path.join(root, folder, opts.stamp || stamp(new Date()));
     return {
         capturesRoot: root,
+        uriFolder: folder,
         sessionDir,
         harPath: path.join(sessionDir, RAW_HAR),
         recordLog: path.join(sessionDir, RECORD_LOG),
-        outputPath: path.resolve(opts.outputPath || DEFAULT_OUTPUT_PATH)
+        outputPath: path.join(path.resolve(opts.outputPath || DEFAULT_OUTPUT_PATH), folder)
     };
 }
 
@@ -1206,7 +1244,7 @@ async function start(args) {
         }
     }
 
-    const paths = resolveSessionPaths({ outputPath: args['output-path'] });
+    const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
     const requestedPort = numberOr(args.port, DEFAULT_PORT);
     const port = args['validate-only'] && requestedPort === 0
         ? requestedPort
@@ -1632,6 +1670,7 @@ module.exports = {
     buildEntry,
     assembleFromLog,
     resolveSessionPaths,
+    uriFolder,
     findFreePort,
     discoverStorageState,
     buildDigest,
