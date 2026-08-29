@@ -535,5 +535,56 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
         '18c.a: the verifier flagged a substitution table in the gitignored capture tree:\n' + r.stderr);
 }
 
+// --- 19. Reference discovery is case-insensitive, both ways. ---
+// Windows is case-preserving but case-insensitive, so the two walks in this
+// verifier must agree with git about what a name means. The two failure
+// directions are not equal: descending into `.Har-Captures` gates raw captures
+// as though they were references (noisy), while skipping `capture.HAR`
+// verifies NOTHING and leaves a reference in the committed tree looking
+// checked. The second is the one that ships a leak.
+{
+    const dir = makeProject('case-insensitive');
+    const leaky = {
+        log: {
+            version: '1.2', creator: { name: 't', version: '1' }, entries: [entry({
+                response: {
+                    content: {
+                        size: 40, mimeType: 'application/json',
+                        text: JSON.stringify({ token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90' }),
+                    },
+                },
+            })],
+        },
+    };
+
+    // A reference whose extension is upper-cased must still be verified.
+    //
+    // Asserting merely "non-zero" would pass for the wrong reason: a skipped
+    // file leaves NO references at all, and the verifier exits 1 complaining it
+    // found none. The point is that the leak inside it is REPORTED, so assert
+    // the violation exit code and the finding itself.
+    fs.writeFileSync(path.join(dir, 'capture.HAR'), JSON.stringify(leaky));
+    let r = runNode(verifyRef, ['--dir', dir], dir);
+    const output19a = r.stdout + r.stderr;
+    assert.strictEqual(r.code, 3,
+        '19.a: a reference named capture.HAR was not verified -- it sits in the committed ' +
+        'tree looking checked: ' + output19a);
+    assert.ok(/hex32/.test(output19a),
+        '19.a2: capture.HAR was counted but its leaked token was never reported: ' + output19a);
+    fs.rmSync(path.join(dir, 'capture.HAR'));
+
+    // A miscased captures directory is still the gitignored capture tree.
+    const captures = path.join(dir, '.Har-Captures');
+    fs.mkdirSync(captures, { recursive: true });
+    fs.writeFileSync(path.join(captures, 'raw.har'), JSON.stringify(leaky));
+    fs.writeFileSync(path.join(dir, 'clean.har'), JSON.stringify({
+        log: { version: '1.2', creator: { name: 't', version: '1' }, entries: [entry({})] },
+    }));
+    r = runNode(verifyRef, ['--dir', dir], dir);
+    assert.strictEqual(r.code, 0,
+        '19.b: the verifier descended into a miscased .Har-Captures and gated the raw capture ' +
+        'inside it: ' + r.stdout + r.stderr);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-reference tests passed');

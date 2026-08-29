@@ -113,15 +113,22 @@ function listForbiddenFiles(dir) {
     return found.sort();
 }
 
+// Both comparisons are lower-cased, for the reason the comment above already
+// gives: Windows is case-preserving but case-insensitive. The two directions
+// fail differently and both are wrong. An exact-case SKIP_DIRS lookup descends
+// into `.Har-Captures` and gates the raw captures inside it as though they were
+// references -- noisy. An exact-case `.har` test skips `capture.HAR`
+// ENTIRELY, so a reference nobody verified sits in the committed tree looking
+// checked, which is the worse of the two by far.
 function listHarFiles(dir) {
     const found = [];
     for (const name of fs.readdirSync(dir)) {
         const full = path.join(dir, name);
         const stat = fs.statSync(full);
         if (stat.isDirectory()) {
-            if (SKIP_DIRS.has(name)) continue;
+            if (SKIP_DIRS.has(name.toLowerCase())) continue;
             found.push(...listHarFiles(full));
-        } else if (name.endsWith('.har')) found.push(full);
+        } else if (name.toLowerCase().endsWith('.har')) found.push(full);
     }
     return found.sort();
 }

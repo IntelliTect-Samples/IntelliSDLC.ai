@@ -333,6 +333,16 @@ function collectEntryStrings(entry, emit) {
 function walkJsonStrings(value, base, emit, depth) {
     if (depth > 40) return;
     if (typeof value === 'string') { emit(base, value); return; }
+    // A scalar that is not a string is still a value somebody sent. Quoting is
+    // invisible to a regex, so the whole-document sweep this replaced found a
+    // card serialised as a bare JSON number; walking string leaves alone would
+    // silently narrow the gate at exactly the point it was being made precise.
+    // JSON number syntax means only the digit-run patterns can hide here -- and
+    // `credit-card` is a digit run, which a project may opt up to `gate`.
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+        emit(base, String(value));
+        return;
+    }
     if (Array.isArray(value)) {
         value.forEach((v, i) => walkJsonStrings(v, `${base}[${i}]`, emit, depth + 1));
         return;
