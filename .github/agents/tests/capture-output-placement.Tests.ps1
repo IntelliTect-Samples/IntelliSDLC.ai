@@ -330,26 +330,52 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
     BeforeAll {
         $script:InvokePs1 = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
 
-        # A stub `node` on PATH: the front door's own Get-Command preflight
-        # finds a .cmd, and standing one in front of the real recorder makes
-        # "what did the front door do before launching anything" observable
-        # without opening a browser.
+        # A stub `node` on PATH: standing one in front of the real recorder
+        # makes "what did the front door do before launching anything"
+        # observable without opening a browser.
+        #
+        # The stub has to be shaped per platform. Windows resolves a bare `node`
+        # through PATHEXT to `node.cmd`; Linux and macOS look for a file named
+        # exactly `node` with the execute bit set, and separate PATH entries
+        # with ':' rather than ';'. A Windows-only stub silently fails to
+        # shadow anything on Linux, the REAL recorder runs, and the test fails
+        # with "capture-har exited 1" -- which is exactly what happened for as
+        # long as this suite never ran on Linux (issue #308).
+        function New-NodeStub {
+            param(
+                [Parameter(Mandatory)][string]$Directory,
+                [Parameter(Mandatory)][string]$EnvFile
+            )
+
+            if ($IsWindows) {
+                Set-Content -LiteralPath (Join-Path $Directory 'node.cmd') -Encoding ascii -Value @(
+                    '@echo off'
+                    "echo GUARD=%HARCAPTURE_PLACEMENT_GUARD_RAN% > `"$EnvFile`""
+                    'exit /b 0'
+                )
+                return
+            }
+
+            $stub = Join-Path $Directory 'node'
+            # LF endings and no BOM: the kernel reads the shebang literally, and
+            # a CR would make the interpreter path '/bin/sh\r', which does not exist.
+            $body = "#!/bin/sh`necho `"GUARD=`$HARCAPTURE_PLACEMENT_GUARD_RAN`" > '$EnvFile'`nexit 0`n"
+            [System.IO.File]::WriteAllText($stub, $body, [System.Text.UTF8Encoding]::new($false))
+            & chmod +x $stub
+        }
+
         function Invoke-FrontDoorIn {
             param([Parameter(Mandatory)][string]$Cwd, [hashtable]$Arguments = @{})
 
             $stubDir = Join-Path $script:Tmp ('stub-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
             $envFile = Join-Path $stubDir 'env.txt'
-            Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
-                '@echo off'
-                "echo GUARD=%HARCAPTURE_PLACEMENT_GUARD_RAN% > `"$envFile`""
-                'exit /b 0'
-            )
+            New-NodeStub -Directory $stubDir -EnvFile $envFile
 
             $infoFile = Join-Path $stubDir 'info.txt'
             $warnFile = Join-Path $stubDir 'warn.txt'
             $savedPath = $env:PATH
-            $env:PATH = "$stubDir;$savedPath"
+            $env:PATH = $stubDir + [System.IO.Path]::PathSeparator + $savedPath
             Push-Location -LiteralPath $Cwd
             try {
                 & $script:InvokePs1 @Arguments 6> $infoFile 3> $warnFile 2>$null | Out-Null
