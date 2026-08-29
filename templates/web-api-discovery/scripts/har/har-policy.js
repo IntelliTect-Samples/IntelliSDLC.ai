@@ -191,10 +191,16 @@ function validateCardIssuers(issuers, file) {
 
 const CARD_ISSUER_KEYS = ['brand', 'prefixes', 'lengths'];
 
-// The card pattern only ever offers the predicate a 13-19 digit run, and the
-// shortest card in circulation is 12. A length outside that window can never
-// match, so accepting it would be accepting a rule that silently does nothing.
-const CARD_LENGTH_MIN = 12;
+// The window is the DETECTOR's, not the payment industry's. The credit-card
+// pattern in har-shapes.js matches a bounded run of 13 to 19 digits, so that is the
+// only thing the predicate is ever offered -- and 12 is where this is easy to get
+// wrong, because 12 IS a real Maestro length. A consumer adding the range for
+// the cards their market actually mints would pass validation and then detect
+// nothing, forever, silently. That is precisely the rule-that-can-never-fire
+// this validator exists to refuse, so the bound tracks the detector rather than
+// the standard. `har-card-issuers.test.js` case 8 probes the pattern for its own
+// floor and ceiling and fails if these two numbers stop agreeing with it.
+const CARD_LENGTH_MIN = 13;
 const CARD_LENGTH_MAX = 19;
 
 function validateCardIssuer(issuer, at, file, index) {
@@ -226,7 +232,9 @@ function validateCardLengths(lengths, at) {
                 `${at}: length ${JSON.stringify(len)} must be a whole number from ` +
                 `${CARD_LENGTH_MIN} to ${CARD_LENGTH_MAX} -- the card pattern never offers ` +
                 `the predicate a run outside that window, so any other value is a rule ` +
-                `that can never fire.`);
+                `that can never fire. This refuses 12 even though 12 is a real card ` +
+                `length: a range that validates and then detects nothing is worse than ` +
+                `one that fails at load.`);
         }
     }
 }

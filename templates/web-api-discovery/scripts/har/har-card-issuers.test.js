@@ -137,7 +137,11 @@ function rejects(project, what) {
     rejects({ cardIssuers: [{ brand: 'x', prefixes: [], lengths: [16] }] },
         '6.g: no prefixes at all');
     rejects({ cardIssuers: [{ brand: 'x', prefixes: [[50, 50]], lengths: [4] }] },
-        '6.h: a length outside the 12-19 the card pattern can even see');
+        '6.h: a length outside the window the card pattern can even see');
+    rejects({ cardIssuers: [{ brand: 'x', prefixes: [[50, 50]], lengths: [12] }] },
+        '6.h2: 12 is a real Maestro length and is STILL rejected -- the card pattern ' +
+        'never offers the predicate a 12-digit run, so accepting it would be accepting ' +
+        'a rule that silently detects nothing');
     rejects({ cardIssuers: [{ brand: 'x', prefixes: [[50, 50]], lengths: [16], note: 'hi' }] },
         '6.i: an unknown key inside an issuer entry');
     rejects({ cardIssuers: { brand: 'x' } },
@@ -153,6 +157,45 @@ function rejects(project, what) {
         loadPolicy({ cardIssuers: [MAESTRO_ADDITION] }).version,
         loadPolicy().version,
         '7.a: adding an issuer range must change the merged policy version');
+}
+
+// --- 8. The validator's length window IS the detector's length window. ---
+// These two numbers are one decision written in two files, and the failure when
+// they disagree is silent in the worst direction: a consumer adds the range for
+// the cards their market actually mints, validation accepts it, and nothing is
+// ever detected. The validator's own comment says it exists to refuse "a rule
+// that can never fire" -- so it has to be measured against what the detector can
+// actually offer it, not against a plausible-looking constant.
+{
+    const pattern = shapes.LEAK_PATTERNS.find((p) => p.name === 'credit-card');
+    assert.ok(pattern, '8.a: the credit-card pattern must exist to bound anything');
+
+    // Probe the pattern itself for the shortest and longest run it can yield.
+    const runOf = (n) => '4'.repeat(n);
+    const matches = (n) => {
+        const re = new RegExp(pattern.re.source, pattern.re.flags);
+        return (runOf(n).match(re) || []).length > 0;
+    };
+
+    let detectorMin = null;
+    let detectorMax = null;
+    for (let n = 1; n <= 30; n++) {
+        if (!matches(n)) continue;
+        if (detectorMin === null) detectorMin = n;
+        detectorMax = n;
+    }
+    assert.strictEqual(detectorMin, 13, '8.b: the card pattern floor moved; the validator must follow');
+    assert.strictEqual(detectorMax, 19, '8.c: the card pattern ceiling moved; the validator must follow');
+
+    // Every length the detector CAN offer must be accepted...
+    for (let n = detectorMin; n <= detectorMax; n++) {
+        loadPolicy({ cardIssuers: [{ brand: 'probe', prefixes: [[50, 50]], lengths: [n] }] });
+    }
+    // ...and every length just outside it must be refused, at both ends.
+    rejects({ cardIssuers: [{ brand: 'probe', prefixes: [[50, 50]], lengths: [detectorMin - 1] }] },
+        '8.d: one below the detector floor');
+    rejects({ cardIssuers: [{ brand: 'probe', prefixes: [[50, 50]], lengths: [detectorMax + 1] }] },
+        '8.e: one above the detector ceiling');
 }
 
 console.log('All har-card-issuers tests passed');

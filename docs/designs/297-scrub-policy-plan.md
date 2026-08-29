@@ -100,7 +100,11 @@ surface #295 closed -- so a repo that needs it declares it and owns the
 consequence. Every field of an added range is validated rather than trusted: a
 range that loads and does not mean what its author wrote is worse than one that
 fails, since `[5, 69]` reads as "5 through 69" and would in fact claim every
-prefix from 05 to 69.
+prefix from 05 to 69. The accepted `lengths` window is the DETECTOR's (13-19),
+not the payment industry's -- 12 is a real Maestro length and is still refused,
+because the card pattern never offers the predicate a 12-digit run and a range
+that validates and then detects nothing is the silent failure the validator
+exists to refuse.
 
 > **PR 1** ends here -- **delivered**. No caller consumes the policy yet; the
 > lift is verifiable in isolation.
