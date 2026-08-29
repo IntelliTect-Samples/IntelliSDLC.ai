@@ -4730,5 +4730,50 @@ Describe 'Issue #301: Git LFS hooks in .githooks/ are consumer-owned' {
                 Test-Path -LiteralPath (Join-Path $consumer $p) | Should -BeTrue
             }
         }
+
+        It 'leaves other consumer-owned files under managed prefixes uncommitted too' {
+            # The unstage keys on Test-IsAlwaysLocalPath, so it covers every
+            # consumer-owned path that sits under a managed add-path -- not just
+            # the LFS hooks. docs/README.md and
+            # .github/instructions/project.instructions.md are the other two
+            # today. This is deliberate and is the whole point of #222: a
+            # consumer's half-finished docs/README.md must not be swept into a
+            # `chore: sync` commit. Pinned here so the widening is not mistaken
+            # for an accident by a future reader.
+            $fx = New-DiffReplayFixture -Root $script:sweepRoot `
+                -Seed {
+                    New-Item -ItemType Directory -Path .github/instructions -Force | Out-Null
+                    'claude v1' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                } `
+                -Tweak {
+                    'claude v2' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                }
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+            Push-Location $fx.Consumer
+            try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+            # Consumer-owned files under managed prefixes, still uncommitted.
+            New-Item -ItemType Directory -Path (Join-Path $fx.Consumer 'docs') -Force | Out-Null
+            'my half-written archive guide' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'docs/README.md') -NoNewline
+            'my project conventions' | Out-File -Encoding utf8 `
+                (Join-Path $fx.Consumer '.github/instructions/project.instructions.md') -NoNewline
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+            $rc | Should -Be 0
+
+            Push-Location $fx.Consumer
+            try {
+                $committed = @(git show --pretty=format: --name-only HEAD | Where-Object { $_ })
+                $committed | Should -Contain 'CLAUDE.md' -Because 'upstream content is what the sync commit is for'
+                $committed | Should -Not -Contain 'docs/README.md' `
+                    -Because 'a consumer''s work-in-progress must not land in a chore: sync commit'
+                $committed | Should -Not -Contain '.github/instructions/project.instructions.md' `
+                    -Because 'project instructions are consumer-owned'
+            } finally { Pop-Location }
+
+            # Left in the working tree for the consumer to commit themselves.
+            Test-Path (Join-Path $fx.Consumer 'docs/README.md') | Should -BeTrue
+            Test-Path (Join-Path $fx.Consumer '.github/instructions/project.instructions.md') | Should -BeTrue
+        }
     }
 }
