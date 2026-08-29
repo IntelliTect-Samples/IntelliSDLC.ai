@@ -4,18 +4,18 @@ BeforeAll {
 
 Describe 'Get-GitHubRepoSlug' {
     It 'parses an https origin remote' {
-        Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai.git' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Dev/IntelliSDLC.ai'
+        Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' }
+        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'parses an https origin remote without a .git suffix' {
-        Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Dev/IntelliSDLC.ai'
+        Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai' }
+        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'parses an ssh origin remote' {
-        Mock -CommandName git -MockWith { 'git@github.com:IntelliTect-Dev/IntelliSDLC.ai.git' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Dev/IntelliSDLC.ai'
+        Mock -CommandName git -MockWith { 'git@github.com:IntelliTect-Samples/IntelliSDLC.ai.git' }
+        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'throws when there is no origin remote' {
