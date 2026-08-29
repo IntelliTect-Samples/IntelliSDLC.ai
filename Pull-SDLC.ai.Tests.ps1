@@ -3825,6 +3825,41 @@ Describe 'Get-UpstreamPrivatePruneOps' {
             }
         @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Count | Should -Be 0
     }
+
+    It 'prunes an upstream-private file outside the agents and skills trees' {
+        # The private-path rule spans all of .github/, but the inventory this
+        # function walks was scoped to agents/ and skills/ only. A consumer that
+        # received .github/instructions/tests/*.Tests.ps1 under the older rule
+        # would keep it forever: never re-shipped, never deleted.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/instructions/tests -Force | Out-Null
+                New-Item -ItemType Directory -Path .github/ci/tests -Force | Out-Null
+                'instr' | Out-File -Encoding utf8 .github/instructions/csharp.instructions.md -NoNewline
+                'stale' | Out-File -Encoding utf8 .github/instructions/tests/shape.Tests.ps1 -NoNewline
+                'gate'  | Out-File -Encoding utf8 .github/ci/tests/PesterGate.Tests.ps1 -NoNewline
+            }
+
+        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) |
+            ForEach-Object { $_.Path } | Sort-Object
+
+        $pruned | Should -Be @(
+            '.github/ci/tests/PesterGate.Tests.ps1',
+            '.github/instructions/tests/shape.Tests.ps1'
+        )
+    }
+
+    It 'does not prune a shipped file that merely sits beside a private tests directory' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/instructions/tests -Force | Out-Null
+                'instr' | Out-File -Encoding utf8 .github/instructions/csharp.instructions.md -NoNewline
+                'stale' | Out-File -Encoding utf8 .github/instructions/tests/shape.Tests.ps1 -NoNewline
+            }
+
+        @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Path |
+            Should -Not -Contain '.github/instructions/csharp.instructions.md'
+    }
 }
 
 Describe 'Invoke-PullSDLC prunes upstream-private paths from consumers' {

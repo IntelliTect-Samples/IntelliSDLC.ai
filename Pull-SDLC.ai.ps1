@@ -345,7 +345,9 @@ $script:AlwaysLocalPrefixes = @(
 # which is protection by omission: adding a new .github subtree to that
 # manifest would silently begin shipping test files (issue #304). Note this
 # also carves out .github/instructions/tests/, which shipped under the older
-# agents|skills form; consumers holding a copy get a delete replayed.
+# agents|skills form; consumers holding a copy get a delete replayed by
+# Get-UpstreamPrivatePruneOps -- whose inventory had to widen to the whole of
+# .github to match, or the delete would never have been emitted.
 $script:UpstreamPrivatePrefixes = @(
     '^\.github/(?:[^/]+/)*(?:tests|fixtures)/',
     # Node tests for the skill tooling under templates/. They exercise this
@@ -1239,23 +1241,31 @@ function Get-UpstreamPrivatePruneOps {
         Emits delete (D) ops for upstream-private files already tracked in the
         consumer's working tree so a sync removes them (issue #226).
     .DESCRIPTION
-        Upstream-private paths (tests/ and fixtures/ directories under
-        .github/agents/ or .github/skills/) are filtered out of the shipped op
-        list by Get-UpstreamOps, but a consumer that synced before this carve-out
-        existed still holds stale copies. Because those files are unchanged
-        between the recorded anchor and the upstream tip, the diff-replay never
-        generates a delete for them. This function lists the tracked files under
-        the managed agent/skill trees and returns a D op for each one that is
-        upstream-private (Test-IsUpstreamPrivatePath already excludes
-        consumer-owned always-local paths such as .github/skills/project-*/),
-        letting the caller replay the deletions. Idempotent: once the files are
-        gone, a rerun lists nothing and returns an empty array.
+        Upstream-private paths (tests/ and fixtures/ directories anywhere under
+        .github/) are filtered out of the shipped op list by Get-UpstreamOps,
+        but a consumer that synced before this carve-out existed still holds
+        stale copies. Because those files are unchanged between the recorded
+        anchor and the upstream tip, the diff-replay never generates a delete
+        for them. This function lists the tracked files under .github and
+        returns a D op for each one that is upstream-private
+        (Test-IsUpstreamPrivatePath already excludes consumer-owned always-local
+        paths such as .github/skills/project-*/), letting the caller replay the
+        deletions. Idempotent: once the files are gone, a rerun lists nothing
+        and returns an empty array.
+
+        The inventory spans the whole of .github deliberately. It was once
+        scoped to agents/ and skills/, matching the narrower private-path rule
+        of the time; when that rule widened, the mismatch meant a consumer
+        holding .github/instructions/tests/*.Tests.ps1 kept it forever -- never
+        re-shipped, never deleted (issue #304). Every path is re-checked against
+        Test-IsUpstreamPrivatePath below, so widening the inventory only ever
+        adds deletions that the predicate already sanctions.
     #>
     [CmdletBinding()]
     param([string]$RepoRoot = '.')
     Push-Location $RepoRoot
     try {
-        $tracked = & git ls-files -- '.github/agents' '.github/skills' 2>$null
+        $tracked = & git ls-files -- '.github' 2>$null
     }
     finally { Pop-Location }
     $ops = New-Object System.Collections.Generic.List[hashtable]

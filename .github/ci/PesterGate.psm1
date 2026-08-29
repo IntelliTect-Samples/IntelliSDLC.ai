@@ -92,6 +92,10 @@ function Get-TestFileInDirectory {
     foreach ($child in (Get-ChildItem -LiteralPath $Directory.FullName -Force -ErrorAction Stop)) {
         if ($child.PSIsContainer) {
             if ($script:SkipFolders -contains $child.Name) { continue }
+            # A directory symlink or junction can point back up its own tree.
+            # Following one recurses until the stack blows -- a discovery step
+            # whose job is to never misbehave silently should not do that.
+            if ($child.Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint)) { continue }
             Get-TestFileInDirectory -Directory $child
         }
         elseif ($child.Name -like '*.Tests.ps1') {
