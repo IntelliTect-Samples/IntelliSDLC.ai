@@ -272,5 +272,38 @@ function only(findings, kind) {
         '14.a: a body field named `comment` or `cache` was skipped as if it were our own bookkeeping');
 }
 
+// --- 15. A value that is not quoted in the JSON is still a value. ---
+// Replacing a text sweep with a structural walk is exactly where coverage
+// gets narrowed by accident: walking only STRING leaves means a card an API
+// serialises as a bare JSON number is never looked at, while the old
+// whole-document regex found it because quoting is invisible to a regex.
+//
+// JSON number syntax means this can only ever hide the digit-run patterns --
+// a JWT or a hex token could not parse as a number -- but `credit-card` is
+// precisely a digit run, and a project may opt that class up to `gate`.
+{
+    const doc = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'application/json', text: '{"card":4111111111111111}' } },
+    })]);
+    const f = only(shapes.findLeaksInHar(doc), 'credit-card');
+    assert.strictEqual(f.keyPath, 'response.content.text.card',
+        '15.a: a card stored as an unquoted JSON number was not found by the structural walk');
+}
+
+// --- 16. ...and a float is still not a card. ---
+// The lookarounds that keep a decimal's fractional part out of the card slot
+// (issues #292/#293) must survive the change: a HAR is full of floats, ~10% of
+// whose digit runs are Luhn-valid by chance, and re-reporting them would undo
+// the fix that made this gate usable at all.
+{
+    const doc = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'application/json', text: '{"elapsed":168.01500000000001,"ratio":0.4111111111111111}' } },
+    })]);
+    assert.deepStrictEqual(shapes.findLeaksInHar(doc), [],
+        '16.a: a decimal number was reported as a credit card again');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-shapes-walk tests passed');
