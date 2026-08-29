@@ -2768,9 +2768,31 @@ function Invoke-PullSDLC {
                     (Test-IsAlwaysLocalPath -Path $_)
                 })
             if ($unstage.Count -gt 0) {
-                & git restore --staged -- @unstage 2>$null | Out-Null
+                # `git restore --staged` resolves HEAD, so it fails with
+                # `fatal: could not resolve 'HEAD'` on the first sync into a repo
+                # with no commits -- a state this script's own auto-init produces,
+                # and exactly what a consumer hits who ran `git lfs install`
+                # before ever syncing. `git rm --cached` removes the index entry
+                # without consulting HEAD and leaves the working-tree file alone,
+                # which is the correct behavior when nothing is in HEAD yet.
+                & git rev-parse --verify --quiet HEAD 2>$null | Out-Null
+                $hasHead = ($LASTEXITCODE -eq 0)
                 foreach ($u in $unstage) {
-                    Write-Information "  (left uncommitted, consumer-owned) $u"
+                    if ($hasHead) {
+                        & git restore --staged -- $u 2>&1 | Out-Null
+                    }
+                    else {
+                        & git rm --cached --quiet -- $u 2>&1 | Out-Null
+                    }
+                    # Report per path, and only on success: a blanket message
+                    # printed ahead of the result would claim a file was left
+                    # uncommitted while it was in fact swept into the commit.
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Information "  (left uncommitted, consumer-owned) $u"
+                    }
+                    else {
+                        Write-Warning "Could not unstage consumer-owned '$u'; it will be included in the sync commit."
+                    }
                 }
             }
         }

@@ -4676,5 +4676,59 @@ Describe 'Issue #301: Git LFS hooks in .githooks/ are consumer-owned' {
             } finally { Pop-Location }
             Test-Path (Join-Path $fx.Consumer '.github/skills/project-mine/SKILL.md') | Should -BeTrue
         }
+
+        It 'does not commit LFS hooks on a first sync into a repo with no commits' {
+            # Regression net for the unborn-HEAD case (found in independent review).
+            # `git restore --staged` fails with `fatal: could not resolve 'HEAD'`
+            # (exit 128) when the repo has no commits yet -- a state the script's
+            # own auto-init/bootstrap flow produces. A consumer who runs
+            # `git lfs install` before their very first sync hits exactly this.
+            # Every other fixture here seeds an anchor commit, so this path needs
+            # its own.
+            $root = Join-Path $script:sweepRoot 'unborn'
+            $upstream = Join-Path $root 'upstream'
+            $consumer = Join-Path $root 'consumer'
+            New-Item -ItemType Directory -Path $upstream, $consumer -Force | Out-Null
+
+            Push-Location $upstream
+            try {
+                git init -q -b main; git config user.email u@u.u; git config user.name u
+                New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                'guard hook v1' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+                git add -A | Out-Null; git commit -q -m 'upstream'
+            } finally { Pop-Location }
+
+            # Consumer has NO commits -- git init only -- but already ran git lfs install.
+            Push-Location $consumer
+            try {
+                git init -q -b main; git config user.email c@c.c; git config user.name c
+                New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                foreach ($h in @('post-checkout', 'post-commit', 'post-merge', 'pre-push')) {
+                    "lfs $h" | Out-File -Encoding utf8 (Join-Path '.githooks' $h) -NoNewline
+                }
+                git remote add sdlc.ai $upstream
+                git fetch sdlc.ai --quiet 2>$null | Out-Null
+                (git rev-parse --verify HEAD 2>$null) | Should -BeNullOrEmpty -Because 'the fixture must start with an unborn HEAD'
+            } finally { Pop-Location }
+
+            $rc = Invoke-PullSDLC -RepoRoot $consumer -RemoteName 'sdlc.ai' `
+                -Bootstrap -NoPrompt -NoFetch -CommitOnMain -Force
+            $rc | Should -Be 0
+
+            Push-Location $consumer
+            try {
+                $committed = @(git show --pretty=format: --name-only HEAD | Where-Object { $_ })
+                foreach ($p in $global:Lfs301HookPaths) {
+                    $committed | Should -Not -Contain $p `
+                        -Because 'an unstage that silently failed would sweep the hook into the first sync commit'
+                }
+                $committed | Should -Contain '.githooks/pre-commit' -Because 'upstream content still syncs'
+            } finally { Pop-Location }
+
+            # The hooks are still on disk -- unstaged, not destroyed.
+            foreach ($p in $global:Lfs301HookPaths) {
+                Test-Path -LiteralPath (Join-Path $consumer $p) | Should -BeTrue
+            }
+        }
     }
 }
