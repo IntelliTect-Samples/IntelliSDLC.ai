@@ -107,11 +107,13 @@ autonomous run (after Phase 7 completes or when you must pause).
 
 Before starting, check whether the shared
 [IntelliSDLC.ai](https://github.com/IntelliTect-Dev/IntelliSDLC.ai)
-have been updated upstream:
+instructions have been updated upstream. `sdlc.ai` is the remote
+`Pull-SDLC.ai.ps1` creates and records; a consumer will not have one named
+anything else:
 
 ```bash
-git fetch instructions
-git log HEAD..instructions/main --oneline -- CLAUDE.md .github/copilot-instructions.md .github/agents/ .github/instructions/ .github/skills/
+git fetch sdlc.ai
+git log HEAD..sdlc.ai/main --oneline -- CLAUDE.md .github/copilot-instructions.md .github/agents/ .github/instructions/ .github/skills/
 ```
 
 If commits appear, pull and merge before proceeding. Skip if working directly

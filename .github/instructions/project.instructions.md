@@ -77,6 +77,67 @@ Note the asymmetry with the root: `Pull-SDLC.ai.Tests.ps1`,
 private prefix, so they **do** ship today. That is a known wart, not a pattern
 to copy — new tests go under `.github/`.
 
+## Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Sync engine + repo tooling | PowerShell 7 (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Start-IssueAgent.ps1`, `.github/ci/`) |
+| Tests | Pester 5/6 (`*.Tests.ps1`) -- the only test framework here |
+| Skill tooling under `templates/` | Node 20 (`capture-har.js`, `run-agent.js`), plus `*.test.js` |
+| Emitted code templates | C# / .NET 10 `*.tmpl` files -- generated *into consumers*, never compiled here |
+| CI | GitHub Actions (`.github/workflows/validate-instructions.yml`) |
+
+There is no compiler and no application. `dotnet` appears in CI only to exercise the
+project the generator emits.
+
+## Domain Glossary -- the sync vocabulary
+
+These terms are not interchangeable, and the distinctions decide whether a file reaches
+a consumer's repo. All are defined in `Pull-SDLC.ai.ps1`.
+
+| Term | Variable | Meaning |
+|---|---|---|
+| **Upstream-managed** | `$script:UpstreamManagedPaths` | Upstream owns it; changes are diff-replayed into consumers. An explicit allowlist -- a path not on it is invisible to the sync. |
+| **Consumer-owned** / **always-local** | `$script:AlwaysLocalPaths`, `$script:AlwaysLocalPrefixes` | The consumer owns it. Never overwritten or deleted. **Trumps upstream-managed**, so a consumer-owned file can live inside a managed tree (this file does). |
+| **Upstream-private** | `$script:UpstreamPrivatePrefixes` | Exists upstream, never ships. Filtered out of the op list *and* delete-replayed into consumers that received it before the carve-out. |
+| **Merge-managed** | `$script:MergePaths` | Union-merged rather than overwritten: the consumer keeps its entries, new upstream entries are appended. Today only `.gitignore`. |
+| **Scaffold** | `$script:TemplateScaffoldMap` | Seeded once from a `*.template` (or same-name) source if absent, then never touched again. How a consumer gets its own `README.md`, `CLAUDE.project.md`, and this file. |
+| **Meta-script** | `$script:MetaScriptPaths` | Managed scripts whose mere presence must not be read as "this consumer already has managed content" -- they arrive via `iwr` to *perform* the bootstrap. |
+| **Anchor** | -- | The last-synced upstream SHA in `.sdlc-ai-sync.json`. Sync is `git diff --name-status <anchor> <ref>`, so the anchor decides what counts as a change. `(empty tree)` means a full refresh. |
+| **Diff-replay** | -- | Applying that anchor-to-tip diff as file ops (`A`/`M`/`D`/`R`) instead of merging, which is why a file unchanged since the anchor generates no op even if it should now be deleted. |
+
+**Two traps this vocabulary sets, both hit for real:**
+
+1. **"Not shipped" is not the same as "upstream-private."** A path absent from the
+   managed allowlist does not ship *today*, but nothing records that intent -- adding its
+   tree to the manifest later silently starts shipping it. Upstream-private is the
+   guarantee that survives a manifest edit. Use both (issue #304).
+2. **Upstream-private must agree with what gets pruned.** `Get-UpstreamPrivatePruneOps`
+   inventories files to delete from consumers. When its scope was narrower than
+   `$script:UpstreamPrivatePrefixes`, a file could be both never-shipped and
+   never-deleted -- retained forever, and no longer diff-replayed, so it silently drifted.
+
+**Never infer any of this from a file's location.** Ask the predicates:
+
+```powershell
+. .\Pull-SDLC.ai.ps1 -WhatIf *> $null
+Test-IsAlwaysLocalPath     -Path '<repo-relative/path>'
+Test-IsUpstreamPrivatePath -Path '<repo-relative/path>'
+```
+
+## The upstream remote is named `sdlc.ai`
+
+`Pull-SDLC.ai.ps1` defaults `-RemoteName` to `sdlc.ai`, creates that remote on first
+sync, and records it in `.sdlc-ai-sync.json` as `"remote": "sdlc.ai"`. That is the one
+canonical name; use it in any new instruction or script.
+
+Do **not** rename it. Every existing consumer has both the git remote and the recorded
+manifest entry, so a rename is a migration (detect, rename, rewrite the manifest), not an
+edit.
+
+In *this* repository the remote is vestigial -- upstream does not sync into itself, and
+the dev-loop pre-flight explicitly skips when run here.
+
 ## Build, Test, Format
 
 There is no compiler. The suite is Pester, and CI runs it through the gate:
