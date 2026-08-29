@@ -198,7 +198,10 @@ function main() {
             report(`${where}: credential '${name}' is readable in the clear`);
         });
 
-        for (const leak of harShapes.findLeaksDeep(raw)) {
+        // Structural walk, not a sweep of the serialized document: a finding
+        // needs a location to be triageable, and our own envelope annotations
+        // are not wire data.
+        for (const leak of harShapes.findLeaksInHar(har)) {
             report(harShapes.describeLeak(leak));
         }
 

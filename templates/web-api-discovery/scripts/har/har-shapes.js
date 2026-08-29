@@ -268,13 +268,139 @@ function fingerprint(value) {
     return crypto.createHash('sha256').update(value).digest('hex').slice(0, 12);
 }
 
-/** Render a finding for a human, with no part of the value in it. */
+/**
+ * Render a finding for a human, with no part of the value in it.
+ *
+ * The location is the part that makes a finding actionable. What this
+ * replaced read `credit-card (fingerprint 4f2a..., 13 chars)` -- repeated 1413
+ * times, with the file already deleted, which is a report that tells its
+ * reader nothing except that the tool is angry.
+ */
 function describeLeak(leak) {
-    return `${leak.kind} (fingerprint ${leak.fingerprint}, ${leak.length} chars)`;
+    const parts = [`${leak.kind}`];
+    if (leak.class) parts.push(`[${leak.class}${leak.gating === false ? ' advisory' : ''}]`);
+    if (leak.entryIndex !== undefined) {
+        parts.push(`at entry ${leak.entryIndex} ${leak.keyPath || `(inside encoded ${leak.enclosing})`}`);
+    }
+    const counted = leak.count > 1 ? `, x${leak.count}` : '';
+    const waived = leak.waived ? ', WAIVED' : '';
+    parts.push(`(fingerprint ${leak.fingerprint}, ${leak.length} chars${counted}${waived})`);
+    return parts.join(' ');
+}
+
+/**
+ * HAR-spec fields inside an entry that WE wrote, skipped by the entry walk.
+ *
+ * The scoping fix is about provenance, not about a list of interesting nodes.
+ * The whole-document sweep reported our own annotations -- `log.comment`,
+ * `log.creator`, a fingerprint the scrubber had itself recorded -- as leaks in
+ * the file it had just scrubbed. Walking `log.entries[]` removes the envelope;
+ * this removes the handful of our-own fields that live inside an entry.
+ *
+ * Everything else in an entry IS scanned, including fields no spec mentions. A
+ * capture tool that adds one is adding wire data, and an allowlist of the
+ * nodes somebody thought of is how a secret in an unanticipated field walks
+ * straight through a gate that reports itself clean.
+ *
+ * This skip applies ONLY to the entry's own structure. It is never applied
+ * inside a parsed body: `comment` is our field on an entry and somebody's
+ * actual content in a response, and confusing the two would hide real data.
+ */
+const ENTRY_OWN_FIELDS = new Set(['comment', 'timings', 'cache']);
+
+function collectEntryStrings(entry, emit) {
+    for (const key of Object.keys(entry)) {
+        if (ENTRY_OWN_FIELDS.has(key)) continue;
+        walkJsonStrings(entry[key], key, emit, 0);
+    }
+}
+
+/**
+ * Walk a parsed JSON value, reporting each string with its key path appended
+ * to `base`, so a finding in a response body says WHICH field held it.
+ */
+function walkJsonStrings(value, base, emit, depth) {
+    if (depth > 40) return;
+    if (typeof value === 'string') { emit(base, value); return; }
+    if (Array.isArray(value)) {
+        value.forEach((v, i) => walkJsonStrings(v, `${base}[${i}]`, emit, depth + 1));
+        return;
+    }
+    if (value !== null && typeof value === 'object') {
+        for (const key of Object.keys(value)) {
+            walkJsonStrings(value[key], `${base}.${key}`, emit, depth + 1);
+        }
+    }
+}
+
+/**
+ * Scan one string, structurally where it can be and as text where it cannot.
+ *
+ * A body that parses as JSON is walked so every finding carries a real key
+ * path. A body that does not -- HTML, a minified JS asset, a multipart blob --
+ * is still scanned as text, because those carry reverse-engineerable protocol
+ * constants and skipping them by content type is the "scrub by size, not
+ * sensitivity" mistake the issue calls out.
+ */
+function scanString(text, keyPath, policy, push) {
+    if (typeof text !== 'string' || text === '') return;
+
+    let structured = false;
+    if (/^\s*[[{]/.test(text)) {
+        try {
+            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => {
+                for (const l of findLeaks(s, policy)) push(l, p, null);
+            }, 0);
+            structured = true;
+        } catch {
+            // Not JSON after all -- fall through to the text scan.
+        }
+    }
+    if (!structured) {
+        for (const l of findLeaks(text, policy)) push(l, keyPath, null);
+    }
+
+    // The percent-decoded view. A secret inside `variables=<encoded JSON>` is
+    // spelled `%22` and `%40` on the wire, so no pattern reaches it otherwise
+    // -- this is the layer the real `fb_dtsg` leak hid in. The decoded offset
+    // sits inside a string rather than at a JSON key, so it has no structural
+    // path of its own; the enclosing node is named instead.
+    const shadow = decodedShadow(text);
+    if (shadow !== text) {
+        for (const l of findLeaks(shadow, policy)) push(l, null, keyPath);
+    }
+}
+
+/**
+ * Find leaks in a PARSED HAR, with a location on every finding.
+ *
+ * Returns one finding per (kind, fingerprint) -- 1413 identical findings is
+ * not 1413 problems, and a wall of them is what taught readers to ignore the
+ * gate. Each carries the FIRST place it was seen plus an occurrence `count`.
+ *
+ * A location is not a secret. Only the value is, and none is ever included.
+ */
+function findLeaksInHar(har, policy) {
+    const entries = har && har.log && Array.isArray(har.log.entries) ? har.log.entries : [];
+    const grouped = new Map();
+
+    entries.forEach((entry, entryIndex) => {
+        if (!entry || typeof entry !== 'object') return;
+        const push = (leak, keyPath, enclosing) => {
+            const key = `${leak.kind}:${leak.fingerprint}`;
+            const existing = grouped.get(key);
+            if (existing) { existing.count++; return; }
+            grouped.set(key, Object.assign({}, leak, { entryIndex, keyPath, enclosing, count: 1 }));
+        };
+        collectEntryStrings(entry, (keyPath, text) => scanString(text, keyPath, policy, push));
+    });
+
+    return [...grouped.values()];
 }
 
 module.exports = {
     LEAK_PATTERNS,
+    findLeaksInHar,
     settingFor,
     findLeaks,
     findLeaksDeep,

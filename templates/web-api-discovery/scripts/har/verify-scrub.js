@@ -68,16 +68,25 @@ function main() {
         process.exit(1);
     }
 
-    // Scans the file AND a percent-decoded view of it, so a shape-matched
-    // secret nested inside an encoded parameter is caught too.
-    const leaks = harShapes.findLeaksDeep(raw);
-
+    // Walk the parsed HAR so every finding carries a location, and so the
+    // fields WE wrote -- log.comment, log.creator, our own annotations -- are
+    // not scanned as if they were wire data. A HAR that will not parse still
+    // gets the flat text sweep: a gate that skips a malformed file entirely
+    // would be a gate anyone could bypass by malforming the file.
+    let leaks;
+    let parsed = null;
     try {
-        harSecrets.walkForUnredactedSecrets(JSON.parse(raw), (name) => {
+        parsed = JSON.parse(raw);
+    } catch {
+        parsed = null;
+    }
+    if (parsed) {
+        leaks = harShapes.findLeaksInHar(parsed);
+        harSecrets.walkForUnredactedSecrets(parsed, (name) => {
             leaks.push({ kind: 'known-secret', sample: name });
         });
-    } catch {
-        // Not parseable as JSON -- the text-level checks above still apply.
+    } else {
+        leaks = harShapes.findLeaksDeep(raw);
     }
 
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
