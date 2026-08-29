@@ -374,44 +374,73 @@ function walkJsonStrings(value, base, emit, depth) {
 function scanString(text, keyPath, policy, push) {
     if (typeof text !== 'string' || text === '') return;
 
-    // One value reported once, however many passes below happen to see it. An
-    // occurrence count that inflates is a count nobody can act on.
-    const seen = new Set();
-    const take = (leaks, at, enclosing) => {
-        for (const l of leaks) {
-            const key = `${l.kind}:${l.fingerprint}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            push(l, at, enclosing);
-        }
-    };
+    // Three passes over one string, each seeing something the others cannot.
+    // The hard part is counting: the passes overlap, so a naive "report each
+    // fingerprint once" collapses two GENUINE occurrences of a value as
+    // readily as it collapses one occurrence seen twice. The count is what an
+    // operator reads to judge blast radius -- one stray echo versus the same
+    // value in fifty places -- so it has to come from one authoritative pass
+    // rather than from whatever the passes happen to agree on.
+    //
+    // The raw text is that authority: it is the actual bytes, and every
+    // occurrence in it is a real occurrence. The structural pass contributes
+    // PRECISION, not counts.
 
-    // Structural first, so a finding gets the most precise location available.
+    // 1. Structural, for location. Records the key path of the first leaf
+    //    carrying each value; pushes nothing yet.
+    const pathFor = new Map();
     if (/^\s*[[{]/.test(text)) {
         try {
-            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => take(findLeaks(s, policy), p, null), 0);
+            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => {
+                for (const l of findLeaks(s, policy)) {
+                    const key = `${l.kind}:${l.fingerprint}`;
+                    if (!pathFor.has(key)) pathFor.set(key, { at: p, leak: l });
+                }
+            }, 0);
         } catch {
             // Not JSON after all -- the raw pass below is the whole scan.
         }
     }
 
-    // Then the RAW TEXT, always -- never gated on whether the structural pass
-    // ran. Reading a body only through `JSON.parse` trusts the parser to be a
-    // faithful copy of the wire, and it is not: a numeric literal past 2^53
-    // comes back with its tail rounded off, which is every credit-card length
-    // above 16 digits. The rounded value fails Luhn, so parsing the body drops
-    // precisely the cards a parser cannot represent. Quoting, escaping and
-    // numeric precision are all invisible to a regex over the original bytes,
-    // which is why the sweep this replaced saw them and why it still runs.
-    take(findLeaks(text, policy), keyPath, null);
+    // 2. The RAW TEXT, always -- never gated on whether the structural pass
+    //    ran. Reading a body only through `JSON.parse` trusts the parser to be
+    //    a faithful copy of the wire, and it is not: a numeric literal past
+    //    2^53 comes back with its tail rounded off, which is every card length
+    //    above 16 digits, and the rounded value fails Luhn. Quoting, escaping
+    //    and numeric precision are all invisible to a regex over the original
+    //    bytes, which is why the sweep this replaced saw these and why it
+    //    still runs. Every match here is one occurrence.
+    const rawSeen = new Set();
+    for (const l of findLeaks(text, policy)) {
+        const key = `${l.kind}:${l.fingerprint}`;
+        rawSeen.add(key);
+        const located = pathFor.get(key);
+        push(l, located ? located.at : keyPath, null);
+    }
 
-    // The percent-decoded view. A secret inside `variables=<encoded JSON>` is
-    // spelled `%22` and `%40` on the wire, so no pattern reaches it otherwise
-    // -- this is the layer the real `fb_dtsg` leak hid in. The decoded offset
-    // sits inside a string rather than at a JSON key, so it has no structural
-    // path of its own; the enclosing node is named instead.
+    // 3. Anything the structural pass found that the raw bytes did not -- a
+    //    value spelled with JSON escapes, say, which is one occurrence the
+    //    regex over the source text cannot match.
+    for (const [key, { at, leak }] of pathFor) {
+        if (!rawSeen.has(key)) push(leak, at, null);
+    }
+
+    // 4. The percent-decoded view. A secret inside `variables=<encoded JSON>`
+    //    is spelled `%22` and `%40` on the wire, so no pattern reaches it
+    //    otherwise -- this is the layer the real `fb_dtsg` leak hid in. The
+    //    decoded offset sits inside a string rather than at a JSON key, so it
+    //    has no structural path of its own; the enclosing node is named
+    //    instead. Only values the plain passes missed: the decoded view is a
+    //    second reading of the SAME bytes, not a second occurrence.
     const shadow = decodedShadow(text);
-    if (shadow !== text) take(findLeaks(shadow, policy), null, keyPath);
+    if (shadow !== text) {
+        for (const l of findLeaks(shadow, policy)) {
+            const key = `${l.kind}:${l.fingerprint}`;
+            if (rawSeen.has(key) || pathFor.has(key)) continue;
+            rawSeen.add(key);
+            push(l, null, keyPath);
+        }
+    }
 }
 
 /**
