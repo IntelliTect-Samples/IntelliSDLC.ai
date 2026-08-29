@@ -61,8 +61,36 @@ BeforeAll {
     # makes "which arguments did node receive" and "did -InformationAction
     # actually suppress anything" observable without launching a browser.
     #
-    # node.cmd rather than a .ps1: PATHEXT makes `& node` resolve a .cmd, and
-    # the front door's own `Get-Command node` preflight finds it too.
+    # The stub is shaped per platform. On Windows, PATHEXT makes `& node`
+    # resolve node.cmd, and the front door's own `Get-Command node` preflight
+    # finds it too. On Linux and macOS a .cmd shadows nothing: the lookup wants
+    # a file named exactly `node` with the execute bit, and PATH entries are
+    # separated by ':' not ';'. With a Windows-only stub the REAL recorder runs
+    # and the test dies with "capture-har exited 1" -- undetected for as long as
+    # this suite never ran on Linux (issue #308).
+    function New-NodeStub {
+        param(
+            [Parameter(Mandatory)][string]$Directory,
+            [Parameter(Mandatory)][string]$ArgsFile
+        )
+
+        if ($IsWindows) {
+            Set-Content -LiteralPath (Join-Path $Directory 'node.cmd') -Encoding ascii -Value @(
+                '@echo off'
+                "echo %* > `"$ArgsFile`""
+                'exit /b 0'
+            )
+            return
+        }
+
+        $stub = Join-Path $Directory 'node'
+        # LF endings and no BOM: the kernel reads the shebang literally, so a CR
+        # would make the interpreter '/bin/sh\r', which does not exist.
+        $body = "#!/bin/sh`necho `"`$@`" > '$ArgsFile'`nexit 0`n"
+        [System.IO.File]::WriteAllText($stub, $body, [System.Text.UTF8Encoding]::new($false))
+        & chmod +x $stub
+    }
+
     function Invoke-FrontDoor {
         param(
             [Parameter(Mandatory)][string]$Script,
@@ -71,11 +99,7 @@ BeforeAll {
         $stubDir = Join-Path $script:Tmp ('stub-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
         $argsFile = Join-Path $stubDir 'args.txt'
-        Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
-            '@echo off'
-            "echo %* > `"$argsFile`""
-            'exit /b 0'
-        )
+        New-NodeStub -Directory $stubDir -ArgsFile $argsFile
 
         # Streams are redirected to FILES, not to -InformationVariable: the
         # common variable parameters collect records even when the matching
@@ -85,7 +109,7 @@ BeforeAll {
         $warnFile = Join-Path $stubDir 'warn.txt'
 
         $savedPath = $env:PATH
-        $env:PATH = "$stubDir;$savedPath"
+        $env:PATH = $stubDir + [System.IO.Path]::PathSeparator + $savedPath
         try {
             & $Script @Arguments 6> $infoFile 3> $warnFile 2>$null | Out-Null
         }
