@@ -1,7 +1,7 @@
 # CI: Pester job reports success while running zero tests
 
 - Issue: https://github.com/IntelliTect-Dev/IntelliSDLC.ai/issues/304
-- PR:    (filled in once the PR exists)
+- PR:    https://github.com/IntelliTect-Samples/IntelliSDLC.ai/pull/306
 - Slug:  304-pester-false-green
 
 ## Overview
@@ -156,29 +156,48 @@ a follow-up issue covering both halves.
 
 ## Acceptance Criteria
 
-- [ ] `Get-PesterTestFile` finds test files under a *hidden* directory
-- [ ] Gate exits non-zero when `Invoke-Pester` returned `$null`
-- [ ] Gate exits non-zero when zero tests ran
-- [ ] Gate exits non-zero when a test failed
-- [ ] Gate exits non-zero when a container errored with no failed test
-- [ ] Gate exits non-zero when a discovered file produced no container
-- [ ] Gate exits zero for a clean run with tests
-- [ ] The workflow job runs the real suite and reports a non-zero test count on Linux
-- [ ] No Pester version pin added
-- [ ] `.github/ci/tests/` is classified upstream-private by `Test-IsUpstreamPrivatePath`
-- [ ] A `tests/` dir under `templates/` is still shipped (regex not over-widened)
-- [ ] `.github/instructions/project.instructions.md` exists and is never synced
+- [x] `Get-PesterTestFile` finds test files under a *hidden* directory
+- [x] Gate exits non-zero when `Invoke-Pester` returned `$null`
+- [x] Gate exits non-zero when zero tests ran
+- [x] Gate exits non-zero when a test failed
+- [x] Gate exits non-zero when a container errored with no failed test
+- [x] Gate exits non-zero when a discovered file produced no container
+- [x] Gate exits zero for a clean run with tests
+- [x] The workflow job runs the real suite and reports a non-zero test count on Linux
+- [x] No Pester version pin added
+- [x] `.github/ci/tests/` is classified upstream-private by `Test-IsUpstreamPrivatePath`
+- [x] A `tests/` dir under `templates/` is still shipped (regex not over-widened)
+- [x] `.github/instructions/project.instructions.md` exists and is never synced
 
 ## Implementation Checklist
 
-- [ ] Add `.github/ci/tests/PesterGate.Tests.ps1` -- red
-- [ ] Add `.github/ci/PesterGate.psm1` -- green
-- [ ] Add `.github/ci/tests/Invoke-PesterSuite.Tests.ps1` -- red
-- [ ] Add `.github/ci/Invoke-PesterSuite.ps1` -- green
-- [ ] Rewrite the `Run Pester suite` step in `validate-instructions.yml`
-- [ ] Add `.github/ci` to the workflow's leak-scan `scan_roots`
-- [ ] Add sync tests to `Pull-SDLC.ai.Tests.ps1` for the widened prefix -- red
-- [ ] Widen `$script:UpstreamPrivatePrefixes` in `Pull-SDLC.ai.ps1` -- green
-- [ ] Create `.github/instructions/project.instructions.md` documenting the rule
-- [ ] Confirm CI reports a real test count on `ubuntu-latest`
-- [ ] File the follow-up issue for root-level `*.Tests.ps1` (untested + shipped)
+- [x] Add `.github/ci/tests/PesterGate.Tests.ps1` -- red
+- [x] Add `.github/ci/PesterGate.psm1` -- green
+- [x] Add `.github/ci/tests/Invoke-PesterSuite.Tests.ps1` -- red
+- [x] Add `.github/ci/Invoke-PesterSuite.ps1` -- green
+- [x] Rewrite the `Run Pester suite` step in `validate-instructions.yml`
+- [x] Add `.github/ci` to the workflow's leak-scan `scan_roots`
+- [x] Add sync tests to `Pull-SDLC.ai.Tests.ps1` for the widened prefix -- red
+- [x] Widen `$script:UpstreamPrivatePrefixes` in `Pull-SDLC.ai.ps1` -- green
+- [x] Create `.github/instructions/project.instructions.md` documenting the rule
+- [x] Confirm CI reports a real test count on `ubuntu-latest`
+- [x] File the follow-up issue for root-level `*.Tests.ps1` (untested + shipped)
+
+## Outcome
+
+Delivered. CI on `ubuntu-latest`: **588 tests across 36 files, 585 passed, 0 failed,
+3 skipped** -- the job previously ran none.
+
+Two things the plan did not anticipate:
+
+1. **Turning the gate on exposed 10 pre-existing Linux failures** (a Windows-only
+   `node.cmd` stub, and a `.tmpl` enumeration missing `-Force`). Filed as #308 and
+   fixed in #310, merged into this branch, because a branch off `main` still runs the
+   old workflow and could not have verified the fix.
+2. **Independent review (Sonnet) found a Critical follow-on**: widening
+   `$script:UpstreamPrivatePrefixes` left `Get-UpstreamPrivatePruneOps` inventorying
+   only `.github/agents` and `.github/skills`, so consumers would keep a stale
+   `.github/instructions/tests/*` forever. Fixed with tests.
+
+Follow-up #309 tracks the root-level `*.Tests.ps1`, which are both never run by CI and
+shipped to every consumer.
