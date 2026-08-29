@@ -84,6 +84,31 @@ BeforeAll {
         return $work
     }
 
+    $script:CheckSh = Join-Path $script:RepoRoot '.githooks/check-dirty-primary-checkout'
+
+    # bash is not on PATH in a Windows PowerShell session, but Git for Windows
+    # always ships one beside git itself -- and a machine running these tests has
+    # git by definition. Resolving it from git's own location keeps the suite
+    # from depending on the operator having put bash on PATH.
+    $script:Bash = (Get-Command bash -ErrorAction SilentlyContinue)?.Source
+    if (-not $script:Bash) {
+        $gitExe = (Get-Command git -ErrorAction Stop).Source
+        $candidate = Join-Path (Split-Path (Split-Path $gitExe)) 'bin/bash.exe'
+        if (Test-Path -LiteralPath $candidate) { $script:Bash = $candidate }
+    }
+
+    # The safety net's verdict, run from $Cwd. Exit 2 means "reported".
+    function Invoke-DirtyCheck {
+        param([Parameter(Mandatory)][string]$Cwd, [string]$StdIn = '')
+        $errFile = Join-Path $script:Tmp ('chk-' + [guid]::NewGuid().ToString('N') + '.txt')
+        Push-Location -LiteralPath $Cwd
+        try { $out = $StdIn | & $script:Bash $script:CheckSh 2>$errFile }
+        finally { Pop-Location }
+        $code = $LASTEXITCODE
+        $err = if (Test-Path -LiteralPath $errFile) { Get-Content -LiteralPath $errFile -Raw } else { '' }
+        [pscustomobject]@{ ExitCode = $code; StdErr = ($err ?? ''); StdOut = $out }
+    }
+
     # The Node guard's verdict for the same directory, so the two can be compared.
     function Get-NodePlacement {
         param([Parameter(Mandatory)][string]$Path)
@@ -252,10 +277,149 @@ Describe 'Get-RelocationNotice -- cleanup in one step' {
     }
 }
 
-Describe 'the two guards agree -- one rule, two runtimes' {
-    # Two implementations of one rule is how the original defect got in. This is
-    # the table that stops them drifting: every shape that matters, both
-    # runtimes, same verdict.
+Describe 'Invoke-HarCapture -- the front door honours the guard' {
+    BeforeAll {
+        $script:InvokePs1 = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
+
+        # A stub `node` on PATH: the front door's own Get-Command preflight
+        # finds a .cmd, and standing one in front of the real recorder makes
+        # "what did the front door do before launching anything" observable
+        # without opening a browser.
+        function Invoke-FrontDoorIn {
+            param([Parameter(Mandatory)][string]$Cwd, [hashtable]$Arguments = @{})
+
+            $stubDir = Join-Path $script:Tmp ('stub-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+            $envFile = Join-Path $stubDir 'env.txt'
+            Set-Content -LiteralPath (Join-Path $stubDir 'node.cmd') -Encoding ascii -Value @(
+                '@echo off'
+                "echo GUARD=%HARCAPTURE_PLACEMENT_GUARD_RAN% > `"$envFile`""
+                'exit /b 0'
+            )
+
+            $infoFile = Join-Path $stubDir 'info.txt'
+            $warnFile = Join-Path $stubDir 'warn.txt'
+            $savedPath = $env:PATH
+            $env:PATH = "$stubDir;$savedPath"
+            Push-Location -LiteralPath $Cwd
+            try {
+                & $script:InvokePs1 @Arguments 6> $infoFile 3> $warnFile 2>$null | Out-Null
+            }
+            finally {
+                Pop-Location
+                $env:PATH = $savedPath
+                Remove-Item Env:HARCAPTURE_PLACEMENT_GUARD_RAN -ErrorAction SilentlyContinue
+            }
+
+            function Read-Stream([string]$Path) {
+                $t = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw } else { $null }
+                if ($null -eq $t) { '' } else { $t }
+            }
+
+            [pscustomobject]@{
+                NodeEnv     = (Read-Stream $envFile).Trim()
+                Information = (Read-Stream $infoFile).Trim()
+                Warning     = (Read-Stream $warnFile).Trim()
+                NodeRan     = (Test-Path -LiteralPath $envFile)
+            }
+        }
+    }
+
+    It 'warns and still records -- the advisory never becomes a hard failure' {
+        $work = New-Checkout -Name 'fd-warn' -TrackedHooks -HooksPath '.githooks'
+        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com' }
+        $r.Warning | Should -Match 'git worktree add'
+        $r.NodeRan | Should -BeTrue -Because 'the recording must proceed; nothing is discarded'
+    }
+
+    It 'tells the recorder the guard already ran, so the operator is warned once' {
+        $work = New-Checkout -Name 'fd-once' -TrackedHooks -HooksPath '.githooks'
+        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com' }
+        $r.NodeEnv | Should -Match 'GUARD=1'
+    }
+
+    It 'stays silent in a worktree' {
+        $work = New-Checkout -Name 'fd-quiet' -TrackedHooks -HooksPath '.githooks'
+        $wt = Join-Path $script:Tmp 'fd-quiet-tree'
+        Invoke-Git $work @('worktree', 'add', $wt, '-b', 'feat/fd') | Out-Null
+        $r = Invoke-FrontDoorIn -Cwd $wt -Arguments @{ Uri = 'https://app.example.com' }
+        $r.Warning | Should -Not -Match 'git worktree add'
+        $r.NodeRan | Should -BeTrue
+    }
+
+    It 'reads the catalogue from the repo root by default, not the cwd (#300)' {
+        # The front door computes the catalogue path itself rather than shelling
+        # out to node for it, so anchoring has to be applied in both places or
+        # the script looks for a catalogue where the recorder did not write one.
+        $work = New-Checkout -Name 'fd-anchor' -TrackedHooks -HooksPath '.githooks'
+        $deep = Join-Path $work 'docs'
+        New-Item -ItemType Directory -Path $deep -Force | Out-Null
+        $r = Invoke-FrontDoorIn -Cwd $deep -Arguments @{ Uri = 'https://app.example.com' }
+        # No catalogue exists, so the front door reports where it looked --
+        # which is the observable proof of which root it anchored to.
+        $r.Warning | Should -Match ([regex]::Escape((Join-Path $work 'app.example.com')))
+    }
+}
+
+Describe 'check-dirty-primary-checkout -- the session-level safety net' {
+    It 'reports a dirty primary checkout on the protected branch' {
+        $work = New-Checkout -Name 'net-dirty' -TrackedHooks -HooksPath '.githooks'
+        # An untracked output directory: exactly what the incident produced.
+        New-Item -ItemType Directory -Path (Join-Path $work 'www.example.com') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $work 'www.example.com/catalogue.json') -Value '{}'
+
+        $r = Invoke-DirtyCheck -Cwd $work
+
+        $r.ExitCode | Should -Be 2 -Because 'exit 2 is what feeds the message back to the agent'
+        $r.StdErr | Should -Match 'www\.example\.com'
+        $r.StdErr | Should -Match 'git worktree add'
+    }
+
+    It 'is silent when the primary checkout is clean' {
+        $work = New-Checkout -Name 'net-clean' -TrackedHooks -HooksPath '.githooks'
+        $r = Invoke-DirtyCheck -Cwd $work
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'ignores a dirty worktree -- the sanctioned place to work' {
+        $work = New-Checkout -Name 'net-wt' -TrackedHooks -HooksPath '.githooks'
+        $wt = Join-Path $script:Tmp 'net-wt-tree'
+        Invoke-Git $work @('worktree', 'add', $wt, '-b', 'feat/net') | Out-Null
+        Set-Content -LiteralPath (Join-Path $wt 'stray.txt') -Value 'x'
+        $r = Invoke-DirtyCheck -Cwd $wt
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'ignores a repo that declares no such rule' {
+        $work = New-Checkout -Name 'net-undeclared'
+        Set-Content -LiteralPath (Join-Path $work 'stray.txt') -Value 'x'
+        $r = Invoke-DirtyCheck -Cwd $work
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'does not block twice -- stop_hook_active ends the loop' {
+        # A Stop hook that keeps blocking on a condition the agent cannot always
+        # clear is an infinite loop, so the second pass has to stand down.
+        $work = New-Checkout -Name 'net-loop' -TrackedHooks -HooksPath '.githooks'
+        Set-Content -LiteralPath (Join-Path $work 'stray.txt') -Value 'x'
+        $r = Invoke-DirtyCheck -Cwd $work -StdIn '{"stop_hook_active":true}'
+        $r.ExitCode | Should -Be 0
+    }
+
+    It 'is wired as a Stop hook in this repository' {
+        $settings = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.claude/settings.json') -Raw |
+            ConvertFrom-Json
+        $commands = $settings.hooks.Stop.hooks.command
+        ($commands -join ' ') | Should -Match 'check-dirty-primary-checkout'
+    }
+}
+
+Describe 'the guards agree -- one rule, three runtimes' {
+    # Reimplementing one rule per runtime is how the original defect got in.
+    # There are three implementations here because there are three runtimes --
+    # Node for the recorder, PowerShell for the front doors, bash for the
+    # harness-level net -- and this is the table that stops them drifting: every
+    # shape that matters, all three, same verdict.
     It 'reaches the same verdict for <Name>' -ForEach @(
         @{ Name = 'primary checkout on the protected branch'; Setup = 'declared' }
         @{ Name = 'a feature branch in the primary checkout'; Setup = 'feature' }
@@ -297,5 +461,13 @@ Describe 'the two guards agree -- one rule, two runtimes' {
         $ps.DeclaresRule    | Should -Be $js.declaresRule    -Because 'declaresRule must agree'
         $ps.RuleSource      | Should -Be $js.ruleSource      -Because 'ruleSource must agree'
         $ps.ShouldWarn      | Should -Be $js.shouldWarn      -Because 'the verdict must agree'
+
+        # The bash net answers a narrower question -- "is this checkout dirty
+        # AND in the state the guards warn about" -- so dirtying the target
+        # first is what makes the two comparable. With the tree dirty, it must
+        # report exactly when the guards would have warned.
+        Set-Content -LiteralPath (Join-Path $target 'stray-output.txt') -Value 'x'
+        $net = Invoke-DirtyCheck -Cwd $target
+        ($net.ExitCode -eq 2) | Should -Be $ps.ShouldWarn -Because 'the safety net must agree too'
     }
 }

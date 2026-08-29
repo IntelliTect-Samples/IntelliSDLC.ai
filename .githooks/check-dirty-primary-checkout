@@ -1,0 +1,107 @@
+#!/bin/bash
+# Flag a dirty primary checkout sitting on the protected branch (issue #300).
+#
+# WHY THIS EXISTS AS A SEPARATE LAYER.
+#
+# The capture tooling's own placement guard warns before recording and then
+# PROCEEDS, deliberately -- discarding a recording the operator spent minutes
+# producing is a worse outcome than the pollution it would prevent. That
+# softness is the right trade, and it means the warning will sometimes be
+# ignored on the non-interactive path. This check is the layer that catches the
+# ignored case.
+#
+# It is also TOOL-AGNOSTIC, which is the other half of the point: the incident
+# that prompted this involved leakage from more than one tool, so a control
+# living inside any single tool could not have caught it. This one asks only
+# "is the primary checkout dirty on the protected branch", which is true no
+# matter what put the files there.
+#
+# It is NOT a git hook despite living beside them. `.githooks/` is what
+# Pull-SDLC.ai.ps1 syncs to consuming projects, so shipping it here is what
+# makes the check available to them at all. Wire it up as an end-of-turn /
+# end-of-session check in whatever agent harness you use; this repository wires
+# it as a Claude Code Stop hook in .claude/settings.json.
+#
+# EXIT CODES
+#   0  clean, or not applicable (not a repo / a worktree / not the protected
+#      branch / the repo declares no such rule)
+#   2  a dirty primary checkout on the protected branch. Two, not one, because
+#      that is the code a Claude Code hook uses to feed stderr back to the agent
+#      as something to act on; a plain caller just sees non-zero.
+#
+# It never modifies anything. Reporting is the whole job -- deciding what to do
+# with a stray directory is the operator's call, not a script's.
+
+set -uo pipefail
+
+# A harness may pipe JSON in. The only field that matters is stop_hook_active:
+# it is true when this check already blocked once and the agent is stopping
+# again, and re-blocking there is how a hook turns into an infinite loop.
+if [ ! -t 0 ]; then
+    payload=$(cat 2>/dev/null || true)
+    case "$payload" in
+        *'"stop_hook_active"'*[Tt]rue*) exit 0 ;;
+    esac
+fi
+
+# Probe 1: inside a repository at all? Outside one there is nothing to be dirty.
+toplevel=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$toplevel" ] || exit 0
+
+# Probe 2: primary checkout, or worktree? A worktree is the sanctioned place to
+# work, so it is never the subject of this check. Same test the pre-commit hook
+# uses -- two controls disagreeing about what a worktree is would be worse than
+# one control.
+git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) || exit 0
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
+[ "$git_dir" = "$common_dir" ] || exit 0
+
+# Probe 3: the protected branch, discovered rather than hardcoded.
+current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+protected=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+if [ -z "$protected" ]; then
+    case "$current" in
+        main|master) protected="$current" ;;
+        *) protected="main" ;;
+    esac
+fi
+[ "$current" = "$protected" ] || exit 0
+
+# Does the repository declare a no-work-on-the-protected-branch rule? Reporting
+# in a repo that has no such rule is noise, and noise is how a warning gets
+# trained out of somebody's attention.
+declared=$(git config --get sdlc.protectedBranchWorkflow 2>/dev/null || true)
+case "$declared" in
+    [Tt]rue|[Yy]es|[Oo]n|1) rule=yes ;;
+    "")
+        hooks_path=$(git config --get core.hooksPath 2>/dev/null || true)
+        rule=no
+        if [ -n "$hooks_path" ]; then
+            case "$hooks_path" in
+                /*) resolved="$hooks_path" ;;
+                *)  resolved="$toplevel/$hooks_path" ;;
+            esac
+            # Tracked is the load-bearing half: an untracked hooks directory is
+            # one developer's local preference and cannot speak for the repo.
+            if [ -f "$resolved/pre-commit" ] &&
+               git ls-files --error-unmatch -- "$resolved/pre-commit" >/dev/null 2>&1; then
+                rule=yes
+            fi
+        fi
+        ;;
+    *) rule=no ;;
+esac
+[ "$rule" = yes ] || exit 0
+
+dirty=$(git status --porcelain 2>/dev/null)
+[ -n "$dirty" ] || exit 0
+
+{
+    echo "Dirty primary checkout on the protected branch ($protected)."
+    echo "Commits are blocked here, so anything below will strand until someone notices:"
+    echo "$dirty" | sed 's/^/    /'
+    echo "Move the work into a worktree, or remove what does not belong:"
+    echo "    git worktree add .worktrees/<name> -b <type>/<issue#>-<name> $protected"
+} >&2
+
+exit 2

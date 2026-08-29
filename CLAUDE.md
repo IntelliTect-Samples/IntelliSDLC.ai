@@ -80,6 +80,15 @@ A pre-commit hook (`.githooks/pre-commit`) enforces rules 1 and 2 automatically.
 git config core.hooksPath .githooks
 ```
 
+**The rule covers writes, not just commits.** "I am not committing, I am only
+running a script" is how the root checkout gets polluted: tooling writes output
+relative to the working directory, the files land on the protected branch where
+commits are blocked, and nothing reports it. Be in a worktree before running
+anything that produces files. `.githooks/check-dirty-primary-checkout` reports
+a dirty primary checkout on the protected branch and can be wired into an agent
+harness as an end-of-turn check. See **The Rule Covers WRITES, Not Just
+Commits** in `.github/copilot-instructions.md`.
+
 ## Independent Code Review -- Reviewer != Author Model
 
 **The invariant: before a PR merges, the diff must have been reviewed by a model
