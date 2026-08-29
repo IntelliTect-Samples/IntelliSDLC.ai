@@ -124,7 +124,11 @@ const LEAK_PATTERNS = [
  * control flow.
  *
  * It stays in CODE rather than in `har-policy.default.json` because it is a
- * public payment-network standard, not anybody's project concept. What IS a
+ * public payment-network standard, not anybody's project concept -- an
+ * editorial decision, not a technical constraint. Nothing prevents the move:
+ * `har-shapes.js` requires `har-policy.js` one-way, `har-policy.js` requires
+ * nothing back, and a JSON data file requires nothing at all. Said plainly so
+ * a maintainer does not go looking for an obstacle that is not there. What IS a
  * project concept is which markets a consumer operates in, so the merged
  * policy's `cardIssuers` appends further ranges to this table -- Maestro and
  * RuPay being the obvious ones. Maestro is deliberately absent from the shipped
