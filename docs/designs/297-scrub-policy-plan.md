@@ -76,8 +76,22 @@ document, for Stage 10.
 file setting any `classes.secret.*` to `off` throws a `PolicyError` naming the
 class. Callers cannot forget a check they never make.
 
-> **PR 1** ends here. No caller consumes the policy yet; the lift is verifiable
-> in isolation.
+**Task 1.5 (added during review).** `advise` on a secret class is refused
+alongside `off` -- a secret finding that does not gate is a secret finding that
+ships -- and the merged policy exposes `loosenedSecretNames`: every upstream
+secret name a project removed via `notSecretFields`. `named-credential` is
+caught by NAME or not at all, so a subtraction is the one input that can hollow
+out a secret class while its setting still reads `gate`. Forbidding it would
+reintroduce the undisableable gate this issue exists to replace (the issue's own
+sketch removes `x-asbd-id`), so it is allowed and recorded. Stage 2 onward must
+report it on every run, per "the cost of a loosening stays visible".
+
+> **PR 1** ends here -- **delivered**. No caller consumes the policy yet; the
+> lift is verifiable in isolation.
+>
+> Landed: `har-policy.js`, `har-policy.default.json`, `har-policy.test.js`,
+> `.github/agents/tests/har-policy.Tests.ps1`, and `FIELD` exported from
+> `pii.js` so the tests can pin the lift against the constants it replaces.
 
 ## Stage 2 -- Class-tagged shapes and waivers
 
