@@ -72,9 +72,9 @@ const LEAK_PATTERNS = [
         isFake: (m) => /^9\d{2}-/.test(m)
     },
     {
-        // Luhn-valid credit-card-shaped digit runs. Fakes are Luhn-valid too
-        // (so we can't use validity as the fake marker); instead, fakes always
-        // start with the 4242 IIN test prefix.
+        // Credit-card numbers. Fakes are Luhn-valid too (so we can't use
+        // validity as the fake marker); instead, fakes always start with the
+        // 4242 IIN test prefix.
         // The lookarounds keep a digit run that is part of a DECIMAL NUMBER
         // out of the card slot. `.` is a non-word character, so a bare
         // /\b\d{13,19}\b/ matches between the decimal point and the first
@@ -91,27 +91,56 @@ const LEAK_PATTERNS = [
         name: 'credit-card',
         re: /(?<!\d\.)\b\d{13,19}\b(?!\.\d)/g,
         isFake: (m) => /^4242/.test(m),
-        precheck: (m) => luhnValid(m) && !isPlausibleRecentUnixMs(m)
+        precheck: (m) => hasAssignedIin(m) && luhnValid(m)
     }
 ];
 
-// A 13-digit numeric run that ALSO parses as a Unix-millisecond timestamp
-// between year 2010 and year 2050 is overwhelmingly more likely to be a
-// timestamp than a credit-card number, even when it happens to be Luhn-valid
-// (~10% of 13-digit numbers are). Suppress this slot so embedded API
-// timestamps do not produce false-positive credit-card leaks (issue #87).
-//
-// Bounds (UTC):
-//   2010-01-01 00:00:00.000 -> 1262304000000
-//   2050-01-01 00:00:00.000 -> 2524608000000
-//
-// Both bounds are 13-digit values, so this exclusion is naturally scoped to
-// the 13-digit length only; 14-19 digit credit-card-shaped numbers are
-// outside the window and continue to be flagged.
-function isPlausibleRecentUnixMs(s) {
-    if (s.length !== 13) return false;
-    const n = Number(s);
-    return n >= 1262304000000 && n <= 2524608000000;
+/**
+ * Issuer identification numbers, as DATA.
+ *
+ * `Luhn-valid 13-19 digit run` is not the predicate "credit card number" --
+ * ~10% of ALL digit runs are Luhn-valid by chance, so a real JSON API's own
+ * numeric identifiers (13-19 digits, everywhere, by the hundred) were reported
+ * as leaked cards and the gate deleted its own output (issue #295). A card
+ * number also carries an ASSIGNED issuer identifier at a LENGTH that issuer
+ * actually mints; a trip id or a Unix-ms timestamp does not.
+ *
+ * `prefixes` are numeric ranges over the leading digits, matched at the width
+ * of the range's own bounds, so `[51, 55]` is "the first two digits are 51-55"
+ * and `[2221, 2720]` is "the first four are 2221-2720". Both bounds inclusive;
+ * a single value is written as an equal pair.
+ *
+ * This is deliberately a table and not a chain of `if`s: the rules change when
+ * the card networks change them, and a table is edited without re-reading any
+ * control flow.
+ */
+const CARD_ISSUERS = [
+    { brand: 'visa',       prefixes: [[4, 4]],                                   lengths: [13, 16, 19] },
+    { brand: 'mastercard', prefixes: [[51, 55], [2221, 2720]],                   lengths: [16] },
+    { brand: 'amex',       prefixes: [[34, 34], [37, 37]],                       lengths: [15] },
+    { brand: 'discover',   prefixes: [[6011, 6011], [644, 649], [65, 65]],       lengths: [16, 19] },
+    { brand: 'jcb',        prefixes: [[3528, 3589]],                             lengths: [16, 17, 18, 19] },
+    { brand: 'unionpay',   prefixes: [[62, 62]],                                 lengths: [16, 17, 18, 19] },
+    { brand: 'diners',     prefixes: [[300, 305], [3095, 3095], [36, 36], [38, 39]], lengths: [14, 15, 16, 17, 18, 19] }
+];
+
+/**
+ * True when `s` begins with an assigned issuer identification number AND is a
+ * length that issuer mints. Both halves are required: `4` at 17 digits is no
+ * more a Visa than `98` at 16 digits is anything at all.
+ */
+function hasAssignedIin(s) {
+    for (const issuer of CARD_ISSUERS) {
+        if (!issuer.lengths.includes(s.length)) continue;
+        for (const [low, high] of issuer.prefixes) {
+            // Range bounds are written at their own digit width, and that
+            // width is how many leading digits the comparison consumes.
+            const width = String(high).length;
+            const head = Number(s.slice(0, width));
+            if (head >= low && head <= high) return true;
+        }
+    }
+    return false;
 }
 
 function luhnValid(s) {
@@ -196,5 +225,6 @@ module.exports = {
     fingerprint,
     describeLeak,
     luhnValid,
-    isPlausibleRecentUnixMs,
+    CARD_ISSUERS,
+    hasAssignedIin,
 };
