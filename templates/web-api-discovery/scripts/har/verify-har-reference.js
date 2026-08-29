@@ -64,6 +64,7 @@ const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
+const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 
 // Matches extract-har-reference.js: references live beside the capture output,
 // not under a second 'docs/har-reference' nested inside it.
@@ -135,6 +136,24 @@ function checkRequestBodies(entries, report) {
     }
 }
 
+// Does a finding fail the run?
+//
+//   gate     yes -- the whole point.
+//   advise   yes, FOR NOW. The design's end state is "reports, non-zero exit,
+//            artifact kept": it is the ARTIFACT that survives an advisory
+//            finding, not the exit code. Stage 7 splits the code and adds the
+//            quarantine; until then advisory findings keep failing exactly as
+//            they do today, so this stage cannot turn a real leaked card into
+//            a pass.
+//   off      no -- the project disabled the class. Reported as a warning so
+//            the cost of the loosening stays visible.
+//   waived   no -- a waiver that did not stop the failure would be decoration.
+function blocks(leak) {
+    if (leak.waived) return false;
+    if (leak.setting === 'off') return false;
+    return true;
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     const dir = path.resolve(typeof args.dir === 'string' ? args.dir : DEFAULT_DIR);
@@ -160,7 +179,18 @@ function main() {
         }
     }
 
+    // The merged policy is discovered from the reference directory, so the
+    // consuming project's own posture governs its committed references.
+    let policy;
+    try {
+        policy = harPolicy.loadPolicy({ startDir: dir });
+    } catch (e) {
+        console.error(`verify-har-reference: ${e.message}`);
+        process.exit(1);
+    }
+
     const violations = [];
+    const advisories = [];
 
     // Checked before the "is there anything to verify" question: a directory
     // holding a substitution table and no reference at all is the worst case,
@@ -196,13 +226,17 @@ function main() {
         checkRequestBodies(entries, report);
         harSecrets.walkForUnredactedSecrets(har, (name, where) => {
             report(`${where}: credential '${name}' is readable in the clear`);
-        });
+        }, { policy });
 
         // Structural walk, not a sweep of the serialized document: a finding
         // needs a location to be triageable, and our own envelope annotations
-        // are not wire data.
-        for (const leak of harShapes.findLeaksInHar(har)) {
-            report(harShapes.describeLeak(leak));
+        // are not wire data. A finding the policy does not gate is reported as
+        // advisory and does not fail the reference -- shape carries no
+        // provenance for an identity, and failing on it is what deleted 1413
+        // trip ids.
+        for (const leak of harShapes.findLeaksInHar(har, policy)) {
+            if (blocks(leak)) report(harShapes.describeLeak(leak));
+            else advisories.push(`${rel}: not blocking ${harShapes.describeLeak(leak)}`);
         }
 
         for (const hit of harLiterals.findLiteralHits(raw, literals)) {
@@ -210,9 +244,21 @@ function main() {
         }
     }
 
+    // Printed whether or not the run passes: a loosening the project chose
+    // stays visible on every run, and an advisory finding is still a finding
+    // somebody should look at.
+    if (policy.loosenedSecretNames.length) {
+        console.error(
+            `verify-har-reference: NOTE -- ${policy.path} removes ` +
+            `${policy.loosenedSecretNames.length} upstream secret name(s) from detection: ` +
+            `${policy.loosenedSecretNames.join(', ')}`);
+    }
+    for (const a of advisories) console.error(`  ~ ${a}`);
+
     if (violations.length === 0) {
         console.log(
-            `verify-har-reference: ${files.length} reference(s) under ${dir} -- clean ` +
+            `verify-har-reference: ${files.length} reference(s) under ${dir} -- clean` +
+            `${advisories.length ? `, ${advisories.length} advisory` : ''} ` +
             `(literal check: ${literalStatus})`);
         process.exit(0);
     }

@@ -86,16 +86,31 @@ function expectThrows(fn, matcher, label) {
 // Task 1.2 is a pure data lift: behaviour must not change. Anything the old
 // module-level constants covered must still be covered by the policy, or the
 // lift silently narrows the scrub.
+//
+// The secret names are written out longhand here rather than read back from
+// har-secrets.js. Stage 4 made that module DERIVE its lists from this very
+// file, so comparing the two would compare a value to itself -- and the whole
+// risk of a data lift is exactly the silent narrowing such a check would miss.
+// `har-secrets-value.test.js` case 4 pins the same list from the other side.
 {
     const dir = path.join(tmp, 'lift');
     fs.mkdirSync(dir, { recursive: true });
     const p = load(dir);
 
-    for (const name of secrets.KNOWN_SECRET_FIELD_NAMES) {
+    const HISTORICAL_FIELDS = [
+        'fb_dtsg', 'lsd', 'jazoest',
+        '__spin_r', '__spin_b', '__spin_t', '__hs', '__hsi', '__csr', '__hsdp', '__req', '__rev',
+        'c_user', 'xs', 'datr', 'fr', 'sb', 'mid', 'ig_did', 'ds_user_id',
+        'sessionid', 'csrftoken',
+    ];
+    const HISTORICAL_HEADERS = [
+        'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
+    ];
+    for (const name of HISTORICAL_FIELDS) {
         assert.ok(p.secretFields.includes(name),
             `3.a: secret field '${name}' was dropped by the lift into har-policy.default.json`);
     }
-    for (const name of secrets.KNOWN_SECRET_HEADER_NAMES) {
+    for (const name of HISTORICAL_HEADERS) {
         assert.ok(p.secretHeaders.includes(name),
             `3.b: secret header '${name}' was dropped by the lift into har-policy.default.json`);
     }
