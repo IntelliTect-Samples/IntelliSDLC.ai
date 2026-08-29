@@ -46,6 +46,12 @@ function assert(cond, msg) {
     // was run to remove.
     assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.har-substitutions.json'),
         '[fresh] the substitution map must be gitignored -- its keys are the original secrets');
+    // The typed-PII table (issue #294) was missed by the original list even
+    // though it is the same class of file. Newer scrubs keep both out of the
+    // output path entirely, but a consumer who ran an older one still has a
+    // copy sitting in a tracked directory, and only this entry protects them.
+    assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.substitutions.json'),
+        '[fresh] the typed-PII substitution table must be gitignored -- it is keyed by the originals too');
     const body = readGi(dir);
     for (const e of SCAFFOLD_GITIGNORE_ENTRIES) {
         assert(body.includes(e), '[fresh] .gitignore missing ' + e);
