@@ -126,25 +126,12 @@ from the merged policy rather than module constants.
 > **PR 2** ends here: the gate now classifies, locates, and stops crying wolf on
 > its own redactions. Expect the 1134-finding measurement to collapse.
 
-## Stage 5 -- Credit-card precision
+## Stage 5 -- Credit-card precision -- ~~STRUCK~~
 
-**Task 5.1 (test-first).** Known-good cards per brand are detected. A Luhn-valid
-17-digit run beginning `17` is **not**. A Luhn-valid 16-digit run beginning `98`
-is **not**. The seven distinct false positives from the #295 measurement are
-**not** (record their prefixes in the fixture; the values themselves must not be
-committed).
-
-**Task 5.2.** Add issuer-identifier + brand-length validation to the
-`credit-card` precheck: Visa `4` at 13/16/19; Mastercard `51-55`, `2221-2720` at
-16; Amex `34`, `37` at 15; Discover `6011`, `644-649`, `65` at 16/19; JCB
-`3528-3589` at 16-19; UnionPay `62` at 16-19; Diners `300-305`, `3095`, `36`,
-`38-39` at 14-19.
-
-**Task 5.3.** Delete `isPlausibleRecentUnixMs` (#87) and re-test the #293
-decimal lookarounds. A 13-digit Unix-ms value starts `17`, which is not an
-assigned IIN, so the timestamp window should now be dead code. Keep the #293
-lookarounds only if a test still fails without them; a carve-out that no longer
-carves anything is a future maintainer's trap.
+Absorbed by **issue #295** (PR #299, merged `db3777e`). The `credit-card`
+predicate now requires an assigned issuer identifier before Luhn;
+`isPlausibleRecentUnixMs` (#87) is deleted; the #292/#293 decimal lookarounds
+were retained on ablation evidence. Nothing remains to do here.
 
 ## Stage 6 -- PII coverage
 
@@ -204,19 +191,13 @@ would have caught all 27 truncated entries in the consuming repo at commit time.
 `...[response body truncated for reference use]` marker corrupts the payload's
 JSON *and* evades a structured audit; a second marker format must not survive.
 
-## Stage 9 -- #294, substitution tables
+## Stage 9 -- #294, substitution tables -- ~~STRUCK~~
 
-**Task 9.1 (test-first).** `sanitize-har.js` writes neither `.substitutions.json`
-nor `.har-substitutions.json` into the output directory.
-`verify-har-reference.js --dir` fails when either is present.
-
-**Task 9.2.** Default both paths into the session's `.har-captures/` directory
-(`sanitize-har.js:304-305`). Gitignored by construction, and not redirectable by
-`-OutputPath`.
-
-**Task 9.3.** Add `.substitutions.json` to `SCAFFOLD_GITIGNORE_ENTRIES`
-(`generate-wrapper.js`). `.har-substitutions.json` is already there. This
-protects consumers who have the files sitting in a tracked directory today.
+Absorbed by **issue #294** (PR #298, merged `23bb3a0` + `debef30`). Both
+substitution tables now default into the gitignored captures tree,
+`.substitutions.json` and `.har-captures/` were added to
+`SCAFFOLD_GITIGNORE_ENTRIES`, and `verify-har-reference.js --dir` fails when
+either table is found in an output path. Nothing remains to do here.
 
 ## Stage 10 -- Provenance
 
