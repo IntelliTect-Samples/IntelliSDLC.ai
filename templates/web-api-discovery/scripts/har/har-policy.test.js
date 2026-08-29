@@ -131,6 +131,12 @@ function expectThrows(fn, matcher, label) {
 
     // ...and notSecretFields subtracts AFTER the append, so it can remove a
     // default name and can veto a name the same file just added.
+    //
+    // Subtracting a DEFAULT name is deliberate, not a hole: the issue's own
+    // policy sketch removes `x-asbd-id`, and requirement 4 exists because a
+    // name list has false positives -- "cookies redacted by name + entropy,
+    // not wholesale; a cookie can carry configuration". Test 12 pins what
+    // stops that being a silent loosening.
     assert.ok(!p.secretHeaders.includes('x-asbd-id'),
         '4.d: notSecretFields did not subtract a default secret header');
     assert.ok(!p.secretFields.includes('x-my-app-token'),
@@ -310,6 +316,52 @@ function expectThrows(fn, matcher, label) {
     expectThrows(
         () => policyModule.loadPolicy({ defaultPath: path.join(dir, 'absent.json'), startDir: dir, stopAt: dir }),
         /absent\.json/, '11.c');
+}
+
+// --- 12. A subtraction that guts a secret class is recorded, not silent. ---
+// `named-credential` has no shape backup: `sessionid`, `csrftoken`, `fb_dtsg`
+// are caught by NAME or not at all. So `notSecretFields` is the one input that
+// can hollow out a secret class while `classes.secret` still reads `gate` --
+// the floor checks the setting, and the setting is not where that class lives.
+//
+// Forbidding the subtraction is not the answer: the issue's own sketch removes
+// `x-asbd-id`, and a name list without an escape hatch is the undisableable
+// gate this whole issue exists to replace. What must not happen is the
+// loosening being INVISIBLE, so the loader records every default secret name a
+// project removed and the gates report it on every run.
+{
+    const dir = path.join(tmp, 'gutted');
+    writeProject(dir, {
+        secretFields: ['x-my-app-token'],
+        notSecretFields: ['sessionid', 'csrftoken', 'fb_dtsg', 'x-asbd-id', 'x-my-app-token'],
+    });
+    const p = load(dir);
+
+    assert.strictEqual(p.classes.secret['named-credential'], 'gate',
+        '12.a: precondition -- the class setting still reads gate');
+    assert.ok(!p.secretFields.includes('sessionid'),
+        '12.b: precondition -- the subtraction took effect');
+
+    assert.deepStrictEqual(p.loosenedSecretNames, ['sessionid', 'csrftoken', 'fb_dtsg', 'x-asbd-id'],
+        '12.c: the default secret names a project removed are not recorded, so a policy can ' +
+        'hollow out the named-credential class while every floor check still reports "gate"');
+
+    // A name the project itself added and then vetoed was never a default, so
+    // removing it loosens nothing and must not read as a loosening -- a report
+    // that cries wolf is the failure mode this issue measured at 1134 findings.
+    assert.ok(!p.loosenedSecretNames.includes('x-my-app-token'),
+        '12.d: vetoing a project-added name was reported as a loosening of the default');
+
+    // Nothing removed, nothing to report.
+    const clean = path.join(tmp, 'not-loosened');
+    writeProject(clean, { secretFields: ['x-my-app-token'] });
+    assert.deepStrictEqual(load(clean).loosenedSecretNames, [],
+        '12.e: a policy that removed nothing still reported a loosening');
+
+    // The record is part of the policy, so the version changes when a project
+    // loosens -- a reference stamped with it says which rules produced it.
+    assert.notStrictEqual(load(dir).version, load(clean).version,
+        '12.f: loosening the secret name list did not change the policy version');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
