@@ -16,7 +16,13 @@
     "classes default to `advise` for shape evidence, because shape carries no",
     "provenance: a Luhn-valid digit run is a card, a trip id, or nothing at all.",
     "Identity LITERALS (declared in .har-profile.json) always gate, whatever the",
-    "class setting says."
+    "class setting says.",
+    "",
+    "`cardIssuers` is EMPTY here on purpose. Issuer identification numbers are a",
+    "public payment-network standard, so the shipped table lives in har-shapes.js;",
+    "this list only ADDS to it, for a market whose cards the standard table does",
+    "not name. Additions append and never subtract -- to loosen card detection,",
+    "lower classes.identity.credit-card, which is visible as a setting."
   ],
   "schemaVersion": 1,
 
@@ -71,6 +77,8 @@
     "geo-lat": ["lat", "latitude", "geolat"],
     "geo-lng": ["lng", "longitude", "geolng", "lon", "long"]
   },
+
+  "cardIssuers": [],
 
   "waivers": []
 }
