@@ -64,6 +64,7 @@ const APPEND_LISTS = ['identifierFields', 'secretFields', 'secretHeaders', 'notS
 // har-shapes.js emits a 12-hex non-reversible fingerprint; a waiver keys on it.
 const FINGERPRINT_RE = /^[0-9a-f]{12}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const WAIVER_KEYS = ['kind', 'fingerprint', 'reason', 'expires'];
 
 class PolicyError extends Error {
     constructor(message) {
@@ -142,48 +143,48 @@ function validateDocument(doc, file, vocabulary) {
             `(this loader understands ${SUPPORTED_SCHEMA_VERSION}).`);
     }
 
-    if (doc.classes !== undefined) {
-        requireObject(doc.classes, file, 'classes');
-        for (const className of Object.keys(doc.classes)) {
-            const kinds = vocabulary.classes[className];
-            if (!kinds) {
-                throw new PolicyError(
-                    `${file}: unknown class "${className}". The policy model has exactly two ` +
-                    `axes: ${Object.keys(vocabulary.classes).join(' and ')}.`);
-            }
-            requireObject(doc.classes[className], file, `classes.${className}`);
-            for (const kind of Object.keys(doc.classes[className])) {
-                if (!kinds.includes(kind)) {
-                    throw new PolicyError(
-                        `${file}: unknown ${className} class "${kind}". Known: ${kinds.join(', ')}.`);
-                }
-                const setting = doc.classes[className][kind];
-                if (!SETTINGS.includes(setting)) {
-                    throw new PolicyError(
-                        `${file}: classes.${className}.${kind} is ${JSON.stringify(setting)}; ` +
-                        `it must be one of ${SETTINGS.join(', ')}.`);
-                }
-            }
-        }
-    }
-
+    if (doc.classes !== undefined) validateClasses(doc.classes, file, vocabulary);
     for (const list of APPEND_LISTS) {
         if (doc[list] !== undefined) requireStringArray(doc[list], file, list);
     }
+    if (doc.piiFields !== undefined) validatePiiFields(doc.piiFields, file, vocabulary);
+    if (doc.waivers !== undefined) validateWaivers(doc.waivers, file, vocabulary);
+}
 
-    if (doc.piiFields !== undefined) {
-        requireObject(doc.piiFields, file, 'piiFields');
-        for (const type of Object.keys(doc.piiFields)) {
-            if (!vocabulary.piiTypes.includes(type)) {
+function validateClasses(classes, file, vocabulary) {
+    requireObject(classes, file, 'classes');
+    for (const className of Object.keys(classes)) {
+        const kinds = vocabulary.classes[className];
+        if (!kinds) {
+            throw new PolicyError(
+                `${file}: unknown class "${className}". The policy model has exactly two ` +
+                `axes: ${Object.keys(vocabulary.classes).join(' and ')}.`);
+        }
+        requireObject(classes[className], file, `classes.${className}`);
+        for (const kind of Object.keys(classes[className])) {
+            if (!kinds.includes(kind)) {
                 throw new PolicyError(
-                    `${file}: unknown piiFields type "${type}". Known: ` +
-                    `${vocabulary.piiTypes.join(', ')}.`);
+                    `${file}: unknown ${className} class "${kind}". Known: ${kinds.join(', ')}.`);
             }
-            requireStringArray(doc.piiFields[type], file, `piiFields.${type}`);
+            const setting = classes[className][kind];
+            if (!SETTINGS.includes(setting)) {
+                throw new PolicyError(
+                    `${file}: classes.${className}.${kind} is ${JSON.stringify(setting)}; ` +
+                    `it must be one of ${SETTINGS.join(', ')}.`);
+            }
         }
     }
+}
 
-    if (doc.waivers !== undefined) validateWaivers(doc.waivers, file, vocabulary);
+function validatePiiFields(piiFields, file, vocabulary) {
+    requireObject(piiFields, file, 'piiFields');
+    for (const type of Object.keys(piiFields)) {
+        if (!vocabulary.piiTypes.includes(type)) {
+            throw new PolicyError(
+                `${file}: unknown piiFields type "${type}". Known: ${vocabulary.piiTypes.join(', ')}.`);
+        }
+        requireStringArray(piiFields[type], file, `piiFields.${type}`);
+    }
 }
 
 /**
@@ -202,38 +203,37 @@ function validateWaivers(waivers, file, vocabulary) {
     }
     const allKinds = [];
     for (const kinds of Object.values(vocabulary.classes)) allKinds.push(...kinds);
+    waivers.forEach((waiver, i) => validateWaiver(waiver, `${file}: waivers[${i}]`, file, i, allKinds));
+}
 
-    waivers.forEach((waiver, i) => {
-        const at = `${file}: waivers[${i}]`;
-        requireObject(waiver, file, `waivers[${i}]`);
-        for (const key of Object.keys(waiver)) {
-            if (!['kind', 'fingerprint', 'reason', 'expires'].includes(key)) {
-                throw new PolicyError(`${at}: unknown waiver key "${key}".`);
-            }
+function validateWaiver(waiver, at, file, index, allKinds) {
+    requireObject(waiver, file, `waivers[${index}]`);
+    for (const key of Object.keys(waiver)) {
+        if (!WAIVER_KEYS.includes(key)) {
+            throw new PolicyError(`${at}: unknown waiver key "${key}".`);
         }
-        if (!allKinds.includes(waiver.kind)) {
-            throw new PolicyError(
-                `${at}: unknown kind "${waiver.kind}". A waiver may only cover a ` +
-                `classified finding. Known: ${allKinds.join(', ')}.`);
-        }
-        if (typeof waiver.fingerprint !== 'string' || !FINGERPRINT_RE.test(waiver.fingerprint)) {
-            throw new PolicyError(
-                `${at}: "fingerprint" must be the 12-character hex fingerprint reported ` +
-                `by the verifier. A waiver that matches nothing reads as cover for a ` +
-                `finding nobody triaged.`);
-        }
-        if (typeof waiver.reason !== 'string' || waiver.reason.trim() === '') {
-            throw new PolicyError(
-                `${at}: "reason" is required. A committed waiver exists so a reviewer ` +
-                `can see WHY a finding was accepted.`);
-        }
-        if (waiver.expires !== undefined) {
-            if (typeof waiver.expires !== 'string' || !ISO_DATE_RE.test(waiver.expires)
-                || Number.isNaN(Date.parse(`${waiver.expires}T00:00:00Z`))) {
-                throw new PolicyError(`${at}: "expires" must be a YYYY-MM-DD date.`);
-            }
-        }
-    });
+    }
+    if (!allKinds.includes(waiver.kind)) {
+        throw new PolicyError(
+            `${at}: unknown kind "${waiver.kind}". A waiver may only cover a ` +
+            `classified finding. Known: ${allKinds.join(', ')}.`);
+    }
+    if (typeof waiver.fingerprint !== 'string' || !FINGERPRINT_RE.test(waiver.fingerprint)) {
+        throw new PolicyError(
+            `${at}: "fingerprint" must be the 12-character hex fingerprint reported ` +
+            `by the verifier. A waiver that matches nothing reads as cover for a ` +
+            `finding nobody triaged.`);
+    }
+    if (typeof waiver.reason !== 'string' || waiver.reason.trim() === '') {
+        throw new PolicyError(
+            `${at}: "reason" is required. A committed waiver exists so a reviewer ` +
+            `can see WHY a finding was accepted.`);
+    }
+    if (waiver.expires !== undefined
+        && (typeof waiver.expires !== 'string' || !ISO_DATE_RE.test(waiver.expires)
+            || Number.isNaN(Date.parse(`${waiver.expires}T00:00:00Z`)))) {
+        throw new PolicyError(`${at}: "expires" must be a YYYY-MM-DD date.`);
+    }
 }
 
 /** Append `additions` to `base`, preserving order and dropping repeats. */
@@ -325,6 +325,39 @@ function deepFreeze(value) {
 }
 
 /**
+ * The default file is the schema authority: the classes it declares and the
+ * PII dictionaries it carries ARE the vocabulary every document is checked
+ * against. Deriving it rather than hardcoding it means adding a class upstream
+ * needs no second edit here -- and no way for the two to disagree.
+ */
+function buildVocabulary(baseDoc, defaultPath) {
+    requireObject(baseDoc.classes, defaultPath, 'classes');
+    requireObject(baseDoc.piiFields, defaultPath, 'piiFields');
+    return {
+        topLevel: ['schemaVersion', 'classes', 'identifierFields', 'secretFields',
+            'secretHeaders', 'notSecretFields', 'piiFields', 'waivers'],
+        classes: Object.fromEntries(
+            Object.keys(baseDoc.classes).map((c) => [c, Object.keys(baseDoc.classes[c])])),
+        piiTypes: Object.keys(baseDoc.piiFields),
+    };
+}
+
+/**
+ * An EXPLICIT path that does not exist is a hard failure -- the operator named
+ * a file and meant it. A discovered path that does not exist is not: standing
+ * on the synced default is the correct posture for a project that has declared
+ * no overrides.
+ */
+function resolveProjectPath(opts) {
+    if (!opts.policyPath) return findUpward(POLICY_FILENAME, opts.startDir, opts.stopAt);
+    const resolved = path.resolve(opts.policyPath);
+    if (!fs.existsSync(resolved)) {
+        throw new PolicyError(`${resolved}: project policy not found. ${HOWTO}`);
+    }
+    return resolved;
+}
+
+/**
  * Load and merge the scrub policy.
  *
  * @param {object} [opts]
@@ -342,29 +375,10 @@ function loadPolicy(opts = {}) {
         ? path.resolve(opts.defaultPath)
         : path.join(__dirname, DEFAULT_POLICY_FILENAME);
     const baseDoc = stripComments(readJson(defaultPath, 'default'));
-
-    // The default declares the vocabulary every other document is checked
-    // against, so adding a class upstream needs no second edit here.
-    requireObject(baseDoc.classes, defaultPath, 'classes');
-    requireObject(baseDoc.piiFields, defaultPath, 'piiFields');
-    const vocabulary = {
-        topLevel: ['schemaVersion', 'classes', 'identifierFields', 'secretFields',
-            'secretHeaders', 'notSecretFields', 'piiFields', 'waivers'],
-        classes: Object.fromEntries(
-            Object.keys(baseDoc.classes).map((c) => [c, Object.keys(baseDoc.classes[c])])),
-        piiTypes: Object.keys(baseDoc.piiFields),
-    };
+    const vocabulary = buildVocabulary(baseDoc, defaultPath);
     validateDocument(baseDoc, defaultPath, vocabulary);
 
-    let projectPath = null;
-    if (opts.policyPath) {
-        projectPath = path.resolve(opts.policyPath);
-        if (!fs.existsSync(projectPath)) {
-            throw new PolicyError(`${projectPath}: project policy not found. ${HOWTO}`);
-        }
-    } else {
-        projectPath = findUpward(POLICY_FILENAME, opts.startDir, opts.stopAt);
-    }
+    const projectPath = resolveProjectPath(opts);
 
     // An absent project policy is not an error: the synced default is the
     // stringent baseline and standing on it is the correct default posture.
