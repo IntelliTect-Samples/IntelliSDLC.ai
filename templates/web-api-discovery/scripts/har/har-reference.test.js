@@ -461,5 +461,61 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
         + 'which strands the unscrubbed entries in the temp directory');
 }
 
+// --- 18. Gate: a substitution table inside the reference directory. ---
+{
+    // Issue #294. Both tables are keyed by the plaintext values the scrub
+    // replaced, so either one sitting in the directory the operator commits
+    // is a credential leak waiting for the next `git add -A`. Newer scrubs
+    // never write them there, but the gate has to catch what the convention
+    // missed -- including a copy left behind by an older run.
+    const clean = { log: { entries: [entry({})] } };
+    for (const [i, name] of ['.substitutions.json', '.har-substitutions.json'].entries()) {
+        const dir = makeProject('gate-subs-' + i);
+        const refDir = path.join(dir, 'acme');
+        fs.mkdirSync(refDir, { recursive: true });
+        fs.writeFileSync(path.join(refDir, 'ref.har'), JSON.stringify(clean));
+        // Contents are irrelevant to the gate and deliberately harmless here:
+        // the finding is about the file existing, never about what is in it.
+        fs.writeFileSync(path.join(refDir, name), JSON.stringify({ version: 1, substitutions: [] }));
+
+        const r = runNode(verifyRef, [], dir);
+        assert.strictEqual(r.code, 3,
+            `18.${i}.a: the verifier passed a reference directory containing ${name}:\n` + r.stderr);
+        assert.ok(r.stderr.includes(name),
+            `18.${i}.b: the failure does not name ${name}:\n` + r.stderr);
+    }
+}
+
+// --- 18b. The gate fires even when there is no reference to verify. ---
+{
+    // "No .har found" exits 1 and says nothing about the table. A directory
+    // holding only the credential-bearing file is the worst case, not an
+    // exempt one.
+    const dir = makeProject('gate-subs-only');
+    fs.writeFileSync(path.join(dir, '.substitutions.json'),
+        JSON.stringify({ version: 1, substitutions: [] }));
+
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 3,
+        '18b.a: a directory holding only a substitution table did not fail the gate:\n' + r.stderr);
+}
+
+// --- 18c. A table inside .har-captures/ is where it belongs. ---
+{
+    const dir = makeProject('gate-subs-captures');
+    const refDir = path.join(dir, 'acme');
+    fs.mkdirSync(refDir, { recursive: true });
+    fs.writeFileSync(path.join(refDir, 'ref.har'), JSON.stringify({ log: { entries: [entry({})] } }));
+    const sessionDir = path.join(dir, '.har-captures', 'example.invalid', '2026-01-01-120000');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, '.substitutions.json'),
+        JSON.stringify({ version: 1, substitutions: [] }));
+    fs.writeFileSync(path.join(sessionDir, '.har-substitutions.json'), '{}');
+
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 0,
+        '18c.a: the verifier flagged a substitution table in the gitignored capture tree:\n' + r.stderr);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-reference tests passed');

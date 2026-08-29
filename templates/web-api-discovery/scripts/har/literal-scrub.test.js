@@ -158,8 +158,13 @@ function scrubbedPath(dir) {
     const r = runNode(sanitize, ['--in', harIn], dir);
     assert.strictEqual(r.code, 0, '4.a: sanitize failed: ' + r.stderr);
     assert.ok(fs.existsSync(scrubbedPath(dir)), '4.b: scrubbed HAR not written to samples/har/');
-    assert.ok(fs.existsSync(path.join(dir, 'samples', 'har', '.har-substitutions.json')),
-        '4.c: substitution map not written beside the output');
+    // The substitution table is NOT an output artifact (issue #294): its keys
+    // are the plaintext values the scrub replaced, so beside the scrubbed HAR
+    // is precisely where it must not be. Location is covered in detail by
+    // substitution-table-location.test.js; here it is enough that the
+    // committable directory stays clean.
+    assert.ok(!fs.existsSync(path.join(dir, 'samples', 'har', '.har-substitutions.json')),
+        '4.c: substitution map written into the committable output directory');
 }
 
 // --- 5. verify-scrub fails on a forbidden literal WITHOUT echoing it. ---

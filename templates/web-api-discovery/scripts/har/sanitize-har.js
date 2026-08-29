@@ -9,6 +9,11 @@
  * an email becomes a fake email, a 64-char hex token becomes a 64-char
  * fake hex string, etc.
  *
+ * The substitution tables are NOT an output artifact. Their keys are the
+ * plaintext values the scrub replaced, so a table is a reverse lookup of live
+ * credentials; they default beside the raw capture in the gitignored
+ * `.har-captures/` tree and never into the scrubbed output path (issue #294).
+ *
  * Scrubbing is TWO controls, not one:
  *
  *   1. Key-name scrubbing -- shape patterns plus the known-secret field and
@@ -57,12 +62,43 @@ function parseArgs(argv) {
     return out;
 }
 
+// The substitution tables are keyed by the plaintext values the scrub
+// replaced, which makes each one a reverse lookup table of live credentials.
+// They are recorder state, not a deliverable, so they never default into the
+// output path -- the directory the operator has been told holds scrubbed,
+// verified artifacts and which is tracked by git (issue #294).
+const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
+const PII_SUBS_FILENAME = '.substitutions.json';
+const CAPTURES_DIR = '.har-captures';
+
+/**
+ * Where a substitution table goes when the caller did not say.
+ *
+ * The raw capture is confined to `.har-captures/` by construction and no
+ * option redirects it, so the session directory the input came from is both
+ * gitignored and already holds the only other file keyed to these values.
+ * When the input is not a raw capture -- the documented `samples/har-original/`
+ * layout, say -- there is no session directory to use, so the tables go under
+ * a `.har-captures/` beside the input instead. The synced .gitignore block
+ * matches that name at any depth, so the containment holds either way.
+ *
+ * What is never used: the output directory. That is the whole point.
+ */
+function deriveSubsDir(inPath) {
+    const dir = path.dirname(path.resolve(inPath));
+    const segments = dir.split(path.sep);
+    if (segments.includes(CAPTURES_DIR)) return dir;
+    return path.join(dir, CAPTURES_DIR);
+}
+
 function usage() {
     console.error([
         'usage: node sanitize-har.js --in <in.har>',
         '  --out        default: the input path with samples/har-original/ -> samples/har/',
-        '  --subs       default: <out-dir>/.har-substitutions.json',
-        '  --pii-subs   default: <out-dir>/.substitutions.json',
+        `  --subs       default: <captures-dir>/${LEGACY_SUBS_FILENAME} (never the output path)`,
+        `  --pii-subs   default: <captures-dir>/${PII_SUBS_FILENAME} (never the output path)`,
+        `                <captures-dir> is the ${CAPTURES_DIR} session directory the input`,
+        `                came from, else a ${CAPTURES_DIR}/ beside it -- gitignored either way`,
         `  --profile    default: nearest ${harProfile.PROFILE_FILENAME} at or above the working directory`,
         '  --fixed-time determinism for tests',
     ].join('\n'));
@@ -301,8 +337,9 @@ function main() {
 
     const outPath = args.out || deriveOutPath(args.in);
     const outDir = path.dirname(outPath);
-    const subsPath = args.subs || path.join(outDir, '.har-substitutions.json');
-    const piiSubsPath = args['pii-subs'] || path.join(outDir, '.substitutions.json');
+    const subsDir = deriveSubsDir(args.in);
+    const subsPath = args.subs || path.join(subsDir, LEGACY_SUBS_FILENAME);
+    const piiSubsPath = args['pii-subs'] || path.join(subsDir, PII_SUBS_FILENAME);
 
     let raw;
     try {
@@ -355,9 +392,14 @@ function main() {
 
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(outPath, literalPass.text, 'utf8');
+    // The tables no longer share a directory with the output, and an explicit
+    // --subs / --pii-subs may point anywhere, so each parent is created on its
+    // own rather than assumed to exist.
+    fs.mkdirSync(path.dirname(subsPath), { recursive: true });
     fs.writeFileSync(subsPath, JSON.stringify(sortedSubs, null, 2), 'utf8');
 
     const createdAt = args['fixed-time'] || new Date().toISOString();
+    fs.mkdirSync(path.dirname(piiSubsPath), { recursive: true });
     fs.writeFileSync(piiSubsPath, JSON.stringify({
         version: 1,
         createdAt,

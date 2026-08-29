@@ -25,6 +25,11 @@
  *      per-session token belongs to neither set, and the reference is the
  *      file that actually ships. Same list verify-scrub.js uses, so the
  *      committed artifact is gated at least as hard as the intermediate.
+ *   6. A substitution table anywhere in the directory. Both tables are keyed
+ *      by the plaintext values the scrub replaced, so either one here is a
+ *      reverse lookup of live credentials one `git add -A` away from a
+ *      remote. The scrub no longer writes them here, but a copy left by an
+ *      earlier run is exactly what a gate is for (issue #294).
  *
  * No failure message ever echoes an offending value: that would relocate the
  * leak into the CI log that reports it.
@@ -84,6 +89,24 @@ function parseArgs(argv) {
 // under them. The rest are excluded for size and noise.
 const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
 
+// Recorder state, never a deliverable: the substitution tables are keyed by
+// the plaintext values the scrub replaced. `.har-captures` is already skipped
+// above, which is where they now belong, so anything this walk reaches is in
+// a directory the operator commits.
+const FORBIDDEN_FILENAMES = new Set(['.substitutions.json', '.har-substitutions.json']);
+
+function listForbiddenFiles(dir) {
+    const found = [];
+    for (const name of fs.readdirSync(dir)) {
+        const full = path.join(dir, name);
+        if (fs.statSync(full).isDirectory()) {
+            if (SKIP_DIRS.has(name)) continue;
+            found.push(...listForbiddenFiles(full));
+        } else if (FORBIDDEN_FILENAMES.has(name)) found.push(full);
+    }
+    return found.sort();
+}
+
 function listHarFiles(dir) {
     const found = [];
     for (const name of fs.readdirSync(dir)) {
@@ -132,13 +155,24 @@ function main() {
         }
     }
 
+    const violations = [];
+
+    // Checked before the "is there anything to verify" question: a directory
+    // holding a substitution table and no reference at all is the worst case,
+    // not an exempt one. Only the path is reported -- naming a key would
+    // relocate the leak into the log that reports it.
+    for (const found of listForbiddenFiles(dir)) {
+        violations.push(
+            `${path.relative(dir, found)}: substitution table in the reference directory -- ` +
+            'its keys are the values the scrub replaced; it belongs in the gitignored capture tree');
+    }
+
     const files = listHarFiles(dir);
-    if (files.length === 0) {
+    if (files.length === 0 && violations.length === 0) {
         console.error(`verify-har-reference: no .har reference found under ${dir}.`);
         process.exit(1);
     }
 
-    const violations = [];
     for (const file of files) {
         const rel = path.relative(dir, file);
         const report = (message) => violations.push(`${rel}: ${message}`);

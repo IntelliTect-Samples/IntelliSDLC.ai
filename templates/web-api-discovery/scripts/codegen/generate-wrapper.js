@@ -67,14 +67,19 @@ function fail(msg) { console.error('generate-wrapper: ' + msg); process.exit(1);
 //                            refuses to run without it.
 // - .har-substitutions.json  the legacy substitution map, keyed by
 //                            `<kind>:<original>` -- the KEYS are the secrets.
-//                            It is written beside the scrubbed HAR, i.e. in a
-//                            committed directory, so it must be ignored by
-//                            name or the scrub publishes what it removed.
+// - .substitutions.json      the typed-PII table, keyed the same way. Both
+//                            default beside the raw capture in the gitignored
+//                            captures tree now (issue #294), but an operator
+//                            who ran an earlier scrub has a copy sitting in a
+//                            committed directory, and only these two entries
+//                            stop `git add -A` publishing what the scrub was
+//                            run to remove.
 const SCAFFOLD_GITIGNORE_ENTRIES = [
     'Samples/HAR-Original/',
     'Samples/MobileApp-Binaries/',
     '.har-profile.json',
     '.har-substitutions.json',
+    '.substitutions.json',
 ];
 
 function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {
