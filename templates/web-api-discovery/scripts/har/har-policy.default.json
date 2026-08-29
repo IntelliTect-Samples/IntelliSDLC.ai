@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "har-policy.default.json -- the stringent scrub baseline (issue #297, Stage 1).",
+    "",
+    "This file is synced from IntelliSDLC.ai and is NOT the place a consuming",
+    "project records its own posture: write .har-policy.project.json instead,",
+    "which merges over this file and survives the next sync.",
+    "",
+    "RULES ONLY, NEVER VALUES. Names, patterns and decisions live here and are",
+    "reviewable in a diff. A raw identity value belongs in the gitignored",
+    ".har-profile.json and nowhere else.",
+    "",
+    "The two axes: a `secret` grants access, an `identity` names a person. Every",
+    "secret class gates and a consumer may not lower it -- the sanctioned escape",
+    "is a per-value `waiver`, which carries a reason and expires. Identity",
+    "classes default to `advise` for shape evidence, because shape carries no",
+    "provenance: a Luhn-valid digit run is a card, a trip id, or nothing at all.",
+    "Identity LITERALS (declared in .har-profile.json) always gate, whatever the",
+    "class setting says."
+  ],
+  "schemaVersion": 1,
+
+  "classes": {
+    "secret": {
+      "named-credential": "gate",
+      "jwt": "gate",
+      "bearer": "gate",
+      "hex64": "gate",
+      "hex32": "gate"
+    },
+    "identity": {
+      "email": "advise",
+      "phone": "advise",
+      "ssn": "advise",
+      "credit-card": "advise",
+      "person-name": "advise",
+      "street-address": "advise",
+      "city": "advise",
+      "region": "advise",
+      "postal-code": "advise",
+      "country": "advise",
+      "dob": "advise",
+      "ip-address": "advise",
+      "geo-coordinates": "advise"
+    }
+  },
+
+  "identifierFields": [],
+
+  "secretFields": [
+    "fb_dtsg", "lsd", "jazoest",
+    "__spin_r", "__spin_b", "__spin_t", "__hs", "__hsi", "__csr", "__hsdp", "__req", "__rev",
+    "c_user", "xs", "datr", "fr", "sb", "mid", "ig_did", "ds_user_id",
+    "sessionid", "csrftoken"
+  ],
+
+  "secretHeaders": [
+    "x-fb-lsd", "x-asbd-id", "x-ig-app-id", "x-instagram-rupload-params"
+  ],
+
+  "notSecretFields": [],
+
+  "piiFields": {
+    "person-name": ["name", "firstname", "lastname", "fullname", "displayname", "givenname", "familyname", "surname"],
+    "street-address": ["address", "street", "addressline1", "addressline2", "streetaddress", "streetname"],
+    "city": ["city", "town", "locality"],
+    "region": ["region", "state", "province", "administrativearea"],
+    "postal-code": ["postalcode", "postal", "zip", "zipcode", "postcode"],
+    "country": ["country", "countrycode"],
+    "dob": ["dob", "dateofbirth", "birthdate", "birthday"],
+    "geo-lat": ["lat", "latitude", "geolat"],
+    "geo-lng": ["lng", "longitude", "geolng", "lon", "long"]
+  },
+
+  "waivers": []
+}
