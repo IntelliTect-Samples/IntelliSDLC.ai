@@ -97,9 +97,13 @@ BeforeAll {
         if ($LASTEXITCODE -ne 0) {
             throw "chmod +x failed on the stub node (exit $LASTEXITCODE): $stub"
         }
+        # UnixMode is the ls -l string, e.g. '-rwxr-xr-x'. Check the OWNER
+        # triplet (chars 1-3) specifically: this process runs the stub as the
+        # owner, so an x borrowed from the group or other bits would pass a
+        # bare -match 'x' while the stub still could not run.
         $mode = (Get-Item -LiteralPath $stub -Force).UnixMode
-        if ($mode -notmatch 'x') {
-            throw "stub node is not executable (mode '$mode'): $stub -- " +
+        if ($mode.Length -lt 4 -or $mode.Substring(1, 3) -notmatch 'x') {
+            throw "stub node is not executable by its owner (mode '$mode'): $stub -- " +
             'the real recorder would run instead. Is TMPDIR mounted noexec?'
         }
     }
