@@ -21,12 +21,46 @@
 #   2. the mention must come from a wrapper that actually invokes `node`, so a
 #      file that names a test and runs nothing does not vouch for it.
 #
-# What it still cannot prove is that the wrapper runs THAT test rather than some
-# other one, and it does not try to; orphaning is the failure that happens. The
-# stripper is line-oriented and does not track here-strings, so a `#` inside a
-# multi-line here-string is over-stripped. That direction is deliberate:
-# over-stripping reports a spurious orphan and fails loudly, where
-# under-stripping is the silent false green above.
+# KNOWN LIMIT -- READ THIS BEFORE TRUSTING A GREEN RUN.
+#
+# Coverage here means: a wrapper file that invokes `node` somewhere also mentions
+# this filename somewhere in its executable text. It does NOT mean that wrapper
+# invokes node FOR this file. There is no association between the token that
+# runs node and the token that names the file, so an incidental mention in a
+# wrapper that runs something else grants FALSE COVERAGE, and the orphan goes
+# unreported. Two reproductions, both confirmed against this suite and both
+# pinned below as PERMITTED:
+#
+#   1. a leftover variable from a refactor -- `$relatedFile = '<name>'` -- in a
+#      wrapper that separately runs its own, unrelated test; and
+#   2. a here-string documentation block naming the file, same situation. A
+#      here-string is executable text, so comment stripping does not reach it.
+#
+# No adversary is required, and the precondition is universally satisfied: every
+# wrapper in this directory already invokes node for its own test.
+#
+# Why this is not simply tightened. The obvious fix -- require the filename to
+# reach a node invocation as an argument, resolving one level of variable -- does
+# not fit this corpus. 11 of the 23 test files reach node through bindings that
+# one level cannot follow:
+#
+#   * `har-class-evidence` and `verify-scrub-cc-timestamp` (7 files) pass the
+#     name through a Pester `-ForEach` data table: a hashtable value becomes
+#     `$Name` in the It block, is interpolated into a path, assigned, and only
+#     then passed to node. Following that means modelling Pester's own binding.
+#   * `har-reference-catalogue` (4 files) passes the name as a named parameter to
+#     a helper function that invokes node in its body.
+#
+# Resolving those is a dataflow analysis over PowerShell, not a predicate tweak,
+# and a half-built one would be a guard that reports confident nonsense. So the
+# limit is accepted, stated here, and pinned in the suite. Anyone closing it
+# should start from the two PERMITTED tests at the bottom of this file and flip
+# them.
+#
+# One further caveat, in the safe direction: the comment stripper is
+# line-oriented and does not track here-strings, so a `#` inside a multi-line
+# here-string is over-stripped. Over-stripping can only shrink the corpus, so it
+# can only produce a spurious orphan that fails loudly -- never false coverage.
 
 BeforeAll {
     # Defined here rather than at file scope: Pester runs each It in a scope
@@ -192,5 +226,38 @@ Describe 'the coverage check cannot be satisfied by a mention that runs nothing'
         $stripped = Remove-PowerShellComments -Text '$msg = "count #1"  # trailing'
         $stripped | Should -Match '#1'
         $stripped | Should -Not -Match 'trailing'
+    }
+}
+
+Describe 'KNOWN LIMIT -- file-scoped association grants false coverage' {
+    # These two pin behaviour that is WRONG and currently PERMITTED. They are
+    # not aspirational: they assert what the guard does today, so the limit is
+    # visible in the suite rather than only in prose, and so whoever tightens it
+    # later has both reproductions ready to flip.
+    #
+    # Both were built and run by an independent reviewer, and reproduced here
+    # end to end before being written down: a genuinely orphaned test file plus
+    # one of these incidental mentions yields `Failed=0`.
+    #
+    # To close this, `Get-OrphanNodeTest` must associate the token that NAMES
+    # the file with the token that RUNS it, instead of asking whether both facts
+    # are true somewhere in the same file. See the header for why that is a
+    # dataflow problem rather than a tweak.
+
+    It 'PERMITTED: a leftover variable naming the file grants coverage from an unrelated node call' {
+        # A refactor leaves `$relatedFile = '<name>'` behind; the wrapper still
+        # invokes node, for something else entirely.
+        $wrapper = "`$relatedFile = '$($script:ProbeName)'`n" + $script:RealRunner
+        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
+        $orphans | Should -BeNullOrEmpty -Because (
+            'file-scoped association cannot tell a leftover variable from an argument -- ' +
+            'this is the documented residual risk, not an accident')
+    }
+
+    It 'PERMITTED: a here-string see-also naming the file grants coverage from an unrelated node call' {
+        $wrapper = "`$doc = @`"`nSee also $($script:ProbeName)`n`"@`n" + $script:RealRunner
+        $orphans = Get-OrphanNodeTest -TestFileName @($script:ProbeName) -WrapperText @($wrapper)
+        $orphans | Should -BeNullOrEmpty -Because (
+            'a here-string is executable text, so stripping comments does not reach it')
     }
 }
