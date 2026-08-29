@@ -102,10 +102,17 @@ jobs:
           # project.instructions.md is consumer-owned and excluded by basename.
           # Consumer-owned skills under .github/skills/project-*/ are excluded
           # by path -- they legitimately contain project-specific names.
+          # tests/ and fixtures/ directories are excluded because they are
+          # upstream-private (see $script:UpstreamPrivatePrefixes in
+          # Pull-SDLC.ai.ps1): they never reach a consumer, so naming a sample
+          # project in them is not a leak. This scan is about what ships.
+          # PowerShell extensions are included so the tooling under .github/ci
+          # and the skill helpers are covered, not just prose and config.
           scan_roots=(
             'CLAUDE.md'
             '.github/copilot-instructions.md'
             '.github/agents'
+            '.github/ci'
             '.github/instructions'
             '.github/skills'
             '.github/workflows/copilot-setup-steps.yml'
@@ -120,10 +127,13 @@ jobs:
               while IFS= read -r -d '' f; do
                 targets+=("$f")
               done < <(find "$root" -type f \
-                \( -name '*.md' -o -name '*.yml' -o -name '*.json' -o -name '*.sh' \) \
+                \( -name '*.md' -o -name '*.yml' -o -name '*.json' -o -name '*.sh' \
+                   -o -name '*.ps1' -o -name '*.psm1' -o -name '*.psd1' \) \
                 -not -name '*.template' \
                 -not -name 'project.instructions.md' \
                 -not -path '*.github/skills/project-*/*' \
+                -not -path '*/tests/*' \
+                -not -path '*/fixtures/*' \
                 -print0)
             fi
           done
@@ -242,9 +252,17 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      # The gate lives in .github/ci/ rather than inline here so its behavior is
+      # unit-tested (.github/ci/tests/). Inline YAML cannot be, which is how
+      # this job came to report success while running zero tests (issue #304).
+      #
+      # Do NOT revert to `Invoke-Pester -Path ./.github`: `.github` is hidden on
+      # Linux, and Pester's Find-File calls Get-Item without -Force, so the path
+      # resolves to nothing. Every Pester 5.x and 6.x release behaves this way,
+      # so pinning a version does not help. Invoke-PesterSuite.ps1 resolves the
+      # test files itself and passes those instead.
       - name: Run Pester suite
         shell: pwsh
         run: |
           Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser -SkipPublisherCheck
-          $r = Invoke-Pester -Path ./.github -Output Detailed -PassThru
-          if ($r.FailedCount -gt 0) { exit 1 }
+          ./.github/ci/Invoke-PesterSuite.ps1 -Path ./.github

@@ -130,4 +130,37 @@ Describe 'Invoke-PesterSuite' {
             $script:CleanRun.ExitCode | Should -Be 0
         }
     }
+
+    Context 'the environment the suite runs in' {
+        It 'does not impose StrictMode on the tests it runs' {
+            # The gate shares a session with the suite, so anything it sets
+            # leaks into every test. Set-StrictMode -Version Latest in the entry
+            # script turned six unrelated, previously-passing tests red -- a
+            # gate that changes the outcome it is measuring is worthless.
+            #
+            # Under StrictMode Latest, reading an absent property throws; without
+            # it, the property is $null. So this fixture passes only if the gate
+            # left the mode alone.
+            $body = 'Describe "strict" { It "treats a missing property as null" { ' +
+            '([pscustomobject]@{}).Nope | Should -BeNullOrEmpty } }'
+            $fixture = script:NewFixture -Name 'strictmode' -Body $body
+
+            (script:InvokeGate -TargetPath $fixture).ExitCode | Should -Be 0
+        }
+
+        It 'still reaches a verdict when a test unloads the gate module' {
+            # PesterGate's own tests import the module and remove it in AfterAll.
+            # Running them through the gate unloaded the very functions the gate
+            # needed next, and it died after the suite had already passed.
+            $body = 'Describe "unload" { ' +
+            'AfterAll { Remove-Module PesterGate -Force -ErrorAction SilentlyContinue }; ' +
+            'It "passes" { 1 | Should -Be 1 } }'
+            $fixture = script:NewFixture -Name 'unload-module' -Body $body
+
+            $run = script:InvokeGate -TargetPath $fixture
+
+            $run.ExitCode | Should -Be 0
+            $run.Output | Should -Not -Match 'not recognized'
+        }
+    }
 }

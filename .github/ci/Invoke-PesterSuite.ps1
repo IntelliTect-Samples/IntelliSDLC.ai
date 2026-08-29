@@ -25,10 +25,15 @@ param(
     [string[]]$Path = @('.github')
 )
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot 'PesterGate.psm1') -Force
+# Deliberately no Set-StrictMode here. This script shares a session with the
+# suite it runs, so anything it sets leaks into every test: StrictMode Latest
+# turned six unrelated, previously-passing tests red. A gate must not change
+# the outcome it is measuring. PesterGate.psm1 sets StrictMode for its own
+# code, where the module scope keeps it contained.
+$script:GateModule = Join-Path $PSScriptRoot 'PesterGate.psm1'
+Import-Module $script:GateModule -Force
 
 try {
     $testFiles = @(Get-PesterTestFile -Path $Path)
@@ -51,6 +56,11 @@ if ($testFiles.Count -gt 0) {
         Write-Output "::error::Pester gate: Invoke-Pester threw -- $($_.Exception.Message)"
     }
 }
+
+# The suite can unload this module -- PesterGate's own tests import it and
+# remove it in AfterAll -- which would leave Test-PesterGate undefined right
+# when the verdict is needed. Re-import before relying on it.
+Import-Module $script:GateModule -Force
 
 $verdict = Test-PesterGate -Result $result -ExpectedFile $testFiles
 
