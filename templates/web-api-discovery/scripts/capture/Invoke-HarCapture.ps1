@@ -59,10 +59,21 @@
 
 .PARAMETER OutputPath
     The parent of the host-named folder the scrubbed artifacts and the
-    catalogue are written to. Default: the current directory, so a capture of
-    https://app.example.com lands in ./app.example.com/. Passing -OutputPath
-    D:\refs writes D:\refs\app.example.com\ instead -- the host folder is
-    always appended. The raw capture never goes here.
+    catalogue are written to. Passing -OutputPath D:\refs writes
+    D:\refs\app.example.com\ instead -- the host folder is always appended, and
+    a relative path resolves against the current directory. The raw capture
+    never goes here.
+
+    THE DEFAULT is the repository root when the working directory is inside a
+    repository, and the current directory when it is not. It used to be the
+    current directory unconditionally, which was right outside a repo and wrong
+    inside one: run from a checkout's subdirectory, artifacts appeared wherever
+    the operator happened to be standing.
+
+    Anchoring alone does not make the placement CORRECT -- a worktree has its
+    own root -- only predictable. Recording from the primary checkout on the
+    protected branch additionally warns before anything is recorded; see
+    ../lib/RepoWorkflowGuard.ps1.
 
 .PARAMETER Describe
     An optional hint about what you intend to do, which helps the cataloguing
@@ -131,6 +142,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# The placement guard is SHARED, not reimplemented here. Bespoke per-script
+# logic about where output may land is how the defect in #300 arrived, so every
+# output-producing script dot-sources the one implementation.
+. (Join-Path $PSScriptRoot '..' 'lib' 'RepoWorkflowGuard.ps1')
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Error 'node not found on PATH -- install Node.js >= 18 to record a capture.'
@@ -213,6 +229,24 @@ if (-not $uriFolder) {
     return
 }
 
+# WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+#
+# This sits ahead of the node invocation because the guard is only safe while
+# nothing has been recorded yet. Warn a second in and cancelling costs the
+# operator nothing; warn after a capture and the choice becomes "discard the
+# recording you just spent minutes producing", which is worse than the
+# misplacement it would prevent. Advisory, never fatal, and never moved
+# downstream.
+$placement = Get-CheckoutPlacement -Path '.'
+if (-not (Assert-NotPrimaryCheckoutOnProtectedBranch -Placement $placement)) {
+    Write-Information 'Cancelled before recording -- nothing was written.'
+    return
+}
+
+# The recorder runs the same check. Telling it the guard already fired is what
+# keeps an operator coming through this front door from being warned twice.
+$env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
+
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
 if ($Describe) { $captureArgs += @('--describe', $Describe) }
@@ -227,8 +261,16 @@ if ($VerbosePreference -ne 'SilentlyContinue') { $captureArgs += @('--log-level'
 Write-Verbose "capture-har.js $($captureArgs -join ' ')"
 Write-Information 'Recording. Browse, then press ENTER in the recorder terminal -- that writes the most complete HAR.'
 
-& node $captureJs @captureArgs
-$exit = $LASTEXITCODE
+try {
+    & node $captureJs @captureArgs
+    $exit = $LASTEXITCODE
+}
+finally {
+    # Scoped to this invocation. Leaving it set would silence the recorder's own
+    # warning for every later capture in the same session, including ones this
+    # front door never saw.
+    Remove-Item Env:HARCAPTURE_PLACEMENT_GUARD_RAN -ErrorAction SilentlyContinue
+}
 Write-Verbose "capture-har.js exited $exit"
 
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
@@ -256,12 +298,31 @@ switch ($exit) {
 # before node returns here.
 # The URI-named subfolder comes from the recorder itself (see $uriFolder above),
 # so this path and the one the recorder wrote to cannot drift apart.
-$cataloguePath = Join-Path (
-    Join-Path $(if ($OutputPath) { $OutputPath } else { '.' }) $uriFolder) 'catalogue.json'
+#
+# The DEFAULT root is anchored the same way the recorder anchors it (#300):
+# the repository root inside a repo, the working directory outside one. Both
+# sides have to apply it or this script looks for a catalogue in a directory
+# the recorder never wrote to. An explicit -OutputPath is left alone, resolved
+# against the working directory, because a relative path the operator typed has
+# to mean what they typed.
+$outputRoot = if ($OutputPath) { $OutputPath } else { Get-DefaultOutputRoot -Path '.' }
+$cataloguePath = Join-Path (Join-Path $outputRoot $uriFolder) 'catalogue.json'
 Write-Verbose "catalogue: $cataloguePath"
+
+# The closing notice, emitted on every path out of here from this point on --
+# including the failure paths (#300). Having warned and then declined to discard
+# anything, the run owes the operator the exact directory it wrote and one
+# command to move it. Raw captures are already confined to a gitignored tree, so
+# the polluting set is exactly this host folder.
+function Write-PlacementNotice {
+    $notice = Get-RelocationNotice -Placement $placement -WrittenPath @(
+        Join-Path $outputRoot $uriFolder)
+    if ($notice) { Write-Warning $notice }
+}
 
 if (-not (Test-Path -LiteralPath $cataloguePath)) {
     Write-Warning "no catalogue was written to $cataloguePath"
+    Write-PlacementNotice
     return
 }
 
@@ -282,5 +343,7 @@ if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
         'Every row is still Observed -- the catalogue needs its AI pass. See ' +
         (Join-Path $PSScriptRoot 'catalogue-prompt.md'))
 }
+
+Write-PlacementNotice
 
 $rows

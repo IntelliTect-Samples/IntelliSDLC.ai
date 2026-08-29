@@ -217,6 +217,29 @@ If the project maintains a living product specification (e.g., `product-spec.md`
     ```
   - Manual fallback: unlock worktree, remove it, prune, checkout main, pull, delete branch.
 
+### The Rule Covers WRITES, Not Just Commits
+
+The no-work-on-`main` rule reads as a rule about **committing**, and that
+reading is how it gets bypassed without anyone meaning to: *"I am not
+committing, I am just running a script."* Tooling then writes its output
+relative to the working directory, the files land in the root checkout on the
+protected branch where commits are blocked, and nothing says so -- the discovery
+path is a human eventually noticing a dirty tree.
+
+So, before running **anything that produces files** -- a capture, a generator, a
+build that emits artifacts, a scratch script -- be in a worktree, not the root
+checkout. The pre-commit hook cannot help here: it enforces commits, and a
+working-tree write never reaches it.
+
+Two mechanical controls back this up, because instructions alone did not:
+
+- **Tooling warns before it starts.** Output-producing scripts check placement
+  up front and warn, then proceed -- deliberately advisory, since the warning
+  fires before anything exists to lose. Heed it: cancel and make a worktree.
+- **`.githooks/check-dirty-primary-checkout`** reports a dirty primary checkout
+  on the protected branch, whatever put the files there. Wire it into your agent
+  harness as an end-of-turn or end-of-session check.
+
 ## Concurrent Session Safety
 
 - **All commits must come from a worktree** -- pre-commit hook blocks repo-root commits.
