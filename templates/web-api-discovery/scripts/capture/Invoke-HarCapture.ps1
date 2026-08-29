@@ -309,20 +309,15 @@ $outputRoot = if ($OutputPath) { $OutputPath } else { Get-DefaultOutputRoot -Pat
 $cataloguePath = Join-Path (Join-Path $outputRoot $uriFolder) 'catalogue.json'
 Write-Verbose "catalogue: $cataloguePath"
 
-# The closing notice, emitted on every path out of here from this point on --
-# including the failure paths (#300). Having warned and then declined to discard
-# anything, the run owes the operator the exact directory it wrote and one
-# command to move it. Raw captures are already confined to a gitignored tree, so
-# the polluting set is exactly this host folder.
-function Write-PlacementNotice {
-    $notice = Get-RelocationNotice -Placement $placement -WrittenPath @(
-        Join-Path $outputRoot $uriFolder)
-    if ($notice) { Write-Warning $notice }
-}
-
+# NO closing notice here, deliberately (#300). The recorder emits it, because
+# the recorder is the process that actually wrote the files and prints it
+# in-process. Printing it from here as well would duplicate it; printing it ONLY
+# from here would make it depend on this process surviving long enough to reach
+# its own epilogue -- and a notice that goes missing exactly when something went
+# wrong is not a safety net. The opening warning is the reverse case and is
+# owned here, because it is printed before the recorder exists.
 if (-not (Test-Path -LiteralPath $cataloguePath)) {
     Write-Warning "no catalogue was written to $cataloguePath"
-    Write-PlacementNotice
     return
 }
 
@@ -343,7 +338,5 @@ if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
         'Every row is still Observed -- the catalogue needs its AI pass. See ' +
         (Join-Path $PSScriptRoot 'catalogue-prompt.md'))
 }
-
-Write-PlacementNotice
 
 $rows

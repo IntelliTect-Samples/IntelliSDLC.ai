@@ -1027,12 +1027,18 @@ test('the closing notice names what was written and how to relocate it (#300)', 
     assert.match(text, /(^|\s)mv\s/m, 'reduces cleanup to a single move');
 });
 
-test('the closing notice is not repeated when a front door already owns it (#300)', () => {
-    // The opening warning is deduplicated via HARCAPTURE_PLACEMENT_GUARD_RAN;
-    // the closing notice has to be too, or an operator coming through
-    // Invoke-HarCapture sees the same "here is what to move" block twice.
-    // Deduplication happens where the session is built, so postProcessLines
-    // stays a pure function of the session it is handed.
+test('the recorder keeps the closing notice even when a front door warned (#300)', () => {
+    // Ownership is split on purpose. The front door owns the OPENING warning,
+    // because it is printed before this process exists and so cannot be lost.
+    // The recorder owns the CLOSING notice, because it is the process that
+    // actually wrote the files and prints it in-process.
+    //
+    // Suppressing this copy to avoid a duplicate would make the notice depend
+    // on the front door surviving from spawn to epilogue. A killed terminal, a
+    // hard Ctrl+C or an agent dying mid-session would then take the notice with
+    // it -- and it would be persisted as null in session.json, so `stop` and
+    // `status` recovery would stay silent too. A notice that only arrives when
+    // nothing went wrong is not a safety net.
     const work = makeGuardedCheckout('guard-dupe');
     const res = require('child_process').spawnSync(
         process.execPath,
@@ -1045,10 +1051,17 @@ test('the closing notice is not repeated when a front door already owns it (#300
         });
 
     assert.strictEqual(res.status, 0);
-    assert.doesNotMatch(res.stderr, /primary checkout/i, 'the opening warning belongs to the caller');
+    assert.doesNotMatch(res.stderr, /primary checkout/i,
+        'the opening warning belongs to the front door that already printed it');
+
     const session = JSON.parse(res.stdout);
-    assert.strictEqual(session.placement, null,
-        'with a front door owning the notice, the recorder must not emit its own');
+    assert.ok(session.placement, 'the recorder must keep ownership of the closing notice');
+    assert.strictEqual(session.placement.shouldWarn, true);
+
+    // Persisted, so a later `stop` or `status` in another process can still
+    // report it without re-probing.
+    const lines = capture.postProcessLines(session).map((l) => l[1]).join('\n');
+    assert.match(lines, /git worktree add/, 'the persisted session still yields the notice');
 });
 
 test('there is no closing notice when the guard never fired (#300)', () => {
