@@ -27,12 +27,22 @@
  *                            ~10% of digit runs by chance.
  *
  * The floor lives HERE, not in the callers: a project file may lower an
- * identity class, but any attempt to lower a secret class is a load-time
- * error. A caller cannot forget a check it never makes. The sanctioned escape
- * for a specific false positive is a `waiver`, which is keyed on the
- * non-reversible fingerprint, must carry a reason, and expires -- so a
- * reviewer sees THAT something was waived and why, without the value ever
- * entering the repo.
+ * identity class, but any attempt to lower a secret CLASS is a load-time
+ * error. A caller cannot forget a check it never makes.
+ *
+ * What the floor does NOT forbid, deliberately, is removing an individual
+ * name: `notSecretFields` may subtract a name the synced default shipped,
+ * because a name list has false positives and a gate with no escape hatch is
+ * the undisableable gate this issue exists to replace. Since `named-credential`
+ * is caught by NAME or not at all, that subtraction is the one input that can
+ * hollow out a secret class while its setting still reads `gate` -- so every
+ * upstream name a project removes is recorded in `loosenedSecretNames` for the
+ * gates to report. Allowed, never silent.
+ *
+ * The sanctioned escape for a specific false-positive VALUE is a `waiver`,
+ * which is keyed on the non-reversible fingerprint, must carry a reason, and
+ * expires -- so a reviewer sees THAT something was waived and why, without the
+ * value ever entering the repo.
  */
 
 'use strict';
@@ -285,6 +295,24 @@ function mergeDocuments(base, override) {
     merged.secretFields = without(merged.secretFields, merged.notSecretFields);
     merged.secretHeaders = without(merged.secretHeaders, merged.notSecretFields);
 
+    // ...but `named-credential` is the one secret class with no shape backup:
+    // `sessionid`, `fb_dtsg`, `c_user` are caught by NAME or not at all. So a
+    // subtraction can hollow that class out while `classes.secret` still reads
+    // `gate` -- the floor checks the setting, and the setting is not where the
+    // class lives. Forbidding it is wrong (the issue's own sketch removes
+    // `x-asbd-id`, and a name list with no escape hatch is the undisableable
+    // gate this issue exists to replace); leaving it INVISIBLE is what must
+    // not happen. Record which upstream names a project removed, so the gates
+    // can report the loosening on every run and its cost stays visible.
+    // Reported in the order the project wrote them, and only for names the
+    // synced default actually carried: vetoing a name the same file just added
+    // loosens nothing, and a report that cries wolf is the failure mode this
+    // issue measured at 1134 findings.
+    const upstream = new Set(
+        [...(base.secretFields || []), ...(base.secretHeaders || [])].map((n) => n.toLowerCase()));
+    merged.loosenedSecretNames = merged.notSecretFields
+        .filter((name) => upstream.has(name.toLowerCase()));
+
     return merged;
 }
 
@@ -367,7 +395,7 @@ function resolveProjectPath(opts) {
  * @param {string} [opts.defaultPath] explicit default policy (tests only)
  * @returns {object} frozen merged policy: { path, defaultPath, version, schemaVersion,
  *                   classes, identifierFields, secretFields, secretHeaders,
- *                   notSecretFields, piiFields, waivers }
+ *                   notSecretFields, loosenedSecretNames, piiFields, waivers }
  * @throws {PolicyError} on an unreadable, unknown-keyed, or floor-violating policy
  */
 function loadPolicy(opts = {}) {
