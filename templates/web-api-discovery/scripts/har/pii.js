@@ -58,25 +58,131 @@ const CITIES = [
 const REGIONS = ['ZZ','XA','XB','XC','XD','XE','XF','XG','XH','XI'];
 
 // --- field-name dictionaries (case-insensitive match on JSON key tail) ---
-const FIELD = {
-    'person-name':    new Set(['name','firstname','lastname','fullname','displayname','givenname','familyname','surname']),
-    'street-address': new Set(['address','street','addressline1','addressline2','streetaddress','streetname']),
-    'city':           new Set(['city','town','locality']),
-    'region':         new Set(['region','state','province','administrativearea']),
-    'postal-code':    new Set(['postalcode','postal','zip','zipcode','postcode']),
-    'country':        new Set(['country','countrycode']),
-    'dob':            new Set(['dob','dateofbirth','birthdate','birthday']),
-    'geo-lat':        new Set(['lat','latitude','geolat']),
-    'geo-lng':        new Set(['lng','longitude','geolng','lon','long'])
-};
+//
+// The names are DATA and live in `har-policy.default.json`, so the scrubber and
+// both gates read one list and a consuming project can extend it. Each type
+// carries `exact` (whole-key names), `tail` (trailing words that denote the
+// type) and `qualifiers` -- the words allowed to precede an ambiguous tail, or
+// the string `any` where the tail speaks for itself. See `fieldTypeFor`.
+const harPolicy = require('./har-policy.js');
 
-function fieldType(key) {
-    if (typeof key !== 'string') return null;
-    const k = key.toLowerCase();
-    for (const t of Object.keys(FIELD)) {
-        if (FIELD[t].has(k)) return t;
+const DEFAULT_PII_POLICY = harPolicy.loadDefaultPolicy();
+
+function compileDictionaries(policy) {
+    const source = (policy && policy.piiFields) || DEFAULT_PII_POLICY.piiFields;
+    return Object.keys(source).map((type) => {
+        const d = source[type];
+        return [type, {
+            exact: new Set((d.exact || []).map((n) => n.toLowerCase())),
+            tail: new Set((d.tail || []).map((n) => n.toLowerCase())),
+            qualifiers: d.qualifiers === 'any' ? 'any'
+                : new Set((d.qualifiers || []).map((n) => n.toLowerCase())),
+        }];
+    });
+}
+
+const DEFAULT_DICTIONARIES = compileDictionaries(null);
+function piiDictionaries(policy) {
+    return policy && policy.piiFields ? compileDictionaries(policy) : DEFAULT_DICTIONARIES;
+}
+
+// Retained for the callers that still read it directly; derived from the
+// policy so there is one source rather than two that can disagree.
+const FIELD = Object.fromEntries(
+    DEFAULT_DICTIONARIES.map(([type, d]) => [type, new Set([...d.exact])]));
+
+/**
+ * Split a JSON key into its words.
+ *
+ * `first_name`, `first-name`, `firstName`, `FirstName` and `billing.city` are
+ * the same field wearing five conventions, and snake_case is dominant in the
+ * APIs this targets -- which is why an exact-match lookup missed almost all of
+ * them. A trailing ordinal is dropped: `address_line_1` and `phone_2` are how
+ * an API spells repetition, not part of the field's name.
+ */
+function keyWords(key) {
+    if (typeof key !== 'string') return [];
+    const words = key
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+        .split(/[^A-Za-z0-9]+/)
+        .filter(Boolean)
+        .map((w) => w.toLowerCase());
+    while (words.length > 1 && /^\d+$/.test(words[words.length - 1])) words.pop();
+    return words;
+}
+
+/**
+ * Which PII type a JSON key denotes, or null.
+ *
+ * Three rules, in order of confidence:
+ *
+ *   1. The whole key, words joined, is a name the policy lists exactly.
+ *   2. A trailing run of words joins to a listed `tail` token, and the type
+ *      accepts any qualifier before it.
+ *   3. Same, but the type qualifies its tail, and the immediately preceding
+ *      word is on that type's allowlist.
+ *
+ * Why rule 3 exists, and why the allowlist runs that way round: this function
+ * does not report a value, it REPLACES it. A key ending in the word `name` is
+ * overwhelmingly not a person -- `file_name`, `event_name`, `column_name`,
+ * `bucket_name` -- and scrubbing those writes `Avery Brooks` over a filename,
+ * corrupting the payload the reference exists to document, undetectably, after
+ * the fact. `address` is sharper still: `ip_address` and `email_address` are
+ * not streets.
+ *
+ * A DENYLIST of non-person qualifiers would fail open -- every convention
+ * nobody anticipated becomes a corrupted field, silently, in the artifact
+ * itself. The allowlist fails toward a MISS instead.
+ *
+ * BE HONEST ABOUT WHAT A MISS COSTS. It is tempting to say the literal pass
+ * catches it, and for the operator's own identifiers it does -- but
+ * `.har-profile.json` holds *the operator's* account id, display name and
+ * email, by design and by enforcement. It knows nothing about the third
+ * parties who make up most of the PII in a real capture: a friend list, a
+ * search result, an order recipient. `email`, `phone`, `ssn` and `credit-card`
+ * have shape detectors that catch those regardless of field name; `person-name`,
+ * `street-address`, `city` and `region` DO NOT, because no shape distinguishes
+ * a person's name from any other short string.
+ *
+ * So a missed name field is a real residual risk, not a covered one. The
+ * allowlist is still the right trade -- a corrupted reference is undetectable
+ * after the fact and destroys the artifact's whole purpose, while a miss is
+ * visible to anyone who reads the capture and fixable by adding a qualifier --
+ * but it is a trade, not a free lunch, and the qualifier list is meant to grow
+ * as real field names turn up.
+ */
+function fieldTypeFor(key, policy) {
+    const words = keyWords(key);
+    if (words.length === 0) return null;
+    const dictionaries = piiDictionaries(policy);
+    const joined = words.join('');
+
+    for (const [type, dict] of dictionaries) {
+        if (dict.exact.has(joined)) return type;
+    }
+
+    // Longest tail first, so `dateofbirth` wins over a bare `birth` and
+    // `postalcode` over `code`.
+    for (let start = 0; start < words.length; start++) {
+        const tail = words.slice(start).join('');
+        for (const [type, dict] of dictionaries) {
+            if (!dict.tail.has(tail)) continue;
+            if (dict.qualifiers === 'any') return type;
+            // No bare-word shortcut here. Returning a match merely because the
+            // tail began at word zero skipped the allowlist entirely -- which
+            // stayed invisible only because every tail token also happened to
+            // be an `exact` name, a coincidence nothing enforces and the merge
+            // explicitly allows a project to break. A legitimate bare-word
+            // match is rule 1's job.
+            if (start > 0 && dict.qualifiers.has(words[start - 1])) return type;
+        }
     }
     return null;
+}
+
+function fieldType(key) {
+    return fieldTypeFor(key, null);
 }
 
 // --- regex detectors (context-free) ---
@@ -682,6 +788,9 @@ function replaceAll(text, replacements) {
 module.exports = {
     PII_TYPES,
     FIELD,
+    fieldType,
+    fieldTypeFor,
+    keyWords,
     detectPii,
     fakeFor,
     scrubPii,
