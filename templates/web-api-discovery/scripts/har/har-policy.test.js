@@ -114,12 +114,36 @@ function expectThrows(fn, matcher, label) {
         assert.ok(p.secretHeaders.includes(name),
             `3.b: secret header '${name}' was dropped by the lift into har-policy.default.json`);
     }
-    for (const type of Object.keys(pii.FIELD)) {
-        assert.ok(Array.isArray(p.piiFields[type]),
+    // The PII dictionaries, written out longhand for the same reason as the
+    // secret names above: `pii.js` now derives its lists FROM this file, so
+    // reading them back would compare a value to itself. These are the names
+    // the exact-match implementation recognised before Stage 6 widened it to
+    // key tails; every one of them must still be recognised.
+    const HISTORICAL_PII = {
+        'person-name': ['name', 'firstname', 'lastname', 'fullname', 'displayname', 'givenname', 'familyname', 'surname'],
+        'street-address': ['address', 'street', 'addressline1', 'addressline2', 'streetaddress', 'streetname'],
+        city: ['city', 'town', 'locality'],
+        region: ['region', 'state', 'province', 'administrativearea'],
+        'postal-code': ['postalcode', 'postal', 'zip', 'zipcode', 'postcode'],
+        country: ['country', 'countrycode'],
+        dob: ['dob', 'dateofbirth', 'birthdate', 'birthday'],
+        'geo-lat': ['lat', 'latitude', 'geolat'],
+        'geo-lng': ['lng', 'longitude', 'geolng', 'lon', 'long'],
+    };
+    for (const type of Object.keys(HISTORICAL_PII)) {
+        const dict = p.piiFields[type];
+        assert.ok(dict && Array.isArray(dict.exact),
             `3.c: PII field dictionary '${type}' was dropped by the lift`);
-        for (const key of pii.FIELD[type]) {
-            assert.ok(p.piiFields[type].includes(key),
+        for (const key of HISTORICAL_PII[type]) {
+            assert.ok(dict.exact.includes(key),
                 `3.d: PII field name '${key}' (${type}) was dropped by the lift`);
+        }
+        // A tail without a qualifier decision is a tail that matches anything
+        // before it, which for `name` or `address` would scrub `file_name` and
+        // `ip_address`. The loader must not let that be left unstated.
+        if (dict.tail.length > 0) {
+            assert.ok(dict.qualifiers === 'any' || Array.isArray(dict.qualifiers),
+                `3.e: '${type}' declares tail tokens but no qualifier decision`);
         }
     }
 }

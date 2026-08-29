@@ -41,7 +41,6 @@
     "lower classes.identity.credit-card, which is visible as a setting."
   ],
   "schemaVersion": 1,
-
   "classes": {
     "secret": {
       "named-credential": "gate",
@@ -66,40 +65,316 @@
       "geo-coordinates": "advise"
     }
   },
-
   "identifierFields": [
     "*id", "*ids",
     "*pk", "*pks",
     "*uuid", "*uuids",
     "*guid", "*guids"
   ],
-
   "secretFields": [
-    "fb_dtsg", "lsd", "jazoest",
-    "__spin_r", "__spin_b", "__spin_t", "__hs", "__hsi", "__csr", "__hsdp", "__req", "__rev",
-    "c_user", "xs", "datr", "fr", "sb", "mid", "ig_did", "ds_user_id",
-    "sessionid", "csrftoken"
+    "fb_dtsg",
+    "lsd",
+    "jazoest",
+    "__spin_r",
+    "__spin_b",
+    "__spin_t",
+    "__hs",
+    "__hsi",
+    "__csr",
+    "__hsdp",
+    "__req",
+    "__rev",
+    "c_user",
+    "xs",
+    "datr",
+    "fr",
+    "sb",
+    "mid",
+    "ig_did",
+    "ds_user_id",
+    "sessionid",
+    "csrftoken"
   ],
-
   "secretHeaders": [
-    "x-fb-lsd", "x-csrftoken", "x-asbd-id", "x-ig-app-id", "x-instagram-rupload-params"
-  ],
-
+    "x-fb-lsd",
+    "x-csrftoken",
+    "x-asbd-id",
+    "x-ig-app-id",
+    "x-instagram-rupload-params"  ],
   "notSecretFields": [],
-
   "piiFields": {
-    "person-name": ["name", "firstname", "lastname", "fullname", "displayname", "givenname", "familyname", "surname"],
-    "street-address": ["address", "street", "addressline1", "addressline2", "streetaddress", "streetname"],
-    "city": ["city", "town", "locality"],
-    "region": ["region", "state", "province", "administrativearea"],
-    "postal-code": ["postalcode", "postal", "zip", "zipcode", "postcode"],
-    "country": ["country", "countrycode"],
-    "dob": ["dob", "dateofbirth", "birthdate", "birthday"],
-    "geo-lat": ["lat", "latitude", "geolat"],
-    "geo-lng": ["lng", "longitude", "geolng", "lon", "long"]
+    "person-name": {
+      "exact": [
+        "name",
+        "firstname",
+        "lastname",
+        "fullname",
+        "displayname",
+        "givenname",
+        "familyname",
+        "surname",
+        "middlename",
+        "nickname",
+        "screenname",
+        "username"
+      ],
+      "tail": [
+        "name"
+      ],
+      "qualifiers": [
+        "first",
+        "last",
+        "full",
+        "given",
+        "family",
+        "middle",
+        "sur",
+        "nick",
+        "screen",
+        "display",
+        "preferred",
+        "legal",
+        "real",
+        "maiden",
+        "user",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "author",
+        "patient",
+        "employee",
+        "guest",
+        "passenger",
+        "subscriber"
+      ]
+    },
+    "street-address": {
+      "exact": [
+        "address",
+        "street",
+        "addressline1",
+        "addressline2",
+        "streetaddress",
+        "streetname",
+        "addressline"
+      ],
+      "tail": [
+        "address",
+        "street",
+        "addressline"
+      ],
+      "qualifiers": [
+        "home",
+        "billing",
+        "shipping",
+        "mailing",
+        "delivery",
+        "residential",
+        "residence",
+        "postal",
+        "work",
+        "business",
+        "current",
+        "birth",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "guest",
+        "passenger",
+        "subscriber",
+        "patient",
+        "employee",
+        "street",
+        "pickup",
+        "dropoff",
+        "destination",
+        "origin"
+      ]
+    },
+    "city": {
+      "exact": [
+        "city",
+        "town",
+        "locality"
+      ],
+      "tail": [
+        "city",
+        "town",
+        "locality"
+      ],
+      "qualifiers": "any"
+    },
+    "region": {
+      "exact": [
+        "region",
+        "state",
+        "province",
+        "administrativearea"
+      ],
+      "tail": [
+        "region",
+        "province",
+        "administrativearea"
+      ],
+      "qualifiers": [
+        "home",
+        "billing",
+        "shipping",
+        "mailing",
+        "delivery",
+        "residential",
+        "residence",
+        "postal",
+        "work",
+        "business",
+        "current",
+        "birth",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "guest",
+        "passenger",
+        "subscriber",
+        "patient",
+        "employee"
+      ]
+    },
+    "postal-code": {
+      "exact": [
+        "postalcode",
+        "postal",
+        "zip",
+        "zipcode",
+        "postcode"
+      ],
+      "tail": [
+        "postalcode",
+        "zipcode",
+        "postcode",
+        "zip"
+      ],
+      "qualifiers": [
+        "home",
+        "billing",
+        "shipping",
+        "mailing",
+        "delivery",
+        "residential",
+        "residence",
+        "postal",
+        "work",
+        "business",
+        "current",
+        "birth",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "guest",
+        "passenger",
+        "subscriber",
+        "patient",
+        "employee"
+      ]
+    },
+    "country": {
+      "exact": [
+        "country",
+        "countrycode"
+      ],
+      "tail": [
+        "country",
+        "countrycode"
+      ],
+      "qualifiers": [
+        "home",
+        "billing",
+        "shipping",
+        "mailing",
+        "delivery",
+        "residential",
+        "residence",
+        "postal",
+        "work",
+        "business",
+        "current",
+        "birth",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "guest",
+        "passenger",
+        "subscriber",
+        "patient",
+        "employee"
+      ]
+    },
+    "dob": {
+      "exact": [
+        "dob",
+        "dateofbirth",
+        "birthdate",
+        "birthday"
+      ],
+      "tail": [
+        "dob",
+        "dateofbirth",
+        "birthdate",
+        "birthday"
+      ],
+      "qualifiers": "any"
+    },
+    "geo-lat": {
+      "exact": [
+        "lat",
+        "latitude",
+        "geolat"
+      ],
+      "tail": [
+        "latitude",
+        "geolat"
+      ],
+      "qualifiers": "any"
+    },
+    "geo-lng": {
+      "exact": [
+        "lng",
+        "longitude",
+        "geolng",
+        "lon",
+        "long"
+      ],
+      "tail": [
+        "longitude",
+        "geolng"
+      ],
+      "qualifiers": "any"
+    }
   },
-
   "cardIssuers": [],
-
   "waivers": []
 }

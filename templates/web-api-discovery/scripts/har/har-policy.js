@@ -290,6 +290,21 @@ function validateClasses(classes, file, vocabulary) {
     }
 }
 
+/**
+ * A PII field dictionary is three lists, not one:
+ *
+ *   exact       whole-key names       `firstname`, `dateofbirth`
+ *   tail        trailing words        `name`, `address`, `city`
+ *   qualifiers  words allowed BEFORE an ambiguous tail, or the string `any`
+ *
+ * The split exists because matching a bare tail replaces values it should not:
+ * `file_name` and `event_name` end in `name` and are not people, and this
+ * dictionary drives a SCRUB, so a false positive corrupts the payload rather
+ * than merely reporting it. `qualifiers: "any"` says the tail carries its own
+ * meaning -- there is no `bucket_city`.
+ */
+const PII_DICT_KEYS = ['exact', 'tail', 'qualifiers'];
+
 function validatePiiFields(piiFields, file, vocabulary) {
     requireObject(piiFields, file, 'piiFields');
     for (const type of Object.keys(piiFields)) {
@@ -297,7 +312,20 @@ function validatePiiFields(piiFields, file, vocabulary) {
             throw new PolicyError(
                 `${file}: unknown piiFields type "${type}". Known: ${vocabulary.piiTypes.join(', ')}.`);
         }
-        requireStringArray(piiFields[type], file, `piiFields.${type}`);
+        const dict = piiFields[type];
+        requireObject(dict, file, `piiFields.${type}`);
+        for (const key of Object.keys(dict)) {
+            if (!PII_DICT_KEYS.includes(key)) {
+                throw new PolicyError(
+                    `${file}: unknown key "${key}" in piiFields.${type}. ` +
+                    `Known: ${PII_DICT_KEYS.join(', ')}.`);
+            }
+        }
+        if (dict.exact !== undefined) requireStringArray(dict.exact, file, `piiFields.${type}.exact`);
+        if (dict.tail !== undefined) requireStringArray(dict.tail, file, `piiFields.${type}.tail`);
+        if (dict.qualifiers !== undefined && dict.qualifiers !== 'any') {
+            requireStringArray(dict.qualifiers, file, `piiFields.${type}.qualifiers`);
+        }
     }
 }
 
@@ -637,8 +665,26 @@ function mergeDocuments(base, override) {
         merged[list] = appendNames(base[list], override[list]);
     }
 
+    // Each PII dictionary merges list-by-list, so a project adding one
+    // qualifier keeps every default name. `qualifiers: "any"` is a decision
+    // rather than a list, so it REPLACES: a project that opens a tail up, or
+    // closes one down, means exactly that.
     for (const type of Object.keys(base.piiFields)) {
-        merged.piiFields[type] = appendNames(base.piiFields[type], (override.piiFields || {})[type]);
+        const from = base.piiFields[type];
+        const over = (override.piiFields || {})[type] || {};
+        merged.piiFields[type] = {
+            exact: appendNames(from.exact, over.exact),
+            tail: appendNames(from.tail, over.tail),
+            // qualifiers REPLACE rather than append, because `any` is a
+            // decision and not a list -- but that means a project adding one
+            // qualifier must COPY the defaults and extend them, or it silently
+            // drops the rest. The failure direction is safe (a shorter
+            // allowlist means more misses, never more corruption), which is
+            // why it is a footgun and not a hazard.
+            qualifiers: over.qualifiers !== undefined
+                ? (over.qualifiers === 'any' ? 'any' : appendNames([], over.qualifiers))
+                : (from.qualifiers === 'any' ? 'any' : appendNames(from.qualifiers, [])),
+        };
     }
 
     // The subtraction runs AFTER the append, so `notSecretFields` can remove a
