@@ -107,11 +107,11 @@ const readline = require('readline');
 const { spawnSync } = require('child_process');
 
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
+const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
 const CAPTURES_DIR = '.har-captures';
-const DEFAULT_OUTPUT_PATH = '.';
 const DEFAULT_SNAPSHOT_SECONDS = 5;
 const STORAGE_STATE_FILENAME = '.har-storage-state.json';
 const CATALOGUE_PROMPT = 'catalogue-prompt.md';
@@ -380,18 +380,34 @@ function uriFolder(uri) {
  * never land on top of each other -- `scrubbed.har`, `digest.json` and
  * `catalogue.json` are fixed filenames, and before this the second capture
  * silently overwrote the first.
+ *
+ * WHERE THE DEFAULT OUTPUT LANDS (#300). It used to be the working directory,
+ * unconditionally. That is right outside a repository and wrong inside one:
+ * run from a checkout's subdirectory, artifacts appeared wherever the operator
+ * happened to be standing, which in the reported incident was a project's root
+ * checkout on the protected branch. Inside a repo the default now anchors to
+ * the repo root, which is where artifact locations are standardized; outside
+ * one nothing changes.
+ *
+ * Anchoring is scoped to the DEFAULT. An explicit `outputPath` still resolves
+ * against the working directory, because a relative path the operator typed has
+ * to mean what they typed.
  */
 function resolveSessionPaths(opts = {}) {
     const root = opts.capturesRoot ? path.resolve(opts.capturesRoot) : capturesRoot();
     const folder = uriFolder(opts.uri);
     const sessionDir = path.join(root, folder, opts.stamp || stamp(new Date()));
+    const cwd = opts.cwd || process.cwd();
+    const outputRoot = opts.outputPath
+        ? path.resolve(cwd, opts.outputPath)
+        : repoGuard.resolveDefaultOutputRoot(cwd);
     return {
         capturesRoot: root,
         uriFolder: folder,
         sessionDir,
         harPath: path.join(sessionDir, RAW_HAR),
         recordLog: path.join(sessionDir, RECORD_LOG),
-        outputPath: path.join(path.resolve(opts.outputPath || DEFAULT_OUTPUT_PATH), folder)
+        outputPath: path.join(outputRoot, folder)
     };
 }
 
@@ -1174,6 +1190,16 @@ function postProcessLines(session) {
         if (pp.catalogue.skippedReason) lines.push(['warn', `             ${pp.catalogue.skippedReason}`]);
     }
     for (const err of pp.errors || []) lines.push(['error', `  ERROR:     ${err}`]);
+
+    // The other half of what makes warn-and-proceed safe rather than merely
+    // deferred (#300). Having declined to discard anything, the run owes the
+    // operator the exact paths it wrote and one command to move them. `warn`,
+    // not `info`, so it survives -InformationAction SilentlyContinue -- the
+    // whole failure mode being fixed is a mess nobody was told about.
+    const relocate = repoGuard.relocationNotice(session.placement, [session.outputPath]);
+    if (relocate) {
+        for (const line of relocate.split('\n')) lines.push(['warn', `  ${line}`]);
+    }
     return lines;
 }
 
@@ -1245,6 +1271,24 @@ async function start(args) {
 
     const isTty = !!process.stdin.isTTY;
 
+    // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+    //
+    // This sits at the very top of `start`, ahead of the profile preflight, the
+    // port scan and the browser, because the guard is only safe while nothing
+    // has been recorded yet. Warn a second in and cancelling costs the operator
+    // nothing; warn after a capture and the choice becomes "discard the
+    // recording you just spent minutes producing", which is a worse outcome
+    // than the misplacement it would prevent. So: advisory, never fatal, and
+    // never moved downstream.
+    //
+    // The PowerShell front door runs the same check and marks the environment,
+    // so an operator driving through Invoke-HarCapture is told once, not twice.
+    const placement = repoGuard.inspectCheckout(process.cwd());
+    if (placement.shouldWarn && !process.env.HARCAPTURE_PLACEMENT_GUARD_RAN) {
+        process.stderr.write('capture-har: ' +
+            repoGuard.guardMessage(placement).split('\n').join('\n  ') + '\n');
+    }
+
     // Preflight FIRST -- before the port scan and long before a browser.
     const preflight = preflightProfile(isTty);
     if (!preflight.ok && !args['validate-only']) {
@@ -1288,6 +1332,10 @@ async function start(args) {
         harPath: paths.harPath,
         recordLog: paths.recordLog,
         outputPath: paths.outputPath,
+        // Carried on the session so the CLOSING notice can name what was
+        // written even though the detection happened before the browser opened.
+        // Null unless the guard fired, so nothing downstream has to re-probe.
+        placement: placement.shouldWarn ? placement : null,
         profileDir,
         externalProfile,
         storageState,

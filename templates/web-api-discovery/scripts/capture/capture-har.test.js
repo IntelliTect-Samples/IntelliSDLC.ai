@@ -330,14 +330,53 @@ test('both roots are keyed on the captured host', () => {
         path.join(tmpRoot, 'out', 'app.example.com'));
 });
 
-test('the output path defaults to a host-named folder in the current directory', () => {
+test('outside a repo the output path defaults to the current directory', () => {
+    // The cwd default is CORRECT here and must stay byte-for-byte unchanged --
+    // tmpRoot is not a repository, so there is no root to anchor to.
     const resolved = capture.resolveSessionPaths({
         uri: 'https://app.example.com/',
+        cwd: tmpRoot,
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
     assert.strictEqual(resolved.outputPath,
-        path.join(path.resolve('.'), 'app.example.com'));
+        path.join(path.resolve(tmpRoot), 'app.example.com'));
+});
+
+test('inside a repo the output path defaults to the repo root, not the cwd (#300)', () => {
+    // The defect: run from a subdirectory of a checkout, output was created
+    // relative to wherever the operator happened to be standing. This test file
+    // lives inside a real repository, so __dirname is a genuine "deep in a
+    // checkout" cwd -- no fixture required to prove the anchoring.
+    const toplevel = require('child_process')
+        .execFileSync('git', ['rev-parse', '--show-toplevel'],
+            { cwd: __dirname, encoding: 'utf8' }).trim();
+    const resolved = capture.resolveSessionPaths({
+        uri: 'https://app.example.com/',
+        cwd: __dirname,
+        capturesRoot: path.join(tmpRoot, '.har-captures'),
+        stamp: '2026-01-01-120000'
+    });
+    // realpath the existing parent, not the not-yet-created host folder.
+    assert.strictEqual(fs.realpathSync(path.dirname(resolved.outputPath)),
+        fs.realpathSync(toplevel));
+    assert.strictEqual(path.basename(resolved.outputPath), 'app.example.com');
+});
+
+test('an explicit relative output path still resolves against the cwd (#300)', () => {
+    // Anchoring is scoped to the DEFAULT. A relative path the operator typed
+    // has to mean what they typed, or the option becomes a riddle.
+    const nested = path.join(tmpRoot, 'nested');
+    fs.mkdirSync(nested, { recursive: true });
+    const resolved = capture.resolveSessionPaths({
+        uri: 'https://app.example.com/',
+        outputPath: 'refs',
+        cwd: nested,
+        capturesRoot: path.join(tmpRoot, '.har-captures'),
+        stamp: '2026-01-01-120000'
+    });
+    assert.strictEqual(resolved.outputPath,
+        path.join(nested, 'refs', 'app.example.com'));
 });
 
 test('uriFolder keeps the host and discards path and query', () => {
@@ -916,6 +955,105 @@ test('a leak-gate rejection is never levelled away', () => {
     })), 'normal');
     assert.match(text, /REJECTED/);
     assert.match(text, /bearer token survived/);
+});
+
+// ---------------------------------------------------------------------------
+// The placement guard fires BEFORE anything is recorded (#300)
+// ---------------------------------------------------------------------------
+
+// A primary checkout on the protected branch that declares the no-work-on-main
+// rule the way this repository does -- a tracked hooks directory. Built with
+// real git, because the guard's whole job is to read what git actually says.
+function makeGuardedCheckout(name) {
+    const cp = require('child_process');
+    const g = (cwd, ...args) => cp.execFileSync('git', args,
+        { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+    const seed = path.join(tmpRoot, name + '-seed');
+    fs.mkdirSync(path.join(seed, '.githooks'), { recursive: true });
+    g(seed, 'init', '--initial-branch', 'main');
+    g(seed, 'config', 'user.email', 't@example.com');
+    g(seed, 'config', 'user.name', 'Test');
+    fs.writeFileSync(path.join(seed, '.githooks', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+    g(seed, 'add', '-A');
+    g(seed, 'commit', '-m', 'seed');
+
+    const bare = path.join(tmpRoot, name + '.git');
+    g(tmpRoot, 'clone', '--bare', seed, bare);
+    const work = path.join(tmpRoot, name);
+    g(tmpRoot, 'clone', bare, work);
+    g(work, 'config', 'core.hooksPath', '.githooks');
+    return work;
+}
+
+test('the placement guard warns before any capture begins', () => {
+    // --validate-only never opens a browser and never writes a HAR, so a
+    // warning on this run proves the guard sits ahead of the recording rather
+    // than after it. That ordering is the load-bearing part of the design: a
+    // guard downstream would be choosing whether to discard a recording the
+    // operator already spent minutes producing.
+    const work = makeGuardedCheckout('guard-order');
+    const res = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+        { cwd: work, encoding: 'utf8' });
+
+    assert.strictEqual(res.status, 0, 'the guard must not turn an advisory into a failure');
+    assert.match(res.stderr, /primary checkout/i, 'says what it detected');
+    assert.match(res.stderr, /git worktree add/, 'gives the exact command to run instead');
+    // stdout stays parseable JSON -- the warning must not corrupt the contract.
+    JSON.parse(res.stdout);
+});
+
+test('the closing notice names what was written and how to relocate it (#300)', () => {
+    // Since the guard proceeds, an operator who ignored it must not be left to
+    // work out what to tidy. Raw captures are already confined to a gitignored
+    // directory, so the polluting set is exactly one host-named folder -- which
+    // is what makes reducing cleanup to a single move possible at all.
+    const lines = capture.postProcessLines({
+        harPath: '/repo/.har-captures/app.example.com/x/raw.har',
+        outputPath: '/repo/app.example.com',
+        placement: {
+            shouldWarn: true,
+            protectedBranch: 'main',
+            topLevel: '/repo'
+        },
+        postProcess: { catalogue: { path: '/repo/app.example.com/catalogue.json', delegatedTo: 'agent' } }
+    });
+    const text = lines.map((l) => l[1]).join('\n');
+    assert.match(text, /app\.example\.com/, 'names the folder actually written');
+    assert.match(text, /git worktree add/, 'gives the worktree command');
+    assert.match(text, /(^|\s)mv\s/m, 'reduces cleanup to a single move');
+});
+
+test('there is no closing notice when the guard never fired (#300)', () => {
+    const lines = capture.postProcessLines({
+        harPath: '/repo/.har-captures/app.example.com/x/raw.har',
+        outputPath: '/repo/app.example.com',
+        placement: null,
+        postProcess: { catalogue: { path: '/repo/app.example.com/catalogue.json', delegatedTo: 'agent' } }
+    });
+    const text = lines.map((l) => l[1]).join('\n');
+    assert.doesNotMatch(text, /git worktree add/);
+});
+
+test('the placement guard stays silent in a worktree', () => {
+    const work = makeGuardedCheckout('guard-quiet');
+    const wt = path.join(tmpRoot, 'guard-quiet-wt');
+    require('child_process').execFileSync('git',
+        ['worktree', 'add', wt, '-b', 'feat/q'],
+        { cwd: work, stdio: ['ignore', 'ignore', 'ignore'] });
+
+    const res = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+        { cwd: wt, encoding: 'utf8' });
+
+    assert.strictEqual(res.status, 0);
+    assert.doesNotMatch(res.stderr, /primary checkout/i,
+        'a worktree is the sanctioned place to work and must never be warned about');
 });
 
 // ---------------------------------------------------------------------------
