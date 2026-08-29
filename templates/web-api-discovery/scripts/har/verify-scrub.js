@@ -155,12 +155,12 @@ function main() {
             `verify-scrub: NOTE -- ${policy.path} removes ${policy.loosenedSecretNames.length} ` +
             `upstream secret name(s) from detection: ${policy.loosenedSecretNames.join(', ')}`);
     }
-    for (const l of advisory) console.error(`  ~ advisory: ${describe(l)}`);
+    for (const l of advisory) console.error(`  ~ reported, not blocking: ${describe(l)}`);
 
     if (gating.length === 0) {
         console.log(
             `verify-scrub: ${args.in} -- 0 blocking leaks` +
-            `${advisory.length ? `, ${advisory.length} advisory` : ''} ` +
+            `${advisory.length ? `, ${advisory.length} reported but not blocking` : ''} ` +
             `(literal check: ${literalStatus})`);
         process.exit(0);
     }

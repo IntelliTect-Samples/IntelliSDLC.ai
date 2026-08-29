@@ -277,8 +277,19 @@ function fingerprint(value) {
  * reader nothing except that the tool is angry.
  */
 function describeLeak(leak) {
+    // Why it is not blocking matters as much as that it is not. A waived
+    // secret is not "advisory" -- somebody signed for it, with a reason and an
+    // expiry -- and a disabled class is not either: the project turned it off.
+    // Collapsing all three into one word is how a report stops meaning
+    // anything, which is the disease this whole issue treats.
     const parts = [`${leak.kind}`];
-    if (leak.class) parts.push(`[${leak.class}${leak.gating === false ? ' advisory' : ''}]`);
+    if (leak.class) {
+        let why = '';
+        if (leak.waived) why = ' waived';
+        else if (leak.setting === 'off') why = ' class disabled';
+        else if (leak.gating === false) why = ' advisory';
+        parts.push(`[${leak.class}${why}]`);
+    }
     if (leak.entryIndex !== undefined) {
         parts.push(`at entry ${leak.entryIndex} ${leak.keyPath || `(inside encoded ${leak.enclosing})`}`);
     }
