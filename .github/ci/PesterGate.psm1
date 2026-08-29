@@ -141,46 +141,88 @@ function Test-PesterGate {
         [string[]]$ExpectedFile
     )
 
-    $verdict = {
-        param([bool]$Passed, [string]$Reason)
-        [pscustomobject]@{ Passed = $Passed; Reason = $Reason }
+    $reason = Get-GateFailureReason -Result $Result -ExpectedFile $ExpectedFile
+
+    if ($reason) {
+        return [pscustomobject]@{ Passed = $false; Reason = $reason }
     }
 
-    # Ordered most-specific first. "Nothing was discovered" is checked before
-    # "no result object" because when there is nothing to run there is nothing
-    # for Invoke-Pester to have thrown from -- blaming it would misdiagnose.
-    if (@($ExpectedFile).Count -eq 0) {
-        return & $verdict $false 'no test files were discovered, so the suite cannot have run.'
+    return [pscustomobject]@{
+        Passed = $true
+        Reason = "$($Result.TotalCount) test(s) ran across $(@($ExpectedFile).Count) file(s); all passed."
+    }
+}
+
+function Get-GateFailureReason {
+    <#
+    .SYNOPSIS
+        Returns the reason the run should fail the build, or $null if it should
+        pass. Internal helper for Test-PesterGate.
+
+    .DESCRIPTION
+        Checks are ordered most-specific first, and the first match wins.
+        "Nothing was discovered" precedes "no result object" deliberately: when
+        there is nothing to run there is nothing for Invoke-Pester to have
+        thrown from, so blaming it would misdiagnose.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter()][AllowNull()][object]$Result,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedFile
+    )
+
+    $fileCount = @($ExpectedFile).Count
+
+    if ($fileCount -eq 0) {
+        return 'no test files were discovered, so the suite cannot have run.'
     }
 
     if ($null -eq $Result) {
-        return & $verdict $false ('Invoke-Pester produced no result object -- it threw before ' +
-            '-PassThru could assign. This is the false green of issue #304.')
+        return 'Invoke-Pester produced no result object -- it threw before ' +
+        '-PassThru could assign. This is the false green of issue #304.'
     }
 
     if ($Result.TotalCount -lt 1) {
-        return & $verdict $false ("no tests ran ($(@($ExpectedFile).Count) file(s) were discovered). " +
-            'A suite that executes nothing must never report success.')
+        return "no tests ran ($fileCount file(s) were discovered). " +
+        'A suite that executes nothing must never report success.'
     }
 
     if ($Result.FailedCount -gt 0) {
-        return & $verdict $false "$($Result.FailedCount) of $($Result.TotalCount) test(s) failed."
+        return "$($Result.FailedCount) of $($Result.TotalCount) test(s) failed."
     }
 
     if ($Result.Result -ne 'Passed') {
-        return & $verdict $false ("the run reported '$($Result.Result)' with no failed test -- " +
-            'a container most likely errored during discovery.')
+        return "the run reported '$($Result.Result)' with no failed test -- " +
+        'a container most likely errored during discovery.'
     }
 
-    $ran = @(Get-ContainerPath -Result $Result | ForEach-Object { ConvertTo-ComparablePath $_ })
-    $missing = @($ExpectedFile | Where-Object { (ConvertTo-ComparablePath $_) -notin $ran })
+    $missing = @(Get-FileWithoutContainer -Result $Result -ExpectedFile $ExpectedFile)
 
     if ($missing.Count -gt 0) {
-        return & $verdict $false ("$($missing.Count) discovered file(s) produced no test container, " +
-            "so discovery silently shrank: $($missing -join ', ')")
+        return "$($missing.Count) discovered file(s) produced no test container, " +
+        "so discovery silently shrank: $($missing -join ', ')"
     }
 
-    return & $verdict $true "$($Result.TotalCount) test(s) ran across $(@($ExpectedFile).Count) file(s); all passed."
+    return $null
+}
+
+function Get-FileWithoutContainer {
+    <#
+    .SYNOPSIS
+        Returns the discovered files that produced no Pester container.
+        Internal helper for Get-GateFailureReason.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory)][object]$Result,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ExpectedFile
+    )
+
+    $ran = @(Get-ContainerPath -Result $Result | ConvertTo-ComparablePath)
+
+    return @($ExpectedFile | Where-Object { (ConvertTo-ComparablePath $_) -notin $ran })
 }
 
 function Get-ContainerPath {
