@@ -78,6 +78,12 @@ function harWith(value) {
     }, harWith(SECRET)));
     assert.strictEqual(r.code, 0, `3.a: a waived fingerprint still failed the run:\n${r.out}`);
     assert.ok(/WAIVED/i.test(r.out), `3.b: the waiver was applied silently:\n${r.out}`);
+
+    // A waived secret is not "advisory" -- somebody signed for it, with a
+    // reason and an expiry. Reporting the two the same way is how a report
+    // stops meaning anything.
+    assert.ok(/\[secret waived\]/.test(r.out),
+        `3.c: a waived secret was labelled as though shape evidence had merely advised it:\n${r.out}`);
 }
 
 // --- 4. An expired waiver does not. ---
