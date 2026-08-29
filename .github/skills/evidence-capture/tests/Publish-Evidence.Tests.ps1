@@ -292,4 +292,129 @@ Describe 'Publish-Evidence' {
             $joined | Should -Match 'file:///'
         }
     }
+
+    Context 'when -LocalOnly is passed without a pull request number (issue #311)' {
+        # The Phase 5b local-link step runs BEFORE a PR exists, so there is no
+        # number to supply. -PullRequest was declared Mandatory even though the
+        # -LocalOnly path returns before ever reading it, so the documented step
+        # exited 1 on a missing mandatory parameter. Every pre-existing
+        # -LocalOnly test passes -PullRequest 5, which is why CI never saw it.
+
+        It 'succeeds and reports Mode = LocalOnly' {
+            $artifact = Join-Path $script:TempDir 'no-pr-mode.md'
+            Set-Content -LiteralPath $artifact -Value '# No PR number' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $result = & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub -LocalOnly
+
+            $result.Mode | Should -Be 'LocalOnly'
+        }
+
+        It 'does not invoke gh' {
+            $artifact = Join-Path $script:TempDir 'no-pr-nogh.md'
+            Set-Content -LiteralPath $artifact -Value '# No PR gh' -NoNewline
+
+            $bag = @{ count = 0 }
+            $stub = { param([string[]]$GhArgs) $bag['count'] = $bag['count'] + 1 }.GetNewClosure()
+
+            & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub -LocalOnly | Out-Null
+
+            $bag['count'] | Should -Be 0
+        }
+
+        It 'still emits the file:// URL -- the whole point of the Phase 5b step' {
+            $artifact = Join-Path $script:TempDir 'no-pr-link.md'
+            Set-Content -LiteralPath $artifact -Value '# No PR link' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact `
+                -GhInvoker $stub -LocalOnly -InformationAction Continue 6>&1
+
+            ($output | Out-String) | Should -Match 'Evidence \(local\): file:///'
+        }
+
+        It 'still honors -SkipDisplay' {
+            $artifact = Join-Path $script:TempDir 'no-pr-skip.md'
+            Set-Content -LiteralPath $artifact -Value '# UNIQUEBODYTOKEN' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            $output = & $script:ScriptPath -ArtifactPath $artifact `
+                -GhInvoker $stub -LocalOnly -SkipDisplay -InformationAction Continue 6>&1
+            # Keep only host/information output. The returned object carries the
+            # body in its Comment property, which would otherwise render into the
+            # formatted stream and defeat the -Not -Match assertion below.
+            $text = $output |
+                Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+                Out-String
+
+            $text | Should -Match 'Evidence \(local\): file:///'
+            $text | Should -Not -Match 'UNIQUEBODYTOKEN'
+        }
+    }
+
+    Context 'when neither -PullRequest nor -LocalOnly is supplied (issue #311)' {
+        It 'throws an error that names both ways forward' {
+            $artifact = Join-Path $script:TempDir 'neither.md'
+            Set-Content -LiteralPath $artifact -Value '# Neither' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            # PowerShell's generic missing-mandatory-parameter message gave no
+            # hint that -LocalOnly is the intended pre-PR path; the replacement
+            # must name both options.
+            { & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub } |
+                Should -Throw -ExpectedMessage '*-PullRequest*'
+            { & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub } |
+                Should -Throw -ExpectedMessage '*-LocalOnly*'
+        }
+
+        It 'does not invoke gh when it throws' {
+            $artifact = Join-Path $script:TempDir 'neither-nogh.md'
+            Set-Content -LiteralPath $artifact -Value '# Neither gh' -NoNewline
+
+            $bag = @{ count = 0 }
+            $stub = { param([string[]]$GhArgs) $bag['count'] = $bag['count'] + 1 }.GetNewClosure()
+
+            { & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub } | Should -Throw
+            $bag['count'] | Should -Be 0
+        }
+    }
+
+    Context 'backward compatibility of the -PullRequest parameter (issue #311)' {
+        # The fix must NOT become a breaking change: -PullRequest <n> -LocalOnly
+        # together is what dev-loop.agent.md documented and what every
+        # pre-existing -LocalOnly test does. Parameter sets would reject it.
+
+        It 'still accepts -PullRequest together with -LocalOnly, and still posts nothing' {
+            $artifact = Join-Path $script:TempDir 'compat-both.md'
+            Set-Content -LiteralPath $artifact -Value '# Both' -NoNewline
+
+            $bag = @{ count = 0 }
+            $stub = { param([string[]]$GhArgs) $bag['count'] = $bag['count'] + 1 }.GetNewClosure()
+
+            $result = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 5 `
+                -GhInvoker $stub -LocalOnly
+
+            $result.Mode | Should -Be 'LocalOnly'
+            $bag['count'] | Should -Be 0
+        }
+
+        It 'still posts normally when -PullRequest is supplied without -LocalOnly' {
+            $artifact = Join-Path $script:TempDir 'compat-post.md'
+            Set-Content -LiteralPath $artifact -Value '# Post' -NoNewline
+
+            $bag = @{}
+            $stub = { param([string[]]$GhArgs) $bag['args'] = $GhArgs }.GetNewClosure()
+
+            $result = & $script:ScriptPath -ArtifactPath $artifact -PullRequest 77 -GhInvoker $stub
+
+            $result.Mode | Should -Be 'Inline'
+            $bag['args'] | Should -Contain '77'
+            $bag['args'] | Should -Contain 'comment'
+        }
+    }
+
 }
