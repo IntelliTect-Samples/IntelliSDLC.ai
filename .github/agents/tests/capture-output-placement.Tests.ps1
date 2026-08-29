@@ -341,6 +341,23 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
         # shadow anything on Linux, the REAL recorder runs, and the test fails
         # with "capture-har exited 1" -- which is exactly what happened for as
         # long as this suite never ran on Linux (issue #308).
+        # A stub that is written but not executable is worse than no stub: the
+        # PATH search silently skips it, the REAL recorder runs, and the test
+        # fails with the same "capture-har exited 1" that issue #308 was about,
+        # pointing at nothing. Fail loudly at the setup step instead.
+        function Assert-StubIsExecutable {
+            param([Parameter(Mandatory)][string]$Path)
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "chmod +x failed on the stub node (exit $LASTEXITCODE): $Path"
+            }
+            $mode = (Get-Item -LiteralPath $Path -Force).UnixMode
+            if ($mode -notmatch 'x') {
+                throw "stub node is not executable (mode '$mode'): $Path -- " +
+                'the real recorder would run instead. Is TMPDIR mounted noexec?'
+            }
+        }
+
         function New-NodeStub {
             param(
                 [Parameter(Mandatory)][string]$Directory,
@@ -362,6 +379,7 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
             $body = "#!/bin/sh`necho `"GUARD=`$HARCAPTURE_PLACEMENT_GUARD_RAN`" > '$EnvFile'`nexit 0`n"
             [System.IO.File]::WriteAllText($stub, $body, [System.Text.UTF8Encoding]::new($false))
             & chmod +x $stub
+            Assert-StubIsExecutable -Path $stub
         }
 
         function Invoke-FrontDoorIn {
