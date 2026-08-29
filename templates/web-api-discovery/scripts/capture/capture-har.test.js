@@ -1027,6 +1027,30 @@ test('the closing notice names what was written and how to relocate it (#300)', 
     assert.match(text, /(^|\s)mv\s/m, 'reduces cleanup to a single move');
 });
 
+test('the closing notice is not repeated when a front door already owns it (#300)', () => {
+    // The opening warning is deduplicated via HARCAPTURE_PLACEMENT_GUARD_RAN;
+    // the closing notice has to be too, or an operator coming through
+    // Invoke-HarCapture sees the same "here is what to move" block twice.
+    // Deduplication happens where the session is built, so postProcessLines
+    // stays a pure function of the session it is handed.
+    const work = makeGuardedCheckout('guard-dupe');
+    const res = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+        {
+            cwd: work,
+            encoding: 'utf8',
+            env: Object.assign({}, process.env, { HARCAPTURE_PLACEMENT_GUARD_RAN: '1' })
+        });
+
+    assert.strictEqual(res.status, 0);
+    assert.doesNotMatch(res.stderr, /primary checkout/i, 'the opening warning belongs to the caller');
+    const session = JSON.parse(res.stdout);
+    assert.strictEqual(session.placement, null,
+        'with a front door owning the notice, the recorder must not emit its own');
+});
+
 test('there is no closing notice when the guard never fired (#300)', () => {
     const lines = capture.postProcessLines({
         harPath: '/repo/.har-captures/app.example.com/x/raw.har',

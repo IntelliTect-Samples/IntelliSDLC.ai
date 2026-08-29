@@ -81,6 +81,28 @@ function makeOrigin(name, opts) {
     return bare;
 }
 
+// A repository with NO REMOTE at all: `git init`, never cloned, so there is no
+// refs/remotes/origin/HEAD to discover the protected branch from. This is the
+// shape that exercises the FALLBACK_TRUNKS path, and it cannot be reached
+// through makeCheckout -- every clone gets a real origin/HEAD.
+function makeRemoteless(name, opts) {
+    opts = opts || {};
+    const work = path.join(tmpRoot, name);
+    fs.mkdirSync(work, { recursive: true });
+    git(work, 'init', '--initial-branch', opts.branch || 'main');
+    git(work, 'config', 'user.email', 't@example.com');
+    git(work, 'config', 'user.name', 'Test');
+    if (opts.trackedHooks) {
+        fs.mkdirSync(path.join(work, '.githooks'), { recursive: true });
+        fs.writeFileSync(path.join(work, '.githooks', 'pre-commit'), '#!/bin/sh\nexit 0\n');
+    }
+    fs.writeFileSync(path.join(work, 'README.md'), '# seed\n');
+    git(work, 'add', '-A');
+    git(work, 'commit', '-m', 'seed');
+    if (opts.hooksPath) { git(work, 'config', 'core.hooksPath', opts.hooksPath); }
+    return work;
+}
+
 function makeCheckout(name, opts) {
     opts = opts || {};
     const bare = makeOrigin(name, opts);
@@ -219,6 +241,42 @@ test('an explicit false declaration overrides tracked hooks', () => {
     const work = makeCheckout('opted-out', {
         trackedHooks: true, hooksPath: '.githooks', declare: false
     });
+    const info = guard.inspectCheckout(work);
+    assert.strictEqual(info.declaresRule, false);
+    assert.strictEqual(info.shouldWarn, false);
+});
+
+// ---------------------------------------------------------------------------
+// No remote at all -- the fallback, asserted rather than assumed
+// ---------------------------------------------------------------------------
+
+test('with no origin/HEAD to discover, a conventional trunk is still protected', () => {
+    // Disabling the guard when the protected branch cannot be discovered would
+    // reopen the defect for every repo without a remote. A spurious warning
+    // costs one ignored line; a missed one is the bug.
+    const work = makeRemoteless('no-remote', { trackedHooks: true, hooksPath: '.githooks' });
+    const info = guard.inspectCheckout(work);
+    assert.strictEqual(info.insideRepo, true);
+    assert.strictEqual(info.primaryCheckout, true);
+    assert.strictEqual(info.currentBranch, 'main');
+    assert.strictEqual(info.protectedBranch, 'main', 'falls back rather than giving up');
+    assert.strictEqual(info.shouldWarn, true);
+});
+
+test('with no origin/HEAD, an unconventional branch name is NOT assumed protected', () => {
+    // The other half of the fallback: guessing `main` must not turn every
+    // branch in a remote-less repo into the protected one.
+    const work = makeRemoteless('no-remote-dev', {
+        trackedHooks: true, hooksPath: '.githooks', branch: 'develop'
+    });
+    const info = guard.inspectCheckout(work);
+    assert.strictEqual(info.currentBranch, 'develop');
+    assert.strictEqual(info.protectedBranch, 'main');
+    assert.strictEqual(info.shouldWarn, false);
+});
+
+test('a remote-less repo that declares no rule is still left alone', () => {
+    const work = makeRemoteless('no-remote-undeclared', {});
     const info = guard.inspectCheckout(work);
     assert.strictEqual(info.declaresRule, false);
     assert.strictEqual(info.shouldWarn, false);
