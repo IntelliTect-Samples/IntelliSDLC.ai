@@ -84,6 +84,35 @@ BeforeAll {
         return $work
     }
 
+    # A repository with NO REMOTE at all: git init, never cloned, so there is no
+    # refs/remotes/origin/HEAD to discover the protected branch from. This is the
+    # shape that exercises the trunk-name fallback, and it cannot be reached
+    # through New-Checkout -- every clone gets a real origin/HEAD.
+    function New-RemotelessCheckout {
+        param(
+            [Parameter(Mandatory)][string]$Name,
+            [switch]$TrackedHooks,
+            [string]$HooksPath,
+            [string]$Branch = 'main'
+        )
+
+        $work = Join-Path $script:Tmp $Name
+        New-Item -ItemType Directory -Path $work -Force | Out-Null
+        Invoke-Git $work @('init', '--initial-branch', $Branch) | Out-Null
+        Invoke-Git $work @('config', 'user.email', 't@example.com') | Out-Null
+        Invoke-Git $work @('config', 'user.name', 'Test') | Out-Null
+        if ($TrackedHooks) {
+            $hooks = Join-Path $work '.githooks'
+            New-Item -ItemType Directory -Path $hooks -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $hooks 'pre-commit') -Value "#!/bin/sh`nexit 0"
+        }
+        Set-Content -LiteralPath (Join-Path $work 'README.md') -Value '# seed'
+        Invoke-Git $work @('add', '-A') | Out-Null
+        Invoke-Git $work @('commit', '-m', 'seed') | Out-Null
+        if ($HooksPath) { Invoke-Git $work @('config', 'core.hooksPath', $HooksPath) | Out-Null }
+        return $work
+    }
+
     $script:CheckSh = Join-Path $script:RepoRoot '.githooks/check-dirty-primary-checkout'
 
     # bash is not on PATH in a Windows PowerShell session, but Git for Windows
@@ -201,6 +230,26 @@ Describe 'Get-CheckoutPlacement -- the three git probes' {
     It 'honours an explicit opt-out over tracked hooks' {
         $work = New-Checkout -Name 'ps-optout' -TrackedHooks -HooksPath '.githooks' -Declare 'false'
         (Get-CheckoutPlacement -Path $work).ShouldWarn | Should -BeFalse
+    }
+}
+
+Describe 'Get-CheckoutPlacement -- no origin/HEAD to discover' {
+    It 'falls back to a conventional trunk rather than giving up' {
+        # Disabling the guard when the protected branch cannot be discovered
+        # would reopen the defect for every repo without a remote. A spurious
+        # warning costs one ignored line; a missed one is the bug.
+        $work = New-RemotelessCheckout -Name 'ps-noremote' -TrackedHooks -HooksPath '.githooks'
+        $info = Get-CheckoutPlacement -Path $work
+        $info.ProtectedBranch | Should -Be 'main'
+        $info.ShouldWarn | Should -BeTrue
+    }
+
+    It 'does not assume every branch in a remote-less repo is the protected one' {
+        $work = New-RemotelessCheckout -Name 'ps-noremote-dev' -TrackedHooks -HooksPath '.githooks' -Branch 'develop'
+        $info = Get-CheckoutPlacement -Path $work
+        $info.CurrentBranch | Should -Be 'develop'
+        $info.ProtectedBranch | Should -Be 'main'
+        $info.ShouldWarn | Should -BeFalse
     }
 }
 
@@ -428,6 +477,8 @@ Describe 'the guards agree -- one rule, three runtimes' {
         @{ Name = 'a non-default trunk name';                 Setup = 'trunk' }
         @{ Name = 'an explicit opt-out';                      Setup = 'optout' }
         @{ Name = 'somewhere outside a repository';           Setup = 'plain' }
+        @{ Name = 'a remote-less repo on a conventional trunk'; Setup = 'noremote' }
+        @{ Name = 'a remote-less repo on an unusual branch';  Setup = 'noremote-dev' }
     ) {
         $target = switch ($Setup) {
             'declared' { New-Checkout -Name "cmp-$Setup" -TrackedHooks -HooksPath '.githooks' }
@@ -449,6 +500,10 @@ Describe 'the guards agree -- one rule, three runtimes' {
                 $d = Join-Path $script:Tmp "cmp-$Setup"
                 New-Item -ItemType Directory -Path $d -Force | Out-Null
                 $d
+            }
+            'noremote' { New-RemotelessCheckout -Name "cmp-$Setup" -TrackedHooks -HooksPath '.githooks' }
+            'noremote-dev' {
+                New-RemotelessCheckout -Name "cmp-$Setup" -TrackedHooks -HooksPath '.githooks' -Branch 'develop'
             }
         }
 

@@ -1334,8 +1334,16 @@ async function start(args) {
         outputPath: paths.outputPath,
         // Carried on the session so the CLOSING notice can name what was
         // written even though the detection happened before the browser opened.
-        // Null unless the guard fired, so nothing downstream has to re-probe.
-        placement: placement.shouldWarn ? placement : null,
+        //
+        // Null unless the guard fired AND no front door already owns the
+        // notice. The opening warning is deduplicated by the same env var; the
+        // closing notice needs it too, or an operator coming through
+        // Invoke-HarCapture is handed the same "here is what to move" block
+        // twice. Deduplicating here rather than inside postProcessLines keeps
+        // that a pure function of the session it is given.
+        placement: placement.shouldWarn && !process.env.HARCAPTURE_PLACEMENT_GUARD_RAN
+            ? placement
+            : null,
         profileDir,
         externalProfile,
         storageState,
