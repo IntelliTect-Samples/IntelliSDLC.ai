@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
  * Behavior tests for issue #87: verify-scrub flagged Luhn-valid 13-digit
- * Unix-millisecond timestamps as credit-card leaks. After the fix, those
- * timestamps should be silently skipped while genuine 13-digit card numbers
- * remain detected.
+ * Unix-millisecond timestamps as credit-card leaks. Those timestamps must be
+ * silently skipped while genuine 13-digit card numbers remain detected.
+ *
+ * The mechanism changed in issue #295 -- the explicit year-2010..2050
+ * millisecond window is gone, and the behavior now falls out of the issuer
+ * identifier check, because a Unix-ms timestamp begins `17` and no card
+ * network has been assigned that prefix. These assertions are unchanged and
+ * still guard the behavior; only the reason it holds is different.
  *
  * Zero-dep: relies only on the Node assert module. Exits non-zero on first
  * failure so it can be wired into a Pester wrapper.
@@ -75,14 +80,11 @@ function luhn(s) {
     return sum % 10 === 0;
 }
 
-// Find a 13-digit Visa-prefix number (starts with 4) that is Luhn-valid
-// AND is NOT in the recent-Unix-ms timestamp window. Using a deterministic
-// generated value so the test is reproducible.
+// A deterministic 13-digit Luhn-valid run carrying the Visa issuer
+// identifier (leading `4`), which Visa does mint at 13 digits. Generated
+// rather than published, so the test is reproducible without committing a
+// card number.
 function findRealCard() {
-    // Start from a value well below the 13-digit timestamp window
-    // (timestamp window: ~1.26e12 -> ~2.53e12 for years 2010..2050).
-    // 4000000000000 = 4e12 is INSIDE the window -- bad choice.
-    // 4900000000000 = 4.9e12 -- OUTSIDE the window (> 2050) -- good.
     let base = 4900000000000n;
     for (let i = 0n; i < 1000n; i++) {
         const s = (base + i).toString();
@@ -115,13 +117,6 @@ let passed = 0;
 {
     const card = findRealCard();
     assert.ok(luhn(card), 'precondition: ' + card + ' is luhn-valid');
-    // Ensure outside the timestamp window so the new heuristic does NOT
-    // suppress it on the basis of "looks like a timestamp".
-    const n = Number(card);
-    assert.ok(
-        n < 1.26e12 || n > 2.53e12,
-        'precondition: card ' + card + ' must lie OUTSIDE recent-ms window'
-    );
     const har = tmpHarWith(card);
     const r = runVerify(har);
     assert.strictEqual(
@@ -134,10 +129,9 @@ let passed = 0;
 }
 
 // ===================================================================
-// Case 3: A 16-digit Luhn-valid timestamp-like number is STILL flagged
-// (16-digit window for years 2010-2050 doesn't exist in Unix-ms; this
-//  asserts the heuristic only narrows credit-card detection at the
-//  exact 13-digit length, not generically).
+// Case 3: the gate still does its job. Skipping timestamps must not
+// have been implemented as "skip 13-digit runs" -- the canonical Visa
+// test card is 16 digits and must still be reported.
 // ===================================================================
 {
     // 4111111111111111 = canonical Visa test card, 16 digits, luhn-valid.

@@ -72,9 +72,13 @@ function luhn(s) {
 }
 
 /**
- * A Luhn-valid digit run of the requested length, outside the 13-digit
- * Unix-ms window issue #87 suppresses, so a failure here can only be about
- * the decimal rule under test.
+ * A Luhn-valid digit run of the requested length, carrying the Visa issuer
+ * identifier (leading `4`) so that the length under test is the only thing
+ * that varies. Note that only lengths Visa actually mints (13/16/19) are
+ * cards at all after issue #295 -- the cases below that expect exit 0 at
+ * other lengths would pass for that reason alone, which is why
+ * `verify-scrub-cc-iin.test.js` re-tests the decimal lookarounds at a
+ * length the issuer check does NOT already reject.
  */
 function luhnRunOfLength(len) {
     let base = BigInt('49' + '0'.repeat(len - 2));
@@ -160,7 +164,9 @@ let passed = 0;
 }
 
 // ===================================================================
-// Case 5: issue #87's Unix-ms suppression still holds.
+// Case 5: issue #87's behavior still holds -- a Unix-ms timestamp is
+// not a card. Since issue #295 that follows from `17` not being an
+// assigned issuer identifier rather than from a millisecond window.
 // ===================================================================
 {
     const ts = '1777603192214';
