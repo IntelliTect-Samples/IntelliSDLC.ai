@@ -291,6 +291,69 @@ function only(findings, kind) {
         '15.a: a card stored as an unquoted JSON number was not found by the structural walk');
 }
 
+// --- 15b. ...including one too long to survive JSON.parse intact. ---
+// `JSON.parse` rebuilds a numeric literal as an IEEE-754 double, so an integer
+// past 2^53 (16 digits) comes back with its tail rounded off. Visa's 19-digit
+// form, JCB, Discover and Diners all mint numbers longer than that, and the
+// rounded value fails Luhn -- so reading the number through the parser drops
+// exactly the cards a parser cannot represent. The RAW TEXT is the only
+// faithful copy of what was on the wire.
+//
+// Case 15 above uses 16 digits, which round-trips exactly. That is precisely
+// why it passed while this did not.
+{
+    for (const card of ['4000000000000000006', '35280000000000007']) {
+        assert.notStrictEqual(String(JSON.parse(`{"c":${card}}`).c), card,
+            `15b.pre: ${card} was expected to lose precision through JSON.parse; ` +
+            'if that is no longer true this test is no longer testing anything');
+
+        const doc = har([entry({
+            response: { status: 200, headers: [], cookies: [],
+                content: { mimeType: 'application/json', text: `{"card":${card}}` } },
+        })]);
+        const hits = shapes.findLeaksInHar(doc).filter((f) => f.kind === 'credit-card');
+        assert.strictEqual(hits.length, 1,
+            `15b.a: a ${card.length}-digit card serialised as an unquoted JSON number was lost -- ` +
+            'the parser cannot represent it, so reading it through the parser drops it');
+    }
+}
+
+// --- 15bb. The parser must not INVENT a finding either. ---
+// The mirror of 15b. Rounding cuts both ways: `4560847124165743100` is not a
+// card, but `JSON.parse` rounds it to `4560847124165743000`, which carries an
+// assigned issuer identifier and passes Luhn. Reporting that would hand the
+// operator a fingerprint matching no bytes in the file -- unfindable,
+// unverifiable, and not even waivable, since a waiver keys on the fingerprint
+// of a value that was never there.
+//
+// So the structural pass emits a number only when it survives the round trip
+// intact; the raw-text pass is what covers the rest, faithfully.
+{
+    const notACard = '4560847124165743100';
+    const rounded = String(JSON.parse(`{"c":${notACard}}`).c);
+    assert.notStrictEqual(rounded, notACard, '15bb.pre: the sample no longer loses precision');
+
+    const doc = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'application/json', text: `{"id":${notACard}}` } },
+    })]);
+    assert.deepStrictEqual(shapes.findLeaksInHar(doc).filter((f) => f.kind === 'credit-card'), [],
+        '15bb.a: a number that is not a card was reported as one because the PARSER rounded it ' +
+        'into card shape -- the fingerprint matches nothing in the file');
+}
+
+// --- 15c. A value found twice is one finding, not two. ---
+// Scanning a body both structurally and as raw text must not turn one card
+// into "x2": an occurrence count that inflates is a count nobody can act on.
+{
+    const doc = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'application/json', text: '{"card":"4111111111111111"}' } },
+    })]);
+    assert.strictEqual(only(shapes.findLeaksInHar(doc), 'credit-card').count, 1,
+        '15c.a: one occurrence was counted twice because the body was scanned by two passes');
+}
+
 // --- 16. ...and a float is still not a card. ---
 // The lookarounds that keep a decimal's fractional part out of the card slot
 // (issues #292/#293) must survive the change: a HAR is full of floats, ~10% of

@@ -137,8 +137,44 @@ with a sentinel test that is case-insensitive and recognises both the
 **Task 4.3.** Source `KNOWN_SECRET_FIELD_NAMES` / `KNOWN_SECRET_HEADER_NAMES`
 from the merged policy rather than module constants.
 
-> **PR 2** ends here: the gate now classifies, locates, and stops crying wolf on
-> its own redactions. Expect the 1134-finding measurement to collapse.
+**Task 4.4 (added during review).** Both verifiers load the merged policy and
+print, on every run including a clean one, any upstream secret name the project
+removed via `notSecretFields` -- the Stage 1 carry-forward. A `blocks()`
+predicate decides what fails: waived findings and disabled classes do not,
+advisory identity findings still do. The design's "advise = non-zero exit,
+artifact kept" is only half-implementable until Stage 7: it is the ARTIFACT
+that survives, and `capture-har.js` still deletes the scrubbed file on any
+non-zero exit. Exiting 0 on advisory findings was tried and three existing
+suites caught it turning a real leaked card into a silent pass.
+
+> **PR 2** ends here -- **delivered**. The gate now classifies, locates, and
+> stops crying wolf on its own redactions. Measured on a fixture carrying one
+> real token, one real card, a fingerprint in `log.comment` and an
+> already-redacted `fb_dtsg`: **4 findings before, 2 after**, both real and both
+> naming the field that holds them.
+>
+> Landed: `har-shapes.js` (classes, `findLeaksInHar`, `describeLeak`),
+> `har-secrets.js` (`SENTINEL_RE`, policy-sourced names, options-bag walk),
+> both verifiers, `har-shapes-class.test.js`, `har-shapes-walk.test.js`,
+> `har-secrets-value.test.js`, `verify-scrub-policy.test.js`,
+> `.github/agents/tests/har-class-evidence.Tests.ps1`.
+>
+> Two review findings fixed here rather than deferred: the structural walk
+> skipped unquoted JSON numbers (a card serialised as a number was missed where
+> the old text sweep caught it), and `listHarFiles` matched `.har`
+> case-sensitively, so a `capture.HAR` was never verified at all.
+
+### Carried into the later stages
+
+- **The scrubber does not yet read the merged policy.** `sanitize-har.js`
+  builds its field alternation at module load from the DEFAULT names, so a
+  project that ADDS a secret name gets it gated by the verifiers but not
+  redacted by the scrubber. The existing remedy is the literal mechanism in
+  `.har-profile.json`; the proper fix is deferred to Stage 6, which reworks
+  the scrubber's field matching anyway.
+- **Advisory findings still block.** They stop blocking when Stage 7 lands the
+  quarantine that makes a non-zero exit non-destructive. The two must ship
+  together.
 
 ## Stage 5 -- Credit-card precision -- ~~STRUCK~~
 

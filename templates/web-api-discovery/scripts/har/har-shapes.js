@@ -333,13 +333,21 @@ function collectEntryStrings(entry, emit) {
 function walkJsonStrings(value, base, emit, depth) {
     if (depth > 40) return;
     if (typeof value === 'string') { emit(base, value); return; }
-    // A scalar that is not a string is still a value somebody sent. Quoting is
-    // invisible to a regex, so the whole-document sweep this replaced found a
-    // card serialised as a bare JSON number; walking string leaves alone would
-    // silently narrow the gate at exactly the point it was being made precise.
-    // JSON number syntax means only the digit-run patterns can hide here -- and
-    // `credit-card` is a digit run, which a project may opt up to `gate`.
+    // A scalar that is not a string is still a value somebody sent, and it is
+    // emitted here so it gets a precise key path rather than only being caught
+    // by the raw-text pass at body level.
+    //
+    // But ONLY when the parser's copy is faithful. An integer past 2^53 comes
+    // back rounded, and rounding is wrong in both directions: it drops real
+    // cards longer than 16 digits, and it invents them -- `4560847124165743100`
+    // is not a card, yet it parses to `4560847124165743000`, which carries an
+    // assigned issuer identifier and passes Luhn. Reporting that would hand the
+    // operator a fingerprint matching no bytes in the file: unfindable,
+    // unverifiable, and not even waivable, since a waiver keys on a value that
+    // was never there. Lossy numbers are left to the raw-text pass, which reads
+    // what was actually on the wire.
     if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+        if (typeof value === 'number' && Number.isInteger(value) && !Number.isSafeInteger(value)) return;
         emit(base, String(value));
         return;
     }
@@ -366,20 +374,36 @@ function walkJsonStrings(value, base, emit, depth) {
 function scanString(text, keyPath, policy, push) {
     if (typeof text !== 'string' || text === '') return;
 
-    let structured = false;
+    // One value reported once, however many passes below happen to see it. An
+    // occurrence count that inflates is a count nobody can act on.
+    const seen = new Set();
+    const take = (leaks, at, enclosing) => {
+        for (const l of leaks) {
+            const key = `${l.kind}:${l.fingerprint}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            push(l, at, enclosing);
+        }
+    };
+
+    // Structural first, so a finding gets the most precise location available.
     if (/^\s*[[{]/.test(text)) {
         try {
-            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => {
-                for (const l of findLeaks(s, policy)) push(l, p, null);
-            }, 0);
-            structured = true;
+            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => take(findLeaks(s, policy), p, null), 0);
         } catch {
-            // Not JSON after all -- fall through to the text scan.
+            // Not JSON after all -- the raw pass below is the whole scan.
         }
     }
-    if (!structured) {
-        for (const l of findLeaks(text, policy)) push(l, keyPath, null);
-    }
+
+    // Then the RAW TEXT, always -- never gated on whether the structural pass
+    // ran. Reading a body only through `JSON.parse` trusts the parser to be a
+    // faithful copy of the wire, and it is not: a numeric literal past 2^53
+    // comes back with its tail rounded off, which is every credit-card length
+    // above 16 digits. The rounded value fails Luhn, so parsing the body drops
+    // precisely the cards a parser cannot represent. Quoting, escaping and
+    // numeric precision are all invisible to a regex over the original bytes,
+    // which is why the sweep this replaced saw them and why it still runs.
+    take(findLeaks(text, policy), keyPath, null);
 
     // The percent-decoded view. A secret inside `variables=<encoded JSON>` is
     // spelled `%22` and `%40` on the wire, so no pattern reaches it otherwise
@@ -387,9 +411,7 @@ function scanString(text, keyPath, policy, push) {
     // sits inside a string rather than at a JSON key, so it has no structural
     // path of its own; the enclosing node is named instead.
     const shadow = decodedShadow(text);
-    if (shadow !== text) {
-        for (const l of findLeaks(shadow, policy)) push(l, null, keyPath);
-    }
+    if (shadow !== text) take(findLeaks(shadow, policy), null, keyPath);
 }
 
 /**
