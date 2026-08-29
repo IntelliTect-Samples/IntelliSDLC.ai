@@ -486,6 +486,7 @@ function replaceAll(text, replacements) {
 
 module.exports = {
     PII_TYPES,
+    FIELD,
     detectPii,
     fakeFor,
     scrubPii,
