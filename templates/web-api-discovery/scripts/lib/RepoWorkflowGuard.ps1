@@ -47,7 +47,10 @@
     throw is treated as "non-interactive", never as failure.
 #>
 
-Set-StrictMode -Version Latest
+# NO Set-StrictMode here, deliberately. This file is DOT-SOURCED, so anything it
+# sets runs in the CALLER's scope and would silently change the host script's
+# semantics for everything after the dot-source line. A library that
+# reconfigures its host is a worse bug than the one it was written to fix.
 
 # Every probe is a plain git question with a plain git answer. There are no
 # heuristics here by design: each of the three has a definite answer, so there
