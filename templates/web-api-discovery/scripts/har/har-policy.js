@@ -304,8 +304,10 @@ function mergeDocuments(base, override) {
     // gate this issue exists to replace); leaving it INVISIBLE is what must
     // not happen. Record which upstream names a project removed, so the gates
     // can report the loosening on every run and its cost stays visible.
-    // Reported in the order the project wrote them, and only for names the
-    // synced default actually carried: vetoing a name the same file just added
+    // Reported in merged `notSecretFields` order -- which is the order the
+    // project wrote them while the shipped default carries none of its own,
+    // and default-then-project if it ever does. Only names the synced default
+    // actually carried are reported: vetoing a name the same file just added
     // loosens nothing, and a report that cries wolf is the failure mode this
     // issue measured at 1134 findings.
     const upstream = new Set(
