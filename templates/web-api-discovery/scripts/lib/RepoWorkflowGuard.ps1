@@ -318,6 +318,14 @@ function Assert-NotPrimaryCheckoutOnProtectedBranch {
 
     Returns $null when the guard never fired, so callers can emit it
     unconditionally.
+
+    NOT called by Invoke-HarCapture, and that is deliberate rather than an
+    oversight: in the capture pipeline the RECORDER emits the closing notice,
+    because it is the process that actually writes the files and prints it
+    in-process, where a dying parent cannot take it away. This function is here
+    for the next output-producing PowerShell script that has no such child
+    process to delegate to -- which is the whole reason this file is a shared
+    library. Reintroducing this logic per script is how the defect arrived.
 #>
 function Get-RelocationNotice {
     [CmdletBinding()]

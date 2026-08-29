@@ -1334,16 +1334,22 @@ async function start(args) {
         outputPath: paths.outputPath,
         // Carried on the session so the CLOSING notice can name what was
         // written even though the detection happened before the browser opened.
+        // Null unless the guard fired, so nothing downstream has to re-probe.
         //
-        // Null unless the guard fired AND no front door already owns the
-        // notice. The opening warning is deduplicated by the same env var; the
-        // closing notice needs it too, or an operator coming through
-        // Invoke-HarCapture is handed the same "here is what to move" block
-        // twice. Deduplicating here rather than inside postProcessLines keeps
-        // that a pure function of the session it is given.
-        placement: placement.shouldWarn && !process.env.HARCAPTURE_PLACEMENT_GUARD_RAN
-            ? placement
-            : null,
+        // THE RECORDER OWNS THE CLOSING NOTICE, and deliberately not the front
+        // door -- unlike the opening warning, which the front door owns via
+        // HARCAPTURE_PLACEMENT_GUARD_RAN. The asymmetry is the point. The
+        // opening warning is printed BEFORE this process is spawned, so it
+        // cannot be lost. The closing notice is printed after work has
+        // happened, and this is the process that actually wrote the files:
+        // printing it here is in-process and unconditional, so a front door
+        // that is killed between spawning us and reaching its own epilogue --
+        // a closed terminal, a hard Ctrl+C, an agent that dies mid-session --
+        // cannot take the notice with it. Deduplicating by suppressing THIS
+        // copy would make the notice depend on another process surviving, and
+        // a notice that only arrives when nothing went wrong is not a safety
+        // net.
+        placement: placement.shouldWarn ? placement : null,
         profileDir,
         externalProfile,
         storageState,
