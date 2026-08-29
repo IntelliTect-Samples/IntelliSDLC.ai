@@ -92,7 +92,13 @@ jobs:
             'SampleEmails'
             'GMAIL_SETUP'
             'sample-appsettings'
-            'IntelliTect-Samples'
+            # Narrowed from a bare 'IntelliTect-Samples': that is the org
+            # hosting THIS repository, so banning the bare name made the
+            # canonical repo URL unquotable in the very instructions that
+            # need to link to it (issue #313). The sample PROJECT is what
+            # must not leak, and the Gmail* patterns above already catch it
+            # by name; this keeps the org-qualified form covered too.
+            'IntelliTect-Samples/Gmail'
           )
 
           # Allowlist of upstream-managed paths. Each entry is either a literal

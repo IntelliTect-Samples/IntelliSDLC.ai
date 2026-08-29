@@ -6,7 +6,7 @@ This file provides orientation for AI assistants working in this repository.
 > These instruction files are shared across multiple projects. Never add
 > project names, architecture details, domain concepts, specific dependencies,
 > or hardcoded paths. All changes must be made in the
-> [IntelliSDLC.ai](https://github.com/IntelliTect-Dev/IntelliSDLC.ai)
+> [IntelliSDLC.ai](https://github.com/IntelliTect-Samples/IntelliSDLC.ai)
 > repo and pulled into consuming projects — never edited locally and pushed back.
 > Project-specific context belongs in the consuming project's own
 > `CLAUDE.project.md` and `.github/instructions/project.instructions.md`.

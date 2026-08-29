@@ -1253,19 +1253,22 @@ function Get-UpstreamPrivatePruneOps {
         deletions. Idempotent: once the files are gone, a rerun lists nothing
         and returns an empty array.
 
-        The inventory spans the whole of .github deliberately. It was once
-        scoped to agents/ and skills/, matching the narrower private-path rule
-        of the time; when that rule widened, the mismatch meant a consumer
-        holding .github/instructions/tests/*.Tests.ps1 kept it forever -- never
-        re-shipped, never deleted (issue #304). Every path is re-checked against
-        Test-IsUpstreamPrivatePath below, so widening the inventory only ever
-        adds deletions that the predicate already sanctions.
+        The inventory must cover every tree $script:UpstreamPrivatePrefixes can
+        match -- today .github and templates. Each time it has lagged that rule,
+        consumers have kept files forever: scoped to agents/ and skills/ it
+        missed .github/instructions/tests/*.Tests.ps1 (issue #304), and scoped
+        to .github alone it missed templates/**/*.test.js (issue #313). Both are
+        the same defect -- a file that is never re-shipped because the forward
+        path filters it, and never deleted because the prune path never looked.
+        Widen this alongside any new prefix. Every path is re-checked against
+        Test-IsUpstreamPrivatePath below, so a wider inventory only ever adds
+        deletions the predicate already sanctions.
     #>
     [CmdletBinding()]
     param([string]$RepoRoot = '.')
     Push-Location $RepoRoot
     try {
-        $tracked = & git ls-files -- '.github' 2>$null
+        $tracked = & git ls-files -- '.github' 'templates' 2>$null
     }
     finally { Pop-Location }
     $ops = New-Object System.Collections.Generic.List[hashtable]
