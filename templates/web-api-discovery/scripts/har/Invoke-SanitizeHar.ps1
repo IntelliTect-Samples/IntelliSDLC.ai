@@ -25,7 +25,10 @@
     the literals are the operator's own identifiers.
 
 .PARAMETER SubstitutionsFile
-    Path to write the substitution map to. Defaults to alongside OutputHar.
+    Path to write the substitution map to. Defaults to sanitize-har.js's own
+    choice: the gitignored capture tree, never beside OutputHar. The map's
+    keys are the values the scrub replaced, so it is recorder state and not
+    an artifact to commit.
 
 .PARAMETER VerifyOnly
     Skip sanitize; only run verify-scrub against InputHar.
@@ -76,10 +79,13 @@ if (-not $VerifyOnly) {
         Write-Error "OutputHar is required when not using -VerifyOnly."
         exit 1
     }
-    if (-not $SubstitutionsFile) {
-        $SubstitutionsFile = [System.IO.Path]::ChangeExtension($OutputHar, '.subs.json')
-    }
-    & node $sanitizeJs --in $InputHar --out $OutputHar --subs $SubstitutionsFile @profileArgs
+    # No default of our own. The map is keyed by the plaintext values the
+    # scrub replaced, and defaulting it to <OutputHar>.subs.json put that
+    # reverse lookup table beside the artifact that is safe to commit
+    # (issue #294). Omitting --subs lets sanitize-har.js place it in the
+    # gitignored capture tree, which is the one place the decision belongs.
+    $subsArgs = if ($SubstitutionsFile) { @('--subs', $SubstitutionsFile) } else { @() }
+    & node $sanitizeJs --in $InputHar --out $OutputHar @subsArgs @profileArgs
     if ($LASTEXITCODE -ne 0) {
         Write-Error "sanitize-har.js failed with exit code $LASTEXITCODE."
         exit $LASTEXITCODE

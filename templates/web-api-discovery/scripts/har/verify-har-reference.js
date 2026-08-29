@@ -93,16 +93,21 @@ const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
 // the plaintext values the scrub replaced. `.har-captures` is already skipped
 // above, which is where they now belong, so anything this walk reaches is in
 // a directory the operator commits.
+// Compared lower-cased: readdirSync reports the name as stored, and Windows --
+// this project's primary platform -- is case-preserving but case-insensitive.
+// An exact-case lookup would wave `.Substitutions.json` through while git, on
+// the same filesystem, still treats it as the ignored file.
 const FORBIDDEN_FILENAMES = new Set(['.substitutions.json', '.har-substitutions.json']);
+const isForbiddenFilename = (name) => FORBIDDEN_FILENAMES.has(name.toLowerCase());
 
 function listForbiddenFiles(dir) {
     const found = [];
     for (const name of fs.readdirSync(dir)) {
         const full = path.join(dir, name);
         if (fs.statSync(full).isDirectory()) {
-            if (SKIP_DIRS.has(name)) continue;
+            if (SKIP_DIRS.has(name.toLowerCase())) continue;
             found.push(...listForbiddenFiles(full));
-        } else if (FORBIDDEN_FILENAMES.has(name)) found.push(full);
+        } else if (isForbiddenFilename(name)) found.push(full);
     }
     return found.sort();
 }

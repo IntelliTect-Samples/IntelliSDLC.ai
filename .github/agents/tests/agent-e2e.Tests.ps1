@@ -66,11 +66,22 @@ Describe 'Agent E2E -- REST pipeline (cookie+csrf)' {
         It 'scrubbed HAR was written under .run-agent/' {
             Test-Path (Join-Path $script:RestOut '.run-agent/scrubbed.har') | Should -BeTrue
         }
-        It 'pii substitutions file was written' {
-            $subsPath = Join-Path $script:RestOut '.run-agent/substitutions.json'
+        It 'pii substitutions file was written into the gitignored captures tree' {
+            # Issue #294: the substitution tables are keyed by the plaintext
+            # values the scrub replaced. They used to be written as
+            # .run-agent/substitutions.json -- no leading dot, so covered by
+            # no gitignore entry -- inside the directory the operator commits.
+            $subsPath = Join-Path $script:RestOut '.run-agent/.har-captures/.substitutions.json'
             Test-Path $subsPath | Should -BeTrue
             $store = Get-Content $subsPath -Raw | ConvertFrom-Json
             $store.version | Should -Be 1
+        }
+        It 'writes no substitution table outside the captures tree' {
+            $stray = Get-ChildItem -LiteralPath $script:RestOut -Recurse -Force -File |
+                Where-Object { $_.Name -match '(?i)substitutions.*\.json$' } |
+                Where-Object { $_.FullName -notmatch '(?i)[\\/]\.har-captures[\\/]' }
+            # Report the PATHS only; the contents are the very thing at issue.
+            ($stray | ForEach-Object { $_.FullName }) -join ', ' | Should -BeNullOrEmpty
         }
         It 'no plaintext PII remains in scrubbed HAR' {
             $scrubbed = Get-Content (Join-Path $script:RestOut '.run-agent/scrubbed.har') -Raw

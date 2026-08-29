@@ -52,6 +52,13 @@ function assert(cond, msg) {
     // copy sitting in a tracked directory, and only this entry protects them.
     assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.substitutions.json'),
         '[fresh] the typed-PII substitution table must be gitignored -- it is keyed by the originals too');
+    // The scrub keeps recorder state in `.har-captures/` and the tooling's
+    // comments call that tree gitignored. That was true only of this repo's
+    // hand-authored root .gitignore: a scaffolded consumer got the two table
+    // names (which a bare entry matches at any depth) but nothing covering the
+    // raw capture sitting beside them.
+    assert(SCAFFOLD_GITIGNORE_ENTRIES.includes('.har-captures/'),
+        '[fresh] the captures tree must be gitignored -- it holds the UNSCRUBBED capture');
     const body = readGi(dir);
     for (const e of SCAFFOLD_GITIGNORE_ENTRIES) {
         assert(body.includes(e), '[fresh] .gitignore missing ' + e);

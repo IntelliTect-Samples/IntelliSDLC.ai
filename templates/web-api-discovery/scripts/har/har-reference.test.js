@@ -500,6 +500,24 @@ const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
         '18b.a: a directory holding only a substitution table did not fail the gate:\n' + r.stderr);
 }
 
+// --- 18b2. The gate is not defeated by the case of the filename. ---
+{
+    // readdirSync reports the name as stored, and Windows -- this project's
+    // primary platform -- is case-preserving but case-insensitive. An exact
+    // Set lookup would let `.Substitutions.json` through while git, on the
+    // same filesystem, still treats it as the ignored file's sibling.
+    const dir = makeProject('gate-subs-case');
+    const refDir = path.join(dir, 'acme');
+    fs.mkdirSync(refDir, { recursive: true });
+    fs.writeFileSync(path.join(refDir, 'ref.har'), JSON.stringify({ log: { entries: [entry({})] } }));
+    fs.writeFileSync(path.join(refDir, '.Substitutions.JSON'),
+        JSON.stringify({ version: 1, substitutions: [] }));
+
+    const r = runNode(verifyRef, [], dir);
+    assert.strictEqual(r.code, 3,
+        '18b2.a: a substitution table named in a different case evaded the gate:\n' + r.stderr);
+}
+
 // --- 18c. A table inside .har-captures/ is where it belongs. ---
 {
     const dir = makeProject('gate-subs-captures');
