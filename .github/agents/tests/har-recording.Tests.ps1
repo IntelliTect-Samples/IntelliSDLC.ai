@@ -89,6 +89,19 @@ BeforeAll {
         $body = "#!/bin/sh`necho `"`$@`" > '$ArgsFile'`nexit 0`n"
         [System.IO.File]::WriteAllText($stub, $body, [System.Text.UTF8Encoding]::new($false))
         & chmod +x $stub
+
+        # A stub that is written but not executable is worse than no stub: the
+        # PATH search silently skips it, the REAL recorder runs, and the test
+        # fails with the same "capture-har exited 1" that issue #308 was about,
+        # pointing at nothing. Fail loudly at the setup step instead.
+        if ($LASTEXITCODE -ne 0) {
+            throw "chmod +x failed on the stub node (exit $LASTEXITCODE): $stub"
+        }
+        $mode = (Get-Item -LiteralPath $stub -Force).UnixMode
+        if ($mode -notmatch 'x') {
+            throw "stub node is not executable (mode '$mode'): $stub -- " +
+            'the real recorder would run instead. Is TMPDIR mounted noexec?'
+        }
     }
 
     function Invoke-FrontDoor {
