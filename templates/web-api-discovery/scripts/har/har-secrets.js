@@ -15,26 +15,51 @@
 'use strict';
 
 const { isPlausibleSecretValue, decodeNestedJson } = require('./har-literals.js');
+const harPolicy = require('./har-policy.js');
 
-// Request-signing / CSRF-adjacent body & query parameters, plus session
-// cookies too short to trip the 16-character cookie-value heuristic.
-const KNOWN_SECRET_FIELD_NAMES = new Set([
-    'fb_dtsg', 'lsd', 'jazoest',
-    '__spin_r', '__spin_b', '__spin_t', '__hs', '__hsi', '__csr', '__hsdp', '__req', '__rev',
-    'c_user', 'xs', 'datr', 'fr', 'sb', 'mid', 'ig_did', 'ds_user_id',
-    'sessionid', 'csrftoken',
-]);
+// Request-signing / CSRF-adjacent body & query parameters, session cookies
+// too short to trip the 16-character cookie-value heuristic, and the headers
+// that carry app credentials.
+//
+// The names are DATA and live in `har-policy.default.json`, so the scrubber,
+// both verifiers and a consuming project all read one list. These two Sets are
+// the default view of it, for callers that have no merged policy in hand; a
+// caller that does passes it and gets the project's additions and vetoes.
+const DEFAULT_POLICY = harPolicy.loadDefaultPolicy();
+const KNOWN_SECRET_FIELD_NAMES = new Set(DEFAULT_POLICY.secretFields.map((n) => n.toLowerCase()));
+const KNOWN_SECRET_HEADER_NAMES = new Set(DEFAULT_POLICY.secretHeaders.map((n) => n.toLowerCase()));
 
-const KNOWN_SECRET_HEADER_NAMES = new Set([
-    'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
-]);
+/**
+ * True when `value` is one of the scrubber's own redaction markers.
+ *
+ * The bug this replaces: `['redacted-', '<'].some((p) => value.startsWith(p))`
+ * -- case-sensitive, so a value of literally `REDACTED`, the most obvious
+ * spelling of "already handled" there is, was reported as a live credential.
+ * Noise of that kind is not cosmetic: it is what destroyed the gate's
+ * authority, and an ignored gate is how the three real leaks survived a run
+ * that produced 1134 findings.
+ *
+ * Deliberately anchored, never a substring test. `myredacted-token` is not a
+ * redaction, and treating it as one would be a hole rather than a cleanup.
+ */
+const SENTINEL_RE = /^(?:<[^<>]*>|redacted(?:[-_:]\S*)?|\[redacted\]|\*{3,})$/i;
 
-// Prefixes the scrubber stamps on a replaced value, so a verifier can tell a
-// redaction from a live credential.
-const REDACTION_PREFIXES = ['redacted-', '<'];
+function isRedacted(value) {
+    return typeof value === 'string' && SENTINEL_RE.test(value.trim());
+}
 
-function isKnownSecretField(key) {
-    return typeof key === 'string' && KNOWN_SECRET_FIELD_NAMES.has(key.toLowerCase());
+function secretFieldNames(policy) {
+    if (!policy || !Array.isArray(policy.secretFields)) return KNOWN_SECRET_FIELD_NAMES;
+    return new Set(policy.secretFields.map((n) => n.toLowerCase()));
+}
+
+function secretHeaderNames(policy) {
+    if (!policy || !Array.isArray(policy.secretHeaders)) return KNOWN_SECRET_HEADER_NAMES;
+    return new Set(policy.secretHeaders.map((n) => n.toLowerCase()));
+}
+
+function isKnownSecretField(key, policy) {
+    return typeof key === 'string' && secretFieldNames(policy).has(key.toLowerCase());
 }
 
 // A multipart field puts its name in a Content-Disposition header and its
@@ -109,7 +134,7 @@ function detectBoundary(text) {
  * leave it alone (which is how a detector uses this without mutating).
  * Returns the rewritten text.
  */
-function replaceMultipartSecretFields(text, replacer) {
+function replaceMultipartSecretFields(text, replacer, policy) {
     if (typeof text !== 'string' || !text.includes('Content-Disposition')) return text;
 
     const boundary = detectBoundary(text);
@@ -127,7 +152,7 @@ function replaceMultipartSecretFields(text, replacer) {
         const headers = segment.slice(0, headerEnd);
         if (!/Content-Disposition/i.test(headers)) continue;
         const nameMatch = NAME_ATTR_RE.exec(headers);
-        if (!nameMatch || !isKnownSecretField(nameMatch[1])) continue;
+        if (!nameMatch || !isKnownSecretField(nameMatch[1], policy)) continue;
 
         const separator = /\r?\n\r?\n/.exec(segment.slice(headerEnd))[0];
         const valueStart = headerEnd + separator.length;
@@ -147,12 +172,8 @@ function replaceMultipartSecretFields(text, replacer) {
     return segments.join(boundary);
 }
 
-function isKnownSecretHeader(name) {
-    return typeof name === 'string' && KNOWN_SECRET_HEADER_NAMES.has(name.toLowerCase());
-}
-
-function isRedacted(value) {
-    return typeof value === 'string' && REDACTION_PREFIXES.some((p) => value.startsWith(p));
+function isKnownSecretHeader(name, policy) {
+    return typeof name === 'string' && secretHeaderNames(policy).has(name.toLowerCase());
 }
 
 /**
@@ -163,8 +184,8 @@ function isRedacted(value) {
  * to ignore it, and an ignored gate is worse than no gate. Counters and
  * placeholders are not credentials.
  */
-function isUnredactedSecret(name, value) {
-    if (!isKnownSecretField(name) && !isKnownSecretHeader(name)) return false;
+function isUnredactedSecret(name, value, policy) {
+    if (!isKnownSecretField(name, policy) && !isKnownSecretHeader(name, policy)) return false;
     if (!isPlausibleSecretValue(value)) return false;
     return !isRedacted(value);
 }
@@ -182,43 +203,51 @@ function isUnredactedSecret(name, value) {
  * Shared by verify-scrub.js and verify-har-reference.js so both gate on
  * exactly the same definition of "readable credential".
  */
-function walkForUnredactedSecrets(node, report, where, seen) {
-    const visited = seen || new Set();
-    const location = where || 'entry';
-    if (node === null || typeof node !== 'object') return;
-    if (visited.has(node)) return;
-    visited.add(node);
+function walkForUnredactedSecrets(root, report, options) {
+    // `policy` is optional and absent means the shipped defaults, so the
+    // existing two-argument callers keep exactly today's behaviour. The
+    // recursion state moved into a closure rather than trailing parameters:
+    // an options bag that a caller could accidentally fill with a `where`
+    // string is a bag that silently changes what the walk reports.
+    const policy = options && options.policy;
+    const visited = new Set();
 
-    if (Array.isArray(node)) {
-        for (const item of node) walkForUnredactedSecrets(item, report, location, visited);
-        return;
-    }
+    function walk(node, location) {
+        if (node === null || typeof node !== 'object') return;
+        if (visited.has(node)) return;
+        visited.add(node);
 
-    // HAR name/value pairs: headers, cookies, queryString, postData.params.
-    if (typeof node.name === 'string' && typeof node.value === 'string'
-        && isUnredactedSecret(node.name, node.value)) {
-        report(node.name, location);
-    }
-
-    for (const key of Object.keys(node)) {
-        const value = node[key];
-        if (typeof value !== 'string') {
-            walkForUnredactedSecrets(value, report, location, visited);
-            continue;
+        if (Array.isArray(node)) {
+            for (const item of node) walk(item, location);
+            return;
         }
-        if (isUnredactedSecret(key, value)) report(key, location);
-        // A multipart body is one opaque string, so there is no structured
-        // pair to walk -- detect the field in the text itself. The replacer
-        // returns null, so this reports without mutating.
-        replaceMultipartSecretFields(value, (name) => {
-            report(name, `${location} (multipart field)`);
-            return null;
-        });
-        const nested = decodeNestedJson(value);
-        if (nested) {
-            walkForUnredactedSecrets(nested, report, `${location} (inside encoded '${key}')`, visited);
+
+        // HAR name/value pairs: headers, cookies, queryString, postData.params.
+        if (typeof node.name === 'string' && typeof node.value === 'string'
+            && isUnredactedSecret(node.name, node.value, policy)) {
+            report(node.name, location);
+        }
+
+        for (const key of Object.keys(node)) {
+            const value = node[key];
+            if (typeof value !== 'string') {
+                walk(value, location);
+                continue;
+            }
+            if (isUnredactedSecret(key, value, policy)) report(key, location);
+            // A multipart body is one opaque string, so there is no structured
+            // pair to walk -- detect the field in the text itself. The replacer
+            // returns null, so this reports without mutating.
+            replaceMultipartSecretFields(value, (name) => {
+                report(name, `${location} (multipart field)`);
+                return null;
+            }, policy);
+            const nested = decodeNestedJson(value);
+            if (nested) walk(nested, `${location} (inside encoded '${key}')`);
         }
     }
+
+    walk(root, 'entry');
 }
 
 module.exports = {

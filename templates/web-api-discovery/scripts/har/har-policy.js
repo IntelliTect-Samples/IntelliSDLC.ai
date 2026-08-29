@@ -430,6 +430,18 @@ function loadPolicy(opts = {}) {
     }));
 }
 
+/**
+ * The synced default policy alone, with no project discovery.
+ *
+ * For callers that need the shipped names at module-load time and must not
+ * depend on where the process happens to have been started from. Discovery
+ * walks upward from the working directory, which is the right behaviour for a
+ * tool run inside a project and the wrong one for a module-level constant.
+ */
+function loadDefaultPolicy(defaultPath) {
+    return loadPolicy({ defaultPath, policyPath: null, startDir: __dirname, stopAt: __dirname });
+}
+
 function todayIso(now) {
     return (now || new Date()).toISOString().slice(0, 10);
 }
@@ -453,6 +465,7 @@ function isWaived(policy, kind, fingerprint, now) {
 
 module.exports = {
     POLICY_FILENAME,
+    loadDefaultPolicy,
     DEFAULT_POLICY_FILENAME,
     SUPPORTED_SCHEMA_VERSION,
     SETTINGS,

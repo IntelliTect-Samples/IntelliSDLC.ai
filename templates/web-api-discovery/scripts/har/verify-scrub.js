@@ -43,7 +43,25 @@ const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 // committed reference on exactly the same list. The reference is the file
 // that actually ships.
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
-const { findLeaks } = harShapes;
+const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+
+// Does a finding fail the run?
+//
+//   gate     yes -- the whole point.
+//   advise   yes, FOR NOW. The design's end state is "reports, non-zero exit,
+//            artifact kept": it is the ARTIFACT that survives an advisory
+//            finding, not the exit code. Stage 7 splits the code and adds the
+//            quarantine; until then advisory findings keep failing exactly as
+//            they do today, so this stage cannot turn a real leaked card into
+//            a pass.
+//   off      no -- the project disabled the class. Reported as a warning so
+//            the cost of the loosening stays visible.
+//   waived   no -- a waiver that did not stop the failure would be decoration.
+function blocks(leak) {
+    if (leak.waived) return false;
+    if (leak.setting === 'off') return false;
+    return true;
+}
 
 function parseArgs(argv) {
     const out = {};
@@ -80,13 +98,23 @@ function main() {
     } catch {
         parsed = null;
     }
+    // The merged policy is discovered from the file being verified, so a
+    // consuming project's `.har-policy.project.json` governs its own captures.
+    let policy;
+    try {
+        policy = harPolicy.loadPolicy({ startDir: path.dirname(path.resolve(args.in)) });
+    } catch (e) {
+        console.error(`verify-scrub: ${e.message}`);
+        process.exit(1);
+    }
+
     if (parsed) {
-        leaks = harShapes.findLeaksInHar(parsed);
+        leaks = harShapes.findLeaksInHar(parsed, policy);
         harSecrets.walkForUnredactedSecrets(parsed, (name) => {
-            leaks.push({ kind: 'known-secret', sample: name });
-        });
+            leaks.push({ kind: 'known-secret', sample: name, gating: true });
+        }, { policy });
     } else {
-        leaks = harShapes.findLeaksDeep(raw);
+        leaks = harShapes.findLeaksDeep(raw, policy);
     }
 
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
@@ -105,16 +133,41 @@ function main() {
         }
     }
 
-    if (leaks.length === 0) {
-        console.log(`verify-scrub: ${args.in} -- 0 leaks (literal check: ${literalStatus})`);
+    // A finding the policy does not gate is reported and does not fail the
+    // run: an identity matched only by SHAPE, a waived fingerprint, a class the
+    // project disabled. It has left the gate, not the report.
+    //
+    // The design also asks an advisory finding to exit non-zero while keeping
+    // the artifact. That half waits for Stage 7: today capture-har.js DELETES
+    // the scrubbed file on any non-zero exit, so exiting non-zero on an
+    // advisory finding would destroy the artifact -- the exact behaviour this
+    // issue exists to end. The quarantine lands first, then the exit code.
+    const describe = (l) =>
+        l.sample !== undefined ? `${l.kind}: ${l.sample}` : harShapes.describeLeak(l);
+    const gating = leaks.filter(blocks);
+    const advisory = leaks.filter((l) => !blocks(l));
+
+    // A loosening the project chose is printed on EVERY run, clean or not.
+    // `named-credential` is caught by name or not at all, so removing a name
+    // silently hollows the class out; saying so is what keeps the cost visible.
+    if (policy && policy.loosenedSecretNames && policy.loosenedSecretNames.length) {
+        console.error(
+            `verify-scrub: NOTE -- ${policy.path} removes ${policy.loosenedSecretNames.length} ` +
+            `upstream secret name(s) from detection: ${policy.loosenedSecretNames.join(', ')}`);
+    }
+    for (const l of advisory) console.error(`  ~ advisory: ${describe(l)}`);
+
+    if (gating.length === 0) {
+        console.log(
+            `verify-scrub: ${args.in} -- 0 blocking leaks` +
+            `${advisory.length ? `, ${advisory.length} advisory` : ''} ` +
+            `(literal check: ${literalStatus})`);
         process.exit(0);
     }
-    console.error(`verify-scrub: ${leaks.length} leak(s) detected in ${args.in}:`);
+    console.error(`verify-scrub: ${gating.length} leak(s) detected in ${args.in}:`);
     // Named findings print the field or the sentinel; shape findings print a
-    // fingerprint. Nothing here prints the value itself.
-    for (const l of leaks) {
-        console.error(`  - ${l.sample !== undefined ? `${l.kind}: ${l.sample}` : harShapes.describeLeak(l)}`);
-    }
+    // fingerprint and a location. Nothing here prints the value itself.
+    for (const l of gating) console.error(`  - ${describe(l)}`);
     process.exit(3);
 }
 
