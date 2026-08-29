@@ -110,6 +110,26 @@ Describe 'Get-PesterTestFile' {
         { Get-PesterTestFile -Path $missing } | Should -Throw -ExpectedMessage '*no-such-root*'
     }
 
+    It 'does not follow a directory symlink back into its own tree' {
+        # A reparse point pointing at an ancestor recurses until the stack
+        # blows. Creating one needs privileges that CI may not have, so the
+        # test skips rather than failing where it cannot be set up.
+        $root = Join-Path $script:TempDir 'symlink-case'
+        $inner = Join-Path $root 'inner'
+        New-Item -ItemType Directory -Force -Path $inner | Out-Null
+        Set-Content -LiteralPath (Join-Path $inner 'Real.Tests.ps1') -Value '# test'
+
+        try {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $inner 'loop') -Target $root -ErrorAction Stop | Out-Null
+        }
+        catch {
+            Set-ItResult -Skipped -Because 'creating a symlink requires privileges unavailable here'
+            return
+        }
+
+        @(Get-PesterTestFile -Path $root).Count | Should -Be 1
+    }
+
     It 'does not descend into .git' {
         $root = Join-Path $script:TempDir 'vcs-case'
         $git = Join-Path $root '.git'
@@ -213,6 +233,21 @@ Describe 'Test-PesterGate' {
 
             (Test-PesterGate -Result $r -ExpectedFile @('a.Tests.ps1', 'b.Tests.ps1')).Reason |
                 Should -Match 'b\.Tests\.ps1'
+        }
+
+        It 'fails closed on a container that carries no file path' {
+            # A ScriptBlock container has no FullName. It cannot satisfy any
+            # discovered file, so the gate must treat the file as not run
+            # rather than crashing on the missing property.
+            $r = [pscustomobject]@{
+                TotalCount  = 5
+                FailedCount = 0
+                Result      = 'Passed'
+                Containers  = @([pscustomobject]@{ Item = 'a scriptblock, not a file' })
+            }
+
+            (Test-PesterGate -Result $r -ExpectedFile @('a.Tests.ps1')).Passed |
+                Should -BeFalse
         }
 
         It 'compares container paths case-insensitively and separator-insensitively' {
