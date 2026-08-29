@@ -86,6 +86,22 @@ reintroduce the undisableable gate this issue exists to replace (the issue's own
 sketch removes `x-asbd-id`), so it is allowed and recorded. Stage 2 onward must
 report it on every run, per "the cost of a loosening stays visible".
 
+**Task 1.6 (added after PR 2).** The issuer identification table is
+policy-extendable. `CARD_ISSUERS` stays in `har-shapes.js` -- an IIN range is a
+public payment-network standard, not a project concept -- but which markets a
+consumer operates in *is* a project fact, and "patch upstream" is not an
+override path. So the merged policy carries `cardIssuers`, which **appends** to
+the shipped table and can never subtract from it: card detection is loosened by
+lowering `classes.identity.credit-card`, which reads as a setting a reviewer can
+see, not by deleting the range that would have caught something. Maestro is
+deliberately **absent** from the default -- its range (`50`, `56`-`69`, lengths
+12-19) overlaps Discover and UnionPay and would reopen the false-positive
+surface #295 closed -- so a repo that needs it declares it and owns the
+consequence. Every field of an added range is validated rather than trusted: a
+range that loads and does not mean what its author wrote is worse than one that
+fails, since `[5, 69]` reads as "5 through 69" and would in fact claim every
+prefix from 05 to 69.
+
 > **PR 1** ends here -- **delivered**. No caller consumes the policy yet; the
 > lift is verifiable in isolation.
 >

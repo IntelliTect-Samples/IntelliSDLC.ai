@@ -158,7 +158,102 @@ function validateDocument(doc, file, vocabulary) {
         if (doc[list] !== undefined) requireStringArray(doc[list], file, list);
     }
     if (doc.piiFields !== undefined) validatePiiFields(doc.piiFields, file, vocabulary);
+    if (doc.cardIssuers !== undefined) validateCardIssuers(doc.cardIssuers, file);
     if (doc.waivers !== undefined) validateWaivers(doc.waivers, file, vocabulary);
+}
+
+/**
+ * Extra issuer identification ranges, as DATA.
+ *
+ * The shipped table lives in `har-shapes.js`, because an IIN range is a public
+ * payment-network standard rather than anybody's project concept. What is a
+ * project concept is which markets a consumer is IN: a repo capturing a payment
+ * flow in a Maestro or RuPay market has cards the shipped table does not name,
+ * and "patch upstream" is not an override path.
+ *
+ * So this list APPENDS to the standard and can never subtract from it. Card
+ * detection is loosened by lowering `classes.identity.credit-card`, which reads
+ * as a setting a reviewer can see; deleting the range that would have caught
+ * something is the invisible loosening this whole policy model exists to stop.
+ *
+ * Every field is validated rather than trusted, because a range that loads and
+ * does not mean what its author wrote is worse than one that fails: `[5, 69]`
+ * looks like "5 through 69" and actually claims every prefix from 05 to 69,
+ * since the matcher consumes as many leading digits as the HIGH bound is wide.
+ */
+function validateCardIssuers(issuers, file) {
+    if (!Array.isArray(issuers)) {
+        throw new PolicyError(
+            `${file}: "cardIssuers" must be an array of issuer ranges.`);
+    }
+    issuers.forEach((issuer, i) => validateCardIssuer(issuer, `${file}: cardIssuers[${i}]`, file, i));
+}
+
+const CARD_ISSUER_KEYS = ['brand', 'prefixes', 'lengths'];
+
+// The card pattern only ever offers the predicate a 13-19 digit run, and the
+// shortest card in circulation is 12. A length outside that window can never
+// match, so accepting it would be accepting a rule that silently does nothing.
+const CARD_LENGTH_MIN = 12;
+const CARD_LENGTH_MAX = 19;
+
+function validateCardIssuer(issuer, at, file, index) {
+    requireObject(issuer, file, `cardIssuers[${index}]`);
+    for (const key of Object.keys(issuer)) {
+        if (!CARD_ISSUER_KEYS.includes(key)) {
+            throw new PolicyError(
+                `${at}: unknown issuer key "${key}". Known: ${CARD_ISSUER_KEYS.join(', ')}.`);
+        }
+    }
+    if (typeof issuer.brand !== 'string' || issuer.brand.trim() === '') {
+        throw new PolicyError(
+            `${at}: "brand" is required and must be a non-empty string. It is what a ` +
+            `reviewer reads to know which market this range was added for.`);
+    }
+    validateCardLengths(issuer.lengths, at);
+    validateCardPrefixes(issuer.prefixes, at);
+}
+
+function validateCardLengths(lengths, at) {
+    if (!Array.isArray(lengths) || lengths.length === 0) {
+        throw new PolicyError(
+            `${at}: "lengths" must be a non-empty array. An issuer with no lengths matches ` +
+            `nothing while reading as though it matches something.`);
+    }
+    for (const len of lengths) {
+        if (!Number.isInteger(len) || len < CARD_LENGTH_MIN || len > CARD_LENGTH_MAX) {
+            throw new PolicyError(
+                `${at}: length ${JSON.stringify(len)} must be a whole number from ` +
+                `${CARD_LENGTH_MIN} to ${CARD_LENGTH_MAX} -- the card pattern never offers ` +
+                `the predicate a run outside that window, so any other value is a rule ` +
+                `that can never fire.`);
+        }
+    }
+}
+
+function validateCardPrefixes(prefixes, at) {
+    if (!Array.isArray(prefixes) || prefixes.length === 0) {
+        throw new PolicyError(`${at}: "prefixes" must be a non-empty array of [low, high] ranges.`);
+    }
+    for (const range of prefixes) {
+        if (!Array.isArray(range) || range.length !== 2
+            || !range.every((n) => Number.isInteger(n) && n >= 0)) {
+            throw new PolicyError(
+                `${at}: every prefix must be a [low, high] pair of whole numbers. ` +
+                `A single value is written as an equal pair, e.g. [50, 50].`);
+        }
+        const [low, high] = range;
+        if (low > high) {
+            throw new PolicyError(`${at}: prefix range [${low}, ${high}] has its bounds reversed.`);
+        }
+        if (String(low).length !== String(high).length) {
+            throw new PolicyError(
+                `${at}: prefix range [${low}, ${high}] mixes digit widths. A range is ` +
+                `matched at the width of its own bounds, so [${low}, ${high}] would compare ` +
+                `the first ${String(high).length} digits and claim far more than it names. ` +
+                `Write one range per width.`);
+        }
+    }
 }
 
 function validateClasses(classes, file, vocabulary) {
@@ -269,6 +364,10 @@ function mergeDocuments(base, override) {
         schemaVersion: SUPPORTED_SCHEMA_VERSION,
         classes: {},
         piiFields: {},
+        // Issuer ranges append, exactly like the name lists and for the same
+        // reason: a project naming one issuer must not silently discard the
+        // standard table it did not name.
+        cardIssuers: [...(base.cardIssuers || []), ...(override.cardIssuers || [])],
         waivers: [...(base.waivers || []), ...(override.waivers || [])],
     };
 
@@ -365,7 +464,7 @@ function buildVocabulary(baseDoc, defaultPath) {
     requireObject(baseDoc.piiFields, defaultPath, 'piiFields');
     return {
         topLevel: ['schemaVersion', 'classes', 'identifierFields', 'secretFields',
-            'secretHeaders', 'notSecretFields', 'piiFields', 'waivers'],
+            'secretHeaders', 'notSecretFields', 'piiFields', 'cardIssuers', 'waivers'],
         classes: Object.fromEntries(
             Object.keys(baseDoc.classes).map((c) => [c, Object.keys(baseDoc.classes[c])])),
         piiTypes: Object.keys(baseDoc.piiFields),
@@ -397,7 +496,8 @@ function resolveProjectPath(opts) {
  * @param {string} [opts.defaultPath] explicit default policy (tests only)
  * @returns {object} frozen merged policy: { path, defaultPath, version, schemaVersion,
  *                   classes, identifierFields, secretFields, secretHeaders,
- *                   notSecretFields, loosenedSecretNames, piiFields, waivers }
+ *                   notSecretFields, loosenedSecretNames, piiFields, cardIssuers,
+ *                   waivers }
  * @throws {PolicyError} on an unreadable, unknown-keyed, or floor-violating policy
  */
 function loadPolicy(opts = {}) {

@@ -100,7 +100,7 @@ const LEAK_PATTERNS = [
         class: 'identity',
         re: /(?<!\d\.)\b\d{13,19}\b(?!\.\d)/g,
         isFake: (m) => /^4242/.test(m),
-        precheck: (m) => hasAssignedIin(m) && luhnValid(m)
+        precheck: (m, policy) => hasAssignedIin(m, policy) && luhnValid(m)
     }
 ];
 
@@ -122,6 +122,15 @@ const LEAK_PATTERNS = [
  * This is deliberately a table and not a chain of `if`s: the rules change when
  * the card networks change them, and a table is edited without re-reading any
  * control flow.
+ *
+ * It stays in CODE rather than in `har-policy.default.json` because it is a
+ * public payment-network standard, not anybody's project concept. What IS a
+ * project concept is which markets a consumer operates in, so the merged
+ * policy's `cardIssuers` appends further ranges to this table -- Maestro and
+ * RuPay being the obvious ones. Maestro is deliberately absent from the shipped
+ * table: its range (50, 56-69) at lengths 12-19 overlaps Discover and UnionPay
+ * and would reopen the false-positive surface #295 closed, so a repo that needs
+ * it declares it and owns the consequence.
  */
 const CARD_ISSUERS = [
     { brand: 'visa',       prefixes: [[4, 4]],                                   lengths: [13, 16, 19] },
@@ -137,9 +146,17 @@ const CARD_ISSUERS = [
  * True when `s` begins with an assigned issuer identification number AND is a
  * length that issuer mints. Both halves are required: `4` at 17 digits is no
  * more a Visa than `98` at 16 digits is anything at all.
+ *
+ * `policy` may add ranges and can never remove one, so an absent policy is the
+ * shipped standard and nothing weaker -- the same rule the loader applies to the
+ * secret classes, for the same reason: a missing policy file must never be the
+ * thing that quietly downgrades a detector.
  */
-function hasAssignedIin(s) {
-    for (const issuer of CARD_ISSUERS) {
+function hasAssignedIin(s, policy) {
+    const issuers = policy && Array.isArray(policy.cardIssuers) && policy.cardIssuers.length
+        ? [...CARD_ISSUERS, ...policy.cardIssuers]
+        : CARD_ISSUERS;
+    for (const issuer of issuers) {
         if (!issuer.lengths.includes(s.length)) continue;
         for (const [low, high] of issuer.prefixes) {
             // Range bounds are written at their own digit width, and that
@@ -204,7 +221,7 @@ function findLeaks(text, policy) {
     for (const p of LEAK_PATTERNS) {
         const matches = text.match(p.re) || [];
         for (const m of matches) {
-            if (p.precheck && !p.precheck(m)) continue;
+            if (p.precheck && !p.precheck(m, policy)) continue;
             if (p.isFake(m)) continue;
             const print = fingerprint(m);
             const setting = settingFor(policy, p.class, p.name);
