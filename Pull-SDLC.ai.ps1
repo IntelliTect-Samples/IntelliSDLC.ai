@@ -194,6 +194,10 @@ $script:UpstreamManagedPaths = @(
     '.github/instructions/',
     # Workflow guard hooks must sync to consumers or CLAUDE.md's
     # core.hooksPath guidance promises automation that never arrives.
+    # NOTE: the four hooks `git lfs install` writes here are carved out on
+    # $script:AlwaysLocalPaths (issue #301). Keep this a directory prefix and
+    # keep that carve-out by exact name -- broadening the carve-out to
+    # '.githooks/' would stop the guard hooks reaching consumers entirely.
     '.githooks/',
     # Skill tooling: the capture / scrub / extract scripts and the code
     # templates a skill invokes by path. SKILL.md documents these as
@@ -284,7 +288,28 @@ $script:AlwaysLocalPaths = @(
     # sync never overwrites a project's requirements corpus.
     'docs/specs/',
     'docs/designs/',
-    'docs/README.md'
+    'docs/README.md',
+    # Git LFS hooks. `git lfs install` writes these four into whatever
+    # core.hooksPath points at, and CLAUDE.md tells consumers to point it at
+    # .githooks/ -- an upstream-managed prefix. That left LFS users stuck: the
+    # drift guard refused to sync, and -Force (the only way through) DELETED
+    # them. A missing pre-push silently stops `git push` uploading LFS objects,
+    # so every other clone gets dangling pointers, and the breakage only
+    # surfaces on someone else's machine (issue #301).
+    #
+    # Exempting them forfeits nothing: upstream authors no blob at any of these
+    # paths, so the diff-replay has nothing to propagate and a consumer without
+    # LFS is unaffected (this list is only ever read subtractively, by
+    # Test-IsAlwaysLocalPath -- it never causes a file to be created).
+    #
+    # Listed by exact name ON PURPOSE. A '.githooks/' directory prefix would
+    # also exempt the upstream-authored guard hooks (pre-commit,
+    # check-dirty-primary-checkout), which must keep syncing or CLAUDE.md's
+    # core.hooksPath guidance promises automation that never arrives.
+    '.githooks/post-checkout',
+    '.githooks/post-commit',
+    '.githooks/post-merge',
+    '.githooks/pre-push'
 )
 
 # Glob-style always-local prefixes for cases the exact / trailing-slash matcher
@@ -2719,8 +2744,42 @@ function Invoke-PullSDLC {
             # why the call is not redirected with 2>&1.
             $addArgs = @(Get-SafeCrlfArg) + @('add', '-A', '--') + $addPaths
             & git @addArgs | Out-Null
+
+            # `git add -A -- <managed dir>` cannot distinguish upstream content
+            # from a consumer's own files living in the same directory, so it
+            # sweeps things like the Git LFS hooks in .githooks/ or a
+            # .github/skills/project-*/ skill into the sync commit (issue #301;
+            # same failure class #222 fixed for run.ps1). Those directories must
+            # stay managed, so unstage the consumer-owned paths afterwards
+            # instead of unmanaging the directory.
+            #
+            # Unstaging (rather than :(exclude) pathspecs) reuses
+            # Test-IsAlwaysLocalPath as the single source of truth, so the
+            # '.template' / '.gitkeep' carve-outs inside always-local directory
+            # prefixes and the $script:AlwaysLocalPrefixes regex are honored
+            # automatically, with no glob translation to drift out of sync.
+            $staged = @(& git diff --cached --name-only 2>$null)
+            $unstage = @($staged | Where-Object {
+                    $_ -and
+                    # The sync state file is deliberately BOTH always-local and
+                    # explicitly staged above -- it records the anchor, so
+                    # dropping it would make every later sync re-bootstrap.
+                    $_ -ne $script:SdlcSyncStateFile -and
+                    (Test-IsAlwaysLocalPath -Path $_)
+                })
+            if ($unstage.Count -gt 0) {
+                & git restore --staged -- @unstage 2>$null | Out-Null
+                foreach ($u in $unstage) {
+                    Write-Information "  (left uncommitted, consumer-owned) $u"
+                }
+            }
         }
-        $pending = git status --porcelain
+        # Test the INDEX, not the working tree: `git status --porcelain` also
+        # reports untracked files, so a consumer whose only other changes are
+        # consumer-owned (now unstaged, or never staged) would reach `git commit`
+        # with an empty index. HEAD would not advance and the guard below would
+        # wrongly blame a pre-commit hook or branch protection (issue #301).
+        $pending = & git diff --cached --name-only 2>$null
         if ($pending) {
             $msg = "chore: sync IntelliSDLC.ai to $($upstreamHead.Substring(0,7))`n`nReplayed $($ops.Count) ops from upstream $mergeRef.`n`nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
             $headBefore = (git rev-parse HEAD 2>$null).Trim()

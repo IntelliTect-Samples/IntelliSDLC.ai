@@ -4432,3 +4432,249 @@ Describe 'Sync commit suppresses CRLF round-trip notices (issue #274)' {
             Should -Be @('-c', 'core.safecrlf=false') -Because 'the unconfigured default is the noisy case worth suppressing'
     }
 }
+
+function global:New-LfsConsumerFixture {
+    <#
+    .SYNOPSIS
+        Builds an upstream/consumer pair where the consumer has run
+        `git lfs install` against core.hooksPath=.githooks/ and COMMITTED the
+        four resulting hooks. Upstream ships only .githooks/pre-commit, which
+        changes between the anchor and the tip so the sync has real work to do.
+    .DESCRIPTION
+        The hooks must be committed, not merely present: the deletes reported in
+        issue #301 originate in the HEAD->tip reconcile pass, which diffs the
+        consumer's HEAD tree against the upstream tip. Untracked files never
+        appear in that diff, so a fixture that only drops them on disk would
+        pass even with the bug present.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Root)
+
+    $fx = New-DiffReplayFixture -Root $Root `
+        -Seed {
+            New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+            'guard hook v1' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+        } `
+        -Tweak {
+            'guard hook v2' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+        }
+
+    Push-Location $fx.Consumer
+    try {
+        foreach ($h in @('post-checkout', 'post-commit', 'post-merge', 'pre-push')) {
+            "#!/bin/sh - git lfs $h" | Out-File -Encoding utf8 (Join-Path '.githooks' $h) -NoNewline
+        }
+        git add -A | Out-Null
+        git commit -q -m 'chore: git lfs install'
+    } finally { Pop-Location }
+
+    Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+    Push-Location $fx.Consumer
+    try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+    return $fx
+}
+
+# Defined at file scope as globals, not inside the Describe: a variable assigned
+# during Pester's DISCOVERY phase is visible to -ForEach but NOT to an It body,
+# which runs later in a different scope (same trap the #256 launcher tests note).
+# Globals survive both phases, so the list stays single-sourced.
+$global:Lfs301HookPaths = @(
+    '.githooks/post-checkout'
+    '.githooks/post-commit'
+    '.githooks/post-merge'
+    '.githooks/pre-push'
+)
+
+# Hooks upstream actually authors -- these must keep syncing, or CLAUDE.md's
+# core.hooksPath guidance promises automation that never arrives.
+$global:Lfs301UpstreamHookPaths = @(
+    '.githooks/pre-commit'
+    '.githooks/check-dirty-primary-checkout'
+)
+
+Describe 'Issue #301: Git LFS hooks in .githooks/ are consumer-owned' {
+    # `git lfs install` writes four hooks into whatever core.hooksPath points at.
+    # The shared instructions tell consumers to point it at .githooks/, which is
+    # an upstream-managed prefix -- so the sync either refused to run (drift
+    # guard) or, under -Force, deleted them. Deleting pre-push silently stops
+    # `git push` uploading LFS objects, leaving dangling pointers in every other
+    # clone. Upstream ships no blob at any of these paths, so exempting them
+    # forfeits nothing.
+
+    It 'treats <_> as consumer-owned' -ForEach $global:Lfs301HookPaths {
+        Test-IsAlwaysLocalPath -Path $_ |
+            Should -BeTrue -Because 'git lfs install authors this file; upstream has no version of it'
+    }
+
+    It 'does not treat <_> as upstream-managed' -ForEach $global:Lfs301HookPaths {
+        Test-IsUpstreamManagedPath -Path $_ |
+            Should -BeFalse -Because 'always-local trumps the .githooks/ managed prefix'
+    }
+
+    It 'keeps <_> upstream-managed' -ForEach $global:Lfs301UpstreamHookPaths {
+        Test-IsUpstreamManagedPath -Path $_ |
+            Should -BeTrue -Because 'the workflow guard hooks must still reach consumers'
+    }
+
+    It 'matches LFS hook names exactly, not as a directory prefix' {
+        # A '.githooks/' trailing-slash entry would exempt the guard hooks too.
+        Test-IsAlwaysLocalPath -Path '.githooks/pre-push-custom' | Should -BeFalse
+        Test-IsAlwaysLocalPath -Path '.githooks/post-merge-extra' | Should -BeFalse
+        Test-IsAlwaysLocalPath -Path '.githooks/nested/pre-push' | Should -BeFalse
+    }
+
+    It 'never scaffolds an LFS hook into a consumer that does not use LFS' {
+        # The exemption must be purely subtractive: no consumer without LFS
+        # should gain a file from this change.
+        foreach ($p in $global:Lfs301HookPaths) {
+            $script:TemplateScaffoldMap.Values | Should -Not -Contain $p
+            $script:TemplateScaffoldMap.Keys | Should -Not -Contain $p
+        }
+    }
+
+    It 'ships no LFS hook blob in the upstream repo itself' {
+        $originUrl = (& git -C $PSScriptRoot remote get-url origin 2>$null)
+        if (-not (Test-IsUpstreamRepo -RemoteUrl $originUrl)) {
+            Set-ItResult -Skipped -Because 'only meaningful where the manifest is authored'
+            return
+        }
+        foreach ($p in $global:Lfs301HookPaths) {
+            Test-Path -LiteralPath (Join-Path $PSScriptRoot $p) |
+                Should -BeFalse -Because 'upstream must not author a file it declares consumer-owned'
+        }
+    }
+
+    Context 'end-to-end against a consumer that ran git lfs install' {
+
+        BeforeEach {
+            $script:lfsRoot = Join-Path $TestDrive ('lfs-' + [guid]::NewGuid().ToString('N'))
+        }
+
+        It 'does not report the LFS hooks as local drift' {
+            $fx = New-LfsConsumerFixture -Root $script:lfsRoot
+            $drift = @(Test-LocalDriftOnManagedPaths -Anchor $fx.AnchorSha `
+                    -ManagedPaths $script:UpstreamManagedPaths `
+                    -UpstreamRef 'sdlc.ai/main' -RepoRoot $fx.Consumer)
+            $driftPaths = @($drift | ForEach-Object { $_.Path })
+            foreach ($p in $global:Lfs301HookPaths) {
+                $driftPaths | Should -Not -Contain $p -Because 'a consumer-owned hook is not a policy violation'
+            }
+        }
+
+        It 'emits no delete op for an LFS hook on the HEAD->tip reconcile pass' {
+            $fx = New-LfsConsumerFixture -Root $script:lfsRoot
+            $ops = @(Get-UpstreamOps -Anchor 'HEAD' -Ref 'sdlc.ai/main' `
+                    -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer)
+            $deletes = @($ops | Where-Object { $_.Op -eq 'D' } | ForEach-Object { $_.Path })
+            foreach ($p in $global:Lfs301HookPaths) {
+                $deletes | Should -Not -Contain $p -Because 'upstream has no version to replace it with'
+            }
+        }
+
+        It 'leaves every LFS hook byte-identical after a -Force sync' {
+            $fx = New-LfsConsumerFixture -Root $script:lfsRoot
+            $before = @{}
+            foreach ($p in $global:Lfs301HookPaths) {
+                $before[$p] = Get-Content -LiteralPath (Join-Path $fx.Consumer $p) -Raw
+            }
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -Force
+            $rc | Should -Be 0
+
+            foreach ($p in $global:Lfs301HookPaths) {
+                $full = Join-Path $fx.Consumer $p
+                Test-Path -LiteralPath $full |
+                    Should -BeTrue -Because "$p must survive the sync or git push stops uploading LFS objects"
+                (Get-Content -LiteralPath $full -Raw) | Should -Be $before[$p]
+            }
+            # ...and the upstream-authored guard hook still syncs.
+            (Get-Content -LiteralPath (Join-Path $fx.Consumer '.githooks/pre-commit') -Raw) |
+                Should -Be 'guard hook v2' -Because 'the upstream-authored hook must still sync'
+        }
+    }
+
+    Context 'the sync commit does not sweep in consumer-owned files' {
+
+        BeforeEach {
+            $script:sweepRoot = Join-Path $TestDrive ('sweep-' + [guid]::NewGuid().ToString('N'))
+        }
+
+        It 'commits neither untracked LFS hooks nor project-* skills, but does commit the state file' {
+            # Same failure class #222 fixed for run.ps1: `git add -A -- <managed>`
+            # sweeps consumer files into the `chore: sync` commit. .githooks/ and
+            # .github/skills/ must stay managed, so the fix is to unstage
+            # consumer-owned paths rather than unmanage the directory.
+            $fx = New-DiffReplayFixture -Root $script:sweepRoot `
+                -Seed {
+                    New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                    New-Item -ItemType Directory -Path .github/skills/shared-skill -Force | Out-Null
+                    'guard hook v1' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+                    'shared v1' | Out-File -Encoding utf8 .github/skills/shared-skill/SKILL.md -NoNewline
+                } `
+                -Tweak {
+                    'guard hook v2' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+                }
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+            Push-Location $fx.Consumer
+            try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+            # Consumer-owned files left UNTRACKED in the working tree.
+            New-Item -ItemType Directory -Path (Join-Path $fx.Consumer '.github/skills/project-mine') -Force | Out-Null
+            'my project skill' | Out-File -Encoding utf8 (Join-Path $fx.Consumer '.github/skills/project-mine/SKILL.md') -NoNewline
+            foreach ($h in @('post-checkout', 'post-commit', 'post-merge', 'pre-push')) {
+                "lfs $h" | Out-File -Encoding utf8 (Join-Path $fx.Consumer ".githooks/$h") -NoNewline
+            }
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+            $rc | Should -Be 0
+
+            Push-Location $fx.Consumer
+            try {
+                (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to'
+                $committed = @(git show --pretty=format: --name-only HEAD | Where-Object { $_ })
+
+                foreach ($p in $global:Lfs301HookPaths) {
+                    $committed | Should -Not -Contain $p -Because 'an LFS hook is consumer-owned, not sync content'
+                }
+                $committed | Should -Not -Contain '.github/skills/project-mine/SKILL.md' `
+                    -Because 'the project-* carve-out is consumer-owned'
+                $committed | Should -Contain '.githooks/pre-commit' `
+                    -Because 'the upstream-authored hook update is what the sync commit is for'
+                $committed | Should -Contain '.sdlc-ai-sync.json' `
+                    -Because 'the anchor must persist or every later sync re-bootstraps'
+
+                # The consumer keeps its files -- unstaged, not deleted.
+                foreach ($p in $global:Lfs301HookPaths) {
+                    Test-Path -LiteralPath (Join-Path $fx.Consumer $p) | Should -BeTrue
+                }
+            } finally { Pop-Location }
+        }
+
+        It 'still records the anchor when the only other changes are consumer-owned' {
+            # Regression net for the commit gate: `git status --porcelain` counts
+            # UNTRACKED files, so once consumer-owned paths are unstaged a sync
+            # could call `git commit` with an empty index -- HEAD would not
+            # advance and Invoke-PullSDLC would return 4 blaming a pre-commit
+            # hook. The gate must test the staged set, not the working tree.
+            $fx = New-DiffReplayFixture -Root $script:sweepRoot `
+                -Seed {
+                    New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+                    'guard hook v1' | Out-File -Encoding utf8 .githooks/pre-commit -NoNewline
+                }
+            # No -Tweak: upstream tip == anchor, so there are zero upstream ops.
+            New-Item -ItemType Directory -Path (Join-Path $fx.Consumer '.github/skills/project-mine') -Force | Out-Null
+            'my project skill' | Out-File -Encoding utf8 (Join-Path $fx.Consumer '.github/skills/project-mine/SKILL.md') -NoNewline
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+            $rc | Should -Be 0 -Because 'an empty index must not be reported as a blocked commit'
+
+            Push-Location $fx.Consumer
+            try {
+                $committed = @(git show --pretty=format: --name-only HEAD | Where-Object { $_ })
+                $committed | Should -Not -Contain '.github/skills/project-mine/SKILL.md'
+            } finally { Pop-Location }
+            Test-Path (Join-Path $fx.Consumer '.github/skills/project-mine/SKILL.md') | Should -BeTrue
+        }
+    }
+}
