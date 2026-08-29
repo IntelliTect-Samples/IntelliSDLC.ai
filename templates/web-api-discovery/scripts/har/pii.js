@@ -194,7 +194,19 @@ const RE = {
     // quadratically over a long run that never reaches an `@`, and capture
     // bodies are routinely hundreds of KB.
     email:        /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g,
+    // E.164, and the national spellings a US API actually emits. The
+    // punctuated forms carry their own evidence -- a run grouped 3-3-4 with
+    // separators is a phone number far more often than anything else -- so
+    // they are safe to match without a field name.
+    //
+    // The lookarounds keep the match off a longer digit run: without them
+    // `555-123-45678` and the tail of a formatted card would both match.
     phone:        /\+\d{10,15}\b/g,
+    phonePunctuated: /(?<![\d-])(?:\+?1[ .-]?)?(?:\(\d{3}\)[ .-]?|\d{3}[ .-])\d{3}[ .-]\d{4}(?![\d-])/g,
+    // Ten digits with no punctuation and no context is an order id, a product
+    // code, or a timestamp. It is only a phone number when the field says so
+    // -- the credit-card lesson, applied before it bites rather than after.
+    phoneBare:    /^\+?1?\d{10}$/,
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
     creditDigits: /\b\d{13,19}\b/g,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
@@ -294,6 +306,17 @@ function pushDetection(out, type, value, location) {
     out.push({ type, value, location });
 }
 
+// The scrubber emits `+1555XXXXXXX` and nothing else, so the exemption is that
+// EXACT string -- unpunctuated, E.164, no spaces.
+//
+// Normalising punctuation away before this test looks tidier and is wrong: it
+// turns a real `+1 (555) 123-4567` into the fake's shape and exempts it. An
+// exemption is a hole by construction, so it must recognise our own output and
+// not one character more.
+function isFakePhone(value) {
+    return /^\+1555\d{7}$/.test(String(value));
+}
+
 function detectInString(str, entryIndex, loc, out) {
     if (typeof str !== 'string' || str.length === 0) return;
     // emails
@@ -302,11 +325,13 @@ function detectInString(str, entryIndex, loc, out) {
         if (/@example\.invalid$/i.test(m)) return;
         pushDetection(out, 'email', m, { entryIndex, ...loc });
     });
-    // phones
-    (str.match(RE.phone) || []).forEach(m => {
-        if (/^\+1555\d{7}$/.test(m)) return;
-        pushDetection(out, 'phone', m, { entryIndex, ...loc });
-    });
+    // phones -- E.164 and the punctuated national spellings
+    for (const re of [RE.phone, RE.phonePunctuated]) {
+        (str.match(re) || []).forEach(m => {
+            if (isFakePhone(m)) return;
+            pushDetection(out, 'phone', m, { entryIndex, ...loc });
+        });
+    }
     // ssn
     (str.match(RE.ssn) || []).forEach(m => {
         if (/^9\d{2}-/.test(m)) return;
@@ -344,6 +369,16 @@ function detectInValue(value, key, entryIndex, loc, out) {
         if (fType === 'region')      { pushDetection(out, 'region',      value, { entryIndex, ...loc }); return true; }
         if (fType === 'postal-code') { pushDetection(out, 'postal-code', value, { entryIndex, ...loc }); return true; }
         if (fType === 'country')     { pushDetection(out, 'country',     value, { entryIndex, ...loc }); return true; }
+        if (fType === 'phone') {
+            // The field says phone, so a bare run is evidence enough. Anything
+            // punctuated is caught context-free by detectInString anyway.
+            const digits = value.replace(/[ .()-]/g, '');
+            if (RE.phoneBare.test(digits) && !isFakePhone(digits)) {
+                pushDetection(out, 'phone', value, { entryIndex, ...loc });
+                return true;
+            }
+            return false;
+        }
         if (fType === 'dob' && RE.isoDate.test(value)) {
             pushDetection(out, 'dob', value, { entryIndex, ...loc });
             return true;
@@ -395,6 +430,29 @@ function detectPii(har) {
             if (!h || typeof h.value !== 'string') continue;
             detectInString(h.value, entryIndex, { headerName: h.name, headerCtx: h._ctx }, out);
         }
+        // cookies, both directions. The raw `Cookie` HEADER sweep caught some
+        // of this incidentally, and incidentally is not a control: the
+        // structured arrays are where a cookie's name and value are actually
+        // addressable, and `response.cookies` was never scanned at all.
+        //
+        // The NAME gates the value exactly as a JSON key does, so
+        // `billing_city` in a cookie is classified like `billing_city` in a
+        // body. Session handles (`_ga`, `sessionid`) tokenise to words no PII
+        // dictionary lists, so they fall through to the shape detectors --
+        // which is right: they are secrets by NAME, and har-secrets.js owns
+        // them. Running one through the PII faker would write a fake city over
+        // a session token.
+        const allCookies = [
+            ...((entry.request && entry.request.cookies) || []).map(c => ({ ...c, _ctx: 'request' })),
+            ...((entry.response && entry.response.cookies) || []).map(c => ({ ...c, _ctx: 'response' })),
+        ];
+        for (const c of allCookies) {
+            if (!c || typeof c.value !== 'string') continue;
+            const loc = { cookieName: c.name, cookieCtx: c._ctx };
+            const handled = detectInValue(c.value, c.name, entryIndex, loc, out);
+            if (!handled) detectInString(c.value, entryIndex, loc, out);
+        }
+
         // query string
         const qs = (entry.request && entry.request.queryString) || [];
         for (const q of qs) {
@@ -481,6 +539,18 @@ function applyReplacementsToEntry(entry, replacements) {
         if (Array.isArray(hs)) {
             for (const h of hs) {
                 if (typeof h.value === 'string') h.value = replaceAll(h.value, replacements);
+            }
+        }
+    }
+    // cookies -- the same two arrays detectPii walks. Detection that never
+    // reaches the scrub is a report nobody acts on, and the two walks have to
+    // cover the same nodes or the gate fails a value the scrubber was never
+    // asked to remove.
+    for (const ctx of ['request', 'response']) {
+        const cs = entry[ctx] && entry[ctx].cookies;
+        if (Array.isArray(cs)) {
+            for (const c of cs) {
+                if (typeof c.value === 'string') c.value = replaceAll(c.value, replacements);
             }
         }
     }

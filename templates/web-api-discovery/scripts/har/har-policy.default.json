@@ -373,6 +373,31 @@
         "geolng"
       ],
       "qualifiers": "any"
+    },
+    "phone": {
+      "exact": [
+        "phone",
+        "phonenumber",
+        "mobile",
+        "mobilenumber",
+        "cell",
+        "cellphone",
+        "telephone",
+        "tel",
+        "fax",
+        "faxnumber",
+        "msisdn",
+        "contactnumber"
+      ],
+      "tail": [
+        "phone",
+        "phonenumber",
+        "mobile",
+        "cellphone",
+        "telephone",
+        "fax"
+      ],
+      "qualifiers": "any"
     }
   },
   "cardIssuers": [],
