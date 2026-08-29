@@ -74,12 +74,19 @@ function fail(msg) { console.error('generate-wrapper: ' + msg); process.exit(1);
 //                            committed directory, and only these two entries
 //                            stop `git add -A` publishing what the scrub was
 //                            run to remove.
+// - .har-captures/           the recorder's own tree: the raw capture lives
+//                            here and carries live session cookies. The
+//                            scrub tooling's comments call this tree
+//                            gitignored; without this entry that was true of
+//                            this repo's hand-authored root .gitignore only,
+//                            not of a scaffolded consumer.
 const SCAFFOLD_GITIGNORE_ENTRIES = [
     'Samples/HAR-Original/',
     'Samples/MobileApp-Binaries/',
     '.har-profile.json',
     '.har-substitutions.json',
     '.substitutions.json',
+    '.har-captures/',
 ];
 
 function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {

@@ -108,8 +108,21 @@ function main() {
     const work = path.join(outDir, '.run-agent');
     fs.mkdirSync(work, { recursive: true });
     const scrubbedHar = path.join(work, 'scrubbed.har');
-    const legacySubs  = path.join(work, 'substitutions.legacy.json');
-    const piiSubs     = path.join(work, 'substitutions.json');
+    // The substitution tables are keyed by the plaintext values the scrub
+    // replaced, so each one is a reverse lookup table of live credentials
+    // (issue #294). The rest of .run-agent/ is inspectable intermediates that
+    // have already been through the scrub; these two have not, and they sat
+    // here under names with no leading dot, so no gitignore entry and no gate
+    // recognised them and `git add -A` in the output directory staged them.
+    //
+    // They go in a `.har-captures/` subdirectory under the canonical names
+    // instead: ignored by that entry at any depth, ignored again by name, and
+    // skipped by verify-har-reference.js's walk -- which is what makes them
+    // recorder state rather than something the operator has to remember about.
+    const subsDir     = path.join(work, '.har-captures');
+    fs.mkdirSync(subsDir, { recursive: true });
+    const legacySubs  = path.join(subsDir, '.har-substitutions.json');
+    const piiSubs     = path.join(subsDir, '.substitutions.json');
     const authJson    = path.join(work, 'auth.json');
     // Transcript captures stage outcomes for post-hoc inspection and tests.
     // Truncated on each run; contents are intentionally timestamp-free to

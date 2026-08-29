@@ -221,6 +221,29 @@ Describe 'Invoke-SanitizeHar.ps1' {
         (Get-Content -LiteralPath $script:OutHar -Raw) | Should -Not -Match 'eyJhbGciOiJIUzI1NiJ9'
     }
 
+    It 'writes no substitution table beside the scrubbed output' {
+        # Issue #294. The wrapper used to default the map to
+        # <OutputHar>.subs.json -- the same credential-keyed reverse lookup
+        # table the scrub exists to keep out of a committed directory, sitting
+        # beside the artifact that is safe to commit and under a name no
+        # gitignore entry and no gate recognises.
+        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar -ProfilePath $script:Profile
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath ([IO.Path]::ChangeExtension($script:OutHar, '.subs.json')) | Should -BeFalse
+        $stray = Get-ChildItem -LiteralPath $script:Tmp -Recurse -Force -File |
+            Where-Object { $_.Name -match '(?i)subs.*\.json$' } |
+            Where-Object { $_.FullName -notmatch '(?i)[\\/]\.har-captures[\\/]' }
+        ($stray | ForEach-Object { $_.FullName }) -join ', ' | Should -BeNullOrEmpty
+    }
+
+    It 'still honours an explicit -SubstitutionsFile' {
+        $explicit = Join-Path $script:Tmp 'explicit-subs.json'
+        & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar `
+            -ProfilePath $script:Profile -SubstitutionsFile $explicit
+        $LASTEXITCODE | Should -Be 0
+        Test-Path -LiteralPath $explicit | Should -BeTrue
+    }
+
     It 'propagates a non-zero exit code when verification fails' {
         $leaked = Join-Path $script:Tmp 'leaked.har'
         $jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJsZWFrZWQifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
