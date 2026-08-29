@@ -261,5 +261,56 @@ function expectThrows(fn, matcher, label) {
         /nope\.json/, '9.b');
 }
 
+// --- 10. Discovery walks upward from wherever the script happens to run. ---
+// The realistic shape: the policy sits at the consuming repo's root and the
+// scripts run several directories below it. A loader that only looked in
+// `startDir` would silently apply the stringent default to a project that had
+// deliberately loosened it -- and every symptom of that is a false positive
+// nobody can turn off, which is the failure this whole issue exists to end.
+{
+    const repoRoot = path.join(tmp, 'consumer-repo');
+    const deep = path.join(repoRoot, 'scripts', 'har', 'nested');
+    fs.mkdirSync(deep, { recursive: true });
+    writeProject(repoRoot, { identifierFields: ['trip_id'], classes: { identity: { 'credit-card': 'off' } } });
+
+    const found = policyModule.loadPolicy({ startDir: deep, stopAt: repoRoot });
+    assert.strictEqual(found.path, path.join(repoRoot, policyModule.POLICY_FILENAME),
+        '10.a: upward discovery did not find the project policy at the repo root');
+    assert.strictEqual(found.classes.identity['credit-card'], 'off',
+        '10.b: the discovered project policy was not applied');
+
+    // The nearest policy wins, so a nested project (or a test fixture) can
+    // override without editing the root.
+    const inner = path.join(repoRoot, 'scripts', 'har');
+    writeProject(inner, { classes: { identity: { 'credit-card': 'advise' } } });
+    const nearest = policyModule.loadPolicy({ startDir: deep, stopAt: repoRoot });
+    assert.strictEqual(nearest.path, path.join(inner, policyModule.POLICY_FILENAME),
+        '10.c: a nearer project policy did not win over the one at the root');
+    assert.strictEqual(nearest.classes.identity['credit-card'], 'advise',
+        '10.d: the nearer policy was found but not applied');
+    assert.ok(!nearest.identifierFields.includes('trip_id'),
+        '10.e: two project policies were merged -- exactly one may apply, or which rules ' +
+        'are in force depends on where the script was invoked from');
+}
+
+// --- 11. The shipped default policy is the one the loader really loads. ---
+// Test 3 pins the lift; this pins that the file is FOUND -- a loader that
+// silently fell back to an empty baseline would pass every merge test above
+// while gating nothing at all.
+{
+    const shipped = path.join(__dirname, policyModule.DEFAULT_POLICY_FILENAME);
+    assert.ok(fs.existsSync(shipped),
+        `11.a: ${policyModule.DEFAULT_POLICY_FILENAME} does not ship beside har-policy.js`);
+
+    const dir = path.join(tmp, 'shipped-default');
+    fs.mkdirSync(dir, { recursive: true });
+    assert.strictEqual(load(dir).defaultPath, shipped,
+        '11.b: the loader did not load the default policy shipped beside it');
+
+    expectThrows(
+        () => policyModule.loadPolicy({ defaultPath: path.join(dir, 'absent.json'), startDir: dir, stopAt: dir }),
+        /absent\.json/, '11.c');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-policy tests passed');
