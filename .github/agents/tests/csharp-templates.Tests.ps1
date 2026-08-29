@@ -54,7 +54,10 @@ Describe "C# template manifest" {
         Test-Path $script:ManifestPath | Should -BeTrue
         $manifest = Get-Manifest
         $declared = @($manifest.templates | ForEach-Object { $_.file } | Sort-Object) -join ','
-        $actual = @(Get-ChildItem $script:CsharpDir -Filter "*.tmpl" | ForEach-Object { $_.Name } | Sort-Object) -join ','
+        # -Force, or Linux omits .gitignore.tmpl: a leading dot means "hidden"
+        # there and nothing on Windows, so without it the manifest matches on
+        # one platform and not the other (issue #308, same root cause as #304).
+        $actual = @(Get-ChildItem $script:CsharpDir -Filter "*.tmpl" -File -Force | ForEach-Object { $_.Name } | Sort-Object) -join ','
         $declared | Should -Be $actual
     }
 
