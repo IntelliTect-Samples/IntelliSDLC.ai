@@ -4,15 +4,15 @@ BeforeAll {
 
 Describe 'Test-IsUpstreamRepo' {
     It 'returns $true for the upstream HTTPS URL' {
-        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai.git' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' | Should -BeTrue
     }
 
     It 'returns $true for the upstream SSH URL' {
-        Test-IsUpstreamRepo -RemoteUrl 'git@github.com:IntelliTect-Dev/IntelliSDLC.ai.git' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'git@github.com:IntelliTect-Samples/IntelliSDLC.ai.git' | Should -BeTrue
     }
 
     It 'returns $true with no .git suffix' {
-        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Dev/IntelliSDLC.ai' | Should -BeTrue
+        Test-IsUpstreamRepo -RemoteUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai' | Should -BeTrue
     }
 
     It 'returns $false for a consumer repo' {

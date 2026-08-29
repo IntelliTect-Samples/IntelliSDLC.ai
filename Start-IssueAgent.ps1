@@ -141,7 +141,7 @@
     ./Start-IssueAgent.ps1 123 -PermissionMode manual
 
 .EXAMPLE
-    ./Start-IssueAgent.ps1 -IssueNumber 123 -Repo IntelliTect-Dev/IntelliSDLC.ai
+    ./Start-IssueAgent.ps1 -IssueNumber 123 -Repo IntelliTect-Samples/IntelliSDLC.ai
 
 .EXAMPLE
     ./Start-IssueAgent.ps1 -New "users need a way to export reports as CSV"
