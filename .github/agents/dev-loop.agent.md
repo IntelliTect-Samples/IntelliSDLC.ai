@@ -106,7 +106,7 @@ autonomous run (after Phase 7 completes or when you must pause).
 ### Pre-flight -- Sync Shared Instructions
 
 Before starting, check whether the shared
-[IntelliSDLC.ai](https://github.com/IntelliTect-Dev/IntelliSDLC.ai)
+[IntelliSDLC.ai](https://github.com/IntelliTect-Samples/IntelliSDLC.ai)
 instructions have been updated upstream. `sdlc.ai` is the remote
 `Pull-SDLC.ai.ps1` creates and records; a consumer will not have one named
 anything else:

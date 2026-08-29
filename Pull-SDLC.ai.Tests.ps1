@@ -3849,6 +3849,37 @@ Describe 'Get-UpstreamPrivatePruneOps' {
         )
     }
 
+    It 'prunes an upstream-private node test under templates/' {
+        # $script:UpstreamPrivatePrefixes has always had two entries, but the
+        # prune inventory only ever walked .github -- so a consumer that
+        # received templates/**/*.test.js before that carve-out kept it
+        # forever. Same prune-scope-narrower-than-the-rule defect as #304.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path templates/web-api-discovery/scripts/har -Force | Out-Null
+                'ship' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.js -NoNewline
+                'test' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.test.js -NoNewline
+            }
+
+        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) | ForEach-Object { $_.Path }
+
+        $pruned | Should -Contain 'templates/web-api-discovery/scripts/har/har-literals.test.js'
+        $pruned | Should -Not -Contain 'templates/web-api-discovery/scripts/har/har-literals.js'
+    }
+
+    It 'does not prune a test-project template under templates/, which consumers must receive' {
+        # A tests/ directory under templates/ holds test-project TEMPLATES the
+        # generator emits into the consumer's own solution. Widening the prune
+        # inventory to templates/ must not start deleting those.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path templates/web-api-discovery/csharp/tests -Force | Out-Null
+                'tmpl' | Out-File -Encoding utf8 templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl -NoNewline
+            }
+
+        @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Count | Should -Be 0
+    }
+
     It 'does not prune a shipped file that merely sits beside a private tests directory' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed {
