@@ -329,17 +329,25 @@ $script:AlwaysLocalPrefixes = @(
 
 # Glob-style "upstream-private" regex prefixes (matched case-insensitively
 # against the repo-relative, forward-slash path). These match any 'tests' or
-# 'fixtures' directory at any depth under the otherwise upstream-managed
-# .github/agents/ and .github/skills/ trees. Such files exercise the toolkit's
-# OWN internals -- Pester tests plus HAR/PII sample fixtures -- and are useless
-# (and, for the fixtures, undesirable: secret/PII-shaped payloads) inside a
-# consuming project. The sync engine therefore neither ships them (they are
-# filtered out of the op list in Get-UpstreamOps) nor lets a consumer retain a
-# stale pre-carve-out copy (they are delete-replayed via Get-UpstreamPrivatePruneOps).
+# 'fixtures' directory at any depth under the .github/ tree. Such files
+# exercise the toolkit's OWN internals -- Pester tests plus HAR/PII sample
+# fixtures -- and are useless (and, for the fixtures, undesirable:
+# secret/PII-shaped payloads) inside a consuming project. The sync engine
+# therefore neither ships them (they are filtered out of the op list in
+# Get-UpstreamOps) nor lets a consumer retain a stale pre-carve-out copy (they
+# are delete-replayed via Get-UpstreamPrivatePruneOps).
 # Consumer-owned .github/skills/project-*/ trees are exempt because always-local
 # trumps -- see Test-IsUpstreamPrivatePath, which checks Test-IsAlwaysLocalPath first.
+#
+# The .github rule deliberately spans the WHOLE tree rather than naming
+# agents/ and skills/. Keeping this repo's own tests out of consumer trees
+# otherwise relies on the path being absent from $script:UpstreamManagedPaths,
+# which is protection by omission: adding a new .github subtree to that
+# manifest would silently begin shipping test files (issue #304). Note this
+# also carves out .github/instructions/tests/, which shipped under the older
+# agents|skills form; consumers holding a copy get a delete replayed.
 $script:UpstreamPrivatePrefixes = @(
-    '^\.github/(?:agents|skills)/(?:[^/]+/)*(?:tests|fixtures)/',
+    '^\.github/(?:[^/]+/)*(?:tests|fixtures)/',
     # Node tests for the skill tooling under templates/. They exercise this
     # repo's own scripts and add nothing to a consuming project, which receives
     # the scripts themselves but never runs their unit tests (issue #270).

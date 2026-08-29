@@ -3678,6 +3678,42 @@ Describe 'Test-IsUpstreamPrivatePath' {
         Test-IsUpstreamPrivatePath -Path '.github/instructions/csharp.instructions.md' | Should -BeFalse
     }
 
+    It 'is true for a tests directory under any .github subtree, not just agents/skills' {
+        # Protection by omission from $script:UpstreamManagedPaths is not
+        # enough: a maintainer who later adds a new .github subtree to the
+        # manifest would silently start shipping this repo's own test files to
+        # every consumer (issue #304).
+        Test-IsUpstreamPrivatePath -Path '.github/ci/tests/PesterGate.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'is true for a tests directory directly under .github/' {
+        Test-IsUpstreamPrivatePath -Path '.github/tests/Something.Tests.ps1' | Should -BeTrue
+    }
+
+    It 'is true for a fixtures directory under any .github subtree' {
+        Test-IsUpstreamPrivatePath -Path '.github/ci/fixtures/sample.json' | Should -BeTrue
+    }
+
+    It 'is true for a tests directory under .github/instructions/' {
+        Test-IsUpstreamPrivatePath -Path '.github/instructions/tests/tdd-instructions-shape.Tests.ps1' |
+            Should -BeTrue
+    }
+
+    It 'is false for a shipped script beside an upstream-private tests directory' {
+        # The module ships nowhere, but only because it is absent from the
+        # manifest -- the pattern itself must not claim it, or a future
+        # deliberate decision to ship a .github subtree could not be expressed.
+        Test-IsUpstreamPrivatePath -Path '.github/ci/PesterGate.psm1' | Should -BeFalse
+    }
+
+    It 'is false for a tests directory under templates/, which consumers must receive' {
+        # templates/**/tests/ holds test-project TEMPLATES the generator emits
+        # into the consumer's own solution. Widening the .github rule must not
+        # bleed into this tree.
+        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl' |
+            Should -BeFalse
+    }
+
     It 'is false for a directory merely containing "tests" in its name' {
         Test-IsUpstreamPrivatePath -Path '.github/agents/mytests/foo.md' | Should -BeFalse
     }
