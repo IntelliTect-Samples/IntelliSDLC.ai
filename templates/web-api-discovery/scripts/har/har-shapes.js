@@ -21,6 +21,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const harPolicy = require('./har-policy.js');
 
 // The fake values emitted by sanitize-har.js (jwt) start with `eyJ` followed
 // by 18 hex chars + `.` + 40 hex + `.` + 43 hex. Real JWTs contain base64url
@@ -29,12 +30,14 @@ const crypto = require('crypto');
 const LEAK_PATTERNS = [
     {
         name: 'jwt',
+        class: 'secret',
         re: /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
         // Fake JWTs from sanitize-har.js are entirely lowercase-hex after `eyJ`.
         isFake: (m) => /^eyJ[0-9a-f]{18}\.[0-9a-f]{40}\.[0-9a-f]{43}$/.test(m)
     },
     {
         name: 'hex64',
+        class: 'secret',
         re: /\b[0-9a-fA-F]{64}\b/g,
         // Fake hex64 values produced by sanitize-har.js start with the `f00ded`
         // sentinel (issue #85). Real source values do not.
@@ -42,18 +45,21 @@ const LEAK_PATTERNS = [
     },
     {
         name: 'hex32',
+        class: 'secret',
         re: /\b[0-9a-fA-F]{32}\b/g,
         // Fake hex32 values start with the `deaf00` sentinel.
         isFake: (m) => /^deaf00[0-9a-f]{26}$/.test(m)
     },
     {
         name: 'bearer',
+        class: 'secret',
         re: /Bearer\s+(?!redacted-)[A-Za-z0-9._=+/-]{20,}/g,
         // Fake bearer values are `Bearer <40 lowercase hex>` produced by sanitize-har.js.
         isFake: (m) => /^Bearer [0-9a-f]{40}$/.test(m)
     },
     {
         name: 'email',
+        class: 'identity',
         // Bounded to stay linear over long non-matching runs (see pii.js).
         re: /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}/g,
         // Fake emails always use the @example.invalid domain.
@@ -62,12 +68,14 @@ const LEAK_PATTERNS = [
     {
         // E.164-shaped phone numbers (issue #46). Fakes use the 555 area code.
         name: 'phone',
+        class: 'identity',
         re: /\+\d{10,15}\b/g,
         isFake: (m) => /^\+1555\d{7}$/.test(m)
     },
     {
         // US SSN. Fakes use the 9XX prefix that the SSA never issues.
         name: 'ssn',
+        class: 'identity',
         re: /\b\d{3}-\d{2}-\d{4}\b/g,
         isFake: (m) => /^9\d{2}-/.test(m)
     },
@@ -89,6 +97,7 @@ const LEAK_PATTERNS = [
         // A genuine card followed by sentence punctuation is still caught: the
         // lookahead requires a DIGIT after the dot, not merely a dot.
         name: 'credit-card',
+        class: 'identity',
         re: /(?<!\d\.)\b\d{13,19}\b(?!\.\d)/g,
         isFake: (m) => /^4242/.test(m),
         precheck: (m) => hasAssignedIin(m) && luhnValid(m)
@@ -154,14 +163,61 @@ function luhnValid(s) {
     return sum % 10 === 0;
 }
 
-function findLeaks(text) {
+/**
+ * What a policy says about one class of finding: `gate`, `advise` or `off`.
+ *
+ * An ABSENT policy means `gate`, for every kind. Both verifiers call in
+ * without one today, and the strictest reading is the only safe default: a
+ * missing policy file must never be the thing that quietly downgrades a gate.
+ * The same applies to a kind the policy does not name -- a pattern nobody
+ * classified is not thereby exempt. (`har-shapes-class.test.js` case 2 stops
+ * that going unnoticed: every pattern must be named by the default policy.)
+ */
+function settingFor(policy, cls, kind) {
+    if (!policy || !policy.classes || !policy.classes[cls]) return 'gate';
+    const setting = policy.classes[cls][kind];
+    return setting === undefined ? 'gate' : setting;
+}
+
+/**
+ * Scan `text` for leaked values, classified.
+ *
+ * A finding carries `{ kind, class, setting, gating, waived, fingerprint,
+ * length }` and never the value. `gating` is the single field a caller needs
+ * in order to decide whether to fail; `setting` and `waived` are what it needs
+ * in order to REPORT, which matters just as much:
+ *
+ *   * A `secret` gates unconditionally -- the policy loader refuses to let a
+ *     project lower a secret class, so this needs no special case here.
+ *   * An `identity` gates only where the consumer asked for it. Shape carries
+ *     no provenance: a Luhn-valid 16-digit run is a card, a trip id, or ~10%
+ *     of digit runs by chance, and gating on that deleted 1413 trip ids and
+ *     the artifact with them.
+ *   * A waived or disabled finding is still RETURNED, marked. It has left the
+ *     gate, not the report. A finding that vanished outright would be an
+ *     invisible loosening -- the same failure the policy loader's
+ *     `loosenedSecretNames` exists to prevent, and the reason a lapsing waiver
+ *     is worth anything at all.
+ */
+function findLeaks(text, policy) {
     const leaks = [];
     for (const p of LEAK_PATTERNS) {
         const matches = text.match(p.re) || [];
         for (const m of matches) {
             if (p.precheck && !p.precheck(m)) continue;
             if (p.isFake(m)) continue;
-            leaks.push({ kind: p.name, fingerprint: fingerprint(m), length: m.length });
+            const print = fingerprint(m);
+            const setting = settingFor(policy, p.class, p.name);
+            const waived = policy ? harPolicy.isWaived(policy, p.name, print) : false;
+            leaks.push({
+                kind: p.name,
+                class: p.class,
+                setting,
+                waived,
+                gating: !waived && setting === 'gate',
+                fingerprint: print,
+                length: m.length,
+            });
         }
     }
     return leaks;
@@ -189,13 +245,13 @@ function decodedShadow(text) {
  * this, so the gate on the committed reference is not weaker than the gate on
  * the intermediate it came from.
  */
-function findLeaksDeep(text) {
-    const leaks = findLeaks(text);
+function findLeaksDeep(text, policy) {
+    const leaks = findLeaks(text, policy);
     const shadow = decodedShadow(text);
     if (shadow === text) return leaks;
 
     const seen = new Set(leaks.map((l) => `${l.kind}:${l.fingerprint}`));
-    for (const l of findLeaks(shadow)) {
+    for (const l of findLeaks(shadow, policy)) {
         if (!seen.has(`${l.kind}:${l.fingerprint}`)) leaks.push(l);
     }
     return leaks;
@@ -219,6 +275,7 @@ function describeLeak(leak) {
 
 module.exports = {
     LEAK_PATTERNS,
+    settingFor,
     findLeaks,
     findLeaksDeep,
     decodedShadow,
