@@ -354,6 +354,37 @@ function only(findings, kind) {
         '15c.a: one occurrence was counted twice because the body was scanned by two passes');
 }
 
+// --- 15d. ...but two occurrences are two, not one. ---
+// The count is what an operator reads to judge blast radius: one stray echo of
+// a value is a different problem from the same value in fifty places, and only
+// the count distinguishes them. Collapsing genuinely distinct occurrences
+// understates the remediation exactly where it matters most.
+//
+// This is the failure mode of a dedupe written to fix double-counting: it is
+// easy to suppress one occurrence seen by two passes AND two occurrences seen
+// once each, because both look like "this fingerprint again".
+{
+    const twoKeys = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'application/json',
+                text: JSON.stringify({ primary: '4111111111111111', backup: '4111111111111111' }) } },
+    })]);
+    assert.strictEqual(only(shapes.findLeaksInHar(twoKeys), 'credit-card').count, 2,
+        '15d.a: the same card at two different JSON keys was counted once');
+
+    const twicePlain = har([entry({
+        response: { status: 200, headers: [], cookies: [],
+            content: { mimeType: 'text/plain', text: 'card1=4111111111111111 card2=4111111111111111' } },
+    })]);
+    assert.strictEqual(only(shapes.findLeaksInHar(twicePlain), 'credit-card').count, 2,
+        '15d.b: the same card twice in one non-JSON body was counted once');
+
+    // And the precise location is still the structural one, not the body.
+    assert.strictEqual(only(shapes.findLeaksInHar(twoKeys), 'credit-card').keyPath,
+        'response.content.text.primary',
+        '15d.c: counting correctly cost the finding its precise key path');
+}
+
 // --- 16. ...and a float is still not a card. ---
 // The lookarounds that keep a decimal's fractional part out of the card slot
 // (issues #292/#293) must survive the change: a HAR is full of floats, ~10% of
