@@ -40,6 +40,13 @@
     Test seam. A scriptblock that takes a string array of arguments and
     invokes gh. Default: real `gh` on PATH.
 
+.NOTES
+    -WhatIf does not exempt the usage guard: a run with neither -PullRequest nor
+    -LocalOnly is a usage error, not something to preview, because -WhatIf still
+    has to know whether the run WOULD post. Supply -LocalOnly (previews nothing
+    to post) or -PullRequest <n> (previews the post) and -WhatIf behaves as
+    normal.
+
 .PARAMETER LocalOnly
     Skip the PR comment entirely. The script still resolves the artifact,
     formats the comment body (for caller preview), and emits the clickable
@@ -100,7 +107,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Usage guard. Validated before any I/O so a usage error fails fast, and worded
+# Usage guard. Runs before ShouldProcess on purpose -- see .NOTES: -WhatIf must
+# still resolve whether the run would post, so a missing decision is a usage
+# error rather than something to preview.
+# Validated before any I/O so a usage error fails fast, and worded
 # to name both ways forward -- PowerShell's generic missing-mandatory-parameter
 # message gave no hint that -LocalOnly is the intended pre-PR path (issue #311).
 # ContainsKey rather than a 0 sentinel so "not supplied" is distinguishable from

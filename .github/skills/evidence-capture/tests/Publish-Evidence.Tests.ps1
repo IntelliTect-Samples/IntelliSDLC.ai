@@ -371,6 +371,20 @@ Describe 'Publish-Evidence' {
                 Should -Throw -ExpectedMessage '*-LocalOnly*'
         }
 
+        It 'throws under -WhatIf too, rather than previewing an undecided run' {
+            # -WhatIf does not exempt the guard: the preview still has to know
+            # whether the run WOULD post, so a missing decision is a usage error
+            # rather than something to preview. Pinned because it is a behavior
+            # change worth being deliberate about (independent review, #311).
+            $artifact = Join-Path $script:TempDir 'neither-whatif.md'
+            Set-Content -LiteralPath $artifact -Value '# Neither whatif' -NoNewline
+
+            $stub = { param([string[]]$GhArgs) }
+
+            { & $script:ScriptPath -ArtifactPath $artifact -GhInvoker $stub -WhatIf } |
+                Should -Throw -ExpectedMessage '*-LocalOnly*'
+        }
+
         It 'does not invoke gh when it throws' {
             $artifact = Join-Path $script:TempDir 'neither-nogh.md'
             Set-Content -LiteralPath $artifact -Value '# Neither gh' -NoNewline

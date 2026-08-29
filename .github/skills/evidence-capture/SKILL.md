@@ -112,8 +112,8 @@ upload is for durability and team visibility, not the primary review path.
 entirely and only prints the local link; the final non-`-LocalOnly` run during
 Phase 7 posts the artifact to the PR.
 
-`-LocalOnly` takes **no** `-PullRequest`: the Phase 5b inner loop runs before a
-PR exists, so there is no number to give. `-PullRequest` is required only when
+`-LocalOnly` does **not need** `-PullRequest`: the Phase 5b inner loop runs
+before a PR exists, so there is no number to give. `-PullRequest` is required only when
 actually posting, and is still accepted (and ignored) alongside `-LocalOnly` for
 backward compatibility. Omitting both is a usage error and fails with a message
 naming both options (issue #311).
