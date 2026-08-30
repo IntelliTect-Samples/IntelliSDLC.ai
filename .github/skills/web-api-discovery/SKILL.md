@@ -950,6 +950,17 @@ Require every capture-derived probe to:
   gate, and the scrub refuses with advice to add the entry to the repository's
   own `.gitignore`. That is a false refusal rather than a false pass, which is
   the direction this whole control errs in.
+
+  The same trade explains one confusing refusal worth knowing about in advance.
+  A repository whose **ownership git disputes** -- typically a checkout
+  bind-mounted into a container from a different host UID -- is normally made
+  usable with a `safe.directory` entry in the operator's *global* config, which
+  the probe deliberately cannot see. Such a run is refused, and says the
+  destination is not inside a work tree. Add the `.gitignore` entry, or name
+  the destination with `--subs` / `--pii-subs`. Do **not** "fix" this by having
+  the probe pass `-c safe.directory=...`: a repository's own `.git/config` can
+  set `core.excludesFile`, so trusting a repository whose ownership is disputed
+  is exactly how a planted checkout would forge an "ignored".
 - A committed reference **must** be gated in CI by `verify-har-reference.js`
   over the directory holding it -- `--dir <host>/`, or wherever the project
   keeps its references -- so it is checked on every PR and not only when it
