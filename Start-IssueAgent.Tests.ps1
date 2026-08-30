@@ -517,6 +517,55 @@ Describe 'New-PlanAgentPrompt' {
     }
 }
 
+Describe 'Issue #325: the -New prompt hands the rename back to the user' {
+    # The session launches as `new: <description>` because no issue number
+    # exists yet, and that name is stale the moment @plan files the issue.
+    # A session cannot rename itself -- /rename is expanded from a *user*
+    # message, never from model output (measured against Claude Code 2.1.251;
+    # see New-PlanAgentPrompt's .DESCRIPTION) -- so the prompt's job is to
+    # produce a command the user can paste in one keystroke.
+    It 'gives the paste-ready /rename template with the issue-dispatch name shape' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt | Should -Match '/rename <number>: <issue title>'
+    }
+
+    It 'asks for the rename line once the issue exists, before the dev loop starts' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt | Should -Match '(?s)Between steps 1 and 2, print this line'
+    }
+
+    It 'tells the session to print the command rather than attempt to run it' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt | Should -Match 'Print it, do not try to run it'
+        $prompt | Should -Match 'a session cannot rename itself'
+    }
+
+    It 'hands the rename back for a seedless -New too' {
+        # -New '' still files an issue, so its name goes stale the same way.
+        New-PlanAgentPrompt -Description '' | Should -Match '/rename <number>: <issue title>'
+    }
+
+    It 'keeps the rename hand-off last, after the two ordered steps' {
+        $prompt = New-PlanAgentPrompt -Description 'users need CSV export'
+
+        $prompt.IndexOf('@dev-loop gh issue <number>') |
+            Should -BeLessThan $prompt.IndexOf('/rename <number>: <issue title>')
+    }
+
+    It 'records in the doc comment why the rename is manual' {
+        # Matched to a boolean rather than asserted with -Match: a failure
+        # message that dumps the whole 900-line script is unreadable.
+        $help = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'Start-IssueAgent.ps1')
+        ($help -match '(?s)client-side.*slash command') |
+            Should -BeTrue -Because 'the finding must outlive this spike'
+        ($help -match 'rename_session') |
+            Should -BeTrue -Because 'the one non-typed path -- and why it is out of reach -- is the finding'
+    }
+}
+
 Describe 'Issue #324: -New has exactly one description source' {
     # start-issue-agent.sh -- the bash forwarder -- is gone, and with it the
     # only reason -New ever read a description from stdin: bash has no
