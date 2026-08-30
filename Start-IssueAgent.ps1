@@ -7,8 +7,8 @@
     Two modes, one launcher:
 
       - `-IssueNumber <n>` (the default, positional): work an issue that
-        already exists. Prompt: `@dev-loop gh issue <n>`, permission mode
-        `auto`.
+        already exists. Prompt: `@dev-loop gh issue <n>: <issue title>`,
+        plus any trailing -Context, permission mode `auto`.
       - `-New <description>`: there is no issue yet. Prompt: `@plan
         <description>` plus an explicit two-step instruction -- create the
         GitHub issue via `@plan`, then implement it via `@dev-loop gh issue
@@ -39,7 +39,9 @@
     Steps (the `-IssueNumber` path; `-New` skips 1-2 entirely):
 
       1. Resolve owner/repo from `git remote get-url origin` (never from the
-         local directory name -- see CLAUDE.md).
+         local directory name -- see CLAUDE.md), anchored on this script's own
+         directory rather than the caller's, so the issue is fetched from the
+         same repository the session is launched into (see step 5).
       2. `gh issue view <IssueNumber> --json number,title` to fetch just
          enough to name the session (@dev-loop itself already fetches the
          full issue -- title, body, comments -- when given an issue number,
@@ -50,7 +52,8 @@
          width (a long issue title/description would otherwise overflow the
          tab title/prompt box/resume picker), and pass it to `claude --name`
          (which also sets the terminal/tab title).
-      4. Build the prompt: `@dev-loop gh issue <IssueNumber>`, telling the
+      4. Build the prompt: `@dev-loop gh issue <IssueNumber>: <Issue Title>`
+         (plus any trailing -Context, below a blank line), telling the
          session to run the full dev loop starting from the existing issue
          -- no issue creation step needed; or, under -New, `@plan
          <description>` followed by the two ordered steps (create the issue,
@@ -116,10 +119,30 @@
     an inline `claude` in the current pane would inherit the drained stdin and
     would not be interactive. Empty stdin is an error, not a seedless session.
 
+.PARAMETER Context
+    Optional free-text context for the session, positional and **last**, so
+    the common case stays `./Start-IssueAgent.ps1 900`:
+
+        ./Start-IssueAgent.ps1 900 "Focus on the retry path; the upload
+        succeeds but the poll never terminates."
+
+    It is appended to the prompt below the `@dev-loop` line -- context, not a
+    spec: the issue itself remains the source of truth, so nothing here
+    overrides it. It does **not** affect the session name, which stays
+    `<issue number>: <issue title>`.
+
+    Multi-line context needs no special form -- a PowerShell here-string
+    (`@'...'@`) carries it natively.
+
+    Issue dispatch only. Under -New the description passed to -New is already
+    the free-text seed, and a second free-text value there would be two seeds
+    with no rule for combining them.
+
 .PARAMETER Repo
     Explicit `owner/repo` to pass to `gh issue view --repo`. If omitted, it is
-    resolved from `git remote get-url origin` in the current directory.
-    Unused under -New (no issue is fetched).
+    resolved from `git remote get-url origin` in the repository this script
+    file lives in -- the same one the session is launched into -- not in the
+    caller's current directory. Unused under -New (no issue is fetched).
 
 .PARAMETER PermissionMode
     Value passed to `claude --permission-mode`. Defaults to `auto` when
@@ -133,6 +156,17 @@
 
 .EXAMPLE
     ./Start-IssueAgent.ps1 123
+
+.EXAMPLE
+    # Trailing free-text context, forwarded to the session's prompt.
+    ./Start-IssueAgent.ps1 900 "Focus on the retry path; the upload succeeds but the poll never terminates."
+
+.EXAMPLE
+    # Multi-line context via a here-string; the session name is unaffected.
+    ./Start-IssueAgent.ps1 900 @'
+    Focus on the retry path.
+    The upload succeeds but the poll never terminates.
+    '@
 
 .EXAMPLE
     ./Start-IssueAgent.ps1 123 -NewTab
@@ -162,12 +196,35 @@
     Review this console log, is it what you expect? Please investigate:
     <transcript pasted here>
     END
+
+.NOTES
+    Exit code -- the contract is deliberately asymmetric, because only one of
+    the three launch paths has a session outcome to report:
+
+      - Current pane (already inside Windows Terminal, no -NewTab, not inside
+        a Claude Code session): `claude` runs inline and this script exits
+        with the **session's own exit code**. A caller scripting against the
+        launcher can tell a failed session from a successful one only here.
+      - New tab / new console window (-NewTab, no Windows Terminal, wt.exe
+        missing, or dispatched from inside a Claude Code session): the session
+        is launched fire-and-forget and outlives this script, so there is no
+        exit code to wait for and none is invented. These exit **0 on
+        successful dispatch** -- the only thing they can honestly report --
+        and a non-zero exit there means the dispatch itself failed.
+
+    A preflight failure (a required command missing from PATH, or a missing
+    issue number) exits 1 in either case, and -WhatIf exits 0 having launched
+    nothing.
 #>
 [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Issue')]
 param(
     [Parameter(ParameterSetName = 'Issue', Position = 0)]
     [ValidateRange(1, [int]::MaxValue)]
     [int]$IssueNumber,
+
+    [Parameter(ParameterSetName = 'Issue', Position = 1)]
+    [AllowEmptyString()]
+    [string]$Context = '',
 
     [Parameter(ParameterSetName = 'New')]
     [AllowEmptyString()]
@@ -186,21 +243,74 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Invoke-GitWithoutOverrides {
+    <#
+    .SYNOPSIS
+        Runs `git` with -ArgumentList, with GIT_DIR / GIT_COMMON_DIR /
+        GIT_WORK_TREE cleared for the duration of the call.
+    .DESCRIPTION
+        Those three environment variables take precedence over `git -C <path>`,
+        so a leaked one (a git hook's environment, an IDE integration) silently
+        resolves some *other* repository -- verified: with GIT_DIR set, a path
+        outside any repository still reported that repository's common dir.
+
+        Every `git` call this script makes goes through here, so the guard
+        cannot be forgotten at the next one: both the repo-slug lookup and the
+        launch-directory lookup must answer for the same repository, and both
+        are anchored on $PSScriptRoot via -C.
+
+        The caller's environment is saved and restored, including when git
+        fails -- stderr is discarded and $LASTEXITCODE is left for the caller
+        to inspect, exactly as a direct call would.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'The noun names the whole set of GIT_DIR/GIT_COMMON_DIR/GIT_WORK_TREE overrides cleared for the call; a singular would name only one of them.')]
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][string[]]$ArgumentList)
+
+    $overrides = 'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE'
+    $saved = @{}
+    foreach ($name in $overrides) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
+
+    try {
+        # Remove-Item, not [Environment]::SetEnvironmentVariable($name, $null):
+        # the latter hands the child process an *empty* GIT_DIR rather than
+        # deleting it, and git then fails with "not a git repository: ''".
+        foreach ($name in $overrides) { Remove-Item "Env:\$name" -ErrorAction SilentlyContinue }
+
+        return (git @ArgumentList 2>$null)
+    }
+    finally {
+        foreach ($name in $overrides) {
+            if ($null -ne $saved[$name]) { Set-Item "Env:\$name" -Value $saved[$name] }
+        }
+    }
+}
+
 function Get-GitHubRepoSlug {
     <#
     .SYNOPSIS
-        Resolves `owner/repo` from the current directory's `origin` remote.
+        Resolves `owner/repo` from the `origin` remote of the repository at
+        -Path.
     .DESCRIPTION
         Parses both URL forms git remotes commonly use:
           https://github.com/OWNER/REPO.git (or without .git)
           git@github.com:OWNER/REPO.git
         Never infers owner/repo from the local directory name (CLAUDE.md).
+
+        -Path, not the current directory: Get-LaunchDirectory resolves the
+        session's working directory from $PSScriptRoot, so the issue lookup
+        must be anchored there too. Otherwise this script, invoked by absolute
+        path from another repository (or from ~), fetches issue #N from *that*
+        repo's origin while launching the session in this one.
     #>
     [CmdletBinding()]
     [OutputType([string])]
-    param()
+    param([Parameter(Mandatory)][string]$Path)
 
-    $remoteUrl = git remote get-url origin 2>$null
+    $remoteUrl = Invoke-GitWithoutOverrides -ArgumentList @('-C', $Path, 'remote', 'get-url', 'origin') |
+        Select-Object -First 1
     if (-not $remoteUrl) {
         throw "Could not resolve 'origin' remote. Pass -Repo explicitly (e.g. -Repo owner/repo)."
     }
@@ -239,16 +349,23 @@ function Get-GitHubIssue {
 function Limit-DisplayName {
     <#
     .SYNOPSIS
-        Caps a session display name to -MaxLength, marking a cut with a
-        trailing '...'.
+        Flattens a session display name onto one line and caps it to
+        -MaxLength, marking a cut with a trailing '...'.
     .DESCRIPTION
+        A display name is one line -- a tab title, a prompt box, a /resume
+        entry -- but its source may not be (a pasted multi-line transcript
+        under -New), so every whitespace run, newlines included, collapses to
+        a single space and the result is trimmed. Flatten first, then cap:
+        capping the raw value would spend the budget on whitespace that is
+        about to collapse.
+
         A name beyond -MaxLength would otherwise wrap/overflow the tab title,
         prompt box, and /resume picker. The '...' makes the cut visible rather
         than silent. -MaxLength 0 (the default) means unlimited; a -MaxLength
         too small even for the ellipsis degrades to that many dots.
 
-        Shared by New-IssueAgentName and New-PlanAgentName so both modes cap
-        identically.
+        Shared by New-IssueAgentName and New-PlanAgentName so one rule
+        flattens *and* caps for both modes.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -257,10 +374,12 @@ function Limit-DisplayName {
         [int]$MaxLength = 0
     )
 
-    if ($MaxLength -le 0 -or $Value.Length -le $MaxLength) { return $Value }
+    $flattened = ($Value -replace '\s+', ' ').Trim()
+
+    if ($MaxLength -le 0 -or $flattened.Length -le $MaxLength) { return $flattened }
     if ($MaxLength -le 3) { return '.' * $MaxLength }
 
-    return $Value.Substring(0, $MaxLength - 3) + '...'
+    return $flattened.Substring(0, $MaxLength - 3) + '...'
 }
 
 function New-IssueAgentName {
@@ -302,10 +421,10 @@ function New-PlanAgentName {
         [int]$MaxLength = 0
     )
 
-    # A description may be many lines (a pasted transcript via -New -), but a
-    # tab title / resume-picker entry is one line: collapse every whitespace
-    # run -- newlines included -- to a single space before capping.
-    $trimmed = ($Description -replace '\s+', ' ').Trim()
+    # Whether the description is blank decides the fallback; flattening a
+    # multi-line description onto one line is Limit-DisplayName's job, shared
+    # with New-IssueAgentName.
+    $trimmed = $Description.Trim()
     $fullName = if ($trimmed) { "new: $trimmed" } else { 'new issue' }
 
     return Limit-DisplayName -Value $fullName -MaxLength $MaxLength
@@ -354,32 +473,16 @@ function Get-GitCommonDir {
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
 
-    # GIT_DIR / GIT_COMMON_DIR / GIT_WORK_TREE take precedence over -C, so a
-    # leaked one (a git hook's environment, an IDE integration) would silently
-    # resolve some *other* repository -- verified: with GIT_DIR set, a path
-    # outside any repository still reported that repository's common dir.
-    # Cleared for this call only, then restored.
-    $overrides = 'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE'
-    $saved = @{}
-    foreach ($name in $overrides) { $saved[$name] = [Environment]::GetEnvironmentVariable($name) }
-
+    # The GIT_DIR / GIT_COMMON_DIR / GIT_WORK_TREE guard lives in
+    # Invoke-GitWithoutOverrides, shared with Get-GitHubRepoSlug.
     try {
-        # Remove-Item, not [Environment]::SetEnvironmentVariable($name, $null):
-        # the latter hands the child process an *empty* GIT_DIR rather than
-        # deleting it, and git then fails with "not a git repository: ''".
-        foreach ($name in $overrides) { Remove-Item "Env:\$name" -ErrorAction SilentlyContinue }
-
-        $output = git -C $Path rev-parse --path-format=absolute --git-common-dir 2>$null
+        $output = Invoke-GitWithoutOverrides -ArgumentList @(
+            '-C', $Path, 'rev-parse', '--path-format=absolute', '--git-common-dir')
         if ($LASTEXITCODE -ne 0) { return '' }
     }
     catch {
         Write-Verbose "Could not resolve the git common dir for '$Path', falling back: $_"
         return ''
-    }
-    finally {
-        foreach ($name in $overrides) {
-            if ($null -ne $saved[$name]) { Set-Item "Env:\$name" -Value $saved[$name] }
-        }
     }
 
     return ($output | Select-Object -First 1)
@@ -434,14 +537,66 @@ function New-IssueAgentPrompt {
         the full issue -- title, body, comments -- and skips straight to
         Phase 1 when given an issue number, so the prompt only needs to point
         it at the issue; it does not need the issue body inlined here.
+
+        Phase 0 keys off "the user supplied an issue number" -- it reads the
+        request as prose rather than parsing a fixed grammar -- so the number
+        stays leading and unadorned, and -Title rides along after a colon:
+
+            @dev-loop gh issue 900: Make the Video Upload work
+
+        The title is already fetched to build the session Name; putting it here
+        too makes it readable at the top of the transcript, not only in the tab
+        title and the /resume picker. It is flattened onto one line for the
+        same reason a display name is.
+
+        -Context is optional free text from the command line, appended after a
+        blank line. It is context, not a spec -- the issue remains the source
+        of truth -- so it goes below the dev-loop line rather than into it, and
+        it never touches the session name. Blank/whitespace-only context adds
+        nothing at all, so the common case stays a single-line prompt.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
     [CmdletBinding()]
     [OutputType([string])]
-    param([Parameter(Mandatory)][int]$IssueNumber)
+    param(
+        [Parameter(Mandatory)][int]$IssueNumber,
+        [AllowEmptyString()][string]$Title = '',
+        [AllowEmptyString()][string]$Context = ''
+    )
 
-    return "@dev-loop gh issue $IssueNumber"
+    $flatTitle = ($Title -replace '\s+', ' ').Trim()
+    $line = if ($flatTitle) { "@dev-loop gh issue $IssueNumber`: $flatTitle" } else { "@dev-loop gh issue $IssueNumber" }
+
+    # A here-string is the supported way to pass multi-line context, so
+    # interior newlines are preserved verbatim -- only the CRLF/LF convention
+    # is normalized, matching the rest of the prompt.
+    $trimmedContext = ($Context -replace "`r`n", "`n").Trim()
+    if (-not $trimmedContext) { return $line }
+
+    return "$line`n`n$trimmedContext"
+}
+
+function Get-RequiredCommand {
+    <#
+    .SYNOPSIS
+        The external commands that must be on PATH for a given parameter set.
+    .DESCRIPTION
+        Issue dispatch calls `gh issue view` to name the session, so `gh` must
+        be installed for it. -New makes no `gh` or `git remote` call at all --
+        `@plan` resolves the repo and files the issue itself -- so requiring
+        `gh` there would fail a machine that has `claude` but not `gh`, for a
+        tool the run never invokes.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure lookup -- the Get- verb here names output shape, not state change.')]
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param([Parameter(Mandatory)][ValidateSet('Issue', 'New')][string]$ParameterSetName)
+
+    if ($ParameterSetName -eq 'New') { return , @('claude') }
+
+    return , @('gh', 'claude')
 }
 
 function New-PlanAgentPrompt {
@@ -676,10 +831,21 @@ function Start-ClaudeIssueSession {
     .DESCRIPTION
         CLI options are passed before the trailing positional prompt
         (`claude --name ... --remote-control --permission-mode ... -- <prompt>`).
-        Each is its own array element -- passed straight to `claude` for the
-        current-pane/fallback-window paths, or safely re-embedded via
-        -EncodedCommand for the wt.exe path -- so no manual shell-escaping of
-        the prompt is needed.
+        Each is its own array element -- passed straight to `claude` in the
+        current pane, or safely re-embedded via -EncodedCommand for both
+        out-of-pane paths -- so no manual shell-escaping of the prompt is
+        needed.
+
+        -ExitCode receives the exit code the caller should exit with: the
+        session's own for 'CurrentPane', where `& claude` runs inline; 0 for
+        'NewTab' / 'NewWindow', which are fire-and-forget dispatches with no
+        session exit code to wait for, and 0 under -WhatIf, which launches
+        nothing.
+
+        It is a [ref] out-parameter rather than a return value on purpose:
+        assigning this function's output would make PowerShell redirect the
+        inline `claude`'s stdout into the pipeline, which both pollutes the
+        result and takes the console away from an interactive session.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -688,8 +854,13 @@ function Start-ClaudeIssueSession {
         [Parameter(Mandatory)][string]$PermissionMode,
         [Parameter(Mandatory)][string]$WorkingDirectory,
         [switch]$NewTab,
-        [switch]$StdinConsumed
+        [switch]$StdinConsumed,
+        [ref]$ExitCode
     )
+
+    # Dispatch-succeeded is the default; only the current-pane path can
+    # replace it with something the session itself reported.
+    if ($ExitCode) { $ExitCode.Value = 0 }
 
     $claudeArgs = @(
         '--name', $Name,
@@ -710,6 +881,13 @@ function Start-ClaudeIssueSession {
         'CurrentPane' {
             Push-Location $WorkingDirectory
             try { & claude @claudeArgs } finally { Pop-Location }
+
+            # The only path that can honestly report the session's outcome:
+            # `claude` ran inline, so its exit code is still in $LASTEXITCODE.
+            if ($ExitCode) {
+                $sessionExit = if (Test-Path Variable:\LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+                $ExitCode.Value = if ($null -eq $sessionExit) { 0 } else { [int]$sessionExit }
+            }
         }
         'NewTab' {
             # `-w 0` targets "this window" when the calling process has
@@ -727,14 +905,21 @@ function Start-ClaudeIssueSession {
                 '--',
                 'pwsh', '-NoExit', '-EncodedCommand', $encodedCommand
             )
+            # Fire-and-forget: the session outlives this launcher, so there
+            # is no exit code to wait for and none may be invented -- the 0
+            # set above stands, reporting a successful dispatch.
             Start-Process -FilePath 'wt.exe' -ArgumentList $wtArgs
         }
         'NewWindow' {
-            # -Environment overrides just this one variable for the new claude
-            # process; it does not touch $env:CLAUDE_CODE_CHILD_SESSION in the
-            # caller's own shell/tab (requires PowerShell 7.4+).
-            Start-Process -FilePath 'claude' -ArgumentList $claudeArgs -WorkingDirectory $WorkingDirectory `
-                -Environment @{ CLAUDE_CODE_CHILD_SESSION = $null }
+            # Same -EncodedCommand blob as the wt.exe path rather than handing
+            # $claudeArgs to Start-Process directly: a Windows argv round-trip
+            # mangles arguments containing spaces, and this least-exercised
+            # path -- taken whenever wt.exe is missing -- is exactly where a
+            # multi-line prompt would be mangled. The blob also carries the
+            # working directory and drops CLAUDE_CODE_CHILD_SESSION inside the
+            # new process, so neither needs a Start-Process parameter here.
+            $encodedCommand = New-EncodedClaudeCommand -ArgumentList $claudeArgs -WorkingDirectory $WorkingDirectory
+            Start-Process -FilePath 'pwsh' -ArgumentList @('-NoExit', '-EncodedCommand', $encodedCommand)
         }
     }
 }
@@ -744,7 +929,7 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 # --- Main ---
 
-foreach ($cmd in 'gh', 'claude') {
+foreach ($cmd in (Get-RequiredCommand -ParameterSetName $PSCmdlet.ParameterSetName)) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
         Write-Error "'$cmd' was not found on PATH. Install it before running this script."
         exit 1
@@ -776,14 +961,25 @@ else {
         exit 1
     }
 
-    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug }
+    # $PSScriptRoot, not the current directory: the same repository the session
+    # is launched into (see Get-GitHubRepoSlug / Get-LaunchDirectory).
+    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug -Path $PSScriptRoot }
     $issue = Get-GitHubIssue -Number $IssueNumber -RepoSlug $repoSlug
     $name = New-IssueAgentName -Issue $issue -MaxLength $maxNameLength
-    $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber
+    $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber -Title ([string]$issue.title) -Context $Context
 }
 
 $startDir = Get-LaunchDirectory -GitCommonDir (Get-GitCommonDir -Path $PSScriptRoot) -ScriptRoot $PSScriptRoot
 
 Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
+# [ref], not a captured return value: capturing this call would redirect the
+# inline claude session's stdout away from the console (see
+# Start-ClaudeIssueSession).
+$sessionExitCode = 0
 Start-ClaudeIssueSession -Name $name -Prompt $prompt -PermissionMode $PermissionMode `
-    -WorkingDirectory $startDir -NewTab:$NewTab -StdinConsumed:$stdinConsumed
+    -WorkingDirectory $startDir -NewTab:$NewTab -StdinConsumed:$stdinConsumed `
+    -ExitCode ([ref]$sessionExitCode)
+
+# The session's own exit code when it ran in this pane; 0 for a successful
+# out-of-pane dispatch (see .NOTES).
+exit [int]$sessionExitCode

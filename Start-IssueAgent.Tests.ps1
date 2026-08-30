@@ -5,27 +5,118 @@ BeforeAll {
 Describe 'Get-GitHubRepoSlug' {
     It 'parses an https origin remote' {
         Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
+        Get-GitHubRepoSlug -Path 'C:\repo' | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'parses an https origin remote without a .git suffix' {
         Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
+        Get-GitHubRepoSlug -Path 'C:\repo' | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'parses an ssh origin remote' {
         Mock -CommandName git -MockWith { 'git@github.com:IntelliTect-Samples/IntelliSDLC.ai.git' }
-        Get-GitHubRepoSlug | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
+        Get-GitHubRepoSlug -Path 'C:\repo' | Should -Be 'IntelliTect-Samples/IntelliSDLC.ai'
     }
 
     It 'throws when there is no origin remote' {
         Mock -CommandName git -MockWith { $null }
-        { Get-GitHubRepoSlug } | Should -Throw "*Pass -Repo explicitly*"
+        { Get-GitHubRepoSlug -Path 'C:\repo' } | Should -Throw "*Pass -Repo explicitly*"
     }
 
     It 'throws when the remote is not a recognizable GitHub URL' {
         Mock -CommandName git -MockWith { 'https://example.com/not-github' }
-        { Get-GitHubRepoSlug } | Should -Throw "*Pass -Repo explicitly*"
+        { Get-GitHubRepoSlug -Path 'C:\repo' } | Should -Throw "*Pass -Repo explicitly*"
+    }
+
+    It 'asks git for the remote of -Path, not of the current directory' {
+        # The issue lookup and the launch directory must resolve the same
+        # repository: Get-LaunchDirectory anchors on $PSScriptRoot, so this
+        # must too, or an absolute-path invocation from another repo names the
+        # session from that repo's issue #N while launching into this one.
+        Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' }
+
+        Get-GitHubRepoSlug -Path 'C:\some\other\repo' | Out-Null
+
+        Should -Invoke git -Times 1 -ParameterFilter {
+            ($args -join ' ') -eq '-C C:\some\other\repo remote get-url origin'
+        }
+    }
+
+    It 'ignores a leaked GIT_DIR, which git honors over -C' {
+        # Same exposure Get-GitCommonDir guards against: an inherited GIT_DIR
+        # silently resolves some *other* repository's remote.
+        $expected = Get-GitHubRepoSlug -Path $PSScriptRoot
+        $expected | Should -Not -BeNullOrEmpty
+
+        $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('repo-slug-' + [guid]::NewGuid().ToString('N'))
+        $savedGitDir = [Environment]::GetEnvironmentVariable('GIT_DIR')
+
+        try {
+            git init -q -b main $tempRoot 2>&1 | Out-Null
+            git -C $tempRoot remote add origin 'https://github.com/leaked/leaked.git' 2>&1 | Out-Null
+            $env:GIT_DIR = Join-Path $tempRoot '.git'
+
+            Get-GitHubRepoSlug -Path $PSScriptRoot | Should -Be $expected
+
+            # The caller's environment is left exactly as it was found.
+            $env:GIT_DIR | Should -Be (Join-Path $tempRoot '.git')
+        }
+        finally {
+            # Remove-Item, not SetEnvironmentVariable($null): the latter leaves
+            # an *empty* GIT_DIR behind, and git then fails every later call
+            # with "not a git repository: ''".
+            if ($null -eq $savedGitDir) { Remove-Item Env:\GIT_DIR -ErrorAction SilentlyContinue }
+            else { $env:GIT_DIR = $savedGitDir }
+            if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Describe 'Invoke-GitWithoutOverrides' {
+    BeforeEach {
+        $script:savedOverrides = @{}
+        foreach ($name in 'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE') {
+            $script:savedOverrides[$name] = [Environment]::GetEnvironmentVariable($name)
+        }
+    }
+
+    AfterEach {
+        foreach ($name in 'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE') {
+            # Remove-Item, not SetEnvironmentVariable($null) -- see above.
+            if ($null -eq $script:savedOverrides[$name]) { Remove-Item "Env:\$name" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:\$name" -Value $script:savedOverrides[$name] }
+        }
+    }
+
+    It 'passes its arguments through to git and returns the output' {
+        Mock -CommandName git -MockWith { 'output line' }
+
+        Invoke-GitWithoutOverrides -ArgumentList @('-C', 'C:\repo', 'rev-parse') | Should -Be 'output line'
+
+        Should -Invoke git -Times 1 -ParameterFilter { ($args -join ' ') -eq '-C C:\repo rev-parse' }
+    }
+
+    It 'clears GIT_DIR, GIT_COMMON_DIR and GIT_WORK_TREE for the duration of the call' {
+        # They take precedence over -C, so a leaked one resolves the wrong repo.
+        $env:GIT_DIR = 'C:\leaked\.git'
+        $env:GIT_COMMON_DIR = 'C:\leaked\.git'
+        $env:GIT_WORK_TREE = 'C:\leaked'
+        Mock -CommandName git -MockWith {
+            "[$([Environment]::GetEnvironmentVariable('GIT_DIR'))]" +
+            "[$([Environment]::GetEnvironmentVariable('GIT_COMMON_DIR'))]" +
+            "[$([Environment]::GetEnvironmentVariable('GIT_WORK_TREE'))]"
+        }
+
+        Invoke-GitWithoutOverrides -ArgumentList @('rev-parse') | Should -Be '[][][]'
+    }
+
+    It 'restores the caller environment afterwards, even when git fails' {
+        $env:GIT_DIR = 'C:\leaked\.git'
+        Mock -CommandName git -MockWith { throw 'boom' }
+
+        { Invoke-GitWithoutOverrides -ArgumentList @('rev-parse') } | Should -Throw
+
+        $env:GIT_DIR | Should -Be 'C:\leaked\.git'
     }
 }
 
@@ -71,6 +162,20 @@ Describe 'Limit-DisplayName' {
     It 'handles an empty value' {
         Limit-DisplayName -Value '' -MaxLength 10 | Should -Be ''
     }
+
+    It 'collapses every whitespace run to a single space -- a display name is one line' {
+        Limit-DisplayName -Value "first line`nsecond`tline" | Should -Be 'first line second line'
+    }
+
+    It 'trims surrounding whitespace' {
+        Limit-DisplayName -Value "  padded  " | Should -Be 'padded'
+    }
+
+    It 'caps the flattened value, not the raw one' {
+        # Flatten first, then cap: capping the raw value would spend the budget
+        # on whitespace that is about to collapse.
+        Limit-DisplayName -Value "a`n`n`nvalue that is far too long" -MaxLength 10 | Should -Be 'a value...'
+    }
 }
 
 Describe 'New-IssueAgentName' {
@@ -100,6 +205,11 @@ Describe 'New-IssueAgentName' {
     It 'handles a -MaxLength too small even for the ellipsis' {
         $issue = [pscustomobject]@{ number = 42; title = 'Add widget support' }
         New-IssueAgentName -Issue $issue -MaxLength 2 | Should -Be '..'
+    }
+
+    It 'flattens a multi-line title onto one line, exactly as the -New name builder does' {
+        $issue = [pscustomobject]@{ number = 42; title = "Add widget`nsupport" }
+        New-IssueAgentName -Issue $issue | Should -Be '42: Add widget support'
     }
 }
 
@@ -252,7 +362,10 @@ Describe 'Get-GitCommonDir' {
             $env:GIT_DIR | Should -Be (Join-Path $tempRoot '.git')
         }
         finally {
-            [Environment]::SetEnvironmentVariable('GIT_DIR', $savedGitDir)
+            # Remove-Item, not SetEnvironmentVariable($null): the latter leaves
+            # an *empty* GIT_DIR behind, which git rejects on every later call.
+            if ($null -eq $savedGitDir) { Remove-Item Env:\GIT_DIR -ErrorAction SilentlyContinue }
+            else { $env:GIT_DIR = $savedGitDir }
             if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
         }
     }
@@ -265,6 +378,84 @@ Describe 'Get-GitCommonDir' {
 Describe 'New-IssueAgentPrompt' {
     It 'delegates to @dev-loop by issue number, without inlining the issue body' {
         New-IssueAgentPrompt -IssueNumber 42 | Should -Be '@dev-loop gh issue 42'
+    }
+
+    It 'puts the issue title on the opening line, after the number' {
+        # dev-loop.agent.md Phase 0 keys off "user supplied an issue number";
+        # the number stays leading, and the title rides along so it is readable
+        # at the top of the transcript, not only in the tab title.
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'Make the Video Upload work' |
+            Should -Be '@dev-loop gh issue 900: Make the Video Upload work'
+    }
+
+    It 'omits the separator when there is no title' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title '' | Should -Be '@dev-loop gh issue 900'
+    }
+
+    It 'omits the separator for a whitespace-only title' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title "  `t " | Should -Be '@dev-loop gh issue 900'
+    }
+
+    It 'flattens a multi-line title so the dev-loop line stays one line' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title "Make the Video`nUpload work" |
+            Should -Be '@dev-loop gh issue 900: Make the Video Upload work'
+    }
+
+    It 'appends trailing context below the dev-loop line, separated by a blank line' {
+        $prompt = New-IssueAgentPrompt -IssueNumber 900 -Title 'Make the Video Upload work' `
+            -Context 'Focus on the retry path; the upload succeeds but the poll never terminates.'
+
+        $prompt | Should -Be (
+            "@dev-loop gh issue 900: Make the Video Upload work`n`n" +
+            'Focus on the retry path; the upload succeeds but the poll never terminates.')
+    }
+
+    It 'keeps a multi-line context intact -- a here-string is the supported form' {
+        $context = "first note`n`nsecond note"
+        $prompt = New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' -Context $context
+
+        $prompt | Should -Be "@dev-loop gh issue 900: A title`n`n$context"
+    }
+
+    It 'normalizes CRLF in the context so the prompt has one newline convention' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' -Context "line one`r`nline two" |
+            Should -Be "@dev-loop gh issue 900: A title`n`nline one`nline two"
+    }
+
+    It 'trims surrounding whitespace from the context' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' -Context "  a note`n`n" |
+            Should -Be "@dev-loop gh issue 900: A title`n`na note"
+    }
+
+    It 'emits no trailing blank line when no context is given' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' |
+            Should -Be '@dev-loop gh issue 900: A title'
+    }
+
+    It 'emits no context block for a whitespace-only context' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' -Context "  `n`t " |
+            Should -Be '@dev-loop gh issue 900: A title'
+    }
+
+    It 'passes context containing a single quote through verbatim' {
+        New-IssueAgentPrompt -IssueNumber 900 -Title 'A title' -Context "it's the retry path" |
+            Should -Be "@dev-loop gh issue 900: A title`n`nit's the retry path"
+    }
+}
+
+Describe 'Get-RequiredCommand' {
+    It 'requires gh and claude when dispatching an existing issue' {
+        (Get-RequiredCommand -ParameterSetName 'Issue') -join ',' | Should -Be 'gh,claude'
+    }
+
+    It 'requires only claude under -New, which makes no gh call' {
+        # The -New path resolves nothing itself -- @plan does its own repo
+        # discovery and files the issue -- so gh need not be installed.
+        (Get-RequiredCommand -ParameterSetName 'New') -join ',' | Should -Be 'claude'
+    }
+
+    It 'rejects an unknown parameter set name' {
+        { Get-RequiredCommand -ParameterSetName 'Nope' } | Should -Throw
     }
 }
 
@@ -556,7 +747,11 @@ Describe 'Start-ClaudeIssueSession' {
         }
     }
 
-    It 'falls back to a plain new console window when wt.exe is unavailable and not in Windows Terminal' {
+    It 'falls back to a new console window that also goes through -EncodedCommand' {
+        # The least-exercised path used to hand $claudeArgs straight to
+        # Start-Process, with none of the argv-mangling protection the wt.exe
+        # path has -- and it is exactly the path a multi-line prompt takes on a
+        # machine without wt.exe.
         $env:WT_SESSION = $null
         Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { $null }
         Mock -CommandName Start-Process -MockWith { }
@@ -565,21 +760,116 @@ Describe 'Start-ClaudeIssueSession' {
             -PermissionMode 'auto' -WorkingDirectory 'C:\repo'
 
         Should -Invoke Start-Process -Times 1 -ParameterFilter {
-            $FilePath -eq 'claude' -and
-            $WorkingDirectory -eq 'C:\repo' -and
-            $ArgumentList.Count -eq 7 -and
-            $ArgumentList[0] -eq '--name' -and
-            $ArgumentList[1] -eq '42: Add widget support' -and
-            $ArgumentList[2] -eq '--remote-control' -and
-            $ArgumentList[3] -eq '--permission-mode' -and
-            $ArgumentList[4] -eq 'auto' -and
-            $ArgumentList[5] -eq '--' -and
-            $ArgumentList[6] -eq '@dev-loop gh issue 42' -and
-            # Overrides CLAUDE_CODE_CHILD_SESSION for just this new process,
-            # without touching $env:CLAUDE_CODE_CHILD_SESSION in the caller.
-            $Environment.ContainsKey('CLAUDE_CODE_CHILD_SESSION') -and
-            $null -eq $Environment['CLAUDE_CODE_CHILD_SESSION']
+            if ($FilePath -ne 'pwsh') { return $false }
+            if ($ArgumentList.Count -ne 3) { return $false }
+            if ($ArgumentList[0] -ne '-NoExit') { return $false }
+            if ($ArgumentList[1] -ne '-EncodedCommand') { return $false }
+
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            # The blob carries the working directory and drops
+            # CLAUDE_CODE_CHILD_SESSION inside the new process, so neither needs
+            # a Start-Process parameter of its own.
+            $decoded -eq (
+                'Remove-Item Env:\CLAUDE_CODE_CHILD_SESSION -ErrorAction SilentlyContinue; ' +
+                "Set-Location 'C:\repo'; & claude '--name' '42: Add widget support' '--remote-control' " +
+                "'--permission-mode' 'auto' '--' '@dev-loop gh issue 42'"
+            )
         }
+    }
+
+    It 'round-trips a multi-line prompt through the new-window path intact' {
+        $env:WT_SESSION = $null
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { $null }
+        Mock -CommandName Start-Process -MockWith { }
+
+        $multiline = "@dev-loop gh issue 42: A title`n`nit's the retry path`nthat never terminates"
+        Start-ClaudeIssueSession -Name '42: A title' -Prompt $multiline `
+            -PermissionMode 'auto' -WorkingDirectory 'C:\repo'
+
+        Should -Invoke Start-Process -Times 1 -ParameterFilter {
+            $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[2]))
+            $decoded.Contains("'@dev-loop gh issue 42: A title`n`nit''s the retry path`nthat never terminates'")
+        }
+    }
+
+    It 'reports the session exit code when it ran in the current pane' {
+        $env:WT_SESSION = 'some-guid'
+        Mock -CommandName Push-Location -MockWith { }
+        Mock -CommandName Pop-Location -MockWith { }
+        Mock -CommandName claude -MockWith { $global:LASTEXITCODE = 42 }
+
+        # Seeded with -1 so the assertion proves the function wrote the value.
+        $exitCode = -1
+        Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -ExitCode ([ref]$exitCode)
+
+        $exitCode | Should -Be 42
+    }
+
+    It 'reports 0 for a current-pane session that ended successfully' {
+        $env:WT_SESSION = 'some-guid'
+        Mock -CommandName Push-Location -MockWith { }
+        Mock -CommandName Pop-Location -MockWith { }
+        Mock -CommandName claude -MockWith { $global:LASTEXITCODE = 0 }
+
+        $exitCode = -1
+        Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -ExitCode ([ref]$exitCode)
+
+        $exitCode | Should -Be 0
+    }
+
+    It 'emits nothing on the pipeline -- capturing it would redirect the inline session stdout' {
+        # The exit code travels by [ref] precisely so no caller has to assign
+        # this function's output: assigning it makes PowerShell redirect the
+        # inline `claude`'s stdout into the pipeline, taking the console away
+        # from an interactive session (and mixing its output into the result).
+        $env:WT_SESSION = 'some-guid'
+        Mock -CommandName Push-Location -MockWith { }
+        Mock -CommandName Pop-Location -MockWith { }
+        Mock -CommandName claude -MockWith { $global:LASTEXITCODE = 42; 'session chatter' }
+
+        $exitCode = -1
+        $output = Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -ExitCode ([ref]$exitCode)
+
+        $output | Should -Be 'session chatter'
+        $exitCode | Should -Be 42
+    }
+
+    It 'reports 0 after dispatching a new tab -- there is no session exit code to wait for' {
+        $env:WT_SESSION = $null
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
+        Mock -CommandName Start-Process -MockWith { }
+
+        $exitCode = -1
+        Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -ExitCode ([ref]$exitCode)
+
+        $exitCode | Should -Be 0
+    }
+
+    It 'reports 0 after dispatching a new window -- fire and forget by design' {
+        $env:WT_SESSION = $null
+        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { $null }
+        Mock -CommandName Start-Process -MockWith { }
+
+        $exitCode = -1
+        Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -ExitCode ([ref]$exitCode)
+
+        $exitCode | Should -Be 0
+    }
+
+    It 'reports 0 under -WhatIf, having launched nothing' {
+        $env:WT_SESSION = 'some-guid'
+        Mock -CommandName claude -MockWith { $global:LASTEXITCODE = 42 }
+
+        $exitCode = -1
+        Start-ClaudeIssueSession -Name 'n' -Prompt 'p' -PermissionMode 'auto' `
+            -WorkingDirectory 'C:\repo' -WhatIf -ExitCode ([ref]$exitCode)
+
+        $exitCode | Should -Be 0
     }
 
     It 'reuses the current pane -- runs claude inline -- when already in Windows Terminal and -NewTab is not passed' {
@@ -636,5 +926,36 @@ Describe 'Start-ClaudeIssueSession' {
             -WorkingDirectory 'C:\repo' -WhatIf
 
         Should -Invoke Start-Process -Times 0
+    }
+}
+
+Describe 'Start-IssueAgent.ps1 command-line contract' {
+    BeforeAll {
+        $script:ScriptPath = "$PSScriptRoot/Start-IssueAgent.ps1"
+        $script:Command = Get-Command $script:ScriptPath
+    }
+
+    It 'takes free-text context positionally, immediately after the issue number' {
+        $context = $script:Command.Parameters['Context']
+
+        $context.ParameterType | Should -Be ([string])
+        $context.ParameterSets['Issue'].Position | Should -Be 1
+    }
+
+    It 'keeps the common case a bare issue number -- context is not mandatory' {
+        $script:Command.Parameters['Context'].ParameterSets['Issue'].IsMandatory | Should -BeFalse
+    }
+
+    It 'does not offer -Context under -New, whose description already carries the free text' {
+        # -New <description> is itself the free-text seed; a second free-text
+        # parameter there would be two seeds with no rule for combining them.
+        $script:Command.Parameters['Context'].ParameterSets.Keys | Should -Be 'Issue'
+    }
+
+    It 'documents the asymmetric exit-code contract in its comment-based help' {
+        $helpText = Get-Help $script:ScriptPath -Full | Out-String
+
+        $helpText | Should -Match '(?s)exit code.*current pane'
+        $helpText | Should -Match '(?s)-NewTab.*dispatch|dispatch.*new tab'
     }
 }
