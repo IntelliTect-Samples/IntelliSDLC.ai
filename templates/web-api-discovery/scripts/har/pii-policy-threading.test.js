@@ -43,6 +43,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.test-support.js'));
 
+const pii = require(path.join(__dirname, 'pii.js'));
 const sanitize = path.join(__dirname, 'sanitize-har.js');
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pii-policy-threading-')));
 
@@ -61,6 +62,12 @@ const MAESTRO_ISSUER = { brand: 'maestro', prefixes: [[50, 50]], lengths: [16] }
 
 // A city value under a field name the shipped `piiFields` does not list.
 // `hometown` is one word, so it is neither an `exact` name nor a qualified tail.
+//
+// DO NOT "tidy" this spelling. `homeTown` and `home_town` tokenise to
+// ["home","town"], and `town` IS a default `city` tail with `home` on its
+// qualifier list -- so either of those resolves to `city` with no project
+// policy at all, and case 3.a would fail while 3.b passed for the wrong
+// reason. The one-word spelling is the whole point of the fixture.
 const HOMETOWN_FIELD = 'hometown';
 const HOMETOWN_VALUE = 'Zzyzxvale';
 
@@ -183,8 +190,137 @@ check('3.b a project piiFields name makes the scrubber replace the value', () =>
         + 'field name was validated, merged, loaded and then never consulted');
 });
 
+// --- 4. A float is not a card, on BOTH sides. ---------------------------
+//
+// Unifying the CHECK while leaving the PATTERN divergent is the same defect
+// one layer down. `har-shapes.js` carries lookarounds that keep a digit run
+// which is part of a DECIMAL NUMBER out of the card slot (#292/#293); this
+// module carried a bare `/\b\d{13,19}\b/g`. The reasoning that
+// `hasAssignedIin` makes the lookarounds redundant -- that a fractional part
+// starts with digits no issuer owns -- holds only until the run happens to
+// begin with an assigned IIN at a minted length, which is exactly the case
+// the lookarounds exist for.
+//
+// `4000000000006` is 13 digits, Visa prefix `4`, a length Visa mints, and
+// Luhn-valid. Embedded in a float, the gate passes it clean and the scrubber
+// rewrote it -- corruption, in a case the gate already guards. Reachable
+// anywhere `detectInString` scans: headers, cookies, query params, the URL,
+// or a non-JSON body. Any price, amount or coordinate-as-string is exposed.
+const CARD_SHAPED_INTEGER_PART = '4000000000006';
+
+check('4.a the integer part of a float is not rewritten', () => {
+    const out = scrub('float-integer-part', null, { price: CARD_SHAPED_INTEGER_PART + '.45' });
+    assert.ok(out.includes(CARD_SHAPED_INTEGER_PART + '.45'),
+        'a decimal number was rewritten as a card by the scrubber, in a case the gate passes clean');
+});
+
+check('4.b the fractional part of a float is not rewritten', () => {
+    const out = scrub('float-fraction-part', null, { time: '168.' + CARD_SHAPED_INTEGER_PART });
+    assert.ok(out.includes('168.' + CARD_SHAPED_INTEGER_PART),
+        'the fractional part of a decimal number was rewritten as a card');
+});
+
+// --- 5. Differential: the gate and the scrubber cannot disagree. ---------
+//
+// The two properties above are about two specific values. This is about the
+// PAIR OF DEFINITIONS: over a corpus of deliberately awkward candidates, the
+// set of runs `har-shapes.js` calls a card and the set `pii.js` calls a card
+// must be identical. A generator that cannot express a shape cannot falsify
+// it, so the corpus is built to include the shapes that broke each half --
+// decimals on both sides of the point, lengths at and past the boundary,
+// assigned and unassigned prefixes, and runs pressed against punctuation.
+//
+// Compared by FINGERPRINT, never by value, so a failure names nothing.
+{
+    const shapes = require(path.join(__dirname, 'har-shapes.js'));
+
+    function luhnRun(prefix, len, nonce) {
+        const base = BigInt(prefix + String(nonce).padStart(len - prefix.length, '0'));
+        for (let i = 0n; i < 500n; i++) {
+            const s = (base + i).toString().padStart(len, '0');
+            if (s.length === len && s.startsWith(prefix)
+                && shapes.luhnValid(s)) return s;
+        }
+        return null;
+    }
+
+    const runs = [];
+    // Assigned prefixes at minted lengths, unassigned prefixes, and lengths
+    // just outside what the issuer mints (`4` at 17 is no more a Visa than
+    // `98` at 16 is anything).
+    for (const [prefix, len] of [
+        ['4', 13], ['4', 16], ['4', 19], ['4', 17], ['51', 16], ['2221', 16],
+        ['37', 15], ['6011', 16], ['62', 16], ['36', 14], ['3528', 18],
+        ['98', 16], ['17', 16], ['12', 16], ['9', 13], ['80', 18], ['77', 19],
+        ['4242', 16], ['00', 15],
+    ]) {
+        for (let n = 0; n < 3; n++) {
+            const v = luhnRun(prefix, len, n);
+            if (v) runs.push(v);
+        }
+    }
+
+    // Each run, in every awkward surrounding that has ever mattered.
+    const texts = [];
+    for (const r of runs) {
+        texts.push(r);
+        texts.push(r + '.45');            // integer part of a float
+        texts.push('168.' + r);           // fractional part of a float
+        texts.push('0.' + r + '.9');      // both at once
+        texts.push('id=' + r + '&x=1');   // query-string context
+        texts.push('value: ' + r + '.');  // sentence punctuation, not a decimal
+        texts.push('[' + r + ',' + r + ']');
+        texts.push('/' + r + '/photos');  // path segment
+    }
+
+    // Compared as SETS of fingerprints: the question is which VALUES each side
+    // classifies as a card, not how many times each counts an occurrence. The
+    // two layers legitimately differ on multiplicity -- the gate reports one
+    // leak per match, the scrubber groups by unique value before replacing.
+    function uniqueSorted(xs) { return [...new Set(xs)].sort().join('|'); }
+
+    function gateFingerprints(text) {
+        return uniqueSorted(shapes.findLeaks(text, null)
+            .filter((l) => l.kind === 'credit-card')
+            .map((l) => l.fingerprint));
+    }
+
+    function scrubFingerprints(text) {
+        // A request HEADER, so the candidate reaches `detectInString` as raw
+        // text -- the same thing the gate scans, and one of the paths the
+        // float defect was reachable through. A body would be JSON-parsed
+        // first, and a JSON *number* is string-scanned by neither side, which
+        // would make this a test of the walk rather than of the predicate.
+        const har = { log: { version: '1.2', creator: { name: 't', version: '1' }, entries: [{
+            request: { method: 'GET', url: 'https://example.invalid/',
+                headers: [{ name: 'x-candidate', value: text }], queryString: [], cookies: [] },
+            response: { status: 200, statusText: 'OK', headers: [], cookies: [],
+                content: { mimeType: 'application/json', text: '{}' } },
+        }] } };
+        return uniqueSorted(pii.detectPii(har)
+            .filter((d) => d.type === 'credit-card')
+            .map((d) => shapes.fingerprint(d.value)));
+    }
+
+    check('5.a the gate and the scrubber agree on every candidate', () => {
+        const disagreements = [];
+        for (const text of texts) {
+            const g = gateFingerprints(text);
+            const s = scrubFingerprints(text);
+            if (g !== s) {
+                // Report the SHAPE of the disagreement, never the text.
+                const count = (x) => x.split('|').filter(Boolean).length;
+                disagreements.push(`len=${text.length} gate=${count(g)} scrub=${count(s)}`);
+            }
+        }
+        assert.strictEqual(disagreements.length, 0,
+            `${disagreements.length}/${texts.length} candidates classified differently by the `
+            + `gate and the scrubber; first: ${disagreements[0]}`);
+    });
+}
+
 if (failures > 0) {
     console.error(`pii-policy-threading: ${failures} case(s) failed`);
     process.exit(1);
 }
-console.log('All pii-policy-threading tests passed (6).');
+console.log('All pii-policy-threading tests passed (9).');

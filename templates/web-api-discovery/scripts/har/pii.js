@@ -78,7 +78,51 @@ const harPolicy = require('./har-policy.js');
 // CORRUPTED, rewriting provider object ids into generated fake card numbers in
 // committed references. A second copy of the predicate here would only drift
 // again, so the predicate is imported and the issuer table is not duplicated.
-const { hasAssignedIin } = require('./har-shapes.js');
+const { hasAssignedIin, LEAK_PATTERNS } = require('./har-shapes.js');
+
+/**
+ * One slot of the gate's own leak table, taken from the gate rather than
+ * copied -- for the card slot, its PATTERN and its fake marker.
+ *
+ * A card predicate has two halves -- the pattern that finds candidates and the
+ * check that validates them -- and unifying only the check leaves the other
+ * half free to drift. It had. `har-shapes.js` carries lookarounds that keep a
+ * digit run which is part of a DECIMAL NUMBER out of the card slot (#292/#293);
+ * this module carried a bare 13-19 digit run between word boundaries, on the
+ * reasoning that an assigned-IIN check makes those lookarounds redundant
+ * because a fractional part begins with digits no issuer owns. That holds only
+ * until the run happens to begin with an assigned IIN at a length that issuer
+ * mints -- thirteen digits starting at `4` will do it -- at which point the
+ * gate passes a price clean and this pass rewrites its integer part into a
+ * fake card number. Corruption, in a case the gate already guarded, and
+ * reachable anywhere `detectInString` scans: headers, cookies, query
+ * parameters, the URL, or a non-JSON body.
+ *
+ * So the pattern is CONSUMED, not re-typed here with the lookarounds added by
+ * hand -- which would only leave a third copy to drift on the next change.
+ *
+ * Sharing the RegExp object is safe: both sides reach it through
+ * `String.prototype.match`, which resets `lastIndex` on a global pattern
+ * before it scans, and neither call site is re-entrant. A missing pattern
+ * throws at load rather than silently disabling card detection, because an
+ * upstream rename must not be able to switch this pass off quietly.
+ */
+function gateSlot(name) {
+    const found = LEAK_PATTERNS.find((p) => p.name === name);
+    if (!found) {
+        throw new Error(`pii.js: har-shapes.js no longer defines a "${name}" pattern`);
+    }
+    return found;
+}
+
+// The whole card slot -- pattern, and the marker that recognises this
+// scrubber's OWN output. Every other detector below skips its fake before
+// reporting (`@example.invalid`, the 555 area code, the 9XX SSN prefix, `ZZ00`,
+// `06:F0:0D`, `192.0.2.`); the card slot did not, so re-scrubbing an already
+// scrubbed capture churned one fake card into a different fake card. The gate
+// has always ignored `4242...` for exactly this reason, and taking the test
+// from it keeps the two from disagreeing about what a fake is either.
+const GATE_CARD = gateSlot('credit-card');
 
 const DEFAULT_PII_POLICY = harPolicy.loadDefaultPolicy();
 
@@ -230,7 +274,8 @@ const RE = {
     // -- the credit-card lesson, applied before it bites rather than after.
     phoneBare:    /^\+?1?\d{10}$/,
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
-    creditDigits: /\b\d{13,19}\b/g,
+    // The GATE's pattern, shared rather than copied -- see `gatePattern`.
+    creditDigits: GATE_CARD.re,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
     // Same treatment, same reason: a maximal run of colon-separated hex groups,
     // with the count deciding.
@@ -468,6 +513,7 @@ function detectInString(str, entryIndex, loc, out, policy) {
     // references as a fake card number over the top of a real object id.
     (str.match(RE.creditDigits) || []).forEach(m => {
         if (!hasAssignedIin(m, policy) || !luhnOk(m)) return;
+        if (GATE_CARD.isFake(m)) return;
         pushDetection(out, 'credit-card', m, { entryIndex, ...loc });
     });
     // iban -- shape AND checksum, which is what licenses a context-free match
