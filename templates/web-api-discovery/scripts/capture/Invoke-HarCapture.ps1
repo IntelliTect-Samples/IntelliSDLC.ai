@@ -276,11 +276,24 @@ Write-Verbose "capture-har.js exited $exit"
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
 # from the incremental log rather than recordHar -- a full capture either way,
 # so it is not a failure. 6 means the recording is fine but a post-process
-# phase is not, which must not be reported as success.
+# phase is not, which must not be reported as success. 7 means every artifact
+# was produced but the leak gate reported advisory findings -- non-zero so no
+# caller reads it as clean, and handled here so the `default` arm below does
+# not tell the operator no catalogue exists when one does.
 switch ($exit) {
     0 { }
     5 { Write-Information 'Recording ended by closing the window; press ENTER next time for a slightly richer HAR.' }
     6 { Write-Warning 'Recorded successfully, but scrub or catalogue failed. The raw capture is intact.' }
+    7 {
+        # 7 is not a failure: everything was produced. The leak gate reported
+        # identity findings that rest on SHAPE alone, which carries no
+        # provenance -- a Luhn-valid digit run is a card, an object id, or
+        # nothing. Withholding the catalogue over that is what this issue
+        # exists to stop, so the run continues and the operator triages the
+        # findings report the recorder just named.
+        Write-Warning ('Recorded and catalogued, but the leak gate reported ADVISORY findings. ' +
+            'Review scrub-findings.json beside the artifact, then waive or correct each one.')
+    }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."
         return
