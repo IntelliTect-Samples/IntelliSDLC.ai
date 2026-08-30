@@ -92,11 +92,12 @@ const LEAK_PATTERNS = [
     {
         // Six hex pairs with a consistent separator. The separator is
         // load-bearing: an unpunctuated 12-hex run is a hex12, not a MAC.
-        // Fakes use the `02:00:00` locally administered prefix.
+        // Fakes use the arbitrary `06:F0:0D` locally administered prefix --
+        // NOT `02:00:00`, which real tools emit.
         name: 'mac-address',
         class: 'identity',
         re: /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}\b/g,
-        isFake: (m) => /^02[:-]00[:-]00[:-]/i.test(m)
+        isFake: (m) => /^06[:-]F0[:-]0D[:-]/i.test(m)
     },
     {
         // Credit-card numbers. Fakes are Luhn-valid too (so we can't use

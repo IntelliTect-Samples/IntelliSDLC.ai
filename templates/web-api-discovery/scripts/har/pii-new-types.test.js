@@ -74,6 +74,15 @@ const IDFA = '6D92078A-8246-4BA4-AE5B-76104861E7DC';
     // Six hex pairs with no separators is just a hex12; that is not a MAC.
     assert.strictEqual(found({ device: '3C22FB8A119C' }, 'mac-address').length, 0,
         '3.c: an unpunctuated hex run was claimed as a MAC address');
+
+    // The fake marker must not be a shape the real world uses. `02:00:00:` --
+    // the first draft's marker -- is the textbook locally-administered address
+    // and is what several virtualisation and sandbox tools actually emit, so
+    // treating it as "already scrubbed" meant a real MAC was never reported at
+    // all. Every other fake in this file is arbitrary (`@example.invalid`,
+    // `4242`, `900-`); this one had picked a real convention.
+    assert.strictEqual(found({ device: '02:00:00:AB:CD:EF' }, 'mac-address').length, 1,
+        '3.d: a real locally-administered MAC was skipped as though it were our own fake');
 }
 
 // --- 4. An advertising id needs its field name. THIS IS THE POINT. ---

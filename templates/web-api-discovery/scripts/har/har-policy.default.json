@@ -103,7 +103,8 @@
     "x-csrftoken",
     "x-asbd-id",
     "x-ig-app-id",
-    "x-instagram-rupload-params"  ],
+    "x-instagram-rupload-params"
+  ],
   "notSecretFields": [],
   "piiFields": {
     "person-name": {
@@ -164,12 +165,16 @@
         "addressline2",
         "streetaddress",
         "streetname",
-        "addressline"
+        "addressline",
+        "addr",
+        "addrline"
       ],
       "tail": [
         "address",
         "street",
-        "addressline"
+        "addressline",
+        "addr",
+        "addrline"
       ],
       "qualifiers": [
         "home",
@@ -208,14 +213,47 @@
       "exact": [
         "city",
         "town",
-        "locality"
+        "locality",
+        "cityname",
+        "townname"
       ],
       "tail": [
         "city",
         "town",
         "locality"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "home",
+        "billing",
+        "shipping",
+        "mailing",
+        "delivery",
+        "residential",
+        "residence",
+        "postal",
+        "work",
+        "business",
+        "current",
+        "birth",
+        "contact",
+        "customer",
+        "client",
+        "member",
+        "account",
+        "owner",
+        "recipient",
+        "sender",
+        "guest",
+        "passenger",
+        "subscriber",
+        "patient",
+        "employee",
+        "street",
+        "pickup",
+        "dropoff",
+        "destination",
+        "origin"
+      ]
     },
     "region": {
       "exact": [
