@@ -1117,12 +1117,13 @@ Immediately after Phase 10.5 (`git init`), the agent **must** prompt:
 > this project and add an `sdlc.ai` git remote? [Y/n]
 
 Default is `Y`. On `Y`, run `Pull-SDLC.ai.ps1` from the project root --
-this adds a remote called `sdlc.ai` pointing at the IntelliSDLC.ai
-repository, merges the upstream `main` into the project's initial
-commit (using `--allow-unrelated-histories` on first sync), and
-materializes `CLAUDE.project.md` and `project.instructions.md` from
-their templates. Populate the identity sections of both files from the
-project name and namespace.
+this adds a remote called `sdlc.ai` pointing at
+`https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git`, merges the
+upstream `main` into the project's initial commit (using
+`--allow-unrelated-histories` on first sync), and materializes
+`CLAUDE.project.md` and `project.instructions.md` from their templates.
+Populate the identity sections of both files from the project name and
+namespace.
 
 On `n`, print the manual-run hint (`git clone ... ; Pull-SDLC.ai.ps1`)
 so the developer can opt in later without re-running the agent.
