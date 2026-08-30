@@ -133,12 +133,46 @@ function listHarFiles(dir) {
     return found.sort();
 }
 
-function checkRequestBodies(entries, report) {
+// The inline marker the consumer-side `Export-HarReference.ps1` appends INSIDE
+// the body text. A structured scan alone is a false negative for every
+// reference that tool produced -- measured on the consuming repo, a scan for
+// `content.truncated` found ZERO across 12 references while this found 27
+// truncated entries across 6 of them.
+//
+// It is also worse than a missing marker: cutting mid-string leaves the payload
+// unparseable, so a consumer calling JSON.parse gets an exception rather than a
+// truncation signal, and a consumer reading it sees plausible JSON that
+// silently lacks everything after the cut.
+//
+// Recognised here until both tools emit the same structured marker (SKILL.md
+// documents the contract). Until then, "no truncated references" would keep
+// meaning "none that THIS tool truncated".
+const INLINE_TRUNCATION_MARKER = /\[\s*(?:response|request)?\s*body truncated[^\]]*\]/i;
+
+function checkTruncation(entries, report) {
     for (const [i, entry] of entries.entries()) {
         const postData = entry.request && entry.request.postData;
-        if (!postData) continue;
-        if (postData.truncated) {
+        if (postData && postData.truncated) {
             report(`entry ${i}: request body is marked truncated -- request bodies are never capped`);
+        }
+
+        // Responses, on exactly the reasoning the request rule already used. A
+        // reference exists to be replayed and diffed; a shortened body looks
+        // authoritative and proves nothing. Extending the same rule here would
+        // have caught all 27 at commit time.
+        const content = entry.response && entry.response.content;
+        if (!content) continue;
+        if (content.truncated) {
+            const { originalBytes, keptBytes } = content.truncated;
+            report(
+                `entry ${i}: response body is truncated ` +
+                `(${keptBytes} of ${originalBytes} bytes kept) -- re-extract without ` +
+                '--max-response-bytes, from the preserved raw capture');
+        } else if (typeof content.text === 'string' && INLINE_TRUNCATION_MARKER.test(content.text)) {
+            report(
+                `entry ${i}: response body carries an INLINE truncation marker -- the payload ` +
+                'is cut mid-string and is no longer valid, and the cut is invisible to a ' +
+                'structured audit. Re-extract from the preserved raw capture');
         }
     }
 }
@@ -218,7 +252,7 @@ function main() {
         }
 
         const entries = (har.log && har.log.entries) || [];
-        checkRequestBodies(entries, report);
+        checkTruncation(entries, report);
         harSecrets.walkForUnredactedSecrets(har, (name, where) => {
             report(`${where}: credential '${name}' is readable in the clear`);
         }, { policy });

@@ -35,7 +35,8 @@
  *                                  <provider>-<action>-<yyyy-MM-dd>.har
  *   --provider --action   name the output; --action names what a HUMAN did
  *                         to record it (login-flow-2fa, video-upload).
- *   --max-response-bytes  default 65536. Requests are never capped.
+ *   --max-response-bytes  OPT-IN. Absent, no response body is truncated.
+ *                         Requests are never capped, with or without it.
  *   --profile             the operator profile (see har-profile.js)
  *
  * Exit codes:
@@ -55,7 +56,6 @@ const { spawnSync } = require('child_process');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 
-const DEFAULT_MAX_RESPONSE_BYTES = 65536;
 // The reference root is the CURRENT DIRECTORY. The cataloguer runs with its cwd
 // set to the capture's output path, which is already the host-named folder, so
 // anchoring on 'docs/har-reference' here appended a second copy of that path
@@ -83,7 +83,7 @@ function usage(msg) {
         '  --match               REQUIRED, repeatable; case-insensitive regex over URL and bodies',
         `  --out                 default: ${REFERENCE_ROOT}/<provider>/<provider>-<action>-<yyyy-MM-dd>.har`,
         '  --provider --action   name the output; --action names what you DID to record it',
-        `  --max-response-bytes  default ${DEFAULT_MAX_RESPONSE_BYTES}; request bodies are never capped`,
+        `  --max-response-bytes  optional; absent, nothing is truncated. Requests are never capped`,
         '  --profile             the operator profile carrying salt and literals',
     ].join('\n'));
     process.exit(2);
@@ -112,6 +112,9 @@ function entryText(entry) {
 }
 
 function capResponses(entries, maxBytes) {
+    // A null cap means no cap. The caller decides; this function does not
+    // invent a bound of its own.
+    if (maxBytes === null || maxBytes === undefined) return;
     for (const entry of entries) {
         const content = entry.response && entry.response.content;
         if (!content || typeof content.text !== 'string') continue;
@@ -204,10 +207,19 @@ function main() {
             `(${all.length} entries scanned). No reference written.`, 3);
     }
 
-    const maxResponseBytes = args['max-response-bytes']
-        ? Number(args['max-response-bytes'])
-        : DEFAULT_MAX_RESPONSE_BYTES;
-    if (!Number.isFinite(maxResponseBytes) || maxResponseBytes <= 0) {
+    // No cap unless one is ASKED FOR. Requirement 7 of #297: scrub by
+    // sensitivity, not by size. A response body is not dangerous because it is
+    // large -- asset and minified-JS bodies carry the reverse-engineerable
+    // protocol constants a reference exists to preserve, and the 65536 default
+    // silently discarded exactly those. One such body was the only
+    // documentation of how photo upload worked, and nothing reported its loss.
+    //
+    // The flag stays for the operator who genuinely wants a bound. It is the
+    // DEFAULT that was wrong, not the capability.
+    const maxResponseBytes = args['max-response-bytes'] === undefined
+        ? null
+        : Number(args['max-response-bytes']);
+    if (maxResponseBytes !== null && (!Number.isFinite(maxResponseBytes) || maxResponseBytes <= 0)) {
         usage('--max-response-bytes must be a positive number');
     }
 
