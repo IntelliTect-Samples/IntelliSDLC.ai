@@ -107,10 +107,15 @@ Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
 ```
 
 **Two directories, and the difference is the safety story.** The raw capture
-carries live session cookies and is confined to the gitignored
-`.har-captures/` **by construction** -- no option redirects it. `-OutputPath`
-(default: the current directory) receives only artifacts that have already
-been scrubbed and verified.
+carries live session cookies and is confined to `.har-captures/` **by
+construction** -- no option redirects it. `-OutputPath` (default: the current
+directory) receives only artifacts that have already been scrubbed and
+verified.
+
+That `.har-captures/` is *gitignored*, though, is a property of the repository,
+not of the name: a directory is only ignored where a `.gitignore` says so. The
+scrub therefore **verifies** it rather than assuming it -- see the substitution
+tables below.
 
 **Both are keyed on the captured site's host**, so two captures never
 overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
@@ -914,6 +919,28 @@ Require every capture-derived probe to:
   directory. Ignoring only the directory is not enough. (The typed-PII store
   `.substitutions.json` is different: it records hash prefixes, not values,
   and is safe to commit.)
+- **The destination is verified, not inferred.** `sanitize-har.js` used to
+  place the tables in a directory *named* `.har-captures` and describe that as
+  gitignored by construction. It was not -- the name matched what a scaffolded
+  consumer's `.gitignore` happens to carry, so the protection held by
+  convention plus location. A capture corpus in a `har-captures/` directory
+  (no leading dot, not a repository) defeated it: the scrub created a nested
+  `.har-captures/` inside the capture tree and wrote both tables there,
+  unprotected and nowhere near `--out`. The scrub now asks git whether the
+  destination is genuinely ignored, **before reading the input or writing
+  anything**, and refuses otherwise, so a rejected run leaves no files behind.
+  The two ways past a refusal:
+  - add `.har-captures/` (or the table filenames) to the repository's
+    `.gitignore` -- what `SCAFFOLD_GITIGNORE_ENTRIES` does for a scaffolded
+    consumer; or
+  - pass `--subs` / `--pii-subs` to name the destination deliberately. An
+    explicit path is never gated, which is how `extract-har-reference.js` and
+    `run-agent.js` write into a temp directory outside any repository.
+
+  Because the check is on the *file path* rather than its directory, a
+  hand-made or relocated capture tree inside a properly scaffolded repo is
+  accepted on its merits -- the scaffold ignores the table filenames at any
+  depth -- while the same tree outside one is refused.
 - A committed reference **must** be gated in CI by `verify-har-reference.js`
   over the directory holding it -- `--dir <host>/`, or wherever the project
   keeps its references -- so it is checked on every PR and not only when it
