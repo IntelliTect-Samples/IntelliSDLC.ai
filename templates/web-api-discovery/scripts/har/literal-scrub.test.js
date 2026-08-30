@@ -18,7 +18,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.js'));
+const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.test-support.js'));
 
 const scriptsDir = __dirname;
 const sanitize = path.join(scriptsDir, 'sanitize-har.js');

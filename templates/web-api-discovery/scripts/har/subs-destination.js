@@ -57,9 +57,20 @@ function nearestExistingDir(p) {
 // A plain git question with a plain git answer -- the same shape as the probes
 // in scripts/lib/repo-workflow-guard.js. `status` is null when git could not
 // be run at all, which is an answer of its own (see UNVERIFIABLE).
+//
+// GIT_DIR and GIT_WORK_TREE are stripped from the environment. Inherited, they
+// point git at a repository other than the one containing `cwd`, so the answer
+// would describe somewhere the file is not about to be written. A question
+// about the wrong repository is worse than no answer, because it is a
+// confident one.
 function git(cwd, args) {
+    const env = Object.assign({}, process.env);
+    delete env.GIT_DIR;
+    delete env.GIT_WORK_TREE;
+    delete env.GIT_INDEX_FILE;
+    delete env.GIT_COMMON_DIR;
     const r = spawnSync('git', args, {
-        cwd, encoding: 'utf8', windowsHide: true,
+        cwd, env, encoding: 'utf8', windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore'],
     });
     if (r.error) return { status: null, stdout: '' };
