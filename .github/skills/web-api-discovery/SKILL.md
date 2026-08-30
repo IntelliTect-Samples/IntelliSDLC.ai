@@ -615,8 +615,17 @@ Two scripts, because the manual version of each shipped a defect (see 5).
 and/or body pattern, scrubs them, and writes the reference. Non-negotiable
 behaviours:
 
-- **Request bodies are NEVER truncated.** Only response bodies are capped,
-  and a capped response records what was dropped.
+- **Request bodies are NEVER truncated**, with or without a flag.
+- **Response bodies are not truncated either, unless you ask.**
+  `--max-response-bytes` is opt-in; absent, no body is cut.
+  The old 64 KB response default was removed because it silently discarded
+  exactly the bodies worth keeping -- a minified JS asset carrying an
+  image-variant spec was the only documentation of how photo upload worked,
+  and nothing reported its loss. Scrub by **sensitivity, not size**: a body is
+  not dangerous because it is large.
+- **If you do cap, the marker is STRUCTURAL.** A capped response records
+  `content.truncated = { originalBytes, keptBytes }` and the kept bytes are a
+  verbatim prefix. **Never write a marker into the payload.**
 - Emits **decoded** `postData.params[]` alongside the scrubbed wire `text`.
   A percent-encoded form body is not greppable; the decoded copy is what
   makes the reference searchable for a field name.
@@ -630,10 +639,31 @@ behaviours:
 - Takes the literal -> sentinel map from the capture-time profile
   (see Phase 3).
 
+> **The truncation marker contract, for any tool that writes a reference.**
+> A cut is recorded **structurally**, as `content.truncated =
+> { originalBytes, keptBytes }`, and the retained text is a verbatim prefix of
+> the original. A marker written *inside* the body is forbidden, and a
+> consumer-side tool emitting one must converge on this.
+>
+> Two reasons, both measured on a real corpus. An inline marker cuts the
+> payload mid-string, so `JSON.parse` fails with "Unterminated string" rather
+> than signalling truncation — and a reader who does not parse sees plausible
+> JSON that silently lacks everything after the cut. And it is invisible to a
+> structured audit: scanning 12 committed references for `content.truncated`
+> found **zero**, while scanning for the inline marker found **27 truncated
+> entries across 6 files**. The tell was a recurring body length of `4046` —
+> 4000 kept plus a 46-character marker.
+>
+> `verify-har-reference.js` fails on both spellings until the second one is
+> gone, so "no truncated references" cannot keep meaning "none that this tool
+> truncated".
+
 **`verify-har-reference.js`** is a gate, runnable over the whole directory
 and in CI. It fails on:
 
-- a truncated request body;
+- a truncated request **or response** body, in either spelling — the structured
+  `content.truncated` marker, or an inline `[... body truncated ...]` string
+  written into the payload;
 - an unredacted credential header, parameter, or multipart field;
 - a secret nested inside a JSON-valued parameter;
 - any caller-supplied forbidden literal;
