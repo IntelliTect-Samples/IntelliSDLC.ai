@@ -7,6 +7,7 @@
 # pii-llm-enrich stub.
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'fixtures/ProtectedFixtureRepo.ps1')
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
     $script:ScriptsDir = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts'
     $script:SanitizeJs = Join-Path $script:ScriptsDir 'har/sanitize-har.js'
@@ -171,7 +172,7 @@ Describe 'sanitize-har.js with PII pipeline' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-sani-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp | Out-Null
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
@@ -244,7 +245,7 @@ Describe 'verify-scrub.js typed-PII pass' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-verify-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp | Out-Null
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
@@ -305,7 +306,7 @@ Describe 'backwards compatibility with PR #37' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("pii-bc-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp | Out-Null
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
