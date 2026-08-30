@@ -157,6 +157,7 @@ function validateDocument(doc, file, vocabulary) {
     for (const list of APPEND_LISTS) {
         if (doc[list] !== undefined) requireStringArray(doc[list], file, list);
     }
+    if (doc.identifierFields !== undefined) validateIdentifierFields(doc.identifierFields, file);
     if (doc.piiFields !== undefined) validatePiiFields(doc.piiFields, file, vocabulary);
     if (doc.cardIssuers !== undefined) validateCardIssuers(doc.cardIssuers, file);
     if (doc.waivers !== undefined) validateWaivers(doc.waivers, file, vocabulary);
@@ -347,6 +348,101 @@ function validateWaiver(waiver, at, file, index, allKinds) {
             || Number.isNaN(Date.parse(`${waiver.expires}T00:00:00Z`)))) {
         throw new PolicyError(`${at}: "expires" must be a YYYY-MM-DD date.`);
     }
+}
+
+/**
+ * `identifierFields` -- names of fields whose CONTENTS are an object id.
+ *
+ * The one legitimate use of the field-name axis against a shape finding. A
+ * shape carries no provenance, but a KEY NAME does: a card-shaped digit run
+ * sitting at `media_id` is a card only in the sense that ~10% of digit runs
+ * are. Measured in the field: 176 residual card findings, every one a false
+ * positive, from 16 provider object ids echoed across a corpus.
+ *
+ * Keying on the NAME rather than the value is the whole point. A per-value
+ * waiver has to be rewritten every time the provider rotates an id; a field
+ * name is stable, so declaring it once is a configuration rather than a chore.
+ *
+ * This is emphatically NOT "the value looks safe, so it is safe" -- that
+ * inversion is the bug this subsystem has now shipped four times. It is
+ * "this field is documented to hold an id", which is a claim about
+ * provenance that a human wrote down and a reviewer can read in a diff.
+ *
+ * An entry is either `/pattern/flags` -- a regular expression over the field
+ * name -- or a literal name, matched case-insensitively and whole. The
+ * upstream default carries generic patterns only; a specific provider's field
+ * name is a consumer concept and belongs in `.har-policy.project.json`.
+ */
+const IDENTIFIER_REGEX_RE = /^\/(.*)\/([A-Za-z]*)$/;
+
+function compileIdentifierField(entry, file, index) {
+    const at = `${file}: identifierFields[${index}]`;
+    const asRegex = IDENTIFIER_REGEX_RE.exec(entry);
+    if (!asRegex) {
+        if (entry.trim() === '') {
+            throw new PolicyError(`${at}: an empty identifier field name matches nothing.`);
+        }
+        return { name: entry.toLowerCase(), source: entry };
+    }
+    const [, body, flags] = asRegex;
+    // `g` and `y` make `RegExp.test` STATEFUL: it resumes from `lastIndex`, so
+    // the same pattern would match on one call and not the next. A policy that
+    // loads and then behaves differently on alternate findings is worse than
+    // one that refuses to load.
+    if (/[gy]/.test(flags)) {
+        throw new PolicyError(
+            `${at}: the "${flags}" flags are not allowed -- "g" and "y" make the match stateful, ` +
+            `so the same field name would match only every other time.`);
+    }
+    try {
+        return { re: new RegExp(body, flags), source: entry };
+    } catch (e) {
+        throw new PolicyError(`${at}: ${JSON.stringify(entry)} is not a valid regular expression -- ${e.message}`);
+    }
+}
+
+/**
+ * Compile at LOAD time, not at match time.
+ *
+ * A pattern that cannot compile must fail the load. Deferring it to the first
+ * match means an unparseable rule reads as "matched nothing", and a policy
+ * that loads without meaning what its author wrote is the silent failure this
+ * loader exists to refuse -- the author reads the file back and believes the
+ * rule is in force.
+ */
+function validateIdentifierFields(entries, file) {
+    entries.forEach((entry, index) => compileIdentifierField(entry, file, index));
+}
+
+// Compiled matchers for a merged policy. The policy is frozen, so the cache
+// hangs beside it rather than on it.
+const IDENTIFIER_MATCHERS = new WeakMap();
+
+function identifierMatchers(policy) {
+    let matchers = IDENTIFIER_MATCHERS.get(policy);
+    if (!matchers) {
+        matchers = (policy.identifierFields || [])
+            .map((entry, index) => compileIdentifierField(entry, policy.path || policy.defaultPath || 'policy', index));
+        IDENTIFIER_MATCHERS.set(policy, matchers);
+    }
+    return matchers;
+}
+
+/**
+ * True when `key` names a field the policy declares to hold an object id.
+ *
+ * `key` is a single field name -- the field that DIRECTLY holds the value, not
+ * a path. An ancestor is not evidence: `ids[0].card_number` holds a card
+ * number, and matching any segment of the path would silence it because a
+ * container happens to be an id collection.
+ */
+function isIdentifierField(policy, key) {
+    if (!policy || typeof key !== 'string' || key === '') return false;
+    const lowered = key.toLowerCase();
+    for (const matcher of identifierMatchers(policy)) {
+        if (matcher.re ? matcher.re.test(key) : matcher.name === lowered) return true;
+    }
+    return false;
 }
 
 /** Append `additions` to `base`, preserving order and dropping repeats. */
@@ -580,4 +676,5 @@ module.exports = {
     PolicyError,
     loadPolicy,
     isWaived,
+    isIdentifierField,
 };

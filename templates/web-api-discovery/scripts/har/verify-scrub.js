@@ -45,23 +45,11 @@ const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 
-// Does a finding fail the run?
-//
-//   gate     yes -- the whole point.
-//   advise   yes, FOR NOW. The design's end state is "reports, non-zero exit,
-//            artifact kept": it is the ARTIFACT that survives an advisory
-//            finding, not the exit code. Stage 7 splits the code and adds the
-//            quarantine; until then advisory findings keep failing exactly as
-//            they do today, so this stage cannot turn a real leaked card into
-//            a pass.
-//   off      no -- the project disabled the class. Reported as a warning so
-//            the cost of the loosening stays visible.
-//   waived   no -- a waiver that did not stop the failure would be decoration.
-function blocks(leak) {
-    if (leak.waived) return false;
-    if (leak.setting === 'off') return false;
-    return true;
-}
+// Does a finding fail the run? One definition, in har-shapes.js, so the gate
+// on the committed reference cannot drift away from the gate on the
+// intermediate it came from. See `blocksLeak` there for what each setting
+// means and why an identifier-shaped finding is reported rather than dropped.
+const blocks = harShapes.blocksLeak;
 
 function parseArgs(argv) {
     const out = {};

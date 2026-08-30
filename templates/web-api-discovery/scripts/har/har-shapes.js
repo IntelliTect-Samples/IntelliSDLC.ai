@@ -307,6 +307,7 @@ function describeLeak(leak) {
     if (leak.class) {
         let why = '';
         if (leak.waived) why = ' waived';
+        else if (leak.identifierField) why = ' identifier-shaped';
         else if (leak.setting === 'off') why = ' class disabled';
         else if (leak.gating === false) why = ' advisory';
         parts.push(`[${leak.class}${why}]`);
@@ -384,6 +385,219 @@ function walkJsonStrings(value, base, emit, depth) {
 }
 
 /**
+ * Budgets for the structural walk over a body's SOURCE TEXT.
+ *
+ * The walk runs over multi-hundred-megabyte bodies in the field, so every
+ * dimension that can grow without bound has a ceiling. Exceeding one costs
+ * PRECISION and never COVERAGE: the raw-text pass runs regardless, so an
+ * over-budget body still gates, it just reports at the body node instead of at
+ * a key path -- which is exactly today's behaviour.
+ */
+const STRUCTURAL_LIMITS = Object.freeze({
+    // Above this the structural walk is skipped outright. A single linear pass
+    // is cheap per character, but "cheap per character" is not a bound.
+    maxChars: 32 * 1024 * 1024,
+    // Scalars emitted. A body can be small and still describe a million leaves.
+    maxNodes: 500000,
+    // Nesting. Also what keeps a recursive descent off the JS stack limit: a
+    // 20k-deep array of arrays is a two-line body and a stack overflow.
+    maxDepth: 60,
+    // How many times a JSON document may be found serialised inside a JSON
+    // string. Providers ship one such layer routinely; three is generous.
+    maxNestedDocs: 3,
+    // Shortest value any pattern can match (an email, `a@b.co`). Below it the
+    // patterns cannot fire, so running eight regexes over the scalar is pure
+    // cost -- and most leaves in a real payload are shorter than this.
+    minScalarChars: 6,
+    // How far in to look for the opening brace of a body behind an
+    // anti-hijacking prefix (`for (;;);`, `)]}'`).
+    prefixScanChars: 16,
+    // Structural key paths remembered per distinct value. A value echoed a
+    // thousand times must not cost a thousand strings; past the cap the extra
+    // occurrences report at the body node, which is where they used to report.
+    maxPathsPerValue: 64,
+});
+
+const LITERAL_END = new Set([',', '}', ']', ' ', '\t', '\n', '\r']);
+const LITERAL_RE = /^(-?(0|[1-9]\d*)(\.\d+)?([eE][-+]?\d+)?|true|false|null)$/;
+
+/** Thrown when a budget is exhausted; caught with the syntax errors. */
+class ScanBudgetError extends Error {}
+
+/**
+ * Walk a JSON document as SOURCE TEXT, emitting `(keyPath, scalarText)`.
+ *
+ * Not `JSON.parse`. The parser is not a faithful copy of the wire: an integer
+ * past 2^53 comes back rounded, which is every provider object id above 16
+ * digits -- and those ids are precisely the values being located. Reading them
+ * through the parser meant the walk had to skip them (a rounded value's
+ * fingerprint matches no bytes in the file), so they never got a key path, and
+ * 135 of 176 field findings reported only `response.content.text`. A scan over
+ * the source text emits the digits that are actually there.
+ *
+ * It also never materialises the document, which is what makes a
+ * hundred-megabyte body a linear scan rather than a heap allocation.
+ *
+ * Returns true when the document was consumed end to end.
+ */
+function scanJsonSource(text, start, base, emit, budget, nestDepth) {
+    let i = start;
+    const n = text.length;
+
+    const fail = () => { throw new SyntaxError('not json'); };
+
+    function ws() {
+        while (i < n) {
+            const c = text.charCodeAt(i);
+            if (c === 32 || c === 9 || c === 10 || c === 13) i++; else break;
+        }
+    }
+
+    function readString() {
+        const from = i;
+        i++;
+        while (i < n) {
+            const c = text.charCodeAt(i);
+            if (c === 92) { i += 2; continue; }          // escape: skip the pair
+            if (c === 34) {
+                i++;
+                try { return JSON.parse(text.slice(from, i)); } catch { return fail(); }
+            }
+            if (c < 0x20) fail();                         // control char: not a JSON string
+            i++;
+        }
+        return fail();
+    }
+
+    function emitScalar(keyPath, value) {
+        if (++budget.nodes > STRUCTURAL_LIMITS.maxNodes) throw new ScanBudgetError('nodes');
+        emit(keyPath, value);
+    }
+
+    // A string that is itself a JSON document is walked as one, so a
+    // double-encoded payload names its own fields instead of reporting the
+    // blob that carries it. The nested walk must succeed COMPLETELY before its
+    // paths are believed -- a half-parsed guess would attach confident key
+    // paths to a string that merely starts with a brace.
+    function emitStringValue(keyPath, value) {
+        if (nestDepth < STRUCTURAL_LIMITS.maxNestedDocs
+            && value.length <= STRUCTURAL_LIMITS.maxChars
+            && /^\s*[[{]/.test(value)) {
+            const buffered = [];
+            const nested = scanJsonSource(value, 0, keyPath, (p, v) => buffered.push([p, v]),
+                budget, nestDepth + 1);
+            if (nested) {
+                for (const [p, v] of buffered) emit(p, v);
+                return;
+            }
+        }
+        emitScalar(keyPath, value);
+    }
+
+    function value(keyPath, depth) {
+        if (depth > STRUCTURAL_LIMITS.maxDepth) throw new ScanBudgetError('depth');
+        ws();
+        if (i >= n) fail();
+        const c = text[i];
+        if (c === '{') return object(keyPath, depth);
+        if (c === '[') return array(keyPath, depth);
+        if (c === '"') return emitStringValue(keyPath, readString());
+        const from = i;
+        while (i < n && !LITERAL_END.has(text[i])) i++;
+        const raw = text.slice(from, i);
+        // A number is emitted as the DIGITS THAT ARE THERE, not as a reparsed
+        // double -- see the header. `true`/`false`/`null` come through as
+        // themselves and match nothing, which is correct and costs nothing.
+        if (!LITERAL_RE.test(raw)) fail();
+        return emitScalar(keyPath, raw);
+    }
+
+    function object(keyPath, depth) {
+        i++;
+        ws();
+        if (text[i] === '}') { i++; return; }
+        for (;;) {
+            ws();
+            if (text[i] !== '"') fail();
+            const key = readString();
+            ws();
+            if (text[i] !== ':') fail();
+            i++;
+            value(`${keyPath}.${key}`, depth + 1);
+            ws();
+            if (text[i] === ',') { i++; continue; }
+            if (text[i] === '}') { i++; return; }
+            fail();
+        }
+    }
+
+    function array(keyPath, depth) {
+        i++;
+        ws();
+        if (text[i] === ']') { i++; return; }
+        for (let index = 0; ; index++) {
+            value(`${keyPath}[${index}]`, depth + 1);
+            ws();
+            if (text[i] === ',') { i++; continue; }
+            if (text[i] === ']') { i++; return; }
+            fail();
+        }
+    }
+
+    try {
+        value(base, 0);
+        ws();
+        return i >= n;
+    } catch {
+        // Malformed, truncated, or over budget. Whatever was emitted before
+        // this point came from well-formed input, so the caller keeps it: HAR
+        // bodies are truncated in the field, and the paths resolved before the
+        // cut are the ones an operator would otherwise have to find by hand.
+        return false;
+    }
+}
+
+/**
+ * Walk `text` as a JSON body if it is one, emitting `(keyPath, scalarText)`.
+ *
+ * Returns true when a structural walk ran at all -- which is not the same as
+ * having parsed cleanly. A caller uses this only for PRECISION; the raw-text
+ * pass is what decides whether anything is reported.
+ */
+function walkJsonBody(text, base, emit) {
+    if (typeof text !== 'string' || text.length === 0) return false;
+    if (text.length > STRUCTURAL_LIMITS.maxChars) return false;
+
+    let start = 0;
+    while (start < text.length && ' \t\n\r'.includes(text[start])) start++;
+    if (start >= text.length) return false;
+
+    const budget = { nodes: 0 };
+    if (text[start] === '{' || text[start] === '[') {
+        scanJsonSource(text, start, base, emit, budget, 0);
+        return true;
+    }
+
+    // A body behind an anti-hijacking prefix -- `for (;;);`, `)]}'`, `while(1);`
+    // -- is ordinary armour on a JSON API and is not JSON at offset zero, so a
+    // walk anchored there resolves nothing for every response the provider
+    // sends. Starting further in is a GUESS, though, so unlike the anchored
+    // case it must parse end to end before its paths are believed: applied to
+    // prose or markup that merely contains a brace, a partial parse would
+    // attach confident-looking key paths to nothing.
+    const guess = text.indexOf('{', start) >= 0 && text.indexOf('{', start) < STRUCTURAL_LIMITS.prefixScanChars
+        ? text.indexOf('{', start)
+        : (text.indexOf('[', start) >= 0 && text.indexOf('[', start) < STRUCTURAL_LIMITS.prefixScanChars
+            ? text.indexOf('[', start) : -1);
+    if (guess < 0) return false;
+
+    const buffered = [];
+    if (!scanJsonSource(text, guess, base, (p, v) => buffered.push([p, v]), budget, 0)) return false;
+    for (const [p, v] of buffered) emit(p, v);
+    return true;
+}
+
+/**
  * Scan one string, structurally where it can be and as text where it cannot.
  *
  * A body that parses as JSON is walked so every finding carries a real key
@@ -409,19 +623,24 @@ function scanString(text, keyPath, policy, push) {
 
     // 1. Structural, for location. Records the key path of the first leaf
     //    carrying each value; pushes nothing yet.
+    //
+    //    Every path is recorded, not merely the first. The same value at two
+    //    different keys is two occurrences and the two keys may not agree:
+    //    `{"media_id": X, "billing": {"card_number": X}}` is downgraded by the
+    //    first and must not be by the second, and keeping only the first key
+    //    would decide the whole finding on whichever the serialiser happened
+    //    to write earlier. The list is capped, because a value echoed a
+    //    thousand times must not cost a thousand strings.
     const pathFor = new Map();
-    if (/^\s*[[{]/.test(text)) {
-        try {
-            walkJsonStrings(JSON.parse(text), keyPath, (p, s) => {
-                for (const l of findLeaks(s, policy)) {
-                    const key = `${l.kind}:${l.fingerprint}`;
-                    if (!pathFor.has(key)) pathFor.set(key, { at: p, leak: l });
-                }
-            }, 0);
-        } catch {
-            // Not JSON after all -- the raw pass below is the whole scan.
+    walkJsonBody(text, keyPath, (p, s) => {
+        if (s.length < STRUCTURAL_LIMITS.minScalarChars) return;
+        for (const l of findLeaks(s, policy)) {
+            const key = `${l.kind}:${l.fingerprint}`;
+            const found = pathFor.get(key);
+            if (!found) { pathFor.set(key, { paths: [p], leak: l }); continue; }
+            if (found.paths.length < STRUCTURAL_LIMITS.maxPathsPerValue) found.paths.push(p);
         }
-    }
+    });
 
     // 2. The RAW TEXT, always -- never gated on whether the structural pass
     //    ran. Reading a body only through `JSON.parse` trusts the parser to be
@@ -431,19 +650,28 @@ function scanString(text, keyPath, policy, push) {
     //    and numeric precision are all invisible to a regex over the original
     //    bytes, which is why the sweep this replaced saw these and why it
     //    still runs. Every match here is one occurrence.
+    //
+    //    The structural pass walks the same bytes left to right, so its k-th
+    //    sighting of a value is the k-th occurrence here; the paths are handed
+    //    out in that order. Past the end of the list -- or with no structural
+    //    pass at all -- the occurrence falls back to the body node, which is
+    //    what this reported for every finding before key paths existed.
     const rawSeen = new Set();
+    const taken = new Map();
     for (const l of findLeaks(text, policy)) {
         const key = `${l.kind}:${l.fingerprint}`;
         rawSeen.add(key);
         const located = pathFor.get(key);
-        push(l, located ? located.at : keyPath, null);
+        const nth = taken.get(key) || 0;
+        taken.set(key, nth + 1);
+        push(l, located && nth < located.paths.length ? located.paths[nth] : keyPath, null);
     }
 
     // 3. Anything the structural pass found that the raw bytes did not -- a
     //    value spelled with JSON escapes, say, which is one occurrence the
     //    regex over the source text cannot match.
-    for (const [key, { at, leak }] of pathFor) {
-        if (!rawSeen.has(key)) push(leak, at, null);
+    for (const [key, { paths, leak }] of pathFor) {
+        if (!rawSeen.has(key)) for (const at of paths) push(leak, at, null);
     }
 
     // 4. The percent-decoded view. A secret inside `variables=<encoded JSON>`
@@ -465,6 +693,70 @@ function scanString(text, keyPath, policy, push) {
 }
 
 /**
+ * The field name that DIRECTLY holds a value, from its key path.
+ *
+ * Array subscripts are stripped, so `media_ids[4]` is held by `media_ids` --
+ * an element has no key of its own and the field holding it is the array.
+ * Returns null when the path names no field.
+ */
+function enclosingFieldName(keyPath) {
+    if (typeof keyPath !== 'string' || keyPath === '') return null;
+    const withoutIndices = keyPath.replace(/(\[\d+\])+$/, '');
+    const dot = withoutIndices.lastIndexOf('.');
+    const name = dot === -1 ? withoutIndices : withoutIndices.slice(dot + 1);
+    return name === '' ? null : name;
+}
+
+/**
+ * Is this finding an identity value sitting in a field declared to hold ids?
+ *
+ * THE SCOPE OF THIS IS THE WHOLE POINT, so it is stated once, here, rather
+ * than left to each caller:
+ *
+ *   * IDENTITY class only. A card-shaped digit run at `media_id` is a card in
+ *     the same sense that ~10% of all digit runs are.
+ *   * SECRET class never. A high-entropy token under a field called
+ *     `session_id` is a session token, and suppressing it because the key ends
+ *     in `_id` would be a false negative of exactly the kind this gate exists
+ *     to prevent. Entropy is evidence of secret-ness; a field name does not
+ *     argue it away.
+ *   * A RESOLVED key path only. A percent-decoded finding has no structural
+ *     path; reading the enclosing HAR node's name instead would downgrade on
+ *     no evidence at all.
+ */
+function isIdentifierShaped(leak, keyPath, policy) {
+    if (!policy || leak.class !== 'identity') return false;
+    const field = enclosingFieldName(keyPath);
+    return field !== null && harPolicy.isIdentifierField(policy, field);
+}
+
+/**
+ * Does a finding FAIL the run?
+ *
+ * One definition, because both verifiers ask the question and two copies of it
+ * is how the gate on the committed reference ends up weaker than the gate on
+ * the intermediate it came from.
+ *
+ *   gate       yes -- the whole point.
+ *   advise     yes, FOR NOW; the design's end state pairs a non-zero exit with
+ *              a surviving artifact, and the quarantine that makes that safe
+ *              has not landed.
+ *   off        no -- the project disabled the class.
+ *   waived     no -- a waiver that did not stop the failure would be decoration.
+ *   identifier no -- the field is declared to hold ids. Identity class only.
+ *
+ * None of these REMOVE the finding. A loosening that made findings disappear
+ * would be an invisible one, and invisible loosenings are how this gate lost
+ * its authority in the first place.
+ */
+function blocksLeak(leak) {
+    if (leak.waived) return false;
+    if (leak.setting === 'off') return false;
+    if (leak.identifierField) return false;
+    return true;
+}
+
+/**
  * Find leaks in a PARSED HAR, with a location on every finding.
  *
  * Returns one finding per (kind, fingerprint) -- 1413 identical findings is
@@ -481,9 +773,31 @@ function findLeaksInHar(har, policy) {
         if (!entry || typeof entry !== 'object') return;
         const push = (leak, keyPath, enclosing) => {
             const key = `${leak.kind}:${leak.fingerprint}`;
+            const identifierField = isIdentifierShaped(leak, keyPath, policy);
             const existing = grouped.get(key);
-            if (existing) { existing.count++; return; }
-            grouped.set(key, Object.assign({}, leak, { entryIndex, keyPath, enclosing, count: 1 }));
+            if (existing) {
+                existing.count++;
+                // One occurrence at an id field does not make the VALUE an id.
+                // The same digits echoed at `card_number` are evidence the
+                // field-name downgrade was wrong, so the finding is promoted
+                // back and re-located to the occurrence that earned it.
+                if (existing.identifierField && !identifierField) {
+                    existing.identifierField = false;
+                    existing.gating = !existing.waived && existing.setting === 'gate';
+                    existing.entryIndex = entryIndex;
+                    existing.keyPath = keyPath;
+                    existing.enclosing = enclosing;
+                }
+                return;
+            }
+            grouped.set(key, Object.assign({}, leak, {
+                entryIndex,
+                keyPath,
+                enclosing,
+                identifierField,
+                gating: leak.gating && !identifierField,
+                count: 1,
+            }));
         };
         collectEntryStrings(entry, (keyPath, text) => scanString(text, keyPath, policy, push));
     });
@@ -493,7 +807,11 @@ function findLeaksInHar(har, policy) {
 
 module.exports = {
     LEAK_PATTERNS,
+    STRUCTURAL_LIMITS,
     findLeaksInHar,
+    blocksLeak,
+    walkJsonBody,
+    enclosingFieldName,
     settingFor,
     findLeaks,
     findLeaksDeep,
