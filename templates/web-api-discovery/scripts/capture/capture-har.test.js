@@ -950,15 +950,21 @@ test('a default run still says which artifacts it produced', () => {
 
 test('a leak-gate rejection is never levelled away', () => {
     // The one report that must reach an operator who never types -Verbose:
-    // a scrub the gate refused, and the reason.
+    // a scrub the gate refused, the reason, and -- since #297 Stage 7 -- where
+    // the refused artifact was put, because it is no longer thrown away.
     const text = capture.renderLines(capture.postProcessLines(fakeSession({
         postProcess: {
-            scrubbed: { path: null, removed: true, verified: false },
+            scrubbed: {
+                path: null, verified: false, rejected: true,
+                quarantined: '/tmp/caps/2026-01-01-120000/scrubbed.rejected.har'
+            },
             errors: ['verify-scrub: bearer token survived the scrub']
         }
     })), 'normal');
     assert.match(text, /REJECTED/);
     assert.match(text, /bearer token survived/);
+    assert.match(text, /scrubbed\.rejected\.har/,
+        'a rejection that does not say where the artifact went leaves nothing to triage');
 });
 
 // ---------------------------------------------------------------------------

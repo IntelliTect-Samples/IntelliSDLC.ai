@@ -46,7 +46,12 @@
  * The raw capture carries live session cookies. It always lands in the fixed,
  * gitignored `.har-captures/` and no option can redirect it. `--output-path`
  * receives only what has already been scrubbed and verified, so the guard is
- * structural rather than a check somebody has to remember to run.
+ * structural rather than a check somebody has to remember to run. The scrub
+ * therefore writes its candidate into the session directory and it is COPIED
+ * out only once the gate has passed on it: a file the gate has not judged
+ * never exists in a committable directory, and a scrub the gate refuses is
+ * renamed to `scrubbed.rejected.har` where it stands, never deleted. One false
+ * positive used to destroy the whole capture (#297).
  *
  * ## Phases
  *
@@ -95,6 +100,9 @@
  *   4 -- the capture produced no usable recording
  *   5 -- raw.har was assembled from the incremental log rather than recordHar
  *   6 -- recorded successfully, but scrub or catalogue failed
+ *   7 -- recorded, scrubbed and catalogued, but the leak gate reported
+ *        ADVISORY findings (identity evidence by shape). Every artifact is
+ *        where it should be; the findings need a human verdict.
  */
 
 'use strict';
@@ -121,6 +129,14 @@ const CURRENT_FILE = 'current.json';
 const RAW_HAR = 'raw.har';
 const RECORD_LOG = 'raw.ndjson';
 const SCRUBBED_HAR = 'scrubbed.har';
+// Where a scrub the leak gate refused goes. Under the session directory, which
+// is gitignored, so triage is possible without the committable output path
+// ever holding a file that is known to be leaking.
+const REJECTED_HAR = 'scrubbed.rejected.har';
+const FINDINGS_FILE = 'scrub-findings.json';
+// verify-scrub.js exit 4: identity findings by SHAPE and nothing worse. The
+// artifact is verified enough to proceed. Any other non-zero blocks.
+const VERIFY_ADVISORY_EXIT = 4;
 const DIGEST_FILE = 'digest.json';
 const CATALOGUE_FILE = 'catalogue.json';
 const POLL_MS = 200;
@@ -989,6 +1005,12 @@ function runNode(script, argv, cwd) {
  * The mechanical phases, run in this process on every ending that is not a
  * cancel. Recording success dominates: a scrub failure is reported and exits
  * 6, but it never reports a good capture as lost, and the raw is always kept.
+ *
+ * Three verdicts, not two. Clean promotes; ADVISORY (identity evidence by
+ * shape) also promotes, with the findings surfaced as a warning and exit 7;
+ * anything else quarantines the candidate and stops before the digest. The
+ * middle verdict is the whole point of #297 -- a false positive should cost a
+ * review step, not the capture.
  */
 function postProcess(session, opts = {}) {
     // The runner is injectable so a test can exercise the "sanitized, but the
@@ -997,22 +1019,41 @@ function postProcess(session, opts = {}) {
     // this function's decision, not sanitize-har.js's pattern list.
     const run = opts.run || runNode;
     const harDir = path.join(__dirname, '..', 'har');
-    const state = { startedUtc: new Date().toISOString(), errors: [] };
-    fs.mkdirSync(session.outputPath, { recursive: true });
+    const state = { startedUtc: new Date().toISOString(), errors: [], warnings: [] };
 
     // Phase A -- scrub, then verify. Both reused, never reimplemented.
-    const scrubbed = path.join(session.outputPath, SCRUBBED_HAR);
+    //
+    // The candidate is written INSIDE the session directory and only promoted
+    // to the output path once the gate has passed on it. That ordering is what
+    // makes "the output path receives only verified artifacts" true by
+    // construction rather than by cleanup: there is no window in which a file
+    // the gate has not yet judged sits in a committable directory, and a
+    // re-capture whose scrub is rejected cannot have already overwritten the
+    // verified artifact a previous run left there.
+    const candidate = path.join(session.sessionDir, SCRUBBED_HAR);
+    fs.mkdirSync(session.sessionDir, { recursive: true });
     const sanitize = run(path.join(harDir, 'sanitize-har.js'),
-        ['--in', session.harPath, '--out', scrubbed]);
+        ['--in', session.harPath, '--out', candidate]);
     if (!sanitize.ok) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
-        state.scrubbed = { path: null, verified: false };
+        state.scrubbed = { path: null, verified: false, advisory: false };
     } else {
-        const verify = run(path.join(harDir, 'verify-scrub.js'), ['--in', scrubbed]);
-        state.scrubbed = { path: scrubbed, verified: verify.ok };
-        if (!verify.ok) {
-            state.errors.push(`verify-scrub: ${verify.stderr.trim() || `exit ${verify.status}`}`);
-        }
+        const verify = run(path.join(harDir, 'verify-scrub.js'), ['--in', candidate]);
+        // Exit 4 is not a rejection. It says the only findings are identity
+        // evidence by SHAPE, which carries no provenance -- a Luhn-valid
+        // 16-digit run is a card, a trip id, or ~10% of digit runs by chance.
+        // Withholding the capture over that is what cost 1413 trip ids their
+        // reference; the artifact is kept and the findings are surfaced, so a
+        // false positive costs a review step instead of the capture.
+        const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
+        state.scrubbed = { path: candidate, verified: verify.ok, advisory };
+        // verify-scrub.js already names itself in what it prints, so a second
+        // prefix would read as two tools reporting the same thing.
+        const spoke = verify.stderr.trim();
+        const said = spoke.startsWith('verify-scrub')
+            ? spoke : `verify-scrub: ${spoke || `exit ${verify.status}`}`;
+        if (advisory) state.warnings.push(said);
+        else if (!verify.ok) state.errors.push(said);
     }
 
     // Phase B input -- the digest an AI segments from.
@@ -1035,18 +1076,39 @@ function postProcess(session, opts = {}) {
     //
     // Reporting a digest built from an unverified capture is worse than
     // reporting none: it looks safe.
-    if (!state.scrubbed || !state.scrubbed.verified) {
-        // And take the scrubbed file with us. sanitize-har.js writes it before
-        // verify-scrub.js gets to judge it, so a rejected scrub leaves a file
-        // in the committable directory that is known to be leaking and named
-        // as though it were safe. The raw capture is kept -- it is the only
-        // copy of the recording -- but it lives in the gitignored tree where a
-        // credential-bearing file belongs.
-        if (state.scrubbed && state.scrubbed.path) {
-            try { fs.unlinkSync(state.scrubbed.path); } catch (e) { /* never written */ }
-            state.scrubbed.path = null;
-            state.scrubbed.removed = true;
+    if (!state.scrubbed || !(state.scrubbed.verified || state.scrubbed.advisory)) {
+        // Quarantine, not deletion. The old code UNLINKED the scrubbed file
+        // here, so one false positive destroyed the whole capture -- no
+        // artifact, no digest, no catalogue, and a missing file to explain it.
+        // The reasoning was right and is kept: a file the gate refused must not
+        // sit where `git add -A` will take it. What changes is that the
+        // invariant is now preserved by WHERE the file goes.
+        quarantineRejectedScrub(session, state);
+        state.completedUtc = new Date().toISOString();
+        return state;
+    }
+    // Verified (or advisory-only): promote the candidate to the output path.
+    // A COPY, because nothing under .har-captures/ is ever taken away -- the
+    // session keeps the complete record of what it produced.
+    try {
+        fs.mkdirSync(session.outputPath, { recursive: true });
+        const published = path.join(session.outputPath, SCRUBBED_HAR);
+        fs.copyFileSync(state.scrubbed.path, published);
+        state.scrubbed.path = published;
+        // A findings report describes ONE run. Left behind by a re-capture
+        // that came back clean it would still read as current, which is the
+        // same disease as a digest built from an unverified capture: it looks
+        // like information. The output path is the committable tree, not the
+        // archive -- the session directory keeps every report ever written.
+        const publishedReport = path.join(session.outputPath, FINDINGS_FILE);
+        const freshReport = path.join(session.sessionDir, FINDINGS_FILE);
+        if (!fs.existsSync(freshReport) && fs.existsSync(publishedReport)) {
+            try { fs.unlinkSync(publishedReport); } catch { /* leave it */ }
         }
+        state.scrubbed.findings = copyIfPresent(freshReport, publishedReport);
+    } catch (e) {
+        state.errors.push(`publish: ${e.message}`);
+        state.scrubbed.path = null;
         state.completedUtc = new Date().toISOString();
         return state;
     }
@@ -1080,6 +1142,69 @@ function postProcess(session, opts = {}) {
 
     state.completedUtc = new Date().toISOString();
     return state;
+}
+
+/**
+ * A name in `dir` that is not taken yet: `base.ext`, then `base.2.ext`, ...
+ *
+ * Nothing under `.har-captures/` is ever deleted or overwritten, and a second
+ * rejection in a session that already holds one is exactly where a careless
+ * implementation would overwrite the first -- which is the evidence the
+ * operator is still triaging.
+ */
+function freeName(dir, base, ext) {
+    let candidate = path.join(dir, `${base}${ext}`);
+    for (let n = 2; fs.existsSync(candidate); n++) {
+        candidate = path.join(dir, `${base}.${n}${ext}`);
+    }
+    return candidate;
+}
+
+function copyIfPresent(from, to) {
+    if (!fs.existsSync(from)) return null;
+    try {
+        fs.copyFileSync(from, to);
+        return to;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Move a scrub the leak gate refused out of the way, keeping every byte.
+ *
+ * The candidate already lives in the session directory, so this is a rename
+ * within one volume: it cannot half-succeed, and it cannot leave the artifact
+ * in a committable directory. The findings report verify-scrub.js wrote beside
+ * it moves with it under a matching name, because a report separated from the
+ * artifact it describes is a report nobody can act on.
+ */
+function quarantineRejectedScrub(session, state) {
+    if (!state.scrubbed || !state.scrubbed.path) return;
+    const source = state.scrubbed.path;
+    state.scrubbed.path = null;
+    if (!fs.existsSync(source)) return;
+
+    const dest = freeName(session.sessionDir, 'scrubbed.rejected', '.har');
+    // The suffix that made the artifact's name unique, so the report keeps the
+    // same one and the pair stays legible in a directory listing.
+    const suffix = path.basename(dest).slice('scrubbed.rejected'.length, -'.har'.length);
+    try {
+        fs.renameSync(source, dest);
+    } catch (e) {
+        state.errors.push(`quarantine: ${e.message}`);
+        return;
+    }
+    state.scrubbed.quarantined = dest;
+    state.scrubbed.rejected = true;
+
+    const report = path.join(session.sessionDir, FINDINGS_FILE);
+    if (fs.existsSync(report) && suffix) {
+        const moved = path.join(session.sessionDir, `scrub-findings${suffix}.json`);
+        try { fs.renameSync(report, moved); state.scrubbed.findings = moved; } catch { /* keep */ }
+    } else if (fs.existsSync(report)) {
+        state.scrubbed.findings = report;
+    }
 }
 
 function runCatalogue(session, digestPath, cataloguePath, state) {
@@ -1175,14 +1300,66 @@ function startBannerLines(session) {
  * quiet about it would read as "no scrub was attempted" -- a different and far
  * less alarming story than "one was attempted and the leak gate refused it".
  */
+/**
+ * Render the findings report for the console: one triageable line each.
+ *
+ * "credit-card, 1413 occurrences" with no location is the report that taught
+ * operators to ignore this gate. A kind, a class, an entry index, a key path,
+ * a count and a fingerprint is one pass of triage instead -- and the escape is
+ * named, because a warning nobody can act on is a warning nobody reads.
+ *
+ * The report holds no values (verify-scrub.js writes it that way), so nothing
+ * here can print one. Everything below is a name, a location or a hash.
+ */
+function findingSummaryLines(reportPath) {
+    const doc = readJson(reportPath);
+    if (!doc || !Array.isArray(doc.findings)) return [];
+    const shown = doc.findings.filter((f) => f.disposition !== 'reported');
+    const lines = shown.slice(0, 10).map((f) => {
+        // A finding inside a percent-encoded parameter has no JSON key path of
+        // its own -- the enclosing field name is the location, and printing
+        // nothing there would leave the operator with a fingerprint and no
+        // idea where to look.
+        const at = f.keyPath || (f.enclosing ? `(inside encoded ${f.enclosing})` : '');
+        const where = f.entryIndex === undefined
+            ? '' : ` at entry ${f.entryIndex}${at ? ` ${at}` : ''}`;
+        const count = f.count > 1 ? `, x${f.count}` : '';
+        return `${f.disposition === 'gating' ? '-' : '!'} ${f.kind}` +
+            `${f.class ? ` [${f.class}]` : ''}${where}` +
+            ` (fingerprint ${f.fingerprint}${count})`;
+    });
+    if (shown.length > lines.length) {
+        lines.push(`... ${shown.length - lines.length} more in ${path.basename(reportPath)}`);
+    }
+    if (doc.suggestedPolicyFragment) {
+        lines.push(`To accept an identity finding, waive its fingerprint in ` +
+            `.har-policy.project.json -- the report carries a paste-ready fragment.`);
+    }
+    return lines;
+}
+
 function postProcessLines(session) {
     const pp = session.postProcess || {};
     const lines = [['verbose', `  raw:       ${session.harPath}  (unscrubbed -- never commit it)`]];
     if (pp.scrubbed && pp.scrubbed.path) {
-        lines.push(['info', `  scrubbed:  ${pp.scrubbed.path}  (verified)`]);
-    } else if (pp.scrubbed && pp.scrubbed.removed) {
+        lines.push(['info', `  scrubbed:  ${pp.scrubbed.path}` +
+            `  (${pp.scrubbed.advisory ? 'kept -- advisory findings, see below' : 'verified'})`]);
+    } else if (pp.scrubbed && pp.scrubbed.quarantined) {
+        // Where it went, not that it is gone. The predecessor of this line
+        // said "deleted", which left the operator with an exit code, a missing
+        // file and nothing to triage.
         lines.push(['warn',
-            '  scrubbed:  REJECTED by the leak gate and deleted; the raw capture is kept']);
+            `  scrubbed:  REJECTED by the leak gate -- quarantined, not destroyed:\n` +
+            `             ${pp.scrubbed.quarantined}`]);
+    } else if (pp.scrubbed && pp.scrubbed.rejected) {
+        lines.push(['warn',
+            '  scrubbed:  REJECTED by the leak gate; the raw capture is kept']);
+    }
+    if (pp.scrubbed && pp.scrubbed.findings) {
+        lines.push(['warn', `  findings:  ${pp.scrubbed.findings}`]);
+        for (const line of findingSummaryLines(pp.scrubbed.findings)) {
+            lines.push(['warn', `             ${line}`]);
+        }
     }
     if (pp.digest) lines.push(['verbose', `  digest:    ${pp.digest.path}`]);
     if (pp.catalogue) {
@@ -1190,6 +1367,9 @@ function postProcessLines(session) {
         if (pp.catalogue.skippedReason) lines.push(['warn', `             ${pp.catalogue.skippedReason}`]);
     }
     for (const err of pp.errors || []) lines.push(['error', `  ERROR:     ${err}`]);
+    for (const warn of pp.warnings || []) {
+        for (const line of `${warn}`.split('\n')) lines.push(['warn', `  WARNING:   ${line}`]);
+    }
 
     // The other half of what makes warn-and-proceed safe rather than merely
     // deferred (#300). Having declined to discard anything, the run owes the
@@ -1527,7 +1707,21 @@ async function start(args) {
     writeJson(path.join(paths.sessionDir, SESSION_FILE), session);
     reportPostProcess(session);
 
-    if (session.postProcess.errors.length) return 6;
+    return postProcessExitCode(session.postProcess, assembled);
+}
+
+/**
+ * The process exit code the post-process phases earned.
+ *
+ * 7 exists so an advisory finding is neither a lie nor a failure. Returning 0
+ * would tell every wrapper and CI step that a capture possibly carrying a real
+ * card is clean; returning 6 would say "scrub or catalogue failed" about a run
+ * that produced both. An error outranks a warning, and both outrank the
+ * assembled-from-log signal, which is informational.
+ */
+function postProcessExitCode(pp, assembled) {
+    if (pp.errors && pp.errors.length) return 6;
+    if (pp.warnings && pp.warnings.length) return 7;
     return assembled ? 5 : 0;
 }
 
@@ -1723,8 +1917,7 @@ async function stop(args) {
         return 6;
     }
 
-    if (session.postProcess && session.postProcess.errors.length) return 6;
-    return assembled || session.assembledFromLog ? 5 : 0;
+    return postProcessExitCode(session.postProcess, assembled || session.assembledFromLog);
 }
 
 function status(args) {
@@ -1795,6 +1988,8 @@ module.exports = {
     buildCatalogueScaffold,
     decideCatalogueRunner,
     postProcess,
+    postProcessExitCode,
+    findingSummaryLines,
     runNode,
     IncrementalRecorder
 };

@@ -93,6 +93,14 @@ function findRealCard() {
     throw new Error('no luhn-valid Visa-shape generated');
 }
 
+// Since issue #297 Stage 7, a card is IDENTITY-class shape evidence: it exits
+// with the ADVISORY code, not the gating one. Non-zero either way -- it is the
+// ARTIFACT that survives an advisory finding, not the exit code -- but the two
+// codes mean different things to capture-har.js, so these assert the exact one.
+// Loosening them to "non-zero" would let the change be quietly undone by making
+// credit-card gate again, which is the one repair that must not pass here.
+const EXIT_ADVISORY = 4;
+
 let passed = 0;
 
 // ===================================================================
@@ -120,8 +128,8 @@ let passed = 0;
     const har = tmpHarWith(card);
     const r = runVerify(har);
     assert.strictEqual(
-        r.code, 3,
-        'expected exit 3 for a real 13-digit credit card, got ' + r.code +
+        r.code, EXIT_ADVISORY,
+        'expected the advisory exit for a real 13-digit credit card, got ' + r.code +
         '\nstdout: ' + r.stdout + '\nstderr: ' + r.stderr
     );
     assert.match(r.stderr, /credit-card/, 'expected credit-card leak label');
@@ -140,8 +148,8 @@ let passed = 0;
     const har = tmpHarWith(card16);
     const r = runVerify(har);
     assert.strictEqual(
-        r.code, 3,
-        'expected exit 3 for canonical 16-digit Visa test card, got ' + r.code
+        r.code, EXIT_ADVISORY,
+        'expected the advisory exit for the canonical 16-digit Visa test card, got ' + r.code
     );
     assert.match(r.stderr, /credit-card/, 'expected credit-card label');
     passed++;

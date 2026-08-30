@@ -93,14 +93,23 @@ function luhnRun(prefix, len) {
     throw new Error('no Luhn-valid run for prefix ' + prefix + ' at length ' + len);
 }
 
+// Since issue #297 Stage 7, a card is IDENTITY-class shape evidence: it exits
+// with the ADVISORY code, not the gating one. Non-zero either way -- it is the
+// ARTIFACT that survives an advisory finding, not the exit code -- but the two
+// codes mean different things to capture-har.js, so these assert the exact one.
+// Loosening them to "non-zero" would let the change be quietly undone by making
+// credit-card gate again, which is the one repair that must not pass here.
+const EXIT_ADVISORY = 4;
+
 let passed = 0;
 
 function expectLeak(value, why) {
     assert.ok(luhn(value), 'precondition: ' + why + ' must be Luhn-valid');
     const r = runVerify(tmpHarWith(value));
     assert.strictEqual(
-        r.code, 3,
-        'expected exit 3 (leak) for ' + why + ' [len ' + value.length + '], got ' + r.code +
+        r.code, EXIT_ADVISORY,
+        'expected the advisory exit (a card is identity-class) for ' + why +
+        ' [len ' + value.length + '], got ' + r.code +
         '\nstderr: ' + r.stderr
     );
     assert.match(r.stderr, /credit-card/, 'expected credit-card label for ' + why);

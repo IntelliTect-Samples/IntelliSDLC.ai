@@ -58,14 +58,14 @@ function harWith(value) {
     assert.ok(!r.out.includes(SECRET), '1.b: the verifier echoed the secret value');
 }
 
-// --- 2. An identity finding still blocks today, and says it is advisory. ---
-// The design's end state is "reports, non-zero exit, artifact kept" -- it is
-// the ARTIFACT that survives, not the exit code. Until Stage 7 adds the
-// quarantine, a non-zero exit is what stops a leaking capture being committed,
-// so downgrading this to a pass would turn a real card into a silent one.
+// --- 2. An identity finding advises: its OWN non-zero code. ---
+// "Reports, non-zero exit, artifact kept" -- it is the ARTIFACT that survives,
+// not the exit code. Stage 7 gave the advisory verdict a distinct code (4) so
+// capture-har.js can keep the artifact and warn instead of quarantining it;
+// downgrading this to a pass would turn a real card into a silent one.
 {
     const r = run(project('identity', null, harWith(CARD)));
-    assert.strictEqual(r.code, 3, `2.a: a leaked card stopped blocking:\n${r.out}`);
+    assert.strictEqual(r.code, 4, `2.a: a leaked card did not report as advisory:\n${r.out}`);
     assert.ok(/advisory/.test(r.out),
         `2.b: the finding did not say it is identity-shape evidence rather than a certainty:\n${r.out}`);
 }
