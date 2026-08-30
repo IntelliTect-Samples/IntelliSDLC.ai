@@ -58,6 +58,11 @@
          <description>` followed by the two ordered steps (create the issue,
          then `@dev-loop gh issue <number>` on it), so the session runs
          design *and* implementation instead of stopping at the design.
+         The -New prompt also closes by asking the session to print a
+         ready-to-paste `/rename <number>: <issue title>` line once the
+         issue exists -- the `new: <description>` name is stale from that
+         moment on, and only a user-typed slash command can change it (see
+         New-PlanAgentPrompt for why the session cannot do it itself).
       5. Launch `claude` with CLI options first, the derived prompt last:
          `claude --name <Name> --remote-control --permission-mode <mode> -- <prompt>`
          When opening a new wt.exe tab, this command (plus a `Set-Location`
@@ -604,6 +609,36 @@ function New-PlanAgentPrompt {
         questions from there, so nothing else needs to be inlined. An
         empty/whitespace description drops the seed line and keeps the same
         two steps, letting the agent open the conversation itself.
+
+        The prompt then closes by asking the session to print a ready-to-paste
+        `/rename <number>: <issue title>` line once the issue exists, because
+        the -New session name (`new: <description>`, see New-PlanAgentName) goes
+        stale the moment @plan files the issue -- it should read the same as an
+        issue dispatch, `<issue number>: <issue title>`.
+
+        Why printing, and not doing: a session cannot rename itself. Measured
+        against Claude Code 2.1.251, not assumed --
+
+          - `/rename` (alias `/name`) is a *client-side* slash command. It is
+            expanded from a **user message**: `claude -p "/rename <name>"`
+            renames that session and answers "Session renamed to: <name>". The
+            model's own output is never scanned for slash commands -- a session
+            asked to reply with the literal text `/rename <new name>` did so,
+            and its name in `claude agents --json` did not change.
+          - There is no `claude` subcommand that renames a session, and no
+            rename tool exposed to the model.
+          - Renaming a *running* session from outside is refused:
+            `claude -p --resume <live session id> "/rename ..."` errors with
+            "Session ... is running as a background session ... stop it first",
+            and `--fork-session` would rename a copy, not the session.
+          - The one non-typed path is a `rename_session` control request, which
+            exists only on the remote-control/SDK transport (the phone or an
+            SDK host driving the session from outside). Nothing inside the
+            session can reach it.
+
+        So the honest contract is: the session computes the exact command, the
+        human presses one paste. Re-verify against a newer CLI before assuming
+        this is still true.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure string builder -- the New- verb here names output shape, not state change.')]
@@ -624,7 +659,22 @@ function New-PlanAgentPrompt {
         '`@dev-loop gh issue <number>` for the issue you just created, and run the full dev loop.')
     ) -join "`n"
 
-    return "$seed`n`n$steps"
+    # The rename hand-off. This session is named for the description because no
+    # issue existed when it launched; only a typed user message can rename it
+    # (see .DESCRIPTION for the measurements), so the session's job is to hand
+    # over the finished command rather than to attempt the rename itself.
+    $rename = @(
+        ('This session is named for the description, not the issue -- there was no issue number ' +
+        'when it started. Between steps 1 and 2, print this line on its own, filled in from the ' +
+        'issue you just filed, so I can paste it:')
+        ''
+        '    /rename <number>: <issue title>'
+        ''
+        ('Print it, do not try to run it: /rename is a client-side slash command that only takes ' +
+        'effect when a user types it, so a session cannot rename itself.')
+    ) -join "`n"
+
+    return "$seed`n`n$steps`n`n$rename"
 }
 
 function Get-DefaultPermissionMode {
