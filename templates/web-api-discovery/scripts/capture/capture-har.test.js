@@ -25,7 +25,7 @@ const os = require('os');
 const path = require('path');
 
 const capture = require(path.join(__dirname, 'capture-har.js'));
-const { initProtectedRepo } = require(path.join(__dirname, '..', 'har', 'har-test-repo.js'));
+const { initProtectedRepo } = require(path.join(__dirname, '..', 'har', 'har-test-repo.test-support.js'));
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-har-test-'));
 

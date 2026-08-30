@@ -170,14 +170,17 @@ function assertNoTablesUnder(root, label) {
     assert.ok(!has(outDir, PII_TABLE), '3.f: ' + PII_TABLE + ' landed in the committable output path');
 }
 
-// --- 4. The property decides, not the directory name. ---
+// --- 4. The gate does not over-refuse a genuinely protected destination. ---
 {
-    // `har-captures`, no leading dot -- the near-miss from the issue. The old
-    // name test misses it and nests a `.har-captures/` inside. Here the
-    // scaffold's filename entries cover the tables at any depth, so the
-    // destination genuinely is protected and the scrub proceeds. A
-    // name-matching fix would still have refused (or nested); a property
-    // check accepts it on its merits.
+    // `har-captures`, no leading dot -- the near-miss from the issue. Note
+    // this case does NOT discriminate old behavior from new: deriveSubsDir
+    // nests a literal `.har-captures/` segment whatever the outer directory is
+    // spelled, so the old name test landed here too and the scaffold covers it
+    // either way. What it pins is the other half of the fix -- that checking
+    // the property does not cost us the cases the name test got right, and in
+    // particular that nobody later "fixes" #318 by matching directory names
+    // more strictly, which would refuse this genuinely-ignored destination.
+    // Cases 1 and 2 are the ones that discriminate old from new.
     const dir = makeProject('near-miss-covered', SCAFFOLD_GITIGNORE);
     const captureTree = path.join(dir, 'har-captures', 'example.invalid', '2026-01-01-120000');
     const harIn = writeHar(path.join(captureTree, 'raw.har'));

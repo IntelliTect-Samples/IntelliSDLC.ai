@@ -18,7 +18,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const {
     classifyDestination,
@@ -137,6 +137,46 @@ function makeRepo(name, gitignore) {
         '7.e: the not-ignored refusal does not mention .gitignore');
     assert.ok(/git/.test(refusalMessage(target, OUTSIDE_WORK_TREE, '--subs')),
         '7.f: the outside-work-tree refusal does not mention git');
+}
+
+// --- 8. An inherited GIT_DIR / GIT_WORK_TREE cannot answer for another repo. ---
+{
+    // Demonstrated false pass: with both variables exported, git answers about
+    // the repository they name rather than the one containing the destination.
+    // Point GIT_WORK_TREE at an unprotected tree and put the ignore rule in the
+    // *other* repo's info/exclude, and `check-ignore` returns 0 -- "ignored" --
+    // for a path nothing protects. The tables would have been written there.
+    //
+    // A question about the wrong repository is worse than no answer, because it
+    // is a confident one, so the probes run with those variables stripped.
+    const holder = makeRepo('env-holder', '');
+    fs.appendFileSync(path.join(holder, '.git', 'info', 'exclude'),
+        '\n.substitutions.json\n', 'utf8');
+
+    const unprotected = makeDir('env-unprotected');
+    const target = path.join(unprotected, 'har-captures', 'h', 's', '.substitutions.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+
+    const hostile = Object.assign({}, process.env, {
+        GIT_DIR: path.join(holder, '.git'),
+        GIT_WORK_TREE: unprotected,
+    });
+    const leaked = spawnSync('git', ['check-ignore', '-q', '--', target],
+        { cwd: path.dirname(target), env: hostile, encoding: 'utf8', stdio: 'ignore' });
+    assert.strictEqual(leaked.status, 0,
+        '8.a: fixture precondition -- a leaked env must make raw git answer "ignored" here');
+
+    const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+    process.env.GIT_DIR = path.join(holder, '.git');
+    process.env.GIT_WORK_TREE = unprotected;
+    try {
+        assert.strictEqual(classifyDestination(target), OUTSIDE_WORK_TREE,
+            '8.b: an inherited GIT_DIR/GIT_WORK_TREE answered for a different repository');
+    } finally {
+        for (const [k, v] of Object.entries(saved)) {
+            if (v === undefined) delete process.env[k]; else process.env[k] = v;
+        }
+    }
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

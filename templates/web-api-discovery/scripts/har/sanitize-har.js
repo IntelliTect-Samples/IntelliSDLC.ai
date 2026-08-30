@@ -376,10 +376,11 @@ function main() {
 
     // Before any read or write: a derived destination is only safe if git says
     // it is ignored. `.har-captures` is a name, not a protection (issue #318).
-    assertDerivedDestinationsProtected([
+    const tableDestinations = [
         { path: subsPath, flag: '--subs', derived: !args.subs },
         { path: piiSubsPath, flag: '--pii-subs', derived: !args['pii-subs'] },
-    ]);
+    ];
+    assertDerivedDestinationsProtected(tableDestinations);
 
     let raw;
     try {
@@ -429,6 +430,13 @@ function main() {
     // Stable key order in output JSON for byte-for-byte determinism.
     const sortedSubs = {};
     for (const k of Object.keys(merged).sort()) sortedSubs[k] = merged[k];
+
+    // Asked once more, immediately before the writes. The check above runs
+    // early so a refusal costs nothing and leaves nothing behind; this one is
+    // what makes "never written to an unverified destination" true rather than
+    // nearly true, since the scrub in between is not instantaneous and the
+    // repository's ignore rules are not frozen while it runs.
+    assertDerivedDestinationsProtected(tableDestinations);
 
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(outPath, literalPass.text, 'utf8');

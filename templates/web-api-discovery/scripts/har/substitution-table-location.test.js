@@ -22,7 +22,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.js'));
+const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.test-support.js'));
 
 const sanitize = path.join(__dirname, 'sanitize-har.js');
 // realpath: os.tmpdir() can be an 8.3 short path on Windows, which git

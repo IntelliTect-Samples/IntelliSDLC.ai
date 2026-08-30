@@ -3867,6 +3867,23 @@ Describe 'Get-UpstreamPrivatePruneOps' {
         $pruned | Should -Not -Contain 'templates/web-api-discovery/scripts/har/har-literals.js'
     }
 
+    It 'prunes an upstream-private test-support helper under templates/' {
+        # A helper the node tests share is test scaffolding, so it is no more
+        # use to a consumer than the tests that call it -- but it is not named
+        # `*.test.js`, so without its own carve-out it would ship (issue #318).
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                New-Item -ItemType Directory -Path templates/web-api-discovery/scripts/har -Force | Out-Null
+                'ship'   | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.js -NoNewline
+                'helper' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-test-repo.test-support.js -NoNewline
+            }
+
+        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) | ForEach-Object { $_.Path }
+
+        $pruned | Should -Contain 'templates/web-api-discovery/scripts/har/har-test-repo.test-support.js'
+        $pruned | Should -Not -Contain 'templates/web-api-discovery/scripts/har/har-literals.js'
+    }
+
     It 'does not prune a test-project template under templates/, which consumers must receive' {
         # A tests/ directory under templates/ holds test-project TEMPLATES the
         # generator emits into the consumer's own solution. Widening the prune

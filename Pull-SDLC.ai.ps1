@@ -356,7 +356,13 @@ $script:UpstreamPrivatePrefixes = @(
     # NOTE: deliberately narrower than the rule above -- a `tests/` directory
     # under templates/ holds test-project TEMPLATES the generator emits into
     # the consumer's own solution, so it must ship.
-    '^templates/(?:[^/]+/)*[^/]+\.test\.js$'
+    '^templates/(?:[^/]+/)*[^/]+\.test\.js$',
+    # Helpers those node tests share. They are test scaffolding -- building a
+    # fixture repository, say -- so they are no more use to a consumer than the
+    # tests that call them, but they are not named `*.test.js` and would
+    # otherwise ship. The suffix is the marker; nothing executes them directly,
+    # so the Pester-wrapper coverage rule does not apply to them either.
+    '^templates/(?:[^/]+/)*[^/]+\.test-support\.js$'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather

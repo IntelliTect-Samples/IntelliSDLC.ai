@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * har-test-repo.js -- fixture helper: a temp directory the scrub will run in.
+ * har-test-repo.test-support.js -- fixture helper: a temp directory the scrub will run in.
  *
  * Since #318 the scrub refuses to write a substitution table to a destination
  * git will not confirm is ignored, which means a bare `fs.mkdtempSync()`
