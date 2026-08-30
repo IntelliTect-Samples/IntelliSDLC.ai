@@ -417,7 +417,7 @@ function replaceInJson(node, parentKey, replacements) {
         if (fType && fType !== 'geo-lat' && fType !== 'geo-lng') {
             // Find a matching replacement by exact original value, since detection
             // already enrolled this exact string.
-            const target = replacements.find(r => r.type === pickContextType(fType) && r.value === node);
+            const target = indexFor(replacements).byTypeValue.get(`${pickContextType(fType)}${node}`);
             if (target) return target.replacement;
         }
         return replaceAll(node, replacements);
@@ -448,28 +448,78 @@ function pickContextType(fType) {
     return fType; // 'person-name', 'street-address', 'city', 'region', 'postal-code', 'country', 'dob'
 }
 
-function escapeRe(s) {
-    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// --- single-pass replacement index (issue #326) -------------------------
+//
+// The replacement pass used to loop the whole replacement list for EVERY
+// string it touched, building an escaped pattern and a fresh RegExp each time
+// and scanning the string once per value. Distinct detected values grow with
+// body size, so the two factors multiplied and the pass went quadratic: on a
+// real capture a single 6.3 MB JSON list response took over 45 s while the
+// other 314 entries together took ~10 s, and a 27.8 MB capture did not finish
+// in 420 s. A profile put ~67% of self time in `replaceAll` and a further ~21%
+// in `escapeRe` -- the escape ran once per (value, string) pair.
+//
+// The values are literals, not patterns, so a literal matcher does the whole
+// job in ONE walk of each string regardless of how many values there are. The
+// index below is a trie over every needle, built once per replacement list and
+// memoised on that list, so the per-string cost is O(string) instead of
+// O(string x values).
+//
+// PRIORITY IS INSERTION ORDER, and that is load-bearing. `scrubPii` sorts the
+// replacement list longest value first precisely so that "Alice Marie Johnson"
+// is consumed before "Alice"; replacing the short one first would corrupt the
+// long one into a half-fake string. The sequential loop got that from running
+// the longest value's pass first. The trie gets it by preferring, among every
+// needle that matches at a position, the one enrolled EARLIEST -- which is the
+// same order the loop applied them in.
+
+const WORD = /[A-Za-z0-9_]/;
+
+function isWordChar(ch) {
+    return ch !== undefined && WORD.test(ch);
 }
 
-function replaceAll(text, replacements) {
-    let out = text;
+function newNode() {
+    return { next: new Map(), hit: null };
+}
+
+function addNeedle(root, needle, replacement, boundary, priority) {
+    if (!needle) return;
+    let node = root;
+    for (let k = 0; k < needle.length; k++) {
+        const ch = needle[k];
+        let child = node.next.get(ch);
+        if (!child) { child = newNode(); node.next.set(ch, child); }
+        node = child;
+    }
+    // First enrolment wins: the same literal can be detected under two types,
+    // and the sequential loop applied whichever came first in the list.
+    if (node.hit === null) {
+        node.hit = { length: needle.length, replacement, boundary, priority };
+    }
+}
+
+const INDEX_CACHE = new WeakMap();
+
+function indexFor(replacements) {
+    let idx = INDEX_CACHE.get(replacements);
+    if (idx) return idx;
+
+    const root = newNode();
+    const byTypeValue = new Map();
+    let priority = 0;
+
     for (const r of replacements) {
-        // Only do raw text replace for value-like types we can safely substring-match.
-        // Context-typed values (person-name etc.) may have very short literals
-        // (e.g. "Alice") that risk false-positive matches inside unrelated text.
-        // For the JSON-body codepath those are handled by replaceInJson above;
-        // for the raw-text codepath we still need them, so we apply with word
-        // boundaries when the value is purely alphabetic.
         const v = String(r.value);
+        const typeKey = `${r.type}${v}`;
+        if (!byTypeValue.has(typeKey)) byTypeValue.set(typeKey, r);
         if (v.length === 0) continue;
-        let re;
-        if (/^[A-Za-z]+( [A-Za-z]+)*$/.test(v)) {
-            re = new RegExp(`\\b${escapeRe(v)}\\b`, 'g');
-        } else {
-            re = new RegExp(escapeRe(v), 'g');
-        }
-        out = out.replace(re, r.replacement);
+
+        // Context-typed values (person-name etc.) may have very short literals
+        // (e.g. "Alice") that risk false-positive matches inside unrelated
+        // text, so a purely alphabetic value only matches on word boundaries.
+        const boundary = /^[A-Za-z]+( [A-Za-z]+)*$/.test(v);
+        addNeedle(root, v, r.replacement, boundary, priority++);
 
         // The same value can appear percent-encoded in the very same entry:
         // detection reads the decoded `queryString` pair, while the `url`
@@ -477,11 +527,56 @@ function replaceAll(text, replacements) {
         // encoded copy readable -- one value, several spellings, which is the
         // failure literal-value scrubbing exists to close (see har-literals.js).
         const encoded = encodeURIComponent(v);
-        if (encoded !== v && out.includes(encoded)) {
-            out = out.split(encoded).join(encodeURIComponent(r.replacement));
+        if (encoded !== v) {
+            addNeedle(root, encoded, encodeURIComponent(r.replacement), false, priority++);
         }
     }
-    return out;
+
+    idx = { root, byTypeValue, empty: root.next.size === 0 };
+    INDEX_CACHE.set(replacements, idx);
+    return idx;
+}
+
+function replaceAll(text, replacements) {
+    const idx = indexFor(replacements);
+    if (idx.empty || text.length === 0) return text;
+
+    const root = idx.root;
+    let out = '';
+    let copiedTo = 0;   // everything before this index is already in `out`
+    let i = 0;
+
+    while (i < text.length) {
+        let node = root.next.get(text[i]);
+        if (node === undefined) { i++; continue; }
+
+        // Walk as far as the text allows, keeping the earliest-enrolled hit
+        // seen along the way rather than the longest one.
+        let best = null;
+        let j = i;
+        for (;;) {
+            const hit = node.hit;
+            if (hit !== null
+                && (best === null || hit.priority < best.priority)
+                && (!hit.boundary
+                    || (!isWordChar(text[i - 1]) && !isWordChar(text[i + hit.length])))) {
+                best = hit;
+            }
+            j++;
+            if (j >= text.length) break;
+            const child = node.next.get(text[j]);
+            if (child === undefined) break;
+            node = child;
+        }
+
+        if (best === null) { i++; continue; }
+
+        out += text.slice(copiedTo, i) + best.replacement;
+        i += best.length;
+        copiedTo = i;
+    }
+
+    return copiedTo === 0 ? text : out + text.slice(copiedTo);
 }
 
 module.exports = {
