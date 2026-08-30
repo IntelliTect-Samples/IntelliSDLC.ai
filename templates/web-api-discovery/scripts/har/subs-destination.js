@@ -142,6 +142,15 @@ function classifyDestination(filePath) {
     const target = path.resolve(filePath);
     const cwd = nearestExistingDir(path.dirname(target));
 
+    // A repository whose ownership git disputes fails this probe and is
+    // refused. That reads as over-strict and there is an obvious-looking
+    // remedy -- pass `-c safe.directory=<path>` so the probe proceeds. Do not:
+    // a repository's own .git/config may set core.excludesFile, and pointing it
+    // at a file matching `*` makes check-ignore call anything ignored
+    // (confirmed: exit 1 before planting the setting, exit 0 after). Disputed
+    // ownership means the repository is somebody else's, so safe.directory is
+    // the control that stops us trusting their config -- bypassing it here
+    // would open a forging vector rather than close a false refusal.
     const inTree = git(cwd, ['rev-parse', '--is-inside-work-tree']);
     if (inTree.status === null) return UNVERIFIABLE;
     if (inTree.status !== 0 || inTree.stdout !== 'true') return OUTSIDE_WORK_TREE;
