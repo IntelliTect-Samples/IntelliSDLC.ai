@@ -133,8 +133,22 @@ function detectBoundary(text) {
  * `replacer(name, value)` returns a replacement value, or null/undefined to
  * leave it alone (which is how a detector uses this without mutating).
  * Returns the rewritten text.
+ *
+ * `options.includeRedacted` decides what happens to a value that LOOKS like a
+ * redaction marker, and the right answer differs by caller:
+ *
+ *   * a DETECTOR (the default, false) skips it. Reporting our own sentinel is
+ *     the noise that destroyed the gate's authority.
+ *   * a SCRUBBER passes true. It is looking at data it has not replaced yet,
+ *     and a live credential that arrives already looking masked --
+ *     `REDACTED_FOR_PRIVACY...`, `<token>`, `***` -- is still a live
+ *     credential. Skipping it on its shape is a bypass the upstream controls.
+ *
+ * A scrubber that must not re-replace its OWN output distinguishes it by
+ * identity (did I emit this value?), never by shape.
  */
-function replaceMultipartSecretFields(text, replacer, policy) {
+function replaceMultipartSecretFields(text, replacer, policy, options) {
+    const includeRedacted = !!(options && options.includeRedacted);
     if (typeof text !== 'string' || !text.includes('Content-Disposition')) return text;
 
     const boundary = detectBoundary(text);
@@ -163,7 +177,8 @@ function replaceMultipartSecretFields(text, replacer, policy) {
         const trailing = /\r?\n$/.exec(rest);
         const value = trailing ? rest.slice(0, rest.length - trailing[0].length) : rest;
 
-        if (!isPlausibleSecretValue(value) || isRedacted(value)) continue;
+        if (!isPlausibleSecretValue(value)) continue;
+        if (!includeRedacted && isRedacted(value)) continue;
         const replacement = replacer(nameMatch[1], value);
         if (replacement === null || replacement === undefined) continue;
 

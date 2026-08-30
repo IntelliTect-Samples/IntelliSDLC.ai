@@ -41,7 +41,9 @@
  *
  * HAR stores the same datum twice, so every redaction decision here is a pure
  * function of (name, value) and the policy: both copies are replaced, with the
- * same fake, or neither is.
+ * same fake, or neither is. What a value LOOKS like never exempts it from the
+ * scrub -- a live credential that arrives already looking masked is still a
+ * live credential (see `alreadySubstituted`).
  *
  * The salt and the literal map come from the gitignored `.har-profile.json`
  * (see har-profile.js). They are never defaulted: the literals are the
@@ -221,7 +223,6 @@ const PATTERNS = [
 const {
     isKnownSecretField,
     isKnownSecretHeader,
-    isRedacted,
     replaceMultipartSecretFields,
 } = require(path.join(__dirname, 'har-secrets.js'));
 
@@ -245,6 +246,9 @@ function createContext(policy, subs, salt) {
         policy,
         subs,
         salt,
+        // Every fake this run has emitted. Membership here is the ONLY reason
+        // the scrub skips a value -- see `alreadySubstituted`.
+        produced: new Set(),
         formFieldRe: new RegExp(`\\b(${alternation})=([^&\\s"';,]+)`, 'gi'),
         jsonFieldRe: new RegExp(`("(?:${alternation})"\\s*:\\s*")([^"]*)(")`, 'gi'),
     };
@@ -257,7 +261,31 @@ function createContext(policy, subs, salt) {
 function substitute(kind, name, value, ctx) {
     const key = `${kind}:${name.toLowerCase()}:${value}`;
     if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, value, ctx.salt);
+    ctx.produced.add(ctx.subs[key]);
     return ctx.subs[key];
+}
+
+/**
+ * True only for a value THIS run already emitted as a replacement.
+ *
+ * An IDENTITY test, never a shape test. The scrub must run over some nodes
+ * twice -- a `Cookie` header is scrubbed pair by pair and then swept again as
+ * text -- and without suppression the header's fake would be replaced by a
+ * second, different fake, so the two spellings of one cookie would stop
+ * agreeing. That is the whole and only job here.
+ *
+ * It is emphatically NOT `isRedacted(value)`. Asking whether an INPUT value
+ * looks like a redaction marker hands the decision to the data: a live
+ * credential that arrives as `REDACTED_SESSION_TOKEN_...`, wrapped in angle
+ * brackets, or spelled `***` would be skipped and shipped in the clear, under
+ * a name the policy says is a secret. That is a scrub bypass an upstream can
+ * trigger, in the false-negative direction, which is the direction that ships.
+ * `isRedacted` is the right question for the GATE, which must not cry wolf
+ * over our own sentinels; it is the wrong question for the SCRUBBER, which is
+ * looking at data it has not replaced yet.
+ */
+function alreadySubstituted(value, ctx) {
+    return ctx.produced.has(value);
 }
 
 /**
@@ -266,24 +294,23 @@ function substitute(kind, name, value, ctx) {
  *
  * Deliberately the same predicate the gate uses (`isKnownSecretField` /
  * `isKnownSecretHeader` over the merged policy), so the scrubber redacts
- * exactly what the verifiers would report. A sentinel is never re-scrubbed:
- * running the scrub twice must be a no-op, and a header that has already had
- * its cookie pairs replaced must not get a second, different fake.
+ * exactly what the verifiers would report. Nothing about the value's SHAPE
+ * exempts it -- only a fake this run itself produced is passed over.
  */
 function fieldReplacement(name, value, ctx) {
     if (typeof name !== 'string' || typeof value !== 'string' || value === '') return null;
-    if (isRedacted(value)) return null;
+    if (alreadySubstituted(value, ctx)) return null;
     if (!isKnownSecretField(name, ctx.policy) && !isKnownSecretHeader(name, ctx.policy)) return null;
     return substitute('field', name, value, ctx);
 }
 
 function scrubKnownFields(s, ctx) {
     let out = s.replace(ctx.formFieldRe, (m, name, val) => {
-        if (isRedacted(val)) return m;
+        if (alreadySubstituted(val, ctx)) return m;
         return `${name}=${substitute('field', name, val, ctx)}`;
     });
     out = out.replace(ctx.jsonFieldRe, (m, pre, val, post) => {
-        if (val === '' || isRedacted(val)) return m;
+        if (val === '' || alreadySubstituted(val, ctx)) return m;
         return `${pre}${substitute('field', pre, val, ctx)}${post}`;
     });
     return out;
@@ -312,8 +339,11 @@ function scrubString(s, ctx, depth) {
     // Multipart bodies carry the field name in a header and the value on its
     // own line, so the `name=value` and `"name":"value"` forms above never
     // see them.
+    // `includeRedacted: true`: a multipart value that merely looks masked is
+    // still scrubbed. Our own output is passed over by identity instead.
     out = replaceMultipartSecretFields(out, (name, value) =>
-        substitute('field', name, value, ctx), ctx.policy);
+        (alreadySubstituted(value, ctx) ? null : substitute('field', name, value, ctx)),
+        ctx.policy, { includeRedacted: true });
 
     // Reach INSIDE percent-encoded parameters. A form body carrying
     // `variables=<percent-encoded JSON>` hides per-request tokens where no
@@ -351,7 +381,7 @@ const COOKIE_TOKEN_MIN_LENGTH = 16;
  */
 function cookieReplacement(name, value, ctx) {
     if (typeof name !== 'string' || typeof value !== 'string' || value === '') return null;
-    if (isRedacted(value)) return null;
+    if (alreadySubstituted(value, ctx)) return null;
     if (value.length < COOKIE_TOKEN_MIN_LENGTH
         && !isKnownSecretField(name, ctx.policy)
         && !isKnownSecretHeader(name, ctx.policy)) return null;
