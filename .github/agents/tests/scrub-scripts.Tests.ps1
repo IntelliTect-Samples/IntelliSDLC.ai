@@ -13,6 +13,8 @@ BeforeAll {
     $script:WrapperPs1 = Join-Path $script:ScriptsDir 'har/Invoke-SanitizeHar.ps1'
     $script:CaptureJs  = Join-Path $script:ScriptsDir 'capture/capture-cdp.js'
 
+    . (Join-Path $PSScriptRoot 'fixtures/ProtectedFixtureRepo.ps1')
+
     function New-FixtureHar {
         param(
             [Parameter(Mandatory)][string]$Path,
@@ -74,7 +76,7 @@ Describe 'sanitize-har.js' {
 
     BeforeEach {
         $script:Tmp     = Join-Path ([IO.Path]::GetTempPath()) ("har-test-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
@@ -138,7 +140,7 @@ Describe 'verify-scrub.js' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("verify-test-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
@@ -192,7 +194,7 @@ Describe 'Invoke-SanitizeHar.ps1' {
 
     BeforeEach {
         $script:Tmp = Join-Path ([IO.Path]::GetTempPath()) ("wrap-test-" + [guid]::NewGuid())
-        New-Item -ItemType Directory -Path $script:Tmp -Force | Out-Null
+        New-ProtectedFixtureRepo -Path $script:Tmp
         # sanitize-har reads its salt and literal -> sentinel map from the
         # operator's gitignored .har-profile.json (issue #255); there is no
         # default salt, so each fixture project declares its own.
