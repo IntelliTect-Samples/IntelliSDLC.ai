@@ -142,6 +142,18 @@ const PUBLISH_TEMP_PREFIX = '.publishing-';
 // exists for milliseconds, so nothing in flight is ever this old -- which is
 // what lets the sweep run without racing a concurrent capture.
 const PUBLISH_TEMP_STALE_MS = 24 * 60 * 60 * 1000;
+// Windows refuses to rename ONTO a destination another process holds open,
+// where POSIX replaces it regardless. The everyday cause is real-time
+// antivirus reading the file that was just written, and it clears in
+// milliseconds. Six attempts with a doubling backoff wait 465ms in total: long
+// enough for a scanner to let go, short enough that a standing fault -- a file
+// somebody left open in an editor -- is reported rather than waited on.
+const PUBLISH_RENAME_ATTEMPTS = 6;
+const PUBLISH_RENAME_BACKOFF_MS = 15;
+// EPERM and EBUSY are what Windows raises for a held handle, and only those.
+// EACCES is a permission fact about the path: retrying it changes nothing
+// except how long the operator waits to be told.
+const PUBLISH_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY']);
 // verify-scrub.js exit 4: identity findings by SHAPE and nothing worse. The
 // artifact is verified enough to proceed. Any other non-zero blocks.
 const VERIFY_ADVISORY_EXIT = 4;
@@ -1198,14 +1210,51 @@ function freeName(dir, base, ext) {
  *
  * The temporary is removed if the rename does not happen, so a failure leaves
  * the previous artifact in place and nothing else behind.
+ *
+ * The rename is retried on a transient Windows lock -- see renameWithRetry.
+ * Atomicity is not free on that platform, and the retry is what stops the
+ * guarantee costing availability.
  */
+/**
+ * Block for `ms` without an event loop turn.
+ *
+ * postProcess is synchronous by design -- it runs the mechanical phases in the
+ * recorder's own process -- so the backoff cannot be a promise without turning
+ * the whole call chain async for a wait measured in milliseconds.
+ */
+function sleepSync(ms) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * `fs.renameSync`, retried while the destination is momentarily held.
+ *
+ * Bounded on purpose. Retrying until a lock clears would hang a capture on a
+ * file left open in an editor, which is a worse failure than the one being
+ * avoided: an error can at least be read. And the retry is narrow -- every
+ * attempt is still a rename, so nothing here weakens the property that the
+ * destination is never seen holding a partial write.
+ */
+function renameWithRetry(from, to) {
+    for (let attempt = 1; ; attempt++) {
+        try {
+            fs.renameSync(from, to);
+            return;
+        } catch (e) {
+            if (attempt >= PUBLISH_RENAME_ATTEMPTS
+                || !PUBLISH_RENAME_RETRY_CODES.has(e.code)) throw e;
+            sleepSync(PUBLISH_RENAME_BACKOFF_MS * 2 ** (attempt - 1));
+        }
+    }
+}
+
 function publishFile(from, to) {
     const temp = path.join(path.dirname(to),
         `${PUBLISH_TEMP_PREFIX}${process.pid}-${Date.now().toString(36)}-` +
         `${Math.random().toString(36).slice(2, 8)}`);
     fs.copyFileSync(from, temp);
     try {
-        fs.renameSync(temp, to);
+        renameWithRetry(temp, to);
     } catch (e) {
         try { fs.unlinkSync(temp); } catch { /* nothing more to do */ }
         throw e;
@@ -2067,6 +2116,7 @@ module.exports = {
     publishFile,
     sweepAbandonedTemps,
     PUBLISH_TEMP_PREFIX,
+    PUBLISH_RENAME_ATTEMPTS,
     findingSummaryLines,
     runNode,
     IncrementalRecorder
