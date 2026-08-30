@@ -28,7 +28,9 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const IGNORED = 'ignored';
@@ -54,33 +56,76 @@ function nearestExistingDir(p) {
     }
 }
 
-// A plain git question with a plain git answer -- the same shape as the probes
-// in scripts/lib/repo-workflow-guard.js. `status` is null when git could not
-// be run at all, which is an answer of its own (see UNVERIFIABLE).
-//
-// The whole `GIT_*` namespace is stripped from the child's environment, not a
-// list of the variables that happen to be dangerous today. A blocklist is the
-// wrong shape here: `GIT_DIR` and `GIT_WORK_TREE` redirect the answer to
-// another repository, and `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` /
-// `GIT_CONFIG_VALUE_n` inject `core.excludesFile` to make `check-ignore` call
-// a path ignored that the repository does not protect -- and the next release
-// may add a third way. A question about the wrong repository is worse than no
-// answer, because it is a confident one.
-//
-// What is deliberately NOT stripped is `HOME` / `XDG_CONFIG_HOME`, so global
-// and system config still apply. The distinction is not squeamishness about
-// how far to go: environment-scoped config binds only this subprocess, so an
-// "ignored" it produces is a claim about nothing -- the operator's own later
-// `git add` would not honor it. Persistent config binds that `git add` too, so
-// when it says a path is ignored, the path really will not be committed and
-// the answer is correct.
-function git(cwd, args) {
+// Variables naming where git looks for a home directory, and therefore for
+// global config. Overridden, not merely removed -- see probeEnv().
+const HOME_VARS = ['HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'];
+
+// A directory that does not exist and cannot be predicted by whoever set the
+// environment, so nothing can be planted there ahead of the run. git reads no
+// config from a home that is not there.
+const NO_HOME = path.join(os.tmpdir(), 'sanitize-har-no-home-' + crypto.randomBytes(9).toString('hex'));
+
+/**
+ * The environment the probes run in: everything except what can tell git where
+ * to find configuration.
+ *
+ * The whole `GIT_*` namespace goes, rather than the variables known to be
+ * dangerous today. A blocklist is the wrong shape: `GIT_DIR` and
+ * `GIT_WORK_TREE` redirect the answer to another repository, and
+ * `GIT_CONFIG_COUNT` with a `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` pair
+ * injects `core.excludesFile` so that `check-ignore` calls a path ignored that
+ * the repository does not protect -- and the next release may add a third way.
+ *
+ * The home variables go for the same reason, though it took a second look to
+ * see it. The tempting argument for keeping them is that global config is
+ * *persistent*, so unlike a per-invocation `GIT_CONFIG_*` it binds the
+ * operator's own later `git add` too, which would make its "ignored" a true
+ * answer rather than a forged one. That argument does not survive: what is
+ * persistent is the config *file*, while the path to it is named by an
+ * environment variable, and `HOME=<somewhere> node sanitize-har.js` scopes that
+ * to exactly one invocation as cheaply as the `GIT_CONFIG_*` form it was
+ * supposed to be different from.
+ *
+ * The home variables are OVERRIDDEN rather than removed, which is not
+ * decoration. On Windows, node re-injects `HOMEDRIVE`, `HOMEPATH` and
+ * `USERPROFILE` into a child process even when the `env` handed to spawnSync
+ * omits them, so deleting those keys is silently ineffective -- a poisoned
+ * `HOMEDRIVE`/`HOMEPATH` pair still reached git and still produced a false
+ * "ignored". Assigning them a home that does not exist is what actually holds.
+ * `GIT_CONFIG_GLOBAL` says the same thing a second way, for git versions that
+ * honor it, without depending on how home discovery happens to be implemented.
+ *
+ * System config is deliberately still honored: once the `GIT_*` namespace is
+ * stripped its location is fixed rather than environment-named, so it cannot be
+ * pointed somewhere else for one invocation, and an admin-installed rule is a
+ * real fact about the machine.
+ *
+ * The cost is real and deliberate: an operator whose only ignore rule for these
+ * files lives in a global `core.excludesFile` is refused, and told to add the
+ * entry to the repository. That is a false refusal rather than a false pass,
+ * which is the direction this module errs in everywhere else.
+ */
+function probeEnv() {
     const env = {};
     for (const [k, v] of Object.entries(process.env)) {
-        if (!/^GIT_/i.test(k)) env[k] = v;
+        // Windows environment names are case-insensitive; compare accordingly.
+        if (/^GIT_/i.test(k) || HOME_VARS.includes(k.toUpperCase())) continue;
+        env[k] = v;
     }
+    env.HOME = NO_HOME;
+    env.USERPROFILE = NO_HOME;
+    env.XDG_CONFIG_HOME = NO_HOME;
+    env.HOMEDRIVE = NO_HOME.slice(0, 2);
+    env.HOMEPATH = NO_HOME.slice(2);
+    env.GIT_CONFIG_GLOBAL = path.join(NO_HOME, 'gitconfig');
+    return env;
+}
+
+// A plain git question with a plain git answer. `status` is null when git could
+// not be run at all, which is an answer of its own (see UNVERIFIABLE).
+function git(cwd, args) {
     const r = spawnSync('git', args, {
-        cwd, env, encoding: 'utf8', windowsHide: true,
+        cwd, env: probeEnv(), encoding: 'utf8', windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore'],
     });
     if (r.error) return { status: null, stdout: '' };

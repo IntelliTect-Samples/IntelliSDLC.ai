@@ -219,5 +219,57 @@ function makeRepo(name, gitignore) {
     }
 }
 
+// --- 10. A poisoned home directory cannot manufacture an "ignored" either. ---
+{
+    // The third vector, and the one that refuted the reasoning for keeping
+    // these: global config is persistent, so it was argued that unlike a
+    // per-invocation GIT_CONFIG_* it binds the operator's later `git add` too,
+    // making its answer true rather than forged. What is persistent is the
+    // config FILE; the path to it is named by an environment variable, and
+    // `HOME=<somewhere> node sanitize-har.js` scopes that to one invocation
+    // just as cheaply.
+    //
+    // Each variable below was confirmed to produce a false "ignored" before
+    // the strip. HOMEDRIVE/HOMEPATH only bite when HOME is unset -- which is
+    // the normal state of a Windows process -- so testing HOME alone would
+    // have missed them.
+    const evil = path.join(tmp, 'poison-excludes');
+    fs.writeFileSync(evil, '*\n', 'utf8');
+    const cfg = '[core]\n\texcludesFile = ' + evil.replace(/\\/g, '/') + '\n';
+
+    const fakeHome = makeDir('poison-home');
+    fs.writeFileSync(path.join(fakeHome, '.gitconfig'), cfg, 'utf8');
+    const fakeXdg = makeDir('poison-xdg');
+    fs.mkdirSync(path.join(fakeXdg, 'git'), { recursive: true });
+    fs.writeFileSync(path.join(fakeXdg, 'git', 'config'), cfg, 'utf8');
+
+    const repo = makeRepo('home-poisoned', '# nothing relevant\n');
+    const target = path.join(repo, '.har-captures', 'h', 's', '.substitutions.json');
+
+    const vectors = [
+        { HOME: fakeHome },
+        { XDG_CONFIG_HOME: fakeXdg },
+        { HOME: undefined, HOMEDRIVE: fakeHome.slice(0, 2), HOMEPATH: fakeHome.slice(2) },
+        { HOME: undefined, USERPROFILE: fakeHome },
+    ];
+
+    for (const vector of vectors) {
+        const saved = {};
+        for (const k of Object.keys(vector)) saved[k] = process.env[k];
+        for (const [k, v] of Object.entries(vector)) {
+            if (v === undefined) delete process.env[k]; else process.env[k] = v;
+        }
+        try {
+            assert.strictEqual(classifyDestination(target), NOT_IGNORED,
+                '10.a: a poisoned home (' + Object.keys(vector).join('+') +
+                ') manufactured an "ignored" verdict');
+        } finally {
+            for (const [k, v] of Object.entries(saved)) {
+                if (v === undefined) delete process.env[k]; else process.env[k] = v;
+            }
+        }
+    }
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All subs-destination tests passed');

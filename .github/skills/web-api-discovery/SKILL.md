@@ -941,6 +941,15 @@ Require every capture-derived probe to:
   hand-made or relocated capture tree inside a properly scaffolded repo is
   accepted on its merits -- the scaffold ignores the table filenames at any
   depth -- while the same tree outside one is refused.
+
+  **One deliberate limit.** The probe runs git with the environment's `GIT_*`
+  and home variables neutralised, because either can be pointed at
+  chosen config for a single invocation and forge an "ignored" verdict the
+  operator's own later `git add` would not honor. The consequence: an ignore
+  rule living **only** in a *global* `core.excludesFile` does not satisfy the
+  gate, and the scrub refuses with advice to add the entry to the repository's
+  own `.gitignore`. That is a false refusal rather than a false pass, which is
+  the direction this whole control errs in.
 - A committed reference **must** be gated in CI by `verify-har-reference.js`
   over the directory holding it -- `--dir <host>/`, or wherever the project
   keeps its references -- so it is checked on every PR and not only when it
