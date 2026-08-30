@@ -17,12 +17,16 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { makeTempRepo } = require(path.join(__dirname, 'har-test-repo.js'));
 
 const scriptsDir = __dirname;
 const sanitize = path.join(scriptsDir, 'sanitize-har.js');
 const verify = path.join(scriptsDir, 'verify-scrub.js');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'scrubber-hex-isfake-'));
+// The scrub refuses a substitution-table destination git will not confirm
+// is ignored (issue #318), so the fixture root is a real repository
+// configured the way a consumer's is.
+const tmp = makeTempRepo('scrubber-hex-isfake-');
 
 // The salt and the literal map now live in the operator's gitignored
 // `.har-profile.json` (issue #255); `--salt` was retired so that one profile
