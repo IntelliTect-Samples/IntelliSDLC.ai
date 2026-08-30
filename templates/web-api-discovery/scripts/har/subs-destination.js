@@ -58,17 +58,27 @@ function nearestExistingDir(p) {
 // in scripts/lib/repo-workflow-guard.js. `status` is null when git could not
 // be run at all, which is an answer of its own (see UNVERIFIABLE).
 //
-// GIT_DIR and GIT_WORK_TREE are stripped from the environment. Inherited, they
-// point git at a repository other than the one containing `cwd`, so the answer
-// would describe somewhere the file is not about to be written. A question
-// about the wrong repository is worse than no answer, because it is a
-// confident one.
+// The whole `GIT_*` namespace is stripped from the child's environment, not a
+// list of the variables that happen to be dangerous today. A blocklist is the
+// wrong shape here: `GIT_DIR` and `GIT_WORK_TREE` redirect the answer to
+// another repository, and `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` /
+// `GIT_CONFIG_VALUE_n` inject `core.excludesFile` to make `check-ignore` call
+// a path ignored that the repository does not protect -- and the next release
+// may add a third way. A question about the wrong repository is worse than no
+// answer, because it is a confident one.
+//
+// What is deliberately NOT stripped is `HOME` / `XDG_CONFIG_HOME`, so global
+// and system config still apply. The distinction is not squeamishness about
+// how far to go: environment-scoped config binds only this subprocess, so an
+// "ignored" it produces is a claim about nothing -- the operator's own later
+// `git add` would not honor it. Persistent config binds that `git add` too, so
+// when it says a path is ignored, the path really will not be committed and
+// the answer is correct.
 function git(cwd, args) {
-    const env = Object.assign({}, process.env);
-    delete env.GIT_DIR;
-    delete env.GIT_WORK_TREE;
-    delete env.GIT_INDEX_FILE;
-    delete env.GIT_COMMON_DIR;
+    const env = {};
+    for (const [k, v] of Object.entries(process.env)) {
+        if (!/^GIT_/i.test(k)) env[k] = v;
+    }
     const r = spawnSync('git', args, {
         cwd, env, encoding: 'utf8', windowsHide: true,
         stdio: ['ignore', 'pipe', 'ignore'],

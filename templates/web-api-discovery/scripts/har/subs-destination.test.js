@@ -179,5 +179,45 @@ function makeRepo(name, gitignore) {
     }
 }
 
+// --- 9. Inherited git config injection cannot manufacture an "ignored". ---
+{
+    // The second vector, and the reason the fix strips the whole GIT_ namespace
+    // rather than the names known to be dangerous: GIT_CONFIG_COUNT with a
+    // KEY/VALUE pair sets core.excludesFile for the child process alone, so a
+    // repository whose real .gitignore does not cover the destination reports
+    // it ignored anyway.
+    //
+    // That "ignored" is a claim about nothing -- config bound to this
+    // subprocess does not bind the operator's later `git add`, which is what
+    // the answer is supposed to predict.
+    const repo = makeRepo('cfg-injection', '# nothing relevant\n');
+    const target = path.join(repo, '.har-captures', 'h', 's', '.substitutions.json');
+    const excludes = path.join(tmp, 'evil-excludes');
+    fs.writeFileSync(excludes, '*\n', 'utf8');
+
+    const inject = {
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.excludesFile',
+        GIT_CONFIG_VALUE_0: excludes,
+    };
+    const leaked = spawnSync('git', ['check-ignore', '-q', '--', target], {
+        cwd: repo, env: Object.assign({}, process.env, inject), stdio: 'ignore',
+    });
+    assert.strictEqual(leaked.status, 0,
+        '9.a: fixture precondition -- injected config must make raw git answer "ignored" here');
+
+    const saved = {};
+    for (const k of Object.keys(inject)) saved[k] = process.env[k];
+    Object.assign(process.env, inject);
+    try {
+        assert.strictEqual(classifyDestination(target), NOT_IGNORED,
+            '9.b: inherited git config injection manufactured an "ignored" verdict');
+    } finally {
+        for (const [k, v] of Object.entries(saved)) {
+            if (v === undefined) delete process.env[k]; else process.env[k] = v;
+        }
+    }
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All subs-destination tests passed');
