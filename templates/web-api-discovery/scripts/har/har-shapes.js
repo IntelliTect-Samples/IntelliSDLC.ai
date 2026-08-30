@@ -80,6 +80,25 @@ const LEAK_PATTERNS = [
         isFake: (m) => /^9\d{2}-/.test(m)
     },
     {
+        // An IBAN carries a mod-97 checksum, so shape plus arithmetic is real
+        // evidence -- unlike a bare digit run. `ZZ` is unassigned and marks the
+        // scrubber's own fake.
+        name: 'iban',
+        class: 'identity',
+        re: /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g,
+        isFake: (m) => /^ZZ00/i.test(m),
+        precheck: (m) => ibanChecksumOk(m)
+    },
+    {
+        // Six hex pairs with a consistent separator. The separator is
+        // load-bearing: an unpunctuated 12-hex run is a hex12, not a MAC.
+        // Fakes use the `02:00:00` locally administered prefix.
+        name: 'mac-address',
+        class: 'identity',
+        re: /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}\b/g,
+        isFake: (m) => /^02[:-]00[:-]00[:-]/i.test(m)
+    },
+    {
         // Credit-card numbers. Fakes are Luhn-valid too (so we can't use
         // validity as the fake marker); instead, fakes always start with the
         // 4242 IIN test prefix.
@@ -171,6 +190,34 @@ function hasAssignedIin(s, policy) {
         }
     }
     return false;
+}
+
+/**
+ * ISO 13616 mod-97. Shared definition with pii.js by intent: the scrubber
+ * removes an IBAN and this gate fails a reference that still has one, and if
+ * the two disagreed about what an IBAN is, one of them would be wrong on every
+ * capture.
+ *
+ * There is deliberately NO `device-id` pattern here. IDFA and GAID are plain
+ * UUIDs, and a UUID is the most common identifier shape in any API -- request
+ * ids, trace ids, idempotency keys. Gating on that shape would report every
+ * one of them. `pii.js` scrubs advertising ids by FIELD NAME, which is the only
+ * evidence that exists for them.
+ */
+function ibanChecksumOk(value) {
+    const s = String(value).toUpperCase();
+    if (s.length < 15 || s.length > 34) return false;
+    const rearranged = s.slice(4) + s.slice(0, 4);
+    let remainder = 0;
+    for (const ch of rearranged) {
+        const code = ch.charCodeAt(0);
+        let part;
+        if (code >= 48 && code <= 57) part = String(code - 48);
+        else if (code >= 65 && code <= 90) part = String(code - 55);
+        else return false;
+        for (const digit of part) remainder = (remainder * 10 + (digit.charCodeAt(0) - 48)) % 97;
+    }
+    return remainder === 1;
 }
 
 function luhnValid(s) {
@@ -808,6 +855,7 @@ function findLeaksInHar(har, policy) {
 module.exports = {
     LEAK_PATTERNS,
     STRUCTURAL_LIMITS,
+    ibanChecksumOk,
     findLeaksInHar,
     blocksLeak,
     walkJsonBody,
