@@ -90,6 +90,12 @@ const LIVE = 'AbCdEfGhIjKl012345';
     ];
     const HISTORICAL_HEADERS = [
         'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
+        // ADDED with the scrubber's structural-node stage (issue #297). The
+        // corpus measurement found a live `x-csrftoken` in a "scrubbed"
+        // artifact: the CSRF token's cookie spelling was on the field list and
+        // its header spelling was on neither, so the header was gated by
+        // nothing and redacted by nothing.
+        'x-csrftoken',
     ];
     for (const name of HISTORICAL_FIELDS) {
         assert.strictEqual(secrets.isKnownSecretField(name), true,

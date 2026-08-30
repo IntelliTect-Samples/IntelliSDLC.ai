@@ -31,6 +31,18 @@
  * covers the same value appearing under a name nobody knew about. Neither
  * substitutes for the other.
  *
+ * The names control 1 acts on come from the MERGED policy (har-policy.js) --
+ * the same document the two verifiers gate on. That is not a tidiness point:
+ * while the scrubber kept its own view of the names and of where they live, it
+ * covered one spelling of each datum and the gate covered the other, so a
+ * capture the pipeline called "scrubbed" carried live session credentials in
+ * the structural nodes (`postData.params[]`, `queryString[]`, the `Cookie`
+ * header) while their raw twins held sentinels (issue #297).
+ *
+ * HAR stores the same datum twice, so every redaction decision here is a pure
+ * function of (name, value) and the policy: both copies are replaced, with the
+ * same fake, or neither is.
+ *
  * The salt and the literal map come from the gitignored `.har-profile.json`
  * (see har-profile.js). They are never defaulted: the literals are the
  * operator's own identifiers, and an absent profile is a hard failure.
@@ -51,6 +63,7 @@ const path = require('path');
 const crypto = require('crypto');
 const pii = require(path.join(__dirname, 'pii.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
+const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 
@@ -197,35 +210,81 @@ const PATTERNS = [
 // Field/header names that are secrets by identity, not by shape (issue #253).
 // These are short, non-hex, non-JWT tokens (CSRF/session-signing values,
 // upload handles) that the shape-based PATTERNS above never match, so they
-// need to be redacted by name instead. The lists live in har-secrets.js so
-// the verifiers gate on exactly the names the scrubber redacts.
+// need to be redacted by name instead.
+//
+// The names are DATA, and they come from the MERGED policy -- the same
+// `loadPolicy` the two verifiers call -- not from a second list this file
+// keeps. Sourcing them anywhere else is how the scrubber and the gate drifted:
+// stage 4.3 moved the gate onto the policy and left the scrubber reading the
+// shipped defaults, so a name a consuming project ADDED was gated by the
+// verifiers and never redacted by the scrubber (issue #297).
 const {
-    KNOWN_SECRET_FIELD_NAMES,
-    KNOWN_SECRET_HEADER_NAMES,
     isKnownSecretField,
+    isKnownSecretHeader,
+    isRedacted,
     replaceMultipartSecretFields,
 } = require(path.join(__dirname, 'har-secrets.js'));
 
-// Escaped alternation of known secret field names, used to catch them by
-// identity inside form-encoded bodies (`fb_dtsg=...&lsd=...`) and inline
-// JSON text (`"lsd":"..."`) -- shapes that PATTERNS never matches because
-// these values are short and neither hex- nor JWT-shaped.
-const KNOWN_FIELD_NAME_ALT = Array.from(KNOWN_SECRET_FIELD_NAMES)
-    .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('|');
-const FORM_FIELD_RE = new RegExp(`\\b(${KNOWN_FIELD_NAME_ALT})=([^&\\s"';,]+)`, 'gi');
-const JSON_FIELD_RE = new RegExp(`("(?:${KNOWN_FIELD_NAME_ALT})"\\s*:\\s*")([^"]*)(")`, 'gi');
+/**
+ * The scrub context: the merged policy, the salt, the running substitution
+ * table, and the field patterns compiled from the policy's names.
+ *
+ * It is one object rather than four parameters because every scrub function
+ * needs the policy now, and a `policy` that some call sites forget to pass is
+ * exactly the drift this change exists to remove.
+ */
+function createContext(policy, subs, salt) {
+    // Escaped alternation of known secret field names, used to catch them by
+    // identity inside form-encoded bodies (`fb_dtsg=...&lsd=...`) and inline
+    // JSON text (`"lsd":"..."`) -- shapes that PATTERNS never matches because
+    // these values are short and neither hex- nor JWT-shaped.
+    const alternation = policy.secretFields
+        .map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('|');
+    return {
+        policy,
+        subs,
+        salt,
+        formFieldRe: new RegExp(`\\b(${alternation})=([^&\\s"';,]+)`, 'gi'),
+        jsonFieldRe: new RegExp(`("(?:${alternation})"\\s*:\\s*")([^"]*)(")`, 'gi'),
+    };
+}
 
-function scrubKnownFields(s, subs, salt) {
-    let out = s.replace(FORM_FIELD_RE, (_m, name, val) => {
-        const key = `field:${name.toLowerCase()}:${val}`;
-        if (!subs[key]) subs[key] = fakeFor('field', val, salt);
-        return `${name}=${subs[key]}`;
+// One substitution per (kind, name, value), so the SAME datum spelled two ways
+// -- `postData.text` and `postData.params[]`, the `Cookie` header and
+// `request.cookies[]` -- resolves to the same fake. Both copies scrubbed, to
+// the same sentinel, or neither.
+function substitute(kind, name, value, ctx) {
+    const key = `${kind}:${name.toLowerCase()}:${value}`;
+    if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, value, ctx.salt);
+    return ctx.subs[key];
+}
+
+/**
+ * The replacement for a `name=value` pair whose NAME is a known secret, or
+ * null to leave it alone.
+ *
+ * Deliberately the same predicate the gate uses (`isKnownSecretField` /
+ * `isKnownSecretHeader` over the merged policy), so the scrubber redacts
+ * exactly what the verifiers would report. A sentinel is never re-scrubbed:
+ * running the scrub twice must be a no-op, and a header that has already had
+ * its cookie pairs replaced must not get a second, different fake.
+ */
+function fieldReplacement(name, value, ctx) {
+    if (typeof name !== 'string' || typeof value !== 'string' || value === '') return null;
+    if (isRedacted(value)) return null;
+    if (!isKnownSecretField(name, ctx.policy) && !isKnownSecretHeader(name, ctx.policy)) return null;
+    return substitute('field', name, value, ctx);
+}
+
+function scrubKnownFields(s, ctx) {
+    let out = s.replace(ctx.formFieldRe, (m, name, val) => {
+        if (isRedacted(val)) return m;
+        return `${name}=${substitute('field', name, val, ctx)}`;
     });
-    out = out.replace(JSON_FIELD_RE, (_m, pre, val, post) => {
-        const key = `field:${pre.toLowerCase()}:${val}`;
-        if (!subs[key]) subs[key] = fakeFor('field', val, salt);
-        return `${pre}${subs[key]}${post}`;
+    out = out.replace(ctx.jsonFieldRe, (m, pre, val, post) => {
+        if (val === '' || isRedacted(val)) return m;
+        return `${pre}${substitute('field', pre, val, ctx)}${post}`;
     });
     return out;
 }
@@ -245,19 +304,16 @@ function looksFormEncoded(s) {
 
 const MAX_DECODE_DEPTH = 3;
 
-function scrubString(s, subs, salt, depth) {
+function scrubString(s, ctx, depth) {
     if (typeof s !== 'string' || s.length === 0) return s;
     const level = depth || 0;
-    let out = scrubKnownFields(s, subs, salt);
+    let out = scrubKnownFields(s, ctx);
 
     // Multipart bodies carry the field name in a header and the value on its
     // own line, so the `name=value` and `"name":"value"` forms above never
     // see them.
-    out = replaceMultipartSecretFields(out, (name, value) => {
-        const key = `field:${name.toLowerCase()}:${value}`;
-        if (!subs[key]) subs[key] = fakeFor('field', value, salt);
-        return subs[key];
-    });
+    out = replaceMultipartSecretFields(out, (name, value) =>
+        substitute('field', name, value, ctx), ctx.policy);
 
     // Reach INSIDE percent-encoded parameters. A form body carrying
     // `variables=<percent-encoded JSON>` hides per-request tokens where no
@@ -265,89 +321,161 @@ function scrubString(s, subs, salt, depth) {
     // never appears in the form's own parameter list.
     if (level < MAX_DECODE_DEPTH && looksFormEncoded(out)) {
         out = harLiterals.transformEncodedParams(out, (_name, decoded) =>
-            scrubString(decoded, subs, salt, level + 1));
+            scrubString(decoded, ctx, level + 1));
     }
 
     for (const { kind, re } of PATTERNS) {
         out = out.replace(re, (match) => {
             const key = `${kind}:${match}`;
-            if (!subs[key]) subs[key] = fakeFor(kind, match, salt);
-            return subs[key];
+            if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, match, ctx.salt);
+            return ctx.subs[key];
         });
     }
     return out;
 }
 
-function scrubCookieHeader(value, subs, salt) {
+// A cookie is worth redacting when its value looks token-ish (16+ chars) OR
+// its name is a known secret -- session cookies like `mid` / `sb` can be short.
+const COOKIE_TOKEN_MIN_LENGTH = 16;
+
+/**
+ * The replacement for one cookie, or null to leave it alone.
+ *
+ * The ONE decision, shared by `request.cookies[]`, `response.cookies[]`, the
+ * `Cookie` header and the `Set-Cookie` header. It is a pure function of the
+ * cookie's name and value, which is what makes "both copies scrubbed or
+ * neither" true by construction rather than by two heuristics happening to
+ * agree -- they did not: the header scrub stopped its value match at a comma,
+ * so a comma-bearing session cookie was scrubbed in the array and left live
+ * in the header carrying the same datum.
+ */
+function cookieReplacement(name, value, ctx) {
+    if (typeof name !== 'string' || typeof value !== 'string' || value === '') return null;
+    if (isRedacted(value)) return null;
+    if (value.length < COOKIE_TOKEN_MIN_LENGTH
+        && !isKnownSecretField(name, ctx.policy)
+        && !isKnownSecretHeader(name, ctx.policy)) return null;
+    return substitute('cookie', name, value, ctx);
+}
+
+/**
+ * Scrub the cookie pairs of a `Cookie` or `Set-Cookie` header.
+ *
+ * Split on `;`, which is what actually separates the pairs, rather than
+ * matching `name=value` with a character class that excludes commas: a cookie
+ * value legitimately contains commas (and `=`), and the old pattern truncated
+ * such a value to the fragment before the comma, measured the fragment against
+ * the 16-character threshold, and left the whole cookie in the clear.
+ *
+ * `Set-Cookie` carries exactly one pair, in the first segment; everything after
+ * it is an attribute (`Path`, `Domain`, `Expires`, ...). Attributes are
+ * protocol documentation, not credentials, so they are left alone -- the old
+ * scrub replaced any attribute whose value ran to 16 characters, which
+ * corrupted `Domain` and told the reader nothing.
+ */
+function scrubCookieHeader(value, ctx, singlePair) {
     if (typeof value !== 'string') return value;
-    // For Cookie / Set-Cookie headers, replace the value of any pair whose
-    // value looks token-ish (16+ chars) OR whose cookie name is a known
-    // secret (session cookies like `mid` / `sb` can be short).
-    return value.replace(/([^;,\s=]+)=([^;,\s]+)/g, (m, name, tok) => {
-        if (tok.length < 16 && !isKnownSecretField(name)) return m;
-        const key = `cookie:${name.toLowerCase()}:${tok}`;
-        if (!subs[key]) subs[key] = fakeFor('cookie', tok, salt);
-        return `${name}=${subs[key]}`;
-    });
+    const segments = value.split(';');
+    const last = singlePair ? Math.min(1, segments.length) : segments.length;
+    for (let i = 0; i < last; i++) {
+        const segment = segments[i];
+        const eq = segment.indexOf('=');
+        if (eq < 0) continue;
+        const rawName = segment.slice(0, eq);
+        const rawValue = segment.slice(eq + 1);
+        const name = rawName.trim();
+        const leading = /^\s*/.exec(rawValue)[0];
+        const trailing = /\s*$/.exec(rawValue)[0];
+        const cookieValue = rawValue.slice(leading.length, rawValue.length - trailing.length);
+        const replacement = cookieReplacement(name, cookieValue, ctx);
+        if (replacement === null) continue;
+        segments[i] = `${rawName}=${leading}${replacement}${trailing}`;
+    }
+    return segments.join(';');
 }
 
 // The HAR spec lets `cookies[]` and the `Cookie` header diverge, and the
 // 16-char-or-known-name heuristic only ever ran over header text. A session
 // cookie present only in the structured array was missed by the scrubber and
 // by every gate downstream of it.
-function scrubCookieArray(cookies, subs, salt) {
+function scrubCookieArray(cookies, ctx) {
     if (!Array.isArray(cookies)) return cookies;
     for (const c of cookies) {
         if (!c || typeof c.value !== 'string' || typeof c.name !== 'string') continue;
-        if (c.value.length < 16 && !isKnownSecretField(c.name)) continue;
-        const key = `cookie:${c.name.toLowerCase()}:${c.value}`;
-        if (!subs[key]) subs[key] = fakeFor('cookie', c.value, salt);
-        c.value = subs[key];
+        const replacement = cookieReplacement(c.name, c.value, ctx);
+        if (replacement !== null) c.value = replacement;
     }
     return cookies;
 }
 
-function scrubHeaders(headers, subs, salt) {
+/**
+ * Scrub the structural `{ name, value }` arrays: `request.queryString[]` and
+ * `request.postData.params[]`.
+ *
+ * These are the OTHER half of data the scrubber already handled in its raw
+ * spelling. `postData.text` was scrubbed by name and `postData.params[]` was
+ * not, so on a real capture the same secret appeared twice in one entry: a
+ * sentinel in the text and the live value in the parameter list. The query
+ * string had no raw twin at all and was simply never scrubbed by name.
+ *
+ * The generic walk still runs over each pair afterwards, so shapes and
+ * percent-encoded payloads inside a parameter keep exactly today's treatment.
+ */
+function scrubNameValuePairs(pairs, ctx) {
+    if (!Array.isArray(pairs)) return walk(pairs, ctx);
+    for (const pair of pairs) {
+        if (pair && typeof pair === 'object' && !Array.isArray(pair)) {
+            const replacement = fieldReplacement(pair.name, pair.value, ctx);
+            if (replacement !== null) pair.value = replacement;
+        }
+        walk(pair, ctx);
+    }
+    return pairs;
+}
+
+function scrubHeaders(headers, ctx) {
     if (!Array.isArray(headers)) return headers;
     for (const h of headers) {
         if (!h || typeof h.value !== 'string') continue;
         const lname = (h.name || '').toLowerCase();
         if (lname === 'cookie' || lname === 'set-cookie') {
-            h.value = scrubCookieHeader(h.value, subs, salt);
+            h.value = scrubCookieHeader(h.value, ctx, lname === 'set-cookie');
         }
         if (lname === 'authorization') {
             // Replace bearer-style: "Bearer <token>"
             h.value = h.value.replace(/Bearer\s+(\S+)/i, (_m, tok) => {
                 const key = `bearer:${tok}`;
-                if (!subs[key]) subs[key] = `Bearer ${fakeFor('hex64', tok, salt).slice(0, 40)}`;
-                return subs[key];
+                if (!ctx.subs[key]) ctx.subs[key] = `Bearer ${fakeFor('hex64', tok, ctx.salt).slice(0, 40)}`;
+                return ctx.subs[key];
             });
         }
-        if (KNOWN_SECRET_HEADER_NAMES.has(lname)) {
-            const key = `field:${lname}:${h.value}`;
-            if (!subs[key]) subs[key] = fakeFor('field', h.value, salt);
-            h.value = subs[key];
-        }
-        h.value = scrubString(h.value, subs, salt);
+        // A header whose NAME is a secret, by either list. The verifiers test a
+        // name/value pair against both, so the scrubber does too: a name on one
+        // list and not the other would be gated and never redacted.
+        const replacement = fieldReplacement(lname, h.value, ctx);
+        if (replacement !== null) h.value = replacement;
+        h.value = scrubString(h.value, ctx);
     }
     return headers;
 }
 
-function walk(node, subs, salt) {
+function walk(node, ctx) {
     if (node === null || node === undefined) return node;
-    if (typeof node === 'string') return scrubString(node, subs, salt);
+    if (typeof node === 'string') return scrubString(node, ctx);
     if (Array.isArray(node)) {
-        for (let i = 0; i < node.length; i++) node[i] = walk(node[i], subs, salt);
+        for (let i = 0; i < node.length; i++) node[i] = walk(node[i], ctx);
         return node;
     }
     if (typeof node === 'object') {
         for (const k of Object.keys(node)) {
             if (k === 'headers') {
-                node[k] = scrubHeaders(node[k], subs, salt);
+                node[k] = scrubHeaders(node[k], ctx);
             } else if (k === 'cookies') {
-                node[k] = scrubCookieArray(node[k], subs, salt);
+                node[k] = scrubCookieArray(node[k], ctx);
+            } else if (k === 'queryString' || k === 'params') {
+                node[k] = scrubNameValuePairs(node[k], ctx);
             } else {
-                node[k] = walk(node[k], subs, salt);
+                node[k] = walk(node[k], ctx);
             }
         }
         return node;
@@ -367,6 +495,20 @@ function main() {
         process.exit(1);
     }
     const salt = profile.salt;
+
+    // The merged policy is discovered from the file being scrubbed, exactly as
+    // verify-scrub.js discovers it from the file being verified, so a consuming
+    // project's `.har-policy.project.json` governs the scrub and the gate with
+    // one document. A policy that fails to load is a hard failure: scrubbing
+    // against a silently-defaulted list is how a project's added secret names
+    // go unredacted (issue #297).
+    let policy;
+    try {
+        policy = harPolicy.loadPolicy({ startDir: path.dirname(path.resolve(args.in)) });
+    } catch (e) {
+        console.error(`sanitize-har: ${e.message}`);
+        process.exit(1);
+    }
 
     const outPath = args.out || deriveOutPath(args.in);
     const outDir = path.dirname(outPath);
@@ -399,7 +541,7 @@ function main() {
     }
 
     const subs = {};
-    walk(har, subs, salt);
+    walk(har, createContext(policy, subs, salt));
 
     // Typed-PII pass (issue #46): runs after legacy regex scrub so that
     // anything still in the HAR (emails in custom-named fields, phones,
