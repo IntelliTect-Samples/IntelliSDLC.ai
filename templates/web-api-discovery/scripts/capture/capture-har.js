@@ -134,6 +134,14 @@ const SCRUBBED_HAR = 'scrubbed.har';
 // ever holding a file that is known to be leaking.
 const REJECTED_HAR = 'scrubbed.rejected.har';
 const FINDINGS_FILE = 'scrub-findings.json';
+// Publication writes here first and then RENAMES onto the real name. The
+// prefix is shared by every file the output path receives, so one sweep finds
+// them all; the dot keeps them out of a casual listing.
+const PUBLISH_TEMP_PREFIX = '.publishing-';
+// A temporary older than this was abandoned by a run that died. A live one
+// exists for milliseconds, so nothing in flight is ever this old -- which is
+// what lets the sweep run without racing a concurrent capture.
+const PUBLISH_TEMP_STALE_MS = 24 * 60 * 60 * 1000;
 // verify-scrub.js exit 4: identity findings by SHAPE and nothing worse. The
 // artifact is verified enough to proceed. Any other non-zero blocks.
 const VERIFY_ADVISORY_EXIT = 4;
@@ -1092,9 +1100,9 @@ function postProcess(session, opts = {}) {
     // session keeps the complete record of what it produced.
     try {
         fs.mkdirSync(session.outputPath, { recursive: true });
-        const published = path.join(session.outputPath, SCRUBBED_HAR);
-        fs.copyFileSync(state.scrubbed.path, published);
-        state.scrubbed.path = published;
+        sweepAbandonedTemps(session.outputPath);
+        state.scrubbed.path =
+            publishFile(state.scrubbed.path, path.join(session.outputPath, SCRUBBED_HAR));
         // A findings report describes ONE run. Left behind by a re-capture
         // that came back clean it would still read as current, which is the
         // same disease as a digest built from an unverified capture: it looks
@@ -1102,7 +1110,7 @@ function postProcess(session, opts = {}) {
         // archive -- the session directory keeps every report ever written.
         const publishedReport = path.join(session.outputPath, FINDINGS_FILE);
         const freshReport = path.join(session.sessionDir, FINDINGS_FILE);
-        if (!fs.existsSync(freshReport) && fs.existsSync(publishedReport)) {
+        if (!fs.existsSync(freshReport) && isFindingsReport(publishedReport)) {
             try { fs.unlinkSync(publishedReport); } catch { /* leave it */ }
         }
         state.scrubbed.findings = copyIfPresent(freshReport, publishedReport);
@@ -1145,6 +1153,20 @@ function postProcess(session, opts = {}) {
 }
 
 /**
+ * Is the file at `p` a findings report THIS tool wrote?
+ *
+ * Clearing a stale report must key on the document, not on the filename. The
+ * output path being tool-owned is documented and bannered, which makes it a
+ * convention; deleting whatever occupies a name on the strength of a
+ * convention is how somebody's hand-written notes disappear.
+ */
+function isFindingsReport(p) {
+    const doc = readJson(p);
+    return !!doc && typeof doc === 'object'
+        && doc.schemaVersion !== undefined && Array.isArray(doc.findings);
+}
+
+/**
  * A name in `dir` that is not taken yet: `base.ext`, then `base.2.ext`, ...
  *
  * Nothing under `.har-captures/` is ever deleted or overwritten, and a second
@@ -1160,11 +1182,61 @@ function freeName(dir, base, ext) {
     return candidate;
 }
 
+/**
+ * Put `from` at `to` so that `to` is never seen holding a partial write.
+ *
+ * The bytes land under a temporary name in the SAME directory and then take
+ * the real name with a rename, which either happens or does not -- there is no
+ * intermediate state in which the destination exists and is incomplete. A
+ * plain copy has one: a run killed part-way through leaves a truncated file
+ * under the name that means "verified", and two captures publishing at once
+ * interleave into a corrupted one rather than one of them simply winning.
+ *
+ * The whole invariant here is "a file that exists at the output path has
+ * already been judged", so a half-written file under that name is worse than
+ * no file at all -- neither a reader nor `git add -A` can tell it apart.
+ *
+ * The temporary is removed if the rename does not happen, so a failure leaves
+ * the previous artifact in place and nothing else behind.
+ */
+function publishFile(from, to) {
+    const temp = path.join(path.dirname(to),
+        `${PUBLISH_TEMP_PREFIX}${process.pid}-${Date.now().toString(36)}-` +
+        `${Math.random().toString(36).slice(2, 8)}`);
+    fs.copyFileSync(from, temp);
+    try {
+        fs.renameSync(temp, to);
+    } catch (e) {
+        try { fs.unlinkSync(temp); } catch { /* nothing more to do */ }
+        throw e;
+    }
+    return to;
+}
+
+/**
+ * Remove publication temporaries abandoned by a run that died.
+ *
+ * Age is the discriminator, not the prefix alone. A blind sweep would delete
+ * the in-flight temporary of a CONCURRENT capture and reintroduce exactly the
+ * corruption `publishFile` exists to prevent -- from the other side.
+ */
+function sweepAbandonedTemps(dir, now = Date.now()) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+        if (!name.startsWith(PUBLISH_TEMP_PREFIX)) continue;
+        const full = path.join(dir, name);
+        try {
+            if (now - fs.statSync(full).mtimeMs < PUBLISH_TEMP_STALE_MS) continue;
+            fs.unlinkSync(full);
+        } catch { /* another run may have just taken it; that is fine */ }
+    }
+}
+
 function copyIfPresent(from, to) {
     if (!fs.existsSync(from)) return null;
     try {
-        fs.copyFileSync(from, to);
-        return to;
+        return publishFile(from, to);
     } catch {
         return null;
     }
@@ -1992,6 +2064,9 @@ module.exports = {
     decideCatalogueRunner,
     postProcess,
     postProcessExitCode,
+    publishFile,
+    sweepAbandonedTemps,
+    PUBLISH_TEMP_PREFIX,
     findingSummaryLines,
     runNode,
     IncrementalRecorder
