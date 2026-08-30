@@ -114,17 +114,43 @@ function check(key, expected, label) {
         'shipping_address_1', 'street']) {
         check(key, 'street-address', '6.b');
     }
+
+    // `addr` / `addr1` / `addr2` is the older convention and was missing, so a
+    // street address under that key shipped unscrubbed. A miss rather than a
+    // corruption -- the acceptable direction -- but a real gap.
+    for (const key of ['addr', 'addr1', 'addr2', 'billing_addr', 'shipping_addr_2']) {
+        check(key, 'street-address', '6.c');
+    }
 }
 
-// --- 7. Genuinely unambiguous tails need no qualifier. ---
-// `city`, `town`, `locality` and the date-of-birth spellings carry their
-// meaning in the token itself: there is no `bucket_city` or `file_dob`.
+// --- 7. A qualified location tail matches. ---
+// The first version of this test asserted "there is no `bucket_city`" and
+// treated `city` as unambiguous on that basis. That was an assumption written
+// down as a premise rather than tested, and it was wrong -- see 7d.
 {
-    for (const key of ['billing_city', 'shipping_city', 'home_city', 'work_city']) {
+    for (const key of ['billing_city', 'shipping_city', 'home_city', 'work_city',
+        'origin_city', 'destination_city']) {
         check(key, 'city', '7.a');
     }
     for (const key of ['birth_date', 'date_of_birth', 'birthday']) {
         check(key, 'dob', '7.c');
+    }
+}
+
+// --- 7d. `city` is a sorting and filtering word too. ---
+// `sort_city: "asc"` was scrubbed to `sort_city: "Ashendell"`. A sort direction
+// silently became a fake place name in a committed reference, with nothing
+// reporting it -- the artifact corrupted rather than leaked from.
+//
+// This is the SAME class the qualifier allowlist already fixed for `region`,
+// `country` and `zip`. `city`, `town` and `locality` were left in the
+// unconditional bucket because the fix was applied to the three names that had
+// been named, rather than to the category. List-endpoint verbs are exactly
+// where a location word turns up meaning something else.
+{
+    for (const key of ['sort_city', 'filter_city', 'search_city', 'nearest_city',
+        'sort_town', 'filter_locality', 'group_by_city', 'order_by_city']) {
+        check(key, null, '7d.a');
     }
 }
 

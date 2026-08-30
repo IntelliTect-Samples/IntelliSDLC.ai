@@ -110,6 +110,14 @@ function keyWords(key) {
         .filter(Boolean)
         .map((w) => w.toLowerCase());
     while (words.length > 1 && /^\d+$/.test(words[words.length - 1])) words.pop();
+    // ...and an ordinal fused onto the last word, which is the same repetition
+    // spelled without a separator: `addr1`, `addr2`, `address2`, `phone2`.
+    // Only the trailing digits go, and only when letters remain, so `sha256`
+    // becomes `sha` -- a word no dictionary lists -- rather than anything.
+    if (words.length > 0) {
+        const fused = /^([a-z]+)\d+$/.exec(words[words.length - 1]);
+        if (fused) words[words.length - 1] = fused[1];
+    }
     return words;
 }
 
@@ -269,7 +277,7 @@ function fakeFor(type, original) {
         case 'mac-address': {
             const octets = [];
             for (let i = 0; i < 3; i++) octets.push(h.slice(i * 2, i * 2 + 2).toUpperCase());
-            return `02:00:00:${octets.join(':')}`;
+            return `06:F0:0D:${octets.join(':')}`;
         }
         case 'device-id':
             return `DEADBEEF-${h.slice(0, 4)}-4${h.slice(4, 7)}-8${h.slice(7, 10)}-${h.slice(10, 22)}`.toUpperCase();
@@ -361,10 +369,13 @@ function ibanChecksumOk(value) {
 }
 
 // The scrubber's own output, recognised exactly. `ZZ` is an unassigned country
-// code and `02:00:00` is a locally administered MAC prefix, so neither fake can
+// code and `06:F0:0D` is an arbitrary locally administered MAC prefix -- NOT
+// `02:00:00`, which is the textbook one that real virtualisation and sandbox
+// tools emit, and which therefore made real addresses look already-scrubbed.
+// A fake marker must be a shape the world does not already use, so neither fake can
 // be mistaken for a real value -- and neither is re-detected as a leak.
 function isFakeIban(v) { return /^ZZ00/i.test(String(v)); }
-function isFakeMac(v) { return /^02[:-]00[:-]00[:-]/i.test(String(v)); }
+function isFakeMac(v) { return /^06[:-]F0[:-]0D[:-]/i.test(String(v)); }
 function isFakeDeviceId(v) { return /^DEADBEEF-/i.test(String(v)); }
 
 function isFakePhone(value) {
