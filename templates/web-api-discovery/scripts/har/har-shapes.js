@@ -96,7 +96,13 @@ const LEAK_PATTERNS = [
         // NOT `02:00:00`, which real tools emit.
         name: 'mac-address',
         class: 'identity',
-        re: /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}\b/g,
+        // Exactly six pairs, never six pairs INSIDE more pairs. A TLS thumbprint
+        // and an SSH host-key fingerprint are colon-separated hex too, and an
+        // unanchored pattern carves three "MAC addresses" out of one of them.
+        // Kept character-identical to `RE.mac` in pii.js: the scrubber removes
+        // what this gate fails on, and if the two disagreed about what a MAC is,
+        // one of them would be wrong on every capture.
+        re: /(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])|(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])/g,
         isFake: (m) => /^06[:-]F0[:-]0D[:-]/i.test(m)
     },
     {

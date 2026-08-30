@@ -213,6 +213,53 @@ function check(key, expected, label) {
         '7c.d: a bare key listed in `exact` stopped matching');
 }
 
+// --- 7e. The rest of the unconditional set: dob and geo. ---
+// Two rounds of review found this class twice -- `region`/`country`/`zip`,
+// then `city`/`town`/`locality` -- and both times the fix went to the names
+// that had been named. These are the remainder of the set.
+//
+// `birthday` is an anniversary word: an account, a page or a cohort has one and
+// none of them is a person's date of birth. `latitude` and `longitude` are
+// coordinate words: ecliptic and galactic coordinates are astronomy, and a
+// game world grid reuses the same terms. Scrubbing any of them overwrites real
+// data with a fake date or a zero.
+{
+    for (const key of ['account_birthday', 'page_birthday', 'cohort_birthday',
+        'company_birthday', 'product_birthday']) {
+        check(key, null, '7e.a');
+    }
+    for (const key of ['ecliptic_latitude', 'galactic_longitude', 'world_latitude',
+        'grid_longitude', 'texture_latitude']) {
+        check(key, null, '7e.b');
+    }
+
+    // ...and the person-located spellings still match.
+    for (const key of ['user_birthday', 'customer_birthday', 'birth_date', 'date_of_birth']) {
+        check(key, 'dob', '7e.c');
+    }
+    for (const key of ['device_latitude', 'gps_latitude', 'user_latitude', 'current_latitude']) {
+        check(key, 'geo-lat', '7e.d');
+    }
+    for (const key of ['device_longitude', 'gps_longitude', 'user_longitude']) {
+        check(key, 'geo-lng', '7e.e');
+    }
+}
+
+// --- 7f. Qualifiers that a payments or travel payload actually uses. ---
+// The mirror direction. `cardholder_name` sits directly beside card data in
+// every checkout payload there is, and returned null. A miss is the acceptable
+// direction, but not one worth accepting when the word is this common.
+{
+    for (const key of ['cardholder_name', 'beneficiary_name', 'payee_name', 'guardian_name',
+        'spouse_name', 'traveler_name', 'passenger_name', 'applicant_name', 'tenant_name']) {
+        check(key, 'person-name', '7f.a');
+    }
+    for (const key of ['invoice_city', 'invoice_address', 'cardholder_address']) {
+        assert.ok(['city', 'street-address'].includes(pii.fieldType(key)),
+            `7f.b: ${key} was not recognised as a location field`);
+    }
+}
+
 // --- 8. A trailing index is part of the path, not part of the name. ---
 // `address_line_1`, `addresses[0]`, `phone_2` -- an ordinal suffix is how APIs
 // spell repetition, and it must not stop the field being recognised.

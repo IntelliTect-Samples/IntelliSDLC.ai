@@ -219,7 +219,11 @@ const RE = {
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
     creditDigits: /\b\d{13,19}\b/g,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
-    ipv6:         /\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b/g,
+    // Same anchoring, and the same reason. This one is PRE-EXISTING: main
+    // already carves `192.0.2.x` out of a certificate fingerprint. Fixed here
+    // because it is the identical defect in the identical value, and shipping
+    // only the MAC half would leave the demonstration case still corrupting.
+    ipv6:         /(?<![0-9A-Fa-f:])(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}(?![:0-9A-Fa-f])/g,
     isoDate:      /^\d{4}-\d{2}-\d{2}$/,
     // An IBAN is two country letters, two check digits, then up to 30
     // alphanumerics -- and a mod-97 checksum over the lot. The arithmetic is
@@ -229,7 +233,12 @@ const RE = {
     // Six hex pairs with a consistent separator. Nothing else wears this, and
     // the separator is load-bearing: an unpunctuated 12-hex run is a hex12,
     // not a MAC.
-    mac:          /\b[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\b|\b[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}\b/g,
+    // Exactly six pairs, never six pairs INSIDE more pairs. A TLS thumbprint
+    // and an SSH host-key fingerprint are colon-separated hex too, and they are
+    // protocol evidence the capture exists to preserve -- an unanchored pattern
+    // carves three `MAC addresses` out of one fingerprint and the scrub then
+    // destroys it. `Six hex pairs` is not `a MAC address` when more follow.
+    mac:          /(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])|(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])/g,
     uuid:         /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 };
 

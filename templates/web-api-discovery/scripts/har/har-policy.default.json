@@ -154,7 +154,22 @@
         "employee",
         "guest",
         "passenger",
-        "subscriber"
+        "subscriber",
+        "cardholder",
+        "beneficiary",
+        "payee",
+        "payer",
+        "guardian",
+        "spouse",
+        "traveler",
+        "traveller",
+        "applicant",
+        "tenant",
+        "buyer",
+        "seller",
+        "attendee",
+        "billing",
+        "shipping"
       ]
     },
     "street-address": {
@@ -206,7 +221,9 @@
         "pickup",
         "dropoff",
         "destination",
-        "origin"
+        "origin",
+        "invoice",
+        "cardholder"
       ]
     },
     "city": {
@@ -252,7 +269,9 @@
         "pickup",
         "dropoff",
         "destination",
-        "origin"
+        "origin",
+        "invoice",
+        "cardholder"
       ]
     },
     "region": {
@@ -292,7 +311,9 @@
         "passenger",
         "subscriber",
         "patient",
-        "employee"
+        "employee",
+        "invoice",
+        "cardholder"
       ]
     },
     "postal-code": {
@@ -334,7 +355,9 @@
         "passenger",
         "subscriber",
         "patient",
-        "employee"
+        "employee",
+        "invoice",
+        "cardholder"
       ]
     },
     "country": {
@@ -371,7 +394,9 @@
         "passenger",
         "subscriber",
         "patient",
-        "employee"
+        "employee",
+        "invoice",
+        "cardholder"
       ]
     },
     "dob": {
@@ -387,7 +412,23 @@
         "birthdate",
         "birthday"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "user",
+        "customer",
+        "client",
+        "member",
+        "account_holder",
+        "patient",
+        "employee",
+        "child",
+        "dependent",
+        "subscriber",
+        "guest",
+        "passenger",
+        "birth",
+        "person",
+        "contact"
+      ]
     },
     "geo-lat": {
       "exact": [
@@ -399,7 +440,21 @@
         "latitude",
         "geolat"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "device",
+        "gps",
+        "user",
+        "current",
+        "home",
+        "last",
+        "pickup",
+        "dropoff",
+        "origin",
+        "destination",
+        "customer",
+        "driver",
+        "delivery"
+      ]
     },
     "geo-lng": {
       "exact": [
@@ -413,7 +468,21 @@
         "longitude",
         "geolng"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "device",
+        "gps",
+        "user",
+        "current",
+        "home",
+        "last",
+        "pickup",
+        "dropoff",
+        "origin",
+        "destination",
+        "customer",
+        "driver",
+        "delivery"
+      ]
     },
     "phone": {
       "exact": [
