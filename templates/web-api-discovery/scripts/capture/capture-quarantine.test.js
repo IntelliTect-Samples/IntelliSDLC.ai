@@ -434,6 +434,120 @@ test('a temporary file abandoned by an earlier crash is swept, a live one is not
 });
 
 // ---------------------------------------------------------------------------
+// The rename retries a transient Windows lock, and only a transient one
+// ---------------------------------------------------------------------------
+
+// Atomicity is not free on Windows, and the asymmetry is real: POSIX
+// rename(2) replaces a destination even while another process holds it open,
+// while Windows refuses with EPERM unless that handle was opened with
+// FILE_SHARE_DELETE. A plain copy did not care. So moving to a rename bought
+// the correctness guarantee at the cost of availability on the platform this
+// repo primarily runs on -- real-time antivirus scanning the file that was
+// just written is the everyday trigger, and an editor or a git command
+// holding scrubbed.har for a moment does it too.
+//
+// The condition clears on its own in milliseconds, so a capture that would
+// have succeeded must not be lost to it. A bounded retry recovers the
+// availability without giving back the guarantee: every attempt is still a
+// rename, so there is still no state in which the destination exists and is
+// incomplete.
+//
+// The race is not what is asserted -- holding a real handle open with the
+// right share mode is not reproducible across platforms. What is asserted is
+// the retry itself: a rename that fails transiently N times and then succeeds,
+// one that never succeeds, and one that fails for a reason that is not
+// transient at all.
+function countingRename(publishedName, plan) {
+    const real = fs.renameSync;
+    const state = { attempts: 0 };
+    fs.renameSync = (from, to) => {
+        if (path.basename(to) !== publishedName) return real(from, to);
+        state.attempts++;
+        const code = plan(state.attempts);
+        if (!code) return real(from, to);
+        throw Object.assign(new Error(`induced ${code}`), { code });
+    };
+    state.restore = () => { fs.renameSync = real; };
+    return state;
+}
+
+test('a rename that is briefly locked is retried until it succeeds', () => {
+    const dir = repo('rename-retry');
+    const s = session(dir, '2026-01-01-120000');
+
+    // Fails for every attempt but the last one the bound allows, so the retry
+    // is exercised to its limit and still recovers the capture.
+    const failures = capture.PUBLISH_RENAME_ATTEMPTS - 1;
+    const rename = countingRename(SCRUBBED_HAR, (n) => (n <= failures ? 'EPERM' : null));
+    let state;
+    try { state = inDir(dir, () => capture.postProcess(s)); } finally { rename.restore(); }
+
+    assert.strictEqual(rename.attempts, capture.PUBLISH_RENAME_ATTEMPTS,
+        'the retry gave up before the bound it advertises');
+    assert.deepStrictEqual(state.errors, [],
+        'a capture was lost to a lock that cleared on its own');
+    assert.ok(fs.existsSync(path.join(s.outputPath, SCRUBBED_HAR)));
+    assert.strictEqual(state.scrubbed.path, path.join(s.outputPath, SCRUBBED_HAR));
+    assert.deepStrictEqual(
+        fs.readdirSync(s.outputPath).sort(),
+        ['catalogue.json', 'digest.json', SCRUBBED_HAR].sort(),
+        'a retried publication left its temporary behind');
+});
+
+test('a rename locked forever gives up, reports, and keeps the previous artifact', () => {
+    // The bound is the point. Retrying until the lock clears would hang a
+    // capture on a file somebody left open in an editor, which is a worse
+    // failure than the one being avoided: at least an error can be read.
+    const dir = repo('rename-forever');
+    const first = session(dir, '2026-01-01-120000');
+    inDir(dir, () => capture.postProcess(first));
+    const artifact = path.join(first.outputPath, SCRUBBED_HAR);
+    const kept = fs.readFileSync(artifact, 'utf8');
+
+    const other = JSON.parse(JSON.stringify(okEntry));
+    other.request.url = 'https://api.example.com/v2/elsewhere';
+    const again = session(dir, '2026-01-02-120000', [other]);
+
+    const rename = countingRename(SCRUBBED_HAR, () => 'EBUSY');
+    const startedAt = Date.now();
+    let state;
+    try { state = inDir(dir, () => capture.postProcess(again)); } finally { rename.restore(); }
+    const elapsed = Date.now() - startedAt;
+
+    assert.strictEqual(rename.attempts, capture.PUBLISH_RENAME_ATTEMPTS,
+        'the retry is not bounded by the count it advertises');
+    assert.ok(elapsed < 30000,
+        `a permanently locked destination took ${elapsed}ms to surface -- an error `
+        + 'nobody waits for is not an error anybody reads');
+    assert.ok(state.errors.length, 'the failure must be reported');
+    assert.strictEqual(fs.readFileSync(artifact, 'utf8'), kept,
+        'the previous artifact was disturbed by a publication that never happened');
+    assert.deepStrictEqual(
+        fs.readdirSync(again.outputPath).sort(),
+        ['catalogue.json', 'digest.json', SCRUBBED_HAR].sort(),
+        'the temporary survived a failed publication');
+});
+
+test('a rename that fails for a non-transient reason is not retried', () => {
+    // Backoff must not paper over a real permission problem. EACCES is a
+    // standing condition -- waiting 400ms and asking again changes nothing
+    // except how long the operator waits to be told.
+    const dir = repo('rename-eacces');
+    const s = session(dir, '2026-01-01-120000');
+
+    const rename = countingRename(SCRUBBED_HAR, () => 'EACCES');
+    let state;
+    try { state = inDir(dir, () => capture.postProcess(s)); } finally { rename.restore(); }
+
+    assert.strictEqual(rename.attempts, 1,
+        'a non-transient error was retried, delaying the report of a real fault');
+    assert.ok(state.errors.some((e) => /EACCES/.test(e)),
+        `the underlying error must reach the operator: ${JSON.stringify(state.errors)}`);
+    assert.ok(!fs.existsSync(path.join(s.outputPath, SCRUBBED_HAR)),
+        'nothing may be published when the publication failed');
+});
+
+// ---------------------------------------------------------------------------
 // The stale findings report is removed on provenance, not on filename
 // ---------------------------------------------------------------------------
 
