@@ -4286,10 +4286,12 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
     # diff by $script:UpstreamManagedPaths, so a root-level file absent from
     # that list is invisible to the sync. Same failure class as #148/F2.
 
+    # start-issue-agent.sh was retired in issue #324. It stays on the managed
+    # path list (see the Issue #324 Describe below) so its delete replays, but
+    # it is no longer a file that must REACH consumers, so it is not listed here.
     $script:launcherPaths = @(
         'Start-IssueAgent.ps1'
         'Start-IssueAgent.Tests.ps1'
-        'start-issue-agent.sh'
     )
 
     It 'treats <_> as upstream-managed' -ForEach $script:launcherPaths {
@@ -4311,7 +4313,6 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
         # scope during the run phase.
         $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.ps1'
         $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.Tests.ps1'
-        $script:MetaScriptPaths | Should -Not -Contain 'start-issue-agent.sh'
     }
 
     It 'leaves every root-level script either upstream-managed or explicitly consumer-owned' {
@@ -4392,7 +4393,6 @@ Describe 'Issue #263: launcher reaches a consumer already anchored past its intr
                 # Commit 1: the launcher lands upstream (mirrors #256).
                 Set-Content -LiteralPath 'Start-IssueAgent.ps1' -Value "# upstream launcher`n" -NoNewline
                 Set-Content -LiteralPath 'Start-IssueAgent.Tests.ps1' -Value "# upstream launcher tests`n" -NoNewline
-                Set-Content -LiteralPath 'start-issue-agent.sh' -Value "# upstream launcher sh`n" -NoNewline
                 git add -A | Out-Null
                 git commit -q -m "feat(start-issue-agent): add launcher"
                 $launcherCommit = (git rev-parse HEAD).Trim()
@@ -4450,8 +4450,90 @@ Describe 'Issue #263: launcher reaches a consumer already anchored past its intr
             $tracked = git ls-files
             $tracked | Should -Contain 'Start-IssueAgent.ps1'
             $tracked | Should -Contain 'Start-IssueAgent.Tests.ps1'
-            $tracked | Should -Contain 'start-issue-agent.sh'
         } finally { Pop-Location }
+    }
+}
+
+Describe 'Issue #324: retiring start-issue-agent.sh replays the delete into consumers' {
+    # The bash forwarder was deleted upstream in issue #324. Its absence from
+    # THIS tree is not the behavior that matters: every consumer that already
+    # synced holds a copy, and the only thing that removes one is a `D` op from
+    # the diff-replay. Get-UpstreamOps filters the upstream diff by
+    # $script:UpstreamManagedPaths, so the retired path must STAY on that list
+    # -- exactly the contract Consolidate-Tasks.ps1 has carried since #184.
+    # Dropping the entry in the same change that deletes the file would emit no
+    # op at all and strand the orphan in every consuming project, silently and
+    # permanently.
+
+    BeforeEach {
+        $script:retiredShRoot = Join-Path $TestDrive ("retired-sh-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'keeps the retired path on the managed list so a delete has a pathspec to travel through' {
+        Test-IsUpstreamManagedPath -Path 'start-issue-agent.sh' |
+            Should -BeTrue -Because 'Get-UpstreamOps only emits ops for paths it still manages'
+    }
+
+    It 'emits a D op for start-issue-agent.sh under the real managed-path list' {
+        $fx = New-DiffReplayFixture -Root $script:retiredShRoot `
+            -Seed {
+                'baseline claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                '# upstream launcher' | Out-File -Encoding utf8 Start-IssueAgent.ps1 -NoNewline
+                '# upstream launcher sh' | Out-File -Encoding utf8 start-issue-agent.sh -NoNewline
+            } `
+            -Tweak { Remove-Item start-issue-agent.sh }
+
+        # The REAL manifest, not a hand-written pathspec: this is the assertion
+        # that fails the moment the entry leaves $script:UpstreamManagedPaths.
+        $ops = @(Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' `
+                -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer)
+
+        ($ops | Where-Object { $_.Op -eq 'D' -and $_.Path -eq 'start-issue-agent.sh' }) |
+            Should -Not -BeNullOrEmpty -Because 'a consumer holding the forwarder must be told to delete it'
+    }
+
+    It 'deletes start-issue-agent.sh from a consumer tree that still holds it' {
+        # End to end, through the real sync: the op list above is only half the
+        # story -- this is the assertion that the consumer's working tree and
+        # index actually lose the file.
+        $fx = New-DiffReplayFixture -Root $script:retiredShRoot `
+            -Seed {
+                'baseline claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                '# upstream launcher' | Out-File -Encoding utf8 Start-IssueAgent.ps1 -NoNewline
+                '# upstream launcher sh' | Out-File -Encoding utf8 start-issue-agent.sh -NoNewline
+            } `
+            -Tweak { Remove-Item start-issue-agent.sh }
+
+        Push-Location $fx.Consumer
+        try {
+            Test-Path -LiteralPath 'start-issue-agent.sh' |
+                Should -BeTrue -Because 'the fixture consumer starts out holding the forwarder'
+
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+            git add -A | Out-Null
+            git commit -q -m 'record anchor'
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+            $rc | Should -Be 0
+
+            Test-Path -LiteralPath 'start-issue-agent.sh' |
+                Should -BeFalse -Because 'the sync must remove the retired forwarder from the consumer working tree'
+            @(git ls-files) | Should -Not -Contain 'start-issue-agent.sh' `
+                -Because 'the delete must be committed, not just applied to the working tree'
+        } finally { Pop-Location }
+    }
+
+    It 'no longer ships start-issue-agent.sh from the upstream tree' {
+        # Upstream-only, for the same reason as the root-script net above: a
+        # consumer repo may legitimately have a file by any name at its root.
+        $originUrl = (& git -C $PSScriptRoot remote get-url origin 2>$null)
+        if (-not (Test-IsUpstreamRepo -RemoteUrl $originUrl)) {
+            Set-ItResult -Skipped -Because 'this invariant only applies in the upstream repo, where the launcher is authored'
+            return
+        }
+
+        Test-Path -LiteralPath (Join-Path $PSScriptRoot 'start-issue-agent.sh') |
+            Should -BeFalse -Because 'the bash forwarder was retired in issue #324'
     }
 }
 

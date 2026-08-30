@@ -517,46 +517,47 @@ Describe 'New-PlanAgentPrompt' {
     }
 }
 
-Describe 'Read-DescriptionFromStdin' {
-    It 'returns the text read from stdin' {
-        Read-DescriptionFromStdin -Reader { 'users need CSV export' } -IsInputRedirected $true |
-            Should -Be 'users need CSV export'
+Describe 'Issue #324: -New has exactly one description source' {
+    # start-issue-agent.sh -- the bash forwarder -- is gone, and with it the
+    # only reason -New ever read a description from stdin: bash has no
+    # equivalent of PowerShell's @'...'@ here-string, so `-New -` plus a
+    # heredoc was the workaround. From pwsh a here-string carries a multi-line
+    # description natively, so -New now takes a description and nothing else.
+    # A leftover stdin path would be a second acquisition route with no caller.
+
+    It 'defines no stdin reader' {
+        Get-Command -Name 'Read-DescriptionFromStdin' -CommandType Function -ErrorAction SilentlyContinue |
+            Should -BeNullOrEmpty -Because 'the -New - stdin path was removed with the bash forwarder'
     }
 
-    It 'preserves interior newlines and blank lines of a pasted transcript' {
-        $heredoc = "Review this log:`n`nwarning: CRLF will be replaced by LF`nPlease investigate"
-        Read-DescriptionFromStdin -Reader { $heredoc }.GetNewClosure() -IsInputRedirected $true |
-            Should -Be $heredoc
+    It 'decides the launch mode without a StdinConsumed input' {
+        (Get-Command Get-ClaudeLaunchMode).Parameters.Keys |
+            Should -Not -Contain 'StdinConsumed' -Because 'nothing can drain stdin any more'
     }
 
-    It 'normalizes CRLF to LF' {
-        Read-DescriptionFromStdin -Reader { "line one`r`nline two" } -IsInputRedirected $true |
-            Should -Be "line one`nline two"
+    It 'launches a session without a StdinConsumed input' {
+        (Get-Command Start-ClaudeIssueSession).Parameters.Keys |
+            Should -Not -Contain 'StdinConsumed'
     }
 
-    It 'trims the trailing newline a heredoc always adds' {
-        Read-DescriptionFromStdin -Reader { "the description`n`n" } -IsInputRedirected $true |
-            Should -Be 'the description'
+    It 'still carries a multi-line -New description through a here-string' {
+        # The replacement for the heredoc, asserted rather than assumed.
+        $description = @'
+Review this console log, is it what you expect? Please investigate:
+warning: CRLF will be replaced by LF
+'@
+        New-PlanAgentPrompt -Description $description |
+            Should -BeLike "@plan Review this console log*warning: CRLF will be replaced by LF*Two steps*"
     }
 
-    It 'preserves embedded single quotes verbatim' {
-        Read-DescriptionFromStdin -Reader { "it's broken" } -IsInputRedirected $true |
-            Should -Be "it's broken"
-    }
-
-    It 'throws when stdin is not redirected, rather than blocking on the console' {
-        { Read-DescriptionFromStdin -Reader { 'unused' } -IsInputRedirected $false } |
-            Should -Throw '*stdin is not redirected*'
-    }
-
-    It 'throws on empty stdin rather than launching a seedless session' {
-        { Read-DescriptionFromStdin -Reader { '' } -IsInputRedirected $true } |
-            Should -Throw '*empty description*'
-    }
-
-    It 'throws on whitespace-only stdin' {
-        { Read-DescriptionFromStdin -Reader { "  `n`t " } -IsInputRedirected $true } |
-            Should -Throw '*empty description*'
+    It 'documents no bash entry point and no stdin form' {
+        # Matched to a boolean rather than asserted with -Match: a failure
+        # message that dumps the whole 900-line script is unreadable.
+        $help = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'Start-IssueAgent.ps1')
+        ($help -match 'start-issue-agent\.sh') |
+            Should -BeFalse -Because 'the bash forwarder no longer exists to point at'
+        ($help -match '(?i)stdin') |
+            Should -BeFalse -Because 'no documented form of -New reads stdin'
     }
 }
 
@@ -612,22 +613,6 @@ Describe 'Get-ClaudeLaunchMode' {
 
     It 'opens a new tab when inside a Claude Code session, even inside Windows Terminal and without -NewTab' {
         Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $true | Should -Be 'NewTab'
-    }
-
-    It 'opens a new tab when stdin was consumed, even inside Windows Terminal without -NewTab' {
-        # An inline claude in the current pane would inherit the drained stdin.
-        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $false `
-            -StdinConsumed $true | Should -Be 'NewTab'
-    }
-
-    It 'falls back to a new window when stdin was consumed but wt.exe is unavailable' {
-        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $false -InClaudeCodeSession $false `
-            -StdinConsumed $true | Should -Be 'NewWindow'
-    }
-
-    It 'still reuses the current pane when stdin was NOT consumed (the default)' {
-        Get-ClaudeLaunchMode -InWindowsTerminal $true -WtAvailable $true -InClaudeCodeSession $false `
-            -StdinConsumed $false | Should -Be 'CurrentPane'
     }
 
     It 'opens a new tab when not in Windows Terminal but wt.exe is available' {
@@ -717,19 +702,6 @@ Describe 'Start-ClaudeIssueSession' {
         }
     }
 
-    It 'opens a new tab when -StdinConsumed is passed, even in Windows Terminal without -NewTab' {
-        $env:WT_SESSION = 'some-guid'
-        Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
-        Mock -CommandName Start-Process -MockWith { }
-        Mock -CommandName claude -MockWith { }
-
-        Start-ClaudeIssueSession -Name 'new: Review this log' -Prompt "@plan Review this log:`nwarning: CRLF" `
-            -PermissionMode 'plan' -WorkingDirectory 'C:\repo' -StdinConsumed
-
-        Should -Invoke Start-Process -Times 1 -ParameterFilter { $FilePath -eq 'wt.exe' }
-        Should -Invoke claude -Times 0
-    }
-
     It 'round-trips a multi-line prompt through the -EncodedCommand blob intact' {
         $env:WT_SESSION = $null
         Mock -CommandName Get-Command -ParameterFilter { $Name -eq 'wt.exe' } -MockWith { [pscustomobject]@{ Name = 'wt.exe' } }
@@ -737,7 +709,7 @@ Describe 'Start-ClaudeIssueSession' {
 
         $multiline = "@plan Review this log:`nwarning: it's CRLF again`n`nPlease investigate"
         Start-ClaudeIssueSession -Name 'new: Review this log' -Prompt $multiline `
-            -PermissionMode 'plan' -WorkingDirectory 'C:\repo' -StdinConsumed
+            -PermissionMode 'plan' -WorkingDirectory 'C:\repo'
 
         Should -Invoke Start-Process -Times 1 -ParameterFilter {
             $decoded = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($ArgumentList[7]))
