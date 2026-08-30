@@ -148,6 +148,76 @@ const IDFA = '6D92078A-8246-4BA4-AE5B-76104861E7DC';
     }
 }
 
+// --- 3g. The hex-run predicate, checked as a PROPERTY rather than a list. ---
+// Cases 3, 3e and 3f are a curated list of spellings, and a curated list is a
+// predicate about which spellings matter. Mine has been wrong twice: it missed
+// the fingerprint carving, then it missed `device:` suppressing a real match.
+// Both times the list passed and the code was wrong.
+//
+// The property is checkable, so check the property. For a delimited hex run in
+// any surrounding context:
+//
+//     detected as a MAC  <=>  the run is exactly six pairs
+//     and the detection is the WHOLE run, never a piece of one
+//
+// This fails against both of my earlier attempts: the unanchored pattern
+// carves matches out of the long runs, and the lookbehind-anchored one goes
+// silent in every `word:` context whose word ends in a-f.
+{
+    // Deterministic, so a failure reproduces exactly. No external dependency.
+    let seed = 20260830;
+    const rand = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+    const hex = '0123456789ABCDEF';
+    const pair = () => hex[rand(16)] + hex[rand(16)];
+
+    // Words chosen so half end in a hex-valid letter -- that is the trap the
+    // lookbehind fell into, and a generator that avoided them would be the
+    // same blind spot one level up.
+    const prefixes = ['device', 'source', 'id', 'mac', 'cache', 'trace', 'interface', 'face',
+        'router', 'peer', 'gateway', 'host', 'client'];
+    const contexts = [
+        (r) => r,
+        (r) => `${prefixes[rand(prefixes.length)]}:${r}`,
+        (r) => `${prefixes[rand(prefixes.length)]}-${r}`,
+        (r) => `${prefixes[rand(prefixes.length)]} ${r}`,
+        (r) => `[${r}]`,
+        (r) => `(${r})`,
+        (r) => `value=${r};`,
+        (r) => `saw ${r} on the wire`,
+        (r) => `${r},next`,
+        (r) => `${r}.`,
+    ];
+
+    let checked = 0;
+    for (let pairCount = 1; pairCount <= 12; pairCount++) {
+        for (const sep of [':', '-']) {
+            for (let c = 0; c < contexts.length; c++) {
+                const pairs = [];
+                for (let i = 0; i < pairCount; i++) pairs.push(pair());
+                const run = pairs.join(sep);
+                // Skip anything that happens to wear the fake marker; that
+                // exemption is case 5's subject, not this one.
+                if (/^06[:-]F0[:-]0D[:-]/i.test(run)) continue;
+
+                const text = contexts[c](run);
+                const hits = pii.detectPii(bodyHar({ note: text })).filter((d) => d.type === 'mac-address');
+                checked++;
+
+                if (pairCount === 6) {
+                    assert.strictEqual(hits.length, 1,
+                        `3g.a: a six-pair run was not detected in ${JSON.stringify(text)}`);
+                    assert.strictEqual(hits[0].value, run,
+                        `3g.b: the detection was not the whole run in ${JSON.stringify(text)}`);
+                } else {
+                    assert.strictEqual(hits.length, 0,
+                        `3g.c: a ${pairCount}-pair run produced a MAC detection in ${JSON.stringify(text)}`);
+                }
+            }
+        }
+    }
+    assert.ok(checked > 200, `3g.d: only ${checked} cases generated; the property was barely exercised`);
+}
+
 // --- 4. An advertising id needs its field name. THIS IS THE POINT. ---
 // IDFA and GAID are ordinary UUIDs. So are request ids, trace ids, idempotency
 // keys, message ids and half the primary keys in a modern API. Matching the
