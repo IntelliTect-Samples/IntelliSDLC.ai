@@ -291,8 +291,15 @@ switch ($exit) {
         # nothing. Withholding the catalogue over that is what this issue
         # exists to stop, so the run continues and the operator triages the
         # findings report the recorder just named.
+        #
+        # It names no location. The report USUALLY sits beside the artifact,
+        # but when publishing it fails -- a locked file, a full disk -- it stays
+        # in the session directory instead and the recorder says so. An arm
+        # that asserted the usual place would send the operator looking for a
+        # file that is not there, in exactly the case they most need to read it.
         Write-Warning ('Recorded and catalogued, but the leak gate reported ADVISORY findings. ' +
-            'Review scrub-findings.json beside the artifact, then waive or correct each one.')
+            'The recorder printed each finding and the path to the full report -- review ' +
+            'them, then waive or correct each one.')
     }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."

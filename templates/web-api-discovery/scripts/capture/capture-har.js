@@ -1125,7 +1125,26 @@ function postProcess(session, opts = {}) {
         if (!fs.existsSync(freshReport) && isFindingsReport(publishedReport)) {
             try { fs.unlinkSync(publishedReport); } catch { /* leave it */ }
         }
-        state.scrubbed.findings = copyIfPresent(freshReport, publishedReport);
+        // A sidecar that will not copy must not fail the capture -- the report
+        // is a triage aid, not the gate. But the degradation has to carry a
+        // signal. Silently leaving `findings` null ends the run byte-for-byte
+        // the way a CLEAN one ends, so neither the operator nor an agent
+        // reading the artifacts afterwards can tell "no report was needed"
+        // from "advisory findings exist and their report did not make it" --
+        // while the front door goes on naming a file that is not there.
+        //
+        // The report is not lost in that state: it is complete in the session
+        // directory. So point at it and say so.
+        if (fs.existsSync(freshReport)) {
+            try {
+                state.scrubbed.findings = publishFile(freshReport, publishedReport);
+            } catch (e) {
+                state.scrubbed.findings = freshReport;
+                state.warnings.push(
+                    `capture-har: the findings report could not be published to the output ` +
+                    `path (${e.message}). It is complete at ${freshReport}`);
+            }
+        }
     } catch (e) {
         state.errors.push(`publish: ${e.message}`);
         state.scrubbed.path = null;
@@ -1279,15 +1298,6 @@ function sweepAbandonedTemps(dir, now = Date.now()) {
             if (now - fs.statSync(full).mtimeMs < PUBLISH_TEMP_STALE_MS) continue;
             fs.unlinkSync(full);
         } catch { /* another run may have just taken it; that is fine */ }
-    }
-}
-
-function copyIfPresent(from, to) {
-    if (!fs.existsSync(from)) return null;
-    try {
-        return publishFile(from, to);
-    } catch {
-        return null;
     }
 }
 
