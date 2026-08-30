@@ -238,6 +238,14 @@ $script:UpstreamManagedPaths = @(
     # launcher is upstream-owned and consumers do not customize it.
     'Start-IssueAgent.ps1',
     'Start-IssueAgent.Tests.ps1',
+    # Retired file (the bash forwarder, deleted upstream in issue #324). Kept on
+    # the managed-path list for the same reason as Consolidate-Tasks.ps1 above:
+    # Get-UpstreamOps filters the upstream diff by this pathspec, so the path
+    # must appear here or the delete is never emitted and every consumer keeps
+    # a stale copy forever. Removing this entry is a SEPARATE, LATER release --
+    # never the same one that deleted the file -- and only once no consumer can
+    # still be anchored before the deleting commit. In practice that is never
+    # knowable, which is why the Consolidate-Tasks entries have simply stayed.
     'start-issue-agent.sh'
     # NOTE: run.ps1, run.Tests.ps1, and .github/workflows/copilot-setup-steps.yml
     # are intentionally NOT on this list. They are consumer-owned (see
@@ -2753,12 +2761,26 @@ function Invoke-PullSDLC {
 
     Push-Location $RepoRoot
     try {
-        # Only include pathspecs that actually exist in the working tree --
-        # `git add` aborts the entire operation on a missing pathspec. We add
+        # Only include pathspecs git can actually match -- `git add` aborts the
+        # entire operation on a pathspec that matches nothing at all. We add
         # both upstream-managed paths and any merge-managed file we touched.
+        #
+        # "Matchable" is deliberately NOT just "exists in the working tree". A
+        # D op (or the old side of an R op) has already removed the file, so an
+        # existence-only filter drops exactly the path whose DELETION needs
+        # staging: the sync would remove the file from the working tree, commit
+        # nothing, and leave the consumer with an unstaged deletion that the
+        # next sync -- now anchored past the delete -- never emits again. That
+        # is invisible for a managed directory prefix (the directory survives
+        # and carries its children's deletions), and fatal for an exact-path
+        # entry retired upstream, such as start-issue-agent.sh (issue #324) or
+        # the Consolidate-Tasks.ps1 orphan (issue #184). A path still tracked in
+        # the index matches the pathspec even with no file on disk, so passing
+        # it is safe and is what stages the delete.
         $addPaths = @()
         foreach ($p in @($script:UpstreamManagedPaths + $script:SdlcSyncStateFile + $mergedPaths.ToArray())) {
-            if (Test-Path -LiteralPath $p) { $addPaths += $p }
+            if (Test-Path -LiteralPath $p) { $addPaths += $p; continue }
+            if (@(& git ls-files -- $p 2>$null).Count -gt 0) { $addPaths += $p }
         }
         if ($addPaths.Count -gt 0) {
             # Suppress git's cosmetic "CRLF will be replaced by LF the next time

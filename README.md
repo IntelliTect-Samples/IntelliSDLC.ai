@@ -36,8 +36,7 @@ What the script does:
   `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
   generic `.github/instructions/*`, the meta-scripts `Pull-SDLC.ai.ps1`,
   `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1` and their `*.Tests.ps1`, plus
-  the issue-dispatch launcher `Start-IssueAgent.ps1`, its tests, and the
-  `start-issue-agent.sh` entry point).
+  the issue-dispatch launcher `Start-IssueAgent.ps1` and its tests).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
   `.github/instructions/project.instructions.md`, `README.md`, `docs/README.md`,
   `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`) from
@@ -134,7 +133,7 @@ Files belong to one of two tiers:
 
 | Tier | Files | Edit rule |
 |---|---|---|
-| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`) and their `*.Tests.ps1`, the issue-dispatch launcher (`Start-IssueAgent.ps1`, `start-issue-agent.sh`) and its tests | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`) and their `*.Tests.ps1`, the issue-dispatch launcher (`Start-IssueAgent.ps1`) and its tests | Never edit in a consumer project. Edits go upstream and pull down. |
 | **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`, `docs/README.md` (all scaffolded once, then yours to customize), `docs/specs/`, `docs/designs/`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
 
 ## Init Protocol for Consuming Projects
