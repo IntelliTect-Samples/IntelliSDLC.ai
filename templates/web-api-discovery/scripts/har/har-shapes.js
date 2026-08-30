@@ -96,14 +96,20 @@ const LEAK_PATTERNS = [
         // NOT `02:00:00`, which real tools emit.
         name: 'mac-address',
         class: 'identity',
-        // Exactly six pairs, never six pairs INSIDE more pairs. A TLS thumbprint
-        // and an SSH host-key fingerprint are colon-separated hex too, and an
-        // unanchored pattern carves three "MAC addresses" out of one of them.
+        // Match the MAXIMAL delimited run and let the count decide. A TLS
+        // thumbprint and an SSH host-key fingerprint are hex pairs too, so a
+        // bare six-pair pattern carves "MAC addresses" out of them; and
+        // anchoring that with a hex-character lookbehind instead breaks
+        // `device:AA:BB:...`, because `a`-`f` are ordinary letters and two
+        // characters of context cannot tell the end of an English word from
+        // the second digit of a hex pair. Six-pairs-exactly is the concept.
+        //
         // Kept character-identical to `RE.mac` in pii.js: the scrubber removes
         // what this gate fails on, and if the two disagreed about what a MAC is,
         // one of them would be wrong on every capture.
-        re: /(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])|(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])/g,
-        isFake: (m) => /^06[:-]F0[:-]0D[:-]/i.test(m)
+        re: /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2})+\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2})+\b/g,
+        isFake: (m) => /^06[:-]F0[:-]0D[:-]/i.test(m),
+        precheck: (m) => m.split(/[:-]/).length === 6
     },
     {
         // Credit-card numbers. Fakes are Luhn-valid too (so we can't use

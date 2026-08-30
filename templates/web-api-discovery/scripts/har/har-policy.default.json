@@ -507,7 +507,38 @@
         "telephone",
         "fax"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "home",
+        "work",
+        "business",
+        "office",
+        "mobile",
+        "cell",
+        "contact",
+        "primary",
+        "secondary",
+        "alternate",
+        "alternative",
+        "day",
+        "evening",
+        "night",
+        "emergency",
+        "billing",
+        "shipping",
+        "customer",
+        "client",
+        "user",
+        "account",
+        "member",
+        "recipient",
+        "sender",
+        "guardian",
+        "spouse",
+        "next",
+        "personal",
+        "direct",
+        "main"
+      ]
     },
     "device-id": {
       "exact": [
@@ -528,7 +559,22 @@
         "advertisingid",
         "advertisingidentifier"
       ],
-      "qualifiers": "any"
+      "qualifiers": [
+        "device",
+        "advertising",
+        "ad",
+        "ads",
+        "google",
+        "apple",
+        "ios",
+        "android",
+        "vendor",
+        "tracking",
+        "user",
+        "customer",
+        "mobile",
+        "app"
+      ]
     }
   },
   "cardIssuers": [],

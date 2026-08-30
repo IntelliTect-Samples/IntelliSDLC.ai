@@ -219,26 +219,30 @@ const RE = {
     ssn:          /\b\d{3}-\d{2}-\d{4}\b/g,
     creditDigits: /\b\d{13,19}\b/g,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
-    // Same anchoring, and the same reason. This one is PRE-EXISTING: main
-    // already carves `192.0.2.x` out of a certificate fingerprint. Fixed here
-    // because it is the identical defect in the identical value, and shipping
-    // only the MAC half would leave the demonstration case still corrupting.
-    ipv6:         /(?<![0-9A-Fa-f:])(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}(?![:0-9A-Fa-f])/g,
+    // Same treatment, same reason: a maximal run of colon-separated hex groups,
+    // with the count deciding. This one is PRE-EXISTING -- main already carves
+    // `192.0.2.x` out of a certificate fingerprint -- and is fixed here because
+    // it is the identical defect in the identical value.
+    ipv6:         /\b(?:[A-Fa-f0-9]{1,4}:)+[A-Fa-f0-9]{1,4}\b/g,
     isoDate:      /^\d{4}-\d{2}-\d{2}$/,
     // An IBAN is two country letters, two check digits, then up to 30
     // alphanumerics -- and a mod-97 checksum over the lot. The arithmetic is
     // what makes this safe to match without a field name: shape alone would be
     // another "Luhn-valid digit run", firing on identifiers an API just mints.
     iban:         /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g,
-    // Six hex pairs with a consistent separator. Nothing else wears this, and
-    // the separator is load-bearing: an unpunctuated 12-hex run is a hex12,
-    // not a MAC.
-    // Exactly six pairs, never six pairs INSIDE more pairs. A TLS thumbprint
-    // and an SSH host-key fingerprint are colon-separated hex too, and they are
-    // protocol evidence the capture exists to preserve -- an unanchored pattern
-    // carves three `MAC addresses` out of one fingerprint and the scrub then
-    // destroys it. `Six hex pairs` is not `a MAC address` when more follow.
-    mac:          /(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])|(?<![0-9A-Fa-f][:-])[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}(?![:-]?[0-9A-Fa-f])/g,
+    // A MAC is a maximal run of EXACTLY six hex pairs. Match the whole run and
+    // let the count decide -- do not try to express "six" in the pattern.
+    //
+    // Two wrong answers were tried first. A bare six-pair pattern carves a MAC
+    // out of a TLS thumbprint (which is hex pairs too) and the scrub then
+    // destroys real protocol evidence. Anchoring it with a hex-character
+    // lookbehind fixes that and silently breaks `device:AA:BB:...`, because
+    // `a` through `f` are ordinary letters and the anchor cannot tell the last
+    // letter of an English word from the second digit of a hex pair.
+    //
+    // Matching the run and counting says what a MAC actually is, so neither
+    // failure is reachable.
+    mac:          /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2})+\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2})+\b/g,
     uuid:         /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 };
 
@@ -384,6 +388,12 @@ function ibanChecksumOk(value) {
 // A fake marker must be a shape the world does not already use, so neither fake can
 // be mistaken for a real value -- and neither is re-detected as a leak.
 function isFakeIban(v) { return /^ZZ00/i.test(String(v)); }
+// A delimited hex run is a MAC only at exactly six pairs, and an IPv6 address
+// only at exactly eight groups. Anything longer is a fingerprint, a digest or
+// a key -- protocol evidence, not an identifier.
+function isMacRun(m) { return String(m).split(/[:-]/).length === 6; }
+function isIpv6Run(m) { return String(m).split(":").length === 8; }
+
 function isFakeMac(v) { return /^06[:-]F0[:-]0D[:-]/i.test(String(v)); }
 function isFakeDeviceId(v) { return /^DEADBEEF-/i.test(String(v)); }
 
@@ -423,7 +433,7 @@ function detectInString(str, entryIndex, loc, out) {
     });
     // mac address
     (str.match(RE.mac) || []).forEach(m => {
-        if (isFakeMac(m)) return;
+        if (!isMacRun(m) || isFakeMac(m)) return;
         pushDetection(out, 'mac-address', m, { entryIndex, ...loc });
     });
     // ipv4
@@ -433,6 +443,7 @@ function detectInString(str, entryIndex, loc, out) {
     });
     // ipv6
     (str.match(RE.ipv6) || []).forEach(m => {
+        if (!isIpv6Run(m)) return;
         pushDetection(out, 'ip-address', m, { entryIndex, ...loc });
     });
 }
