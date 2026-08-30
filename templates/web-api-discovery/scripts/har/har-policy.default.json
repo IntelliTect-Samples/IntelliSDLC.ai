@@ -62,7 +62,10 @@
       "country": "advise",
       "dob": "advise",
       "ip-address": "advise",
-      "geo-coordinates": "advise"
+      "geo-coordinates": "advise",
+      "iban": "advise",
+      "mac-address": "advise",
+      "device-id": "advise"
     }
   },
   "identifierFields": [
@@ -396,6 +399,27 @@
         "cellphone",
         "telephone",
         "fax"
+      ],
+      "qualifiers": "any"
+    },
+    "device-id": {
+      "exact": [
+        "idfa",
+        "idfv",
+        "gaid",
+        "aaid",
+        "adid",
+        "advertisingid",
+        "advertisingidentifier",
+        "advertisingtrackingid",
+        "googleadvertisingid"
+      ],
+      "tail": [
+        "idfa",
+        "gaid",
+        "aaid",
+        "advertisingid",
+        "advertisingidentifier"
       ],
       "qualifiers": "any"
     }

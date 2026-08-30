@@ -25,7 +25,8 @@ const crypto = require('crypto');
 const PII_TYPES = [
     'email', 'phone', 'person-name', 'street-address',
     'city', 'region', 'postal-code', 'country',
-    'dob', 'ssn', 'credit-card', 'ip-address', 'geo-coordinates'
+    'dob', 'ssn', 'credit-card', 'ip-address', 'geo-coordinates',
+    'iban', 'mac-address', 'device-id'
 ];
 
 // --- minimal embedded word lists (no external dependencies) ---
@@ -211,7 +212,17 @@ const RE = {
     creditDigits: /\b\d{13,19}\b/g,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
     ipv6:         /\b(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}\b/g,
-    isoDate:      /^\d{4}-\d{2}-\d{2}$/
+    isoDate:      /^\d{4}-\d{2}-\d{2}$/,
+    // An IBAN is two country letters, two check digits, then up to 30
+    // alphanumerics -- and a mod-97 checksum over the lot. The arithmetic is
+    // what makes this safe to match without a field name: shape alone would be
+    // another "Luhn-valid digit run", firing on identifiers an API just mints.
+    iban:         /\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g,
+    // Six hex pairs with a consistent separator. Nothing else wears this, and
+    // the separator is load-bearing: an unpunctuated 12-hex run is a hex12,
+    // not a MAC.
+    mac:          /\b[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}\b|\b[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}\b/g,
+    uuid:         /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 };
 
 function luhnOk(s) {
@@ -250,6 +261,18 @@ function fakeFor(type, original) {
             const c = (intFromHex(h, 8, 4) % 10000).toString().padStart(4, '0');
             return `${a}-${b}-${c}`;
         }
+        case 'iban':
+            // ZZ is unassigned, and the check digits are left as 00 so the
+            // value fails its own mod-97 -- a fake that validated would be
+            // indistinguishable from a real account number.
+            return `ZZ00${h.slice(0, 18).toUpperCase()}`;
+        case 'mac-address': {
+            const octets = [];
+            for (let i = 0; i < 3; i++) octets.push(h.slice(i * 2, i * 2 + 2).toUpperCase());
+            return `02:00:00:${octets.join(':')}`;
+        }
+        case 'device-id':
+            return `DEADBEEF-${h.slice(0, 4)}-4${h.slice(4, 7)}-8${h.slice(7, 10)}-${h.slice(10, 22)}`.toUpperCase();
         case 'credit-card': {
             // Build 15-digit body then compute Luhn check digit -> 16 total.
             let body = '4242';
@@ -313,6 +336,37 @@ function pushDetection(out, type, value, location) {
 // turns a real `+1 (555) 123-4567` into the fake's shape and exempts it. An
 // exemption is a hole by construction, so it must recognise our own output and
 // not one character more.
+/**
+ * ISO 13616 mod-97: move the first four characters to the end, map letters to
+ * two-digit numbers, and the whole value modulo 97 must be 1.
+ *
+ * This is the entire reason `iban` may match without a field name. A shape
+ * that fires on `AB12...` and nothing else would be the credit-card mistake
+ * again -- the checksum is what turns a shape into evidence.
+ */
+function ibanChecksumOk(value) {
+    const s = String(value).toUpperCase();
+    if (s.length < 15 || s.length > 34) return false;
+    const rearranged = s.slice(4) + s.slice(0, 4);
+    let remainder = 0;
+    for (const ch of rearranged) {
+        const code = ch.charCodeAt(0);
+        let part;
+        if (code >= 48 && code <= 57) part = String(code - 48);
+        else if (code >= 65 && code <= 90) part = String(code - 55);
+        else return false;
+        for (const digit of part) remainder = (remainder * 10 + (digit.charCodeAt(0) - 48)) % 97;
+    }
+    return remainder === 1;
+}
+
+// The scrubber's own output, recognised exactly. `ZZ` is an unassigned country
+// code and `02:00:00` is a locally administered MAC prefix, so neither fake can
+// be mistaken for a real value -- and neither is re-detected as a leak.
+function isFakeIban(v) { return /^ZZ00/i.test(String(v)); }
+function isFakeMac(v) { return /^02[:-]00[:-]00[:-]/i.test(String(v)); }
+function isFakeDeviceId(v) { return /^DEADBEEF-/i.test(String(v)); }
+
 function isFakePhone(value) {
     return /^\+1555\d{7}$/.test(String(value));
 }
@@ -342,6 +396,16 @@ function detectInString(str, entryIndex, loc, out) {
         if (!luhnOk(m)) return;
         pushDetection(out, 'credit-card', m, { entryIndex, ...loc });
     });
+    // iban -- shape AND checksum, which is what licenses a context-free match
+    (str.match(RE.iban) || []).forEach(m => {
+        if (!ibanChecksumOk(m) || isFakeIban(m)) return;
+        pushDetection(out, 'iban', m, { entryIndex, ...loc });
+    });
+    // mac address
+    (str.match(RE.mac) || []).forEach(m => {
+        if (isFakeMac(m)) return;
+        pushDetection(out, 'mac-address', m, { entryIndex, ...loc });
+    });
     // ipv4
     (str.match(RE.ipv4) || []).forEach(m => {
         if (/^192\.0\.2\./.test(m)) return; // fake range
@@ -369,6 +433,17 @@ function detectInValue(value, key, entryIndex, loc, out) {
         if (fType === 'region')      { pushDetection(out, 'region',      value, { entryIndex, ...loc }); return true; }
         if (fType === 'postal-code') { pushDetection(out, 'postal-code', value, { entryIndex, ...loc }); return true; }
         if (fType === 'country')     { pushDetection(out, 'country',     value, { entryIndex, ...loc }); return true; }
+        if (fType === 'device-id') {
+            // A UUID is the most common identifier shape in any API -- request
+            // ids, trace ids, idempotency keys. There is no shape evidence
+            // here at all, so the FIELD NAME is the only evidence, and a
+            // pattern for this deliberately does not exist in har-shapes.js.
+            if (RE.uuid.test(value) && !isFakeDeviceId(value)) {
+                pushDetection(out, 'device-id', value, { entryIndex, ...loc });
+                return true;
+            }
+            return false;
+        }
         if (fType === 'phone') {
             // The field says phone, so a bare run is evidence enough. Anything
             // punctuated is caught context-free by detectInString anyway.
