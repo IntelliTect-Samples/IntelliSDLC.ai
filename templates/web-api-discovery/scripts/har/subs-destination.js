@@ -151,6 +151,13 @@ function classifyDestination(filePath) {
     // ownership means the repository is somebody else's, so safe.directory is
     // the control that stops us trusting their config -- bypassing it here
     // would open a forging vector rather than close a false refusal.
+    //
+    // Nor does neutralising that one setting rescue the idea. Once ownership
+    // is trusted, a plain tracked `.gitignore` containing `*` forges the same
+    // answer with no config involved: git has no notion of trusting a tree
+    // enough to walk it but not enough to believe its ignore rules, because
+    // they are the same trust boundary. Honouring the boundary is the only
+    // option short of reimplementing gitignore semantics outside git.
     const inTree = git(cwd, ['rev-parse', '--is-inside-work-tree']);
     if (inTree.status === null) return UNVERIFIABLE;
     if (inTree.status !== 0 || inTree.stdout !== 'true') return OUTSIDE_WORK_TREE;
