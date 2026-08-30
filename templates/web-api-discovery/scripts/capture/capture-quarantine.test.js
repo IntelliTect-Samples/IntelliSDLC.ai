@@ -548,6 +548,60 @@ test('a rename that fails for a non-transient reason is not retried', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A sidecar that cannot be published degrades LOUDLY, not silently
+// ---------------------------------------------------------------------------
+
+test('a findings report that cannot be published says where it actually is', () => {
+    // A locked sidecar must not fail the capture -- the report is a triage aid,
+    // not the gate. But the degradation has to carry a signal, and it did not:
+    // the run ended with no error, no warning and scrubbed.findings null, which
+    // is byte-for-byte how a CLEAN run ends. Nothing in the output path, the
+    // exit code or the state distinguished "no report was needed" from
+    // "advisory findings exist and their report did not make it" -- while the
+    // front door went on telling the operator to read a file that was not
+    // there. An agent reading the artifacts afterwards, with no console to
+    // consult, could not tell the two apart at all.
+    //
+    // The report is not lost in this state. It is sitting complete in the
+    // gitignored session directory; nothing was pointed at it.
+    const dir = repo('findings-locked');
+    const s = session(dir, '2026-01-01-120000');
+    const rename = countingRename(FINDINGS, () => 'EBUSY');
+    let state;
+    try {
+        state = inDir(dir, () => capture.postProcess(s, { run: verdict(4) }));
+    } finally { rename.restore(); }
+
+    // The capture itself is unharmed: artifact, digest and catalogue all land.
+    assert.deepStrictEqual(state.errors, [],
+        'a sidecar that could not be copied must not fail the capture');
+    assert.ok(fs.existsSync(path.join(s.outputPath, SCRUBBED_HAR)));
+    assert.ok(fs.existsSync(path.join(s.outputPath, 'catalogue.json')));
+    assert.strictEqual(capture.postProcessExitCode(state, false), 7,
+        'advisory findings still exist, so the run still reports them');
+
+    const sessionReport = path.join(s.sessionDir, FINDINGS);
+    assert.ok(state.warnings.some((w) => w.includes(sessionReport)),
+        `the run must say where the report actually is: ${JSON.stringify(state.warnings)}`);
+    assert.ok(state.warnings.some((w) => /could not be published/i.test(w)),
+        'and must say that publishing it FAILED -- a generic warning reads like '
+        + 'any other advisory notice, which is what made this invisible');
+    assert.strictEqual(state.scrubbed.findings, sessionReport,
+        'the state must point at the surviving report, not at nothing');
+
+    // The console block is what the operator acts on. It was omitted entirely,
+    // taking the fingerprint, the key path and the waiver guidance with it.
+    const text = capture.renderLines(
+        capture.postProcessLines(Object.assign({}, s, { postProcess: state })), 'normal');
+    assert.ok(text.includes(sessionReport),
+        `the summary must name the fallback location:\n${text}`);
+    assert.ok(/credit-card/.test(text) && /amount_paid/.test(text),
+        `the findings themselves must still reach the operator:\n${text}`);
+    assert.ok(/\.har-policy\.project\.json|waive/.test(text),
+        `and so must the escape hatch:\n${text}`);
+});
+
+// ---------------------------------------------------------------------------
 // The stale findings report is removed on provenance, not on filename
 // ---------------------------------------------------------------------------
 

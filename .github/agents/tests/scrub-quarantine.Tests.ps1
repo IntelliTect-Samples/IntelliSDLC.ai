@@ -50,4 +50,19 @@ Describe 'the PowerShell front door understands the advisory exit code' {
         $text = Get-Content -LiteralPath $wrapper -Raw
         $text | Should -Match '(?m)^\s*7\s*\{'
     }
+
+    # The report usually sits beside the artifact and sometimes cannot: when
+    # publishing it fails it stays in the session directory and the recorder
+    # says where. An arm that asserts the usual location sends the operator
+    # hunting for a file that is not there, in the one case they most need it.
+    It 'does not hard-code where the findings report will be' {
+        $wrapper = Join-Path $script:RepoRoot 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1'
+        $text = Get-Content -LiteralPath $wrapper -Raw
+        $arm = [regex]::Match($text, '(?ms)^\s*7\s*\{.*?^\s*\}').Value
+        # Comments stripped first: this file EXPLAINS the rule in prose right
+        # above the arm, and a guard its own rationale can satisfy is no guard.
+        $code = ($arm -split "`r?`n" | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n"
+        $code | Should -Match 'Write-Warning'
+        $code | Should -Not -Match 'beside the artifact'
+    }
 }
