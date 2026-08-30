@@ -465,18 +465,49 @@ function pickContextType(fType) {
 // memoised on that list, so the per-string cost is O(string) instead of
 // O(string x values).
 //
-// PRIORITY IS INSERTION ORDER, and that is load-bearing. `scrubPii` sorts the
-// replacement list longest value first precisely so that "Alice Marie Johnson"
-// is consumed before "Alice"; replacing the short one first would corrupt the
-// long one into a half-fake string. The sequential loop got that from running
-// the longest value's pass first. The trie gets it by preferring, among every
-// needle that matches at a position, the one enrolled EARLIEST -- which is the
-// same order the loop applied them in.
+// PRIORITY IS INSERTION ORDER, and reproducing it exactly is the whole
+// difficulty. `scrubPii` sorts the replacement list longest value first, and
+// the sequential loop turned that into a guarantee: a longer value was
+// replaced EVERYWHERE before a shorter one was even considered.
+//
+// Preferring the earliest-enrolled needle among those starting at the current
+// character is NOT that guarantee, and the difference leaks PII. Two values can
+// overlap in two ways:
+//
+//   NESTED      "Alice Marie Johnson" and "Alice" share a start position. A
+//               left-to-right scanner picks the longer one there and is right.
+//   STAGGERED   "Ann Marie" and "Marie Louise Johnson" inside
+//               "contacted Ann Marie Louise Johnson yesterday" share characters
+//               at DIFFERENT start positions, and the SHORTER one starts first.
+//               A left-to-right scanner matches "Ann Marie", consumes the
+//               "Marie" the longer value needed, and never scans its tail --
+//               so "Louise Johnson", real detected PII, ships in the clear and
+//               the substitutions table records a fake that is nowhere in the
+//               body.
+//
+// So arbitration cannot be per start position. This collects EVERY match in one
+// walk, then resolves them in priority order: each match claims its span unless
+// a higher-priority match already holds part of it. A longer value therefore
+// wins wherever it occurs no matter what starts earlier, which is exactly what
+// the priority-ordered global replace did.
+//
+// What is deliberately NOT reproduced is that loop scanning its own output.
+// Because each pass ran over text already carrying earlier fakes, a value
+// occurring inside an emitted fake overwrote part of it, leaving a string that
+// was neither an original nor the recorded replacement. Resolving against the
+// ORIGINAL text drops that, which is the one intended behaviour change here.
 
-const WORD = /[A-Za-z0-9_]/;
-
-function isWordChar(ch) {
-    return ch !== undefined && WORD.test(ch);
+// The trie is keyed by UTF-16 code UNIT, matching `` and keeping surrogate
+// pairs consistent with the rest of the file. Codes rather than one-character
+// strings: `text[i]` allocates a string per character, and this walks every
+// character of every body.
+function isWordCode(code) {
+    // NaN (index past either end of the string) fails every comparison, which
+    // is what `` wants at a boundary of the text.
+    return (code >= 48 && code <= 57)
+        || (code >= 97 && code <= 122)
+        || (code >= 65 && code <= 90)
+        || code === 95;
 }
 
 function newNode() {
@@ -487,7 +518,7 @@ function addNeedle(root, needle, replacement, boundary, priority) {
     if (!needle) return;
     let node = root;
     for (let k = 0; k < needle.length; k++) {
-        const ch = needle[k];
+        const ch = needle.charCodeAt(k);
         let child = node.next.get(ch);
         if (!child) { child = newNode(); node.next.set(ch, child); }
         node = child;
@@ -499,6 +530,11 @@ function addNeedle(root, needle, replacement, boundary, priority) {
     }
 }
 
+// Keyed on the replacement list itself, which holds because `scrubPii` finishes
+// building that array before any replacing starts and never touches it again.
+// That is a convention, not something the type enforces: anyone who later
+// appends to a live replacement list must invalidate this entry, or the new
+// values will silently go unscrubbed.
 const INDEX_CACHE = new WeakMap();
 
 function indexFor(replacements) {
@@ -532,50 +568,114 @@ function indexFor(replacements) {
         }
     }
 
-    idx = { root, byTypeValue, empty: root.next.size === 0 };
+    // Direct dispatch for the ASCII first character, so the overwhelmingly
+    // common case -- a character that begins no needle at all -- costs an array
+    // index rather than a Map lookup.
+    const rootAscii = new Array(128);
+    for (const [code, node] of root.next) {
+        if (code < 128) rootAscii[code] = node;
+    }
+
+    idx = { root, rootAscii, byTypeValue, empty: root.next.size === 0 };
     INDEX_CACHE.set(replacements, idx);
     return idx;
+}
+
+// One walk of the text, recording EVERY needle that matches anywhere -- nested
+// and overlapping matches included. Arbitration happens afterwards, because a
+// match cannot be judged against a competitor that has not been found yet.
+//
+// Matches are held as two parallel arrays rather than objects. This runs over
+// every character of every body, and a per-match object is an allocation the
+// garbage collector then has to chase; the `hit` records already live in the
+// trie, so a reference plus a start offset is the whole match.
+function collectMatches(text, idx, outStarts, outHits) {
+    const root = idx.root;
+    const rootAscii = idx.rootAscii;
+    const n = text.length;
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+        const code = text.charCodeAt(i);
+        let node = code < 128 ? rootAscii[code] : root.next.get(code);
+        if (node === undefined) continue;
+        let j = i;
+        for (;;) {
+            const hit = node.hit;
+            if (hit !== null
+                && (!hit.boundary
+                    || (!isWordCode(text.charCodeAt(i - 1))
+                        && !isWordCode(text.charCodeAt(i + hit.length))))) {
+                outStarts[count] = i;
+                outHits[count] = hit;
+                count++;
+            }
+            j++;
+            if (j >= n) break;
+            const child = node.next.get(text.charCodeAt(j));
+            if (child === undefined) break;
+            node = child;
+        }
+    }
+    return count;
+}
+
+// Scratch buffers reused across calls. `replaceAll` runs once per string leaf
+// and never re-enters itself, so a single set is safe, and reusing them keeps
+// a body of many small leaves from allocating two typed arrays per leaf.
+let CLAIMED = new Uint8Array(0);
+let ACCEPTED = new Uint8Array(0);
+
+function scratch(buf, need) {
+    if (buf.length < need) return new Uint8Array(need < 1024 ? 1024 : need * 2);
+    buf.fill(0, 0, need);
+    return buf;
 }
 
 function replaceAll(text, replacements) {
     const idx = indexFor(replacements);
     if (idx.empty || text.length === 0) return text;
 
-    const root = idx.root;
-    let out = '';
-    let copiedTo = 0;   // everything before this index is already in `out`
-    let i = 0;
+    const starts = [];
+    const hits = [];
+    const count = collectMatches(text, idx, starts, hits);
+    if (count === 0) return text;
 
-    while (i < text.length) {
-        let node = root.next.get(text[i]);
-        if (node === undefined) { i++; continue; }
+    // Resolve highest priority first; ties (the same needle occurring more than
+    // once) left to right, the order the global replace visited them in. The
+    // order array is sorted, not the match arrays, so the matches stay in
+    // ascending start order for the emit pass below and need no second sort.
+    const order = new Array(count);
+    for (let k = 0; k < count; k++) order[k] = k;
+    order.sort((a, b) => (hits[a].priority - hits[b].priority) || (starts[a] - starts[b]));
 
-        // Walk as far as the text allows, keeping the earliest-enrolled hit
-        // seen along the way rather than the longest one.
-        let best = null;
-        let j = i;
-        for (;;) {
-            const hit = node.hit;
-            if (hit !== null
-                && (best === null || hit.priority < best.priority)
-                && (!hit.boundary
-                    || (!isWordChar(text[i - 1]) && !isWordChar(text[i + hit.length])))) {
-                best = hit;
-            }
-            j++;
-            if (j >= text.length) break;
-            const child = node.next.get(text[j]);
-            if (child === undefined) break;
-            node = child;
+    CLAIMED = scratch(CLAIMED, text.length);
+    ACCEPTED = scratch(ACCEPTED, count);
+    const claimed = CLAIMED;
+    const accepted = ACCEPTED;
+
+    // Each match takes its span unless a higher-priority one already holds part
+    // of it -- so a longer value wins wherever it occurs, whatever starts first.
+    for (let k = 0; k < count; k++) {
+        const m = order[k];
+        const from = starts[m];
+        const to = from + hits[m].length;
+        let free = true;
+        for (let q = from; q < to; q++) {
+            if (claimed[q]) { free = false; break; }
         }
-
-        if (best === null) { i++; continue; }
-
-        out += text.slice(copiedTo, i) + best.replacement;
-        i += best.length;
-        copiedTo = i;
+        if (!free) continue;
+        for (let q = from; q < to; q++) claimed[q] = 1;
+        accepted[m] = 1;
     }
 
+    let out = '';
+    let copiedTo = 0;   // everything before this index is already in `out`
+    for (let k = 0; k < count; k++) {
+        if (!accepted[k]) continue;
+        const from = starts[k];
+        out += text.slice(copiedTo, from) + hits[k].replacement;
+        copiedTo = from + hits[k].length;
+    }
     return copiedTo === 0 ? text : out + text.slice(copiedTo);
 }
 
