@@ -579,7 +579,12 @@ function main() {
     // gets a deterministic, obviously-fake replacement. The returned
     // substitutions array contains only hash prefixes of originals so the
     // file is safe to commit.
-    const piiResult = pii.scrubPii(har);
+    // The MERGED policy goes in, so the scrub honours exactly the document the
+    // gate honours (issue #334). Without it `fieldTypeFor` was always called
+    // with null and the card predicate would have been too, which left a
+    // project's `piiFields` and `cardIssuers` validated, merged, loaded -- and
+    // never consulted on the side that actually rewrites the capture.
+    const piiResult = pii.scrubPii(har, policy);
 
     // Literal-value pass runs LAST, over the SERIALIZED document, so a single
     // sweep covers URLs, headers, request bodies and response bodies -- the
