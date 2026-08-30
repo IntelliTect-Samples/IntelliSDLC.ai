@@ -18,6 +18,14 @@
     "Identity LITERALS (declared in .har-profile.json) always gate, whatever the",
     "class setting says.",
     "",
+    "`identifierFields` names fields whose CONTENTS are an object id. An",
+    "IDENTITY-class shape finding whose enclosing field name matches is reported",
+    "and does not block: a card-shaped digit run at `media_id` is a card only in",
+    "the sense that ~10% of digit runs are. It NEVER applies to a secret class --",
+    "a high-entropy token under `session_id` is still a session token. The",
+    "entries here are generic patterns only; a specific provider's field name is",
+    "a consumer concept and belongs in .har-policy.project.json, which appends.",
+    "",
     "`cardIssuers` is EMPTY here on purpose. Issuer identification numbers are a",
     "public payment-network standard, so the shipped table lives in har-shapes.js;",
     "this list only ADDS to it, for a market whose cards the standard table does",
@@ -51,7 +59,12 @@
     }
   },
 
-  "identifierFields": [],
+  "identifierFields": [
+    "/(^|[_.-])ids?$/i",
+    "/(^|[_.-])pks?$/i",
+    "/(^|[_.-])(uuid|guid)s?$/i",
+    "/[a-z0-9](Id|Pk|Uuid|Guid)s?$/"
+  ],
 
   "secretFields": [
     "fb_dtsg", "lsd", "jazoest",
