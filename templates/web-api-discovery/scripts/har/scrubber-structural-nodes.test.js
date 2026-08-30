@@ -300,6 +300,147 @@ function check(ok, message) {
     }
 }
 
+// --- 10. A LIVE secret that merely LOOKS redacted is still scrubbed. ---
+// "Already redacted" must be decided by IDENTITY -- this run replaced this
+// value -- and never by the surface shape of a value that arrived in the
+// input. A shape test is a scrub bypass: any provider that masks its own
+// values (`REDACTED_FOR_PRIVACY...`), any token wrapped in angle brackets, any
+// field that is literally `***`, sails through under a secret field name. It
+// is also the false-negative direction, which is the one that ships.
+{
+    const SENTINEL_SHAPED = 'REDACTED_SESSION_TOKEN_1234567890';
+    const ANGLE_SHAPED = '<AVqSyntheticAngleToken0001>';
+    assert.ok(harSecrets.isRedacted(SENTINEL_SHAPED) && harSecrets.isRedacted(ANGLE_SHAPED),
+        '10.pre: the fixture values no longer look like redaction sentinels, so this test proves nothing');
+
+    const cookieHeader = 'sessionid=' + SENTINEL_SHAPED + '; csrftoken=' + ANGLE_SHAPED;
+    const formText = 'lsd=' + SENTINEL_SHAPED + '&fb_dtsg=' + ANGLE_SHAPED + '&doc_id=1234567890';
+    const CRLF = String.fromCharCode(13, 10);
+    const MULTIPART_BODY = [
+        '------Boundary42',
+        'Content-Disposition: form-data; name="lsd"',
+        '',
+        SENTINEL_SHAPED,
+        '------Boundary42--',
+        '',
+    ].join(CRLF);
+    const har = {
+        log: {
+            version: '1.2',
+            creator: { name: 'test', version: '1' },
+            entries: [{
+                startedDateTime: '2026-01-01T00:00:00.000Z',
+                time: 1,
+                request: {
+                    method: 'POST',
+                    url: 'https://example.invalid/api/graphql/?lsd=' + SENTINEL_SHAPED,
+                    httpVersion: 'HTTP/1.1',
+                    headers: [
+                        { name: 'Cookie', value: cookieHeader },
+                        { name: 'x-csrftoken', value: SENTINEL_SHAPED },
+                    ],
+                    queryString: [{ name: 'lsd', value: SENTINEL_SHAPED }],
+                    cookies: [
+                        { name: 'sessionid', value: SENTINEL_SHAPED },
+                        { name: 'csrftoken', value: ANGLE_SHAPED },
+                    ],
+                    postData: {
+                        mimeType: 'application/x-www-form-urlencoded',
+                        text: formText,
+                        params: [
+                            { name: 'lsd', value: SENTINEL_SHAPED },
+                            { name: 'fb_dtsg', value: ANGLE_SHAPED },
+                            { name: 'doc_id', value: '1234567890' },
+                        ],
+                    },
+                    headersSize: -1, bodySize: formText.length,
+                    // A multipart body carries its field name in a header and
+                    // its value on its own line, so no `name=value` pattern
+                    // sees it -- the same sentinel-shape bypass lived there.
+                    _multipart: MULTIPART_BODY,
+                },
+                response: {
+                    status: 200, statusText: 'OK', httpVersion: 'HTTP/1.1',
+                    headers: [{ name: 'set-cookie', value: 'sessionid=' + SENTINEL_SHAPED + '; Path=/' }],
+                    cookies: [{ name: 'sessionid', value: SENTINEL_SHAPED }],
+                    content: { size: 2, mimeType: 'application/json', text: '{}' },
+                    redirectURL: '', headersSize: -1, bodySize: 2,
+                },
+                cache: {}, timings: { send: 0, wait: 1, receive: 0 },
+            }],
+        },
+    };
+
+    const inPath = path.join(tmp, 'sentinel-shaped.har');
+    const outPath = path.join(tmp, 'sentinel-shaped.scrubbed.har');
+    fs.writeFileSync(inPath, JSON.stringify(har, null, 2));
+    const s = runNode(sanitize, [
+        '--in', inPath, '--out', outPath,
+        '--subs', path.join(tmp, 'sentinel-shaped.subs.json'),
+        '--pii-subs', path.join(tmp, 'sentinel-shaped.pii-subs.json'),
+        '--profile', writeProfile(tmp, 'structural-salt'),
+        '--fixed-time', '2026-01-01T00:00:00.000Z',
+    ]);
+    check(s.code === 0, '10.a: sanitize-har failed: ' + (s.stderr || s.stdout));
+    if (s.code === 0) {
+        const out = fs.readFileSync(outPath, 'utf8');
+        const parsed = JSON.parse(out);
+        const r = parsed.log.entries[0].request;
+        const p = parsed.log.entries[0].response;
+
+        // Every node this scrubber covers, asserted by IDENTITY: the live value
+        // is gone. `isSentinel` would pass here whether or not anything
+        // happened, which is exactly how a shape test hides a bypass.
+        const occurrences = [
+            ['request.queryString[lsd]', pairValue(r.queryString, 'lsd')],
+            ['request.postData.params[lsd]', pairValue(r.postData.params, 'lsd')],
+            ['request.postData.params[fb_dtsg]', pairValue(r.postData.params, 'fb_dtsg')],
+            ['request.cookies[sessionid]', pairValue(r.cookies, 'sessionid')],
+            ['request.cookies[csrftoken]', pairValue(r.cookies, 'csrftoken')],
+            ['the sessionid pair of the Cookie header', headerCookieValue(headerValue(r.headers, 'cookie'), 'sessionid')],
+            ['the csrftoken pair of the Cookie header', headerCookieValue(headerValue(r.headers, 'cookie'), 'csrftoken')],
+            ['the x-csrftoken header', headerValue(r.headers, 'x-csrftoken')],
+            ['response.cookies[sessionid]', pairValue(p.cookies, 'sessionid')],
+            ['the sessionid pair of the Set-Cookie header', headerCookieValue(headerValue(p.headers, 'set-cookie'), 'sessionid')],
+        ];
+        for (const occurrence of occurrences) {
+            check(occurrence[1] !== SENTINEL_SHAPED && occurrence[1] !== ANGLE_SHAPED,
+                '10.b: a LIVE secret shaped like a redaction sentinel survives at ' + occurrence[0]
+                + ' -- the sentinel pre-check is a scrub bypass');
+        }
+        check(!/lsd=REDACTED_SESSION_TOKEN_1234567890/.test(r.postData.text),
+            '10.c: a sentinel-shaped live secret survives in request.postData.text');
+        check(!r._multipart.includes(SENTINEL_SHAPED),
+            '10.d: a sentinel-shaped live secret survives in a multipart form field');
+        check(!out.includes(SENTINEL_SHAPED),
+            '10.e: a sentinel-shaped live secret survives somewhere in the scrubbed document');
+        check(!out.includes(ANGLE_SHAPED),
+            '10.f: an angle-bracketed live secret survives somewhere in the scrubbed document');
+    }
+}
+
+// --- 11. A value THIS run produced is never substituted a second time. ---
+// The property the shape test was protecting, kept -- by identity instead. A
+// `Cookie` header is scrubbed pair by pair and then swept again as text, so
+// without this the header's fake gets a second, different fake and the two
+// spellings of one cookie stop agreeing (case 3.c).
+{
+    const table = JSON.parse(fs.readFileSync(path.join(tmp, 'redundant.subs.json'), 'utf8'));
+    const outputs = new Set(Object.values(table));
+    for (const key of Object.keys(table)) {
+        // Keys are `kind:name:original` for named scrubs and `kind:original`
+        // for shape scrubs. Only the key's ORIGINAL half is examined, and it is
+        // never printed -- a message naming it would relocate the leak here.
+        const parts = key.split(':');
+        const original = (parts[0] === 'field' || parts[0] === 'cookie')
+            ? parts.slice(2).join(':')
+            : parts.slice(1).join(':');
+        check(!outputs.has(original),
+            '11: the substitution table has an entry whose ORIGINAL is a fake this run produced'
+            + ' (kind ' + parts[0] + ') -- a replacement was fed back through the scrub');
+    }
+}
+
 if (failures.length) {
     console.error('scrubber-structural-nodes: ' + failures.length + ' failure(s)');
     for (const f of failures) console.error('  - ' + f);
