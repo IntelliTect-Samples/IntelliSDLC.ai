@@ -335,6 +335,127 @@ test('a gating finding alongside an advisory one still quarantines', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Promotion is atomic -- the destination name never shows a partial write
+// ---------------------------------------------------------------------------
+
+// The invariant this whole change rests on is "a file that exists at
+// outputPath has already been judged". A plain read-and-write copy breaks it
+// in two ways that a rename cannot: a process killed mid-copy leaves a
+// TRUNCATED scrubbed.har under the name that means "verified", with nothing
+// marking it incomplete; and two captures of the same site publishing at once
+// interleave their writes into one corrupted file rather than one of them
+// simply winning.
+//
+// HOW THIS IS TESTED, and why this form. A real kill between two syscalls is
+// not reproducible in-process, so the race itself is not what is asserted.
+// What is asserted is the property the race would violate, driven by the one
+// failure that IS inducible: publication is made to fail after the bytes have
+// been written and before they take the destination name. Under a copy the
+// destination has already been overwritten by then, so the previous artifact
+// is gone and the assertions below fail; under write-then-rename the
+// destination has never been touched. That is the same distinction a kill
+// would expose, without depending on timing.
+//
+// fs.renameSync is patched rather than any private hook, and only for the
+// published artifact's own name, so every other rename in the run still
+// happens for real.
+function failingPublishRename(publishedName) {
+    const real = fs.renameSync;
+    fs.renameSync = (from, to) => {
+        if (path.basename(to) === publishedName) throw new Error('induced: rename failed');
+        return real(from, to);
+    };
+    return () => { fs.renameSync = real; };
+}
+
+test('a publication that fails before the rename leaves the previous artifact intact', () => {
+    const dir = repo('publish-atomic');
+    const first = session(dir, '2026-01-01-120000');
+    inDir(dir, () => capture.postProcess(first));
+    const artifact = path.join(first.outputPath, SCRUBBED_HAR);
+    const kept = fs.readFileSync(artifact, 'utf8');
+
+    // The second capture carries different traffic, so a partial or completed
+    // overwrite is distinguishable from the artifact that was already there.
+    const other = JSON.parse(JSON.stringify(okEntry));
+    other.request.url = 'https://api.example.com/v2/somewhere-else';
+    const again = session(dir, '2026-01-02-120000', [other]);
+
+    const restore = failingPublishRename(SCRUBBED_HAR);
+    let state;
+    try { state = inDir(dir, () => capture.postProcess(again)); } finally { restore(); }
+
+    assert.strictEqual(fs.readFileSync(artifact, 'utf8'), kept,
+        'the destination name observed a write that never completed -- a reader, '
+        + 'or `git add -A`, cannot tell that from a verified artifact');
+    assert.ok(state.errors.length,
+        'a publication that did not happen must be reported, not passed over');
+    assert.strictEqual(state.scrubbed.path, null,
+        'and the state must not claim an artifact it did not publish');
+    assert.deepStrictEqual(
+        fs.readdirSync(again.outputPath).sort(),
+        ['catalogue.json', 'digest.json', SCRUBBED_HAR].sort(),
+        'a failed publication left working files behind in a committable directory');
+});
+
+test('a successful publication leaves nothing but the artifacts', () => {
+    // The mirror. Without it, "clean up the temp on failure" could be
+    // implemented as "never write one" and the test above would still pass.
+    const dir = repo('publish-clean');
+    const s = session(dir, '2026-01-01-120000');
+    inDir(dir, () => capture.postProcess(s));
+    assert.deepStrictEqual(
+        fs.readdirSync(s.outputPath).sort(),
+        ['catalogue.json', 'digest.json', SCRUBBED_HAR].sort(),
+        'publication litter survived a successful run');
+});
+
+test('a temporary file abandoned by an earlier crash is swept, a live one is not', () => {
+    // Crash litter in a committable directory is the same defect class this
+    // change exists to end. But a blind sweep would delete the in-flight
+    // temporary of a CONCURRENT capture -- reintroducing the corruption from
+    // the other side -- so only an abandoned one goes.
+    const dir = repo('publish-sweep');
+    const s = session(dir, '2026-01-01-120000');
+    fs.mkdirSync(s.outputPath, { recursive: true });
+
+    const stale = path.join(s.outputPath, `${capture.PUBLISH_TEMP_PREFIX}crashed`);
+    const live = path.join(s.outputPath, `${capture.PUBLISH_TEMP_PREFIX}inflight`);
+    fs.writeFileSync(stale, 'half a har', 'utf8');
+    fs.writeFileSync(live, 'another capture, publishing right now', 'utf8');
+    const longAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    fs.utimesSync(stale, longAgo, longAgo);
+
+    inDir(dir, () => capture.postProcess(s));
+
+    assert.ok(!fs.existsSync(stale), 'an abandoned temporary was left in the output path');
+    assert.ok(fs.existsSync(live),
+        'a concurrent capture\'s in-flight temporary was deleted out from under it');
+});
+
+// ---------------------------------------------------------------------------
+// The stale findings report is removed on provenance, not on filename
+// ---------------------------------------------------------------------------
+
+test('a clean re-capture does not delete a file it did not write', () => {
+    // Clearing the previous run's report keys on the report BEING one: a file
+    // that merely occupies the name is somebody else's, and the output path
+    // being documented as tool-owned is a convention, not a check.
+    const dir = repo('foreign-report');
+    const s = session(dir, '2026-01-01-120000');
+    fs.mkdirSync(s.outputPath, { recursive: true });
+    const foreign = path.join(s.outputPath, FINDINGS);
+    fs.writeFileSync(foreign, '{"notes":"hand-written by the operator"}', 'utf8');
+
+    inDir(dir, () => capture.postProcess(s));
+
+    assert.ok(fs.existsSync(foreign),
+        'a file the tool did not write was deleted because it had the right name');
+    assert.strictEqual(JSON.parse(fs.readFileSync(foreign, 'utf8')).notes,
+        'hand-written by the operator', 'and its contents must be untouched');
+});
+
+// ---------------------------------------------------------------------------
 // The exit code the wrapper reads
 // ---------------------------------------------------------------------------
 
