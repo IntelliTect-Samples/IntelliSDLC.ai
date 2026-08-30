@@ -4,10 +4,15 @@
  * web-api-discovery scrub pipeline (issue #46).
  *
  * Exports:
- *   detectPii(har)              -> [{ type, value, location }]
+ *   detectPii(har, policy?)     -> [{ type, value, location }]
  *   fakeFor(type, original)     -> string (deterministic, obviously-fake)
- *   scrubPii(har)               -> { substitutions: [...] }  (mutates har)
+ *   scrubPii(har, policy?)      -> { substitutions: [...] }  (mutates har)
  *   PII_TYPES                   -> array of supported type strings
+ *
+ * `policy` is the MERGED scrub policy (`har-policy.loadPolicy`). It is
+ * OPTIONAL and absent means the shipped defaults, so no caller breaks; passing
+ * it is what makes a consuming project's `piiFields` and `cardIssuers` govern
+ * the SCRUB as well as the gate (issue #334).
  *
  * Determinism: seed = SHA-256(original).hexSlice(0, 16). Same input always
  * yields same fake. No external dependencies; pure Node stdlib.
@@ -66,6 +71,14 @@ const REGIONS = ['ZZ','XA','XB','XC','XD','XE','XF','XG','XH','XI'];
 // type) and `qualifiers` -- the words allowed to precede an ambiguous tail, or
 // the string `any` where the tail speaks for itself. See `fieldTypeFor`.
 const harPolicy = require('./har-policy.js');
+// ONE definition of "credit card", consumed rather than copied (issue #334).
+// `har-shapes.js` is the gate; it requires an assigned issuer identifier at a
+// length that issuer mints before calling a Luhn-valid run a card. This module
+// drives a REPLACE, so holding a looser definition here did not leak -- it
+// CORRUPTED, rewriting provider object ids into generated fake card numbers in
+// committed references. A second copy of the predicate here would only drift
+// again, so the predicate is imported and the issuer table is not duplicated.
+const { hasAssignedIin } = require('./har-shapes.js');
 
 const DEFAULT_PII_POLICY = harPolicy.loadDefaultPolicy();
 
@@ -428,7 +441,7 @@ function isFakePhone(value) {
     return /^\+1555\d{7}$/.test(String(value));
 }
 
-function detectInString(str, entryIndex, loc, out) {
+function detectInString(str, entryIndex, loc, out, policy) {
     if (typeof str !== 'string' || str.length === 0) return;
     // emails
     (str.match(RE.email) || []).forEach(m => {
@@ -448,9 +461,13 @@ function detectInString(str, entryIndex, loc, out) {
         if (/^9\d{2}-/.test(m)) return;
         pushDetection(out, 'ssn', m, { entryIndex, ...loc });
     });
-    // credit card (Luhn)
+    // credit card -- the GATE's predicate, not a looser local one (issue #334).
+    // An assigned issuer identifier at a length that issuer mints, AND Luhn.
+    // Bare Luhn accepts ~10% of all digit runs by chance, and since this pass
+    // replaces what it finds, that arithmetic accident was being written into
+    // references as a fake card number over the top of a real object id.
     (str.match(RE.creditDigits) || []).forEach(m => {
-        if (!luhnOk(m)) return;
+        if (!hasAssignedIin(m, policy) || !luhnOk(m)) return;
         pushDetection(out, 'credit-card', m, { entryIndex, ...loc });
     });
     // iban -- shape AND checksum, which is what licenses a context-free match
@@ -475,8 +492,8 @@ function detectInString(str, entryIndex, loc, out) {
     });
 }
 
-function detectInValue(value, key, entryIndex, loc, out) {
-    const fType = fieldType(key);
+function detectInValue(value, key, entryIndex, loc, out, policy) {
+    const fType = fieldTypeFor(key, policy);
     // Context-driven detections (run first; do not also report as raw email/etc.)
     if (fType && typeof value === 'string' && value.length > 0) {
         if (fType === 'person-name') {
@@ -528,29 +545,39 @@ function detectInValue(value, key, entryIndex, loc, out) {
     return false;
 }
 
-function walkJsonForDetect(node, key, entryIndex, jsonPath, out) {
+function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
     if (node === null || node === undefined) return;
     if (typeof node === 'string') {
-        const handled = detectInValue(node, key, entryIndex, { jsonPath }, out);
-        if (!handled) detectInString(node, entryIndex, { jsonPath }, out);
+        const handled = detectInValue(node, key, entryIndex, { jsonPath }, out, policy);
+        if (!handled) detectInString(node, entryIndex, { jsonPath }, out, policy);
         return;
     }
     if (typeof node === 'number' || typeof node === 'boolean') {
-        detectInValue(node, key, entryIndex, { jsonPath }, out);
+        detectInValue(node, key, entryIndex, { jsonPath }, out, policy);
         return;
     }
     if (Array.isArray(node)) {
-        node.forEach((v, i) => walkJsonForDetect(v, key, entryIndex, `${jsonPath}[${i}]`, out));
+        node.forEach((v, i) => walkJsonForDetect(v, key, entryIndex, `${jsonPath}[${i}]`, out, policy));
         return;
     }
     if (typeof node === 'object') {
         for (const k of Object.keys(node)) {
-            walkJsonForDetect(node[k], k, entryIndex, jsonPath ? `${jsonPath}.${k}` : k, out);
+            walkJsonForDetect(node[k], k, entryIndex, jsonPath ? `${jsonPath}.${k}` : k, out, policy);
         }
     }
 }
 
-function detectPii(har) {
+/**
+ * @param {object} har
+ * @param {object} [policy] the MERGED scrub policy, as `har-policy.loadPolicy`
+ *   returns it. OPTIONAL: absent means the shipped defaults, which is what
+ *   every caller got before issue #334 and what the direct-call test suites
+ *   still expect. Supplying it is what makes a consuming project's `piiFields`
+ *   and `cardIssuers` reach the SCRUBBER and not only the gate -- before this
+ *   parameter existed, they were validated, merged, loaded, and then never
+ *   consulted on this side, so the whole project-policy surface was inert here.
+ */
+function detectPii(har, policy) {
     const out = [];
     const entries = (har && har.log && har.log.entries) || [];
     entries.forEach((entry, entryIndex) => {
@@ -561,7 +588,7 @@ function detectPii(har) {
         ];
         for (const h of allHeaders) {
             if (!h || typeof h.value !== 'string') continue;
-            detectInString(h.value, entryIndex, { headerName: h.name, headerCtx: h._ctx }, out);
+            detectInString(h.value, entryIndex, { headerName: h.name, headerCtx: h._ctx }, out, policy);
         }
         // cookies, both directions. The raw `Cookie` HEADER sweep caught some
         // of this incidentally, and incidentally is not a control: the
@@ -582,45 +609,45 @@ function detectPii(har) {
         for (const c of allCookies) {
             if (!c || typeof c.value !== 'string') continue;
             const loc = { cookieName: c.name, cookieCtx: c._ctx };
-            const handled = detectInValue(c.value, c.name, entryIndex, loc, out);
-            if (!handled) detectInString(c.value, entryIndex, loc, out);
+            const handled = detectInValue(c.value, c.name, entryIndex, loc, out, policy);
+            if (!handled) detectInString(c.value, entryIndex, loc, out, policy);
         }
 
         // query string
         const qs = (entry.request && entry.request.queryString) || [];
         for (const q of qs) {
             if (!q || typeof q.value !== 'string') continue;
-            detectInString(q.value, entryIndex, { queryParam: q.name }, out);
+            detectInString(q.value, entryIndex, { queryParam: q.name }, out, policy);
         }
         // request URL
         if (entry.request && typeof entry.request.url === 'string') {
-            detectInString(entry.request.url, entryIndex, { jsonPath: 'request.url' }, out);
+            detectInString(entry.request.url, entryIndex, { jsonPath: 'request.url' }, out, policy);
         }
         // request body
         if (entry.request && entry.request.postData && typeof entry.request.postData.text === 'string') {
-            tryWalkJsonText(entry.request.postData.text, entryIndex, 'request.postData', out);
+            tryWalkJsonText(entry.request.postData.text, entryIndex, 'request.postData', out, policy);
         }
         // response body
         if (entry.response && entry.response.content && typeof entry.response.content.text === 'string') {
-            tryWalkJsonText(entry.response.content.text, entryIndex, 'response.content', out);
+            tryWalkJsonText(entry.response.content.text, entryIndex, 'response.content', out, policy);
         }
     });
     return out;
 }
 
-function tryWalkJsonText(text, entryIndex, basePath, out) {
+function tryWalkJsonText(text, entryIndex, basePath, out, policy) {
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
-        walkJsonForDetect(parsed, null, entryIndex, basePath, out);
+        walkJsonForDetect(parsed, null, entryIndex, basePath, out, policy);
     } else {
-        detectInString(text, entryIndex, { jsonPath: basePath }, out);
+        detectInString(text, entryIndex, { jsonPath: basePath }, out, policy);
     }
 }
 
 // --- scrubbing: apply faker substitutions in-place on the HAR ---
-function scrubPii(har) {
-    const detections = detectPii(har);
+function scrubPii(har, policy) {
+    const detections = detectPii(har, policy);
     if (detections.length === 0) return { substitutions: [] };
 
     // Group by (type, original value) so we record one substitution per unique original.
@@ -648,7 +675,7 @@ function scrubPii(har) {
 
     const entries = (har && har.log && har.log.entries) || [];
     for (const entry of entries) {
-        applyReplacementsToEntry(entry, replacements);
+        applyReplacementsToEntry(entry, replacements, policy);
     }
 
     // Strip raw values out of the returned substitutions (safe-store schema).
@@ -665,7 +692,7 @@ function scrubPii(har) {
     return { substitutions: safe };
 }
 
-function applyReplacementsToEntry(entry, replacements) {
+function applyReplacementsToEntry(entry, replacements, policy) {
     // headers
     for (const ctx of ['request', 'response']) {
         const hs = entry[ctx] && entry[ctx].headers;
@@ -700,29 +727,29 @@ function applyReplacementsToEntry(entry, replacements) {
     }
     // bodies (request/response)
     if (entry.request && entry.request.postData && typeof entry.request.postData.text === 'string') {
-        entry.request.postData.text = replaceJsonOrText(entry.request.postData.text, replacements);
+        entry.request.postData.text = replaceJsonOrText(entry.request.postData.text, replacements, policy);
     }
     if (entry.response && entry.response.content && typeof entry.response.content.text === 'string') {
-        entry.response.content.text = replaceJsonOrText(entry.response.content.text, replacements);
+        entry.response.content.text = replaceJsonOrText(entry.response.content.text, replacements, policy);
     }
 }
 
-function replaceJsonOrText(text, replacements) {
+function replaceJsonOrText(text, replacements, policy) {
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
-        const rebuilt = replaceInJson(parsed, null, replacements);
+        const rebuilt = replaceInJson(parsed, null, replacements, policy);
         return JSON.stringify(rebuilt);
     }
     return replaceAll(text, replacements);
 }
 
-function replaceInJson(node, parentKey, replacements) {
+function replaceInJson(node, parentKey, replacements, policy) {
     if (node === null || node === undefined) return node;
     if (typeof node === 'string') {
         // Honor field-typed replacements: if the parent key declares a context
         // type, swap the entire value out for the matching fake.
-        const fType = fieldType(parentKey);
+        const fType = fieldTypeFor(parentKey, policy);
         if (fType && fType !== 'geo-lat' && fType !== 'geo-lng') {
             // Find a matching replacement by exact original value, since detection
             // already enrolled this exact string.
@@ -732,19 +759,19 @@ function replaceInJson(node, parentKey, replacements) {
         return replaceAll(node, replacements);
     }
     if (typeof node === 'number') {
-        const fType = fieldType(parentKey);
+        const fType = fieldTypeFor(parentKey, policy);
         if (fType === 'geo-lat' || fType === 'geo-lng') {
             return 0;
         }
         return node;
     }
     if (Array.isArray(node)) {
-        return node.map(v => replaceInJson(v, parentKey, replacements));
+        return node.map(v => replaceInJson(v, parentKey, replacements, policy));
     }
     if (typeof node === 'object') {
         const out = {};
         for (const k of Object.keys(node)) {
-            out[k] = replaceInJson(node[k], k, replacements);
+            out[k] = replaceInJson(node[k], k, replacements, policy);
         }
         return out;
     }
