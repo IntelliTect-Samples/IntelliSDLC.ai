@@ -216,9 +216,16 @@ function main() {
     //
     // The flag stays for the operator who genuinely wants a bound. It is the
     // DEFAULT that was wrong, not the capability.
-    const maxResponseBytes = args['max-response-bytes'] === undefined
-        ? null
-        : Number(args['max-response-bytes']);
+    // `parseArgs` gives a flag with no value the boolean `true`, and
+    // `Number(true)` is 1 -- so `--max-response-bytes` with the number left off
+    // silently kept ONE BYTE of every response and stamped it truncated. A typo
+    // that destroys every body while exiting 0 is the failure shape this whole
+    // issue exists to remove, so it is refused by TYPE before any coercion.
+    const rawMax = args['max-response-bytes'];
+    if (rawMax === true) {
+        usage('--max-response-bytes needs a number, e.g. --max-response-bytes 65536');
+    }
+    const maxResponseBytes = rawMax === undefined ? null : Number(rawMax);
     if (maxResponseBytes !== null && (!Number.isFinite(maxResponseBytes) || maxResponseBytes <= 0)) {
         usage('--max-response-bytes must be a positive number');
     }

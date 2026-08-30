@@ -201,5 +201,44 @@ function soleReference(outDir) {
     assert.ok(/truncat/i.test(r.stdout + r.stderr), '6.b: the violation did not name truncation');
 }
 
+// --- 7. A value-less --max-response-bytes is refused, not read as 1. ---
+// `parseArgs` turns a flag with no value into boolean `true`, and
+// `Number(true)` is 1 -- so `--max-response-bytes` with the number left off
+// silently kept ONE BYTE of every response and marked it truncated. A typo
+// that destroys every body while reporting success is the shape of defect this
+// whole issue exists to remove.
+{
+    const dir = project('valueless-flag');
+    const { r } = extractTo(dir, ['--max-response-bytes']);
+    assert.strictEqual(r.code, 2,
+        `7.a: a value-less --max-response-bytes was accepted (exit ${r.code}) rather than refused`);
+    assert.ok(/max-response-bytes/.test(r.stderr),
+        `7.b: the usage error did not name the offending flag: ${r.stderr}`);
+}
+
+// --- 8. The inline-marker finding names BOTH readings. ---
+// The gate cannot tell a marker an exporter wrote from one the PROVIDER sent
+// in a genuine response -- logging and webhook APIs really do emit
+// `[response body truncated]` as content. Telling the operator to "re-extract
+// from the preserved raw capture" is wrong advice in that case: re-extracting
+// changes nothing, because the pipeline did not write it.
+//
+// So the finding gives the discriminator instead of guessing. If the payload
+// still parses, the cut is not ours -- our own cut leaves it unterminated.
+{
+    const dir = project('inline-message');
+    const ref = harWith(BIG_BODY);
+    ref.log.entries[0].response.content.text =
+        BIG_BODY.slice(0, 4000) + '...[response body truncated for reference use]';
+    fs.writeFileSync(path.join(dir, 'reference.har'), JSON.stringify(ref));
+
+    const out = runNode(verifyRef, ['--dir', dir], dir).stdout
+        + runNode(verifyRef, ['--dir', dir], dir).stderr;
+    assert.ok(/parse|parses/i.test(out),
+        `8.a: the finding does not tell the operator how to tell the two readings apart: ${out}`);
+    assert.ok(/provider/i.test(out),
+        `8.b: the finding assumes the pipeline wrote the marker and never mentions the other reading: ${out}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All har-truncation tests passed');

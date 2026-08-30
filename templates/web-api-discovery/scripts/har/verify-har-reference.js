@@ -169,10 +169,22 @@ function checkTruncation(entries, report) {
                 `(${keptBytes} of ${originalBytes} bytes kept) -- re-extract without ` +
                 '--max-response-bytes, from the preserved raw capture');
         } else if (typeof content.text === 'string' && INLINE_TRUNCATION_MARKER.test(content.text)) {
+            // Two readings, and the gate cannot tell them apart: an exporter
+            // wrote this marker, or the PROVIDER sent it as genuine content --
+            // logging and webhook APIs really do emit `[response body
+            // truncated]` in a payload. Telling the operator to re-extract is
+            // wrong advice for the second reading, since the pipeline did not
+            // write it and re-extracting changes nothing.
+            //
+            // So give the discriminator rather than guess. A cut this pipeline
+            // (or the consumer exporter) made leaves the payload unterminated;
+            // provider-authored text does not.
             report(
-                `entry ${i}: response body carries an INLINE truncation marker -- the payload ` +
-                'is cut mid-string and is no longer valid, and the cut is invisible to a ' +
-                'structured audit. Re-extract from the preserved raw capture');
+                `entry ${i}: response body carries an INLINE truncation marker. If an exporter ` +
+                'wrote it, the payload is cut mid-string and the cut is invisible to a ' +
+                'structured audit -- re-extract from the preserved raw capture. If the PROVIDER ' +
+                'sent it as genuine content, this is a false positive. To tell them apart: a cut ' +
+                'body no longer parses, provider text still parses');
         }
     }
 }
