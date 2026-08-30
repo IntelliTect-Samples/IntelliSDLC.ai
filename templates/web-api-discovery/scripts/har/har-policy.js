@@ -375,6 +375,126 @@ function validateWaiver(waiver, at, file, index, allKinds) {
  */
 const IDENTIFIER_REGEX_RE = /^\/(.*)\/([A-Za-z]*)$/;
 
+/**
+ * The two bounds that keep a policy pattern from hanging the gate.
+ *
+ * `identifierFields` compiles a PROJECT-supplied regular expression and runs
+ * it against field names lifted out of a CAPTURED body -- third-party data, in
+ * a tool whose whole purpose is capturing third-party APIs. An ordinary regex
+ * anti-pattern in a policy file plus a long field name in a response is a
+ * denial of service on the gate this issue exists to make trustworthy again:
+ * `/(a+)+b/` against 28 characters was measured at 51 SECONDS, and it grows
+ * exponentially from there.
+ *
+ * Two defences, because neither is complete on its own:
+ *
+ *   maxFieldNameChars  Total and un-gameable: past the cap nothing is matched
+ *                      at all. But it only bounds the INPUT. A cap large
+ *                      enough to admit every real field name -- and 128 is
+ *                      already five times the longest name in the shipped
+ *                      vocabulary, `x-instagram-rupload-params` at 26 -- is
+ *                      still hopeless against an exponential pattern, which
+ *                      was already unusable at 28. A cap alone is NOT a fix,
+ *                      whatever intuition says about "far below where
+ *                      backtracking bites"; the measurements say otherwise.
+ *
+ *   probeLengths       So the pattern is also probed AT LOAD TIME against
+ *   maxProbeMs         adversarial inputs built from its own literal alphabet,
+ *                      at rising lengths, and refused the moment one probe
+ *                      runs long. That bounds the WORK rather than the input.
+ *                      Detection of catastrophic backtracking is never
+ *                      complete, which is exactly why it is the SECOND
+ *                      defence and not the only one.
+ *
+ * The probe lengths rise gently at the start because that is where an
+ * exponential pattern must be caught: the cost of the probe that catches it is
+ * the cost of the LAST probe run, so stepping 8 -> 12 -> 16 -> 20 catches
+ * `/(a+)+b/` at a few hundred milliseconds instead of at the fifty seconds a
+ * jump straight to 32 would have cost.
+ */
+const IDENTIFIER_LIMITS = Object.freeze({
+    // A JSON key or HTTP field name longer than this is not a field name.
+    maxFieldNameChars: 128,
+    probeLengths: Object.freeze([8, 12, 16, 20, 24, 32, 48, 64, 96, 128]),
+    // A legitimate pattern matches in microseconds, so this is roughly a
+    // thousandfold margin -- slow enough never to fire on CI noise, fast
+    // enough that nothing exponential survives it.
+    maxProbeMs: 50,
+    // Distinct probe characters. Bounded so a pattern with a large literal
+    // alphabet cannot make the load itself expensive.
+    maxProbeChars: 8,
+});
+
+/**
+ * Probe characters drawn from the pattern's OWN literal alphabet.
+ *
+ * A catastrophic pattern backtracks on input made of the characters it is
+ * written to consume, so the pattern names its own worst case. `a` is the
+ * fallback for a pattern with no literals at all (`/.+/`, say), which is
+ * pathological in a different way and still worth probing.
+ */
+function identifierProbeChars(source) {
+    const chars = [];
+    for (const ch of source) {
+        if (/[A-Za-z0-9_-]/.test(ch) && !chars.includes(ch)) chars.push(ch);
+        if (chars.length >= IDENTIFIER_LIMITS.maxProbeChars) break;
+    }
+    return chars.length ? chars : ['a'];
+}
+
+/**
+ * Probe strings of one length.
+ *
+ * Two families, because a pattern blows up on a FAILED match far more often
+ * than on a successful one: the engine only exhausts every alternative when
+ * no alternative works. So each run of the pattern's own characters is probed
+ * both plain and with a foreign character appended to deny the tail -- which
+ * is what turns `/(.*)*c/` from an instant match on `ccc` into an exhaustive
+ * search on `ccc!`. A run of the foreign character alone is probed too, for a
+ * pattern whose literal alphabet says nothing about what it consumes.
+ */
+function identifierProbes(chars, length) {
+    const foreign = ['!', '~', '0'].find((c) => !chars.includes(c)) || '!';
+    const probes = [foreign.repeat(length)];
+    for (const ch of chars) {
+        probes.push(ch.repeat(length));
+        if (length > 1) probes.push(ch.repeat(length - 1) + foreign);
+    }
+    return probes;
+}
+
+/**
+ * Refuse a pattern that backtracks catastrophically, measured rather than
+ * guessed.
+ *
+ * Structural analysis of a regular expression -- "does it contain a quantified
+ * group containing a quantifier" -- misses whole families (`/(a|a)+b/` has no
+ * nested quantifier and is just as exponential). Running the thing and timing
+ * it makes no such claim about which constructions are dangerous: it observes
+ * the only property that matters.
+ */
+function assertIdentifierPatternIsBounded(re, at) {
+    const chars = identifierProbeChars(re.source);
+    // Length OUTERMOST, so every probe family is tried at the cheap lengths
+    // before any is tried at an expensive one. The cost of catching a bad
+    // pattern is the cost of the last probe run, and that ordering is what
+    // keeps it in the hundreds of milliseconds.
+    for (const length of IDENTIFIER_LIMITS.probeLengths) {
+        for (const probe of identifierProbes(chars, length)) {
+            const started = process.hrtime.bigint();
+            try { re.test(probe); } catch { /* a pattern that throws matches nothing */ }
+            const ms = Number(process.hrtime.bigint() - started) / 1e6;
+            if (ms <= IDENTIFIER_LIMITS.maxProbeMs) continue;
+            throw new PolicyError(
+                `${at}: this pattern backtracks catastrophically -- it took ${ms.toFixed(0)} ms on a ` +
+                `${length}-character input, and the cost grows exponentially with length. Field names ` +
+                `come from CAPTURED response bodies, so a pattern like this lets a third party hang ` +
+                `the scrub gate. Rewrite it without nested or overlapping quantifiers (prefer ` +
+                `"(^|[_-])ids?$" over "(.+)+id").`);
+        }
+    }
+}
+
 function compileIdentifierField(entry, file, index) {
     const at = `${file}: identifierFields[${index}]`;
     const asRegex = IDENTIFIER_REGEX_RE.exec(entry);
@@ -394,11 +514,17 @@ function compileIdentifierField(entry, file, index) {
             `${at}: the "${flags}" flags are not allowed -- "g" and "y" make the match stateful, ` +
             `so the same field name would match only every other time.`);
     }
+    let re;
     try {
-        return { re: new RegExp(body, flags), source: entry };
+        re = new RegExp(body, flags);
     } catch (e) {
         throw new PolicyError(`${at}: ${JSON.stringify(entry)} is not a valid regular expression -- ${e.message}`);
     }
+    // Compiling only proves it PARSES. What it costs to RUN is the half that
+    // can hang a gate, and it is checked here so a bad pattern fails the load
+    // rather than the capture.
+    assertIdentifierPatternIsBounded(re, at);
+    return { re, source: entry };
 }
 
 /**
@@ -438,6 +564,10 @@ function identifierMatchers(policy) {
  */
 function isIdentifierField(policy, key) {
     if (!policy || typeof key !== 'string' || key === '') return false;
+    // The cap comes FIRST, before any pattern runs. It is the defence that
+    // cannot be gamed by a pattern nobody analysed correctly: a field name
+    // longer than this is not a field name, so there is nothing to decide.
+    if (key.length > IDENTIFIER_LIMITS.maxFieldNameChars) return false;
     const lowered = key.toLowerCase();
     for (const matcher of identifierMatchers(policy)) {
         if (matcher.re ? matcher.re.test(key) : matcher.name === lowered) return true;
@@ -677,4 +807,5 @@ module.exports = {
     loadPolicy,
     isWaived,
     isIdentifierField,
+    IDENTIFIER_LIMITS,
 };
