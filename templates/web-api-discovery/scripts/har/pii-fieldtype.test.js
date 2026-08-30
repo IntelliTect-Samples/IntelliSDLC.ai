@@ -20,9 +20,12 @@
 'use strict';
 
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const pii = require(path.join(__dirname, 'pii.js'));
+const policyModule = require(path.join(__dirname, 'har-policy.js'));
 
 function check(key, expected, label) {
     assert.strictEqual(pii.fieldType(key), expected,
@@ -260,6 +263,30 @@ function check(key, expected, label) {
     }
 }
 
+// --- 7g. The last two of the unconditional set: phone and device-id. ---
+// Third round on this category, so this closes it rather than narrowing it
+// again. `isMobile` and `hasIdfa` are boolean flags, not fields carrying a
+// number or an advertising id. The blast radius is smaller than the earlier
+// members -- a misclassification only corrupts when the VALUE is also
+// digit-shaped or UUID-shaped -- but "smaller" is not "closed", and a build
+// string under `deviceMobile` or a trace id under `requestIdfa` is exactly the
+// coincidence that finds it.
+{
+    for (const key of ['isMobile', 'deviceMobile', 'hasMobile', 'supportsMobile',
+        'hasIdfa', 'isGaid', 'allowAdvertisingId', 'canTrackAdvertisingId']) {
+        check(key, null, '7g.a');
+    }
+
+    // ...and the real ones still match.
+    for (const key of ['phone', 'phone_number', 'home_phone', 'work_phone', 'contact_phone',
+        'mobile', 'customer_mobile']) {
+        check(key, 'phone', '7g.b');
+    }
+    for (const key of ['idfa', 'gaid', 'advertising_id', 'device_advertising_id', 'google_advertising_id']) {
+        check(key, 'device-id', '7g.c');
+    }
+}
+
 // --- 8. A trailing index is part of the path, not part of the name. ---
 // `address_line_1`, `addresses[0]`, `phone_2` -- an ordinal suffix is how APIs
 // spell repetition, and it must not stop the field being recognised.
@@ -274,6 +301,29 @@ function check(key, expected, label) {
     for (const key of [null, undefined, 42, '', '_', '__', '---']) {
         assert.strictEqual(pii.fieldType(key), null, `9.a: fieldType(${JSON.stringify(key)}) matched something`);
     }
+}
+
+// --- 9b. No PII type may take an unqualified tail. ---
+// Three review rounds each found the same defect in a different member of the
+// `qualifiers: "any"` set -- region/country/zip, then city/town/locality, then
+// dob/geo/phone/device-id. Every round fixed the members it had been shown.
+//
+// So this stops being about members. A tail word that matches behind ANY
+// qualifier is a predicate standing in for a concept, on a path that REPLACES
+// values, and every such tail has turned out to have a non-PII reading in real
+// APIs. The setting still exists in the loader for a consuming project that
+// genuinely wants it; the shipped default may not use it, and this is what
+// says so out loud rather than leaving it true by accident.
+{
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pii-any-'));
+    const policy = policyModule.loadPolicy({ startDir: dir, stopAt: dir });
+    const unqualified = Object.keys(policy.piiFields)
+        .filter((t) => policy.piiFields[t].tail.length > 0 && policy.piiFields[t].qualifiers === 'any');
+    assert.deepStrictEqual(unqualified, [],
+        `9b.a: ${unqualified.join(', ')} accept a tail behind any qualifier. Every type that has ` +
+        'done so has turned out to have a non-PII reading -- aws_region, sort_city, ' +
+        'account_birthday, ecliptic_latitude, isMobile. Give it an allowlist.');
+    fs.rmSync(dir, { recursive: true, force: true });
 }
 
 // --- 10. The policy is what supplies the names. ---

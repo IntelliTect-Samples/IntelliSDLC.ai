@@ -121,6 +121,33 @@ const IDFA = '6D92078A-8246-4BA4-AE5B-76104861E7DC';
         '3e.e: anchoring the pattern stopped a real MAC being found');
 }
 
+// --- 3f. `key:MAC` is the ordinary spelling and must still be found. ---
+// The first anchoring attempt used a hex-character lookbehind, which cannot
+// tell "the last letter of an English word" from "the second digit of a hex
+// pair" -- and `a` through `f` are ordinary letters. So `device:`, `mac-`,
+// `id:`, `source:`, `cache:`, `trace:`, `interface:` all blocked the match,
+// which is the most natural spelling in a log line or a header.
+//
+// Trading a corruption for a silent miss is not a fix. A MAC is a maximal run
+// of EXACTLY six hex pairs; that is the concept, and it is what the pattern
+// now says rather than approximating it with two characters of lookbehind.
+{
+    for (const value of ['device:AA:BB:CC:DD:EE:FF', 'mac-AA:BB:CC:DD:EE:FF',
+        'id:AA:BB:CC:DD:EE:FF', 'source:AA:BB:CC:DD:EE:FF', 'cache:AA:BB:CC:DD:EE:FF',
+        'interface:AA:BB:CC:DD:EE:FF', 'router:AA:BB:CC:DD:EE:FF',
+        'device-AA-BB-CC-DD-EE-FF', 'Interface eth0 mac:AA:BB:CC:DD:EE:FF up']) {
+        assert.strictEqual(found({ log: value }, 'mac-address').length, 1,
+            `3f.a: a real MAC was missed in ${JSON.stringify(value)}`);
+    }
+
+    // ...while the run that is longer than six pairs is still not carved,
+    // however it is introduced.
+    for (const value of ['device:AA:BB:CC:DD:EE:FF:11:22', 'fingerprint:AA:BB:CC:DD:EE:FF:11:22:33:44']) {
+        assert.strictEqual(found({ log: value }, 'mac-address').length, 0,
+            `3f.b: a longer run was carved into a MAC in ${JSON.stringify(value)}`);
+    }
+}
+
 // --- 4. An advertising id needs its field name. THIS IS THE POINT. ---
 // IDFA and GAID are ordinary UUIDs. So are request ids, trace ids, idempotency
 // keys, message ids and half the primary keys in a modern API. Matching the
