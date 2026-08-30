@@ -378,6 +378,92 @@ function only(findings, kind) {
         '14.a: a finding with no resolved key path was downgraded on the enclosing node name');
 }
 
+// --- 16. A pathological pattern cannot hang the gate. (ReDoS) ---
+// `identifierFields` compiles a project-supplied regular expression and runs
+// it against field names taken from a CAPTURED body -- third-party data, in a
+// tool whose entire purpose is capturing third-party APIs. An ordinary regex
+// anti-pattern in a policy plus a long field name in a response is a denial of
+// service on the gate this issue exists to make trustworthy again.
+//
+// Two independent defences, and this asserts the PAIR rather than either one,
+// because neither is complete alone:
+//
+//   * A key-length cap. Total and un-gameable -- a field name longer than the
+//     cap is simply not a field name -- but on its own it only bounds the
+//     INPUT, and an exponential pattern is still hopeless at 128 characters.
+//   * A load-time complexity probe. Bounds the WORK, but static/dynamic
+//     detection of catastrophic backtracking is never complete.
+//
+// So: for every pattern the loader ACCEPTS, matching must be bounded.
+{
+    const nested = '/(a+)+b/';
+    let policy = null;
+    try {
+        policy = loadPolicy({ identifierFields: [nested] });
+    } catch (e) {
+        assert.ok(e instanceof policyModule.PolicyError,
+            `16.a: a nested-quantifier pattern failed to load, but not as a PolicyError: ${e}`);
+    }
+
+    if (policy) {
+        // The loader accepted it, so the cap is now the only thing standing
+        // between a captured field name and unbounded backtracking.
+        const key = 'a'.repeat(28);
+        const doc = bodyHar(JSON.stringify({ [key]: CARD }));
+        const started = Date.now();
+        shapes.findLeaksInHar(doc, policy);
+        const elapsed = Date.now() - started;
+        assert.ok(elapsed < 2000,
+            `16.b: matching an accepted pattern against a ${key.length}-character field name took ` +
+            `${elapsed} ms. A policy the loader accepts must be bounded at match time -- either ` +
+            'refuse the pattern at load, or cap the key length below where backtracking bites.');
+    }
+}
+
+// --- 16b. The key-length cap, pinned directly. ---
+// Independent of any pattern analysis: past the cap, nothing is matched at all.
+{
+    const limits = policyModule.IDENTIFIER_LIMITS;
+    assert.ok(limits && limits.maxFieldNameChars > 0, '16b.a: the identifier key cap is not exposed');
+
+    const policy = loadPolicy({ identifierFields: ['/a/'] });
+    const atCap = 'a'.repeat(limits.maxFieldNameChars);
+    const pastCap = 'a'.repeat(limits.maxFieldNameChars + 1);
+    assert.strictEqual(policyModule.isIdentifierField(policy, atCap), true,
+        '16b.b: a name at the cap was refused -- the cap must be a ceiling, not an off-by-one');
+    assert.strictEqual(policyModule.isIdentifierField(policy, pastCap), false,
+        '16b.c: a name past the cap was matched -- the cap is the one defence that cannot be gamed');
+}
+
+// --- 16c. The cap short-circuits before any pattern runs. ---
+{
+    const policy = loadPolicy();
+    const absurd = 'a'.repeat(1000000);
+    const started = Date.now();
+    assert.strictEqual(policyModule.isIdentifierField(policy, absurd), false, '16c.a');
+    assert.ok(Date.now() - started < 500, '16c.b: a megabyte-long name reached the patterns');
+}
+
+// --- 17. Known imprecision: a value that is also a JSON KEY. ---
+// The raw-text pass and the structural pass are correlated by sighting order,
+// and the structural pass never emits KEY text -- only values. So a digit run
+// appearing as a key as well as a value shifts the correlation by one and the
+// last occurrence falls back to the body node.
+//
+// This is a LOCATION and COUNT imprecision, not a gate bypass: every path in
+// the map is a genuine path, the identifier promotion is one-directional (a
+// finding can only move back TOWARDS blocking), and the count is still
+// correct. Pinned here so the behaviour is documented rather than discovered.
+{
+    const policy = loadPolicy();
+    const doc = bodyHar(`{"${CARD}":1,"media_id":"${CARD}","amount2":"${CARD}"}`);
+    const f = only(shapes.findLeaksInHar(doc, policy), 'credit-card');
+    assert.strictEqual(f.count, 3, '17.a: the occurrence count is wrong');
+    assert.notStrictEqual(f.identifierField, true,
+        '17.b: an occurrence outside an identifier field must still promote the finding back');
+    assert.strictEqual(shapes.blocksLeak(f), true, '17.c: the finding stopped blocking');
+}
+
 // --- 15. No finding carries the value, downgraded or not. ---
 {
     const policy = loadPolicy();
