@@ -85,6 +85,42 @@ const IDFA = '6D92078A-8246-4BA4-AE5B-76104861E7DC';
         '3.d: a real locally-administered MAC was skipped as though it were our own fake');
 }
 
+// --- 3e. A MAC is exactly six pairs, not any six pairs inside a longer run. ---
+// A TLS certificate thumbprint and an SSH host-key fingerprint are colon-
+// separated hex pairs, and a HAR capture is full of them -- they are part of
+// the protocol evidence the reference exists to preserve. An unanchored
+// six-pair pattern carves three "MAC addresses" out of a twenty-byte
+// fingerprint and the scrub then rewrites them, destroying the real value with
+// no field name involved and no way to notice afterwards.
+//
+// This is the same defect the `sort_city` finding was: a predicate that is not
+// the concept. "Six hex pairs" is not "a MAC address" if it sits inside more
+// hex pairs.
+{
+    const fingerprint = 'AA:BB:CC:DD:EE:FF:11:22:33:44:55:66:77:88:99:00:AB:CD:EF:01';
+    assert.strictEqual(found({ thumbprint: fingerprint }, 'mac-address').length, 0,
+        '3e.a: a certificate fingerprint was carved into MAC addresses');
+    assert.strictEqual(found({ thumbprint: fingerprint }, 'ip-address').length, 0,
+        '3e.b: a certificate fingerprint was carved into IPv6 addresses');
+
+    const har = { log: { entries: [{
+        request: { method: 'GET', url: 'https://example.com/a', cookies: [], queryString: [],
+            headers: [{ name: 'x-cert-fingerprint', value: fingerprint }] },
+        response: { status: 200, headers: [], cookies: [], content: { mimeType: 'application/json', text: '{}' } },
+    }] } };
+    pii.scrubPii(har);
+    assert.strictEqual(har.log.entries[0].request.headers[0].value, fingerprint,
+        '3e.c: a certificate fingerprint was rewritten by the scrub');
+
+    // The hyphen spelling extends the same way.
+    assert.strictEqual(found({ fp: '3C-22-FB-8A-11-9C-DE-AD' }, 'mac-address').length, 0,
+        '3e.d: a longer hyphen-separated hex run was carved into a MAC');
+
+    // ...and a genuine MAC adjacent to other text still reports.
+    assert.strictEqual(found({ note: 'device 3C:22:FB:8A:11:9C connected' }, 'mac-address').length, 1,
+        '3e.e: anchoring the pattern stopped a real MAC being found');
+}
+
 // --- 4. An advertising id needs its field name. THIS IS THE POINT. ---
 // IDFA and GAID are ordinary UUIDs. So are request ids, trace ids, idempotency
 // keys, message ids and half the primary keys in a modern API. Matching the
