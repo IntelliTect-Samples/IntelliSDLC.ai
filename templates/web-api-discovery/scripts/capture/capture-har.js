@@ -1185,10 +1185,11 @@ function quarantineRejectedScrub(session, state) {
     state.scrubbed.path = null;
     if (!fs.existsSync(source)) return;
 
-    const dest = freeName(session.sessionDir, 'scrubbed.rejected', '.har');
+    const stem = REJECTED_HAR.slice(0, -path.extname(REJECTED_HAR).length);
+    const dest = freeName(session.sessionDir, stem, path.extname(REJECTED_HAR));
     // The suffix that made the artifact's name unique, so the report keeps the
     // same one and the pair stays legible in a directory listing.
-    const suffix = path.basename(dest).slice('scrubbed.rejected'.length, -'.har'.length);
+    const suffix = path.basename(dest, path.extname(REJECTED_HAR)).slice(stem.length);
     try {
         fs.renameSync(source, dest);
     } catch (e) {
@@ -1200,7 +1201,9 @@ function quarantineRejectedScrub(session, state) {
 
     const report = path.join(session.sessionDir, FINDINGS_FILE);
     if (fs.existsSync(report) && suffix) {
-        const moved = path.join(session.sessionDir, `scrub-findings${suffix}.json`);
+        const reportStem = FINDINGS_FILE.slice(0, -path.extname(FINDINGS_FILE).length);
+        const moved = path.join(session.sessionDir,
+            `${reportStem}${suffix}${path.extname(FINDINGS_FILE)}`);
         try { fs.renameSync(report, moved); state.scrubbed.findings = moved; } catch { /* keep */ }
     } else if (fs.existsSync(report)) {
         state.scrubbed.findings = report;
