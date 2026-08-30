@@ -220,9 +220,20 @@ const RE = {
     creditDigits: /\b\d{13,19}\b/g,
     ipv4:         /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
     // Same treatment, same reason: a maximal run of colon-separated hex groups,
-    // with the count deciding. This one is PRE-EXISTING -- main already carves
-    // `192.0.2.x` out of a certificate fingerprint -- and is fixed here because
-    // it is the identical defect in the identical value.
+    // with the count deciding.
+    //
+    // This one is PRE-EXISTING. main carves two eight-GROUP matches out of a
+    // twenty-group certificate fingerprint and then replaces each with a fake
+    // IPv4 sentinel, so the fingerprint comes back as
+    // `192.0.2.234:192.0.2.4:AB:CD:EF:01`. The IPv4-looking output is the
+    // FAKE, not the match -- worth saying, because a reviewer read the
+    // original wording as an IPv4 example misfiled under IPv6. Fixed here
+    // because it is the identical defect in the identical value, and shipping
+    // only the MAC half would leave the reproduction case still corrupting.
+    //
+    // ACCEPTED LIMIT, pre-existing and unchanged: `::` compression is not
+    // matched, so a compressed IPv6 address is missed. main's exact-seven-colon
+    // pattern did not handle it either. A miss, not a corruption.
     ipv6:         /\b(?:[A-Fa-f0-9]{1,4}:)+[A-Fa-f0-9]{1,4}\b/g,
     isoDate:      /^\d{4}-\d{2}-\d{2}$/,
     // An IBAN is two country letters, two check digits, then up to 30
@@ -242,6 +253,22 @@ const RE = {
     //
     // Matching the run and counting says what a MAC actually is, so neither
     // failure is reachable.
+    //
+    // ACCEPTED LIMITS -- found by review, not oversights, and both are MISSES
+    // rather than corruptions:
+    //
+    //  1. Mixed separators (`AA:BB-CC:DD:EE:FF`) split into two sub-runs,
+    //     neither of which is six pairs, so nothing is reported. No tool emits
+    //     a MAC with inconsistent separators.
+    //  2. A MAC glued directly to trailing hex with no delimiter
+    //     (`...EE:FFcafe1234`) leaves the closing `\b` unable to fire. This is
+    //     inherent to any word-bounded maximal-run definition.
+    //
+    // Both need an input no real capture produces, and both fail toward a miss
+    // that the literal and name controls still cover. If either turns up in a
+    // real capture, the answer is a proper tokeniser, not another lookaround --
+    // the lookaround is what produced the `device:` regression in the first
+    // place.
     mac:          /\b[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2})+\b|\b[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2})+\b/g,
     uuid:         /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
 };
