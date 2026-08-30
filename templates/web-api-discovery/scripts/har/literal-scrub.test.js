@@ -18,12 +18,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.js'));
 
 const scriptsDir = __dirname;
 const sanitize = path.join(scriptsDir, 'sanitize-har.js');
 const verify = path.join(scriptsDir, 'verify-scrub.js');
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'literal-scrub-'));
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'literal-scrub-')));
 
 const ACCOUNT_ID = '100000123456789';
 const DISPLAY_NAME = 'Ada Lovelace';
@@ -42,6 +43,10 @@ function runNode(script, args, cwd) {
 function makeProject(name, opts) {
     const literals = opts && 'literals' in opts ? opts.literals : undefined;
     const dir = path.join(tmp, name);
+    // The scrub refuses a substitution-table destination git will not confirm
+    // is ignored (issue #318), so each project is a real repository configured
+    // the way a consumer's is.
+    initProtectedRepo(dir);
     fs.mkdirSync(path.join(dir, 'samples', 'har-original'), { recursive: true });
     if (literals !== null) {
         const map = literals || { [ACCOUNT_ID]: '<AccountId>', [DISPLAY_NAME]: '<DisplayName>' };

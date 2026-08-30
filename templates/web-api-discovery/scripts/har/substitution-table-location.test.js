@@ -22,8 +22,12 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const { initProtectedRepo } = require(path.join(__dirname, 'har-test-repo.js'));
+
 const sanitize = path.join(__dirname, 'sanitize-har.js');
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'subs-location-'));
+// realpath: os.tmpdir() can be an 8.3 short path on Windows, which git
+// resolves differently than node does.
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'subs-location-')));
 
 const LEGACY_TABLE = '.har-substitutions.json';
 const PII_TABLE = '.substitutions.json';
@@ -41,8 +45,11 @@ function runNode(script, args, cwd) {
 }
 
 function makeProject(name) {
-    const dir = path.join(tmp, name);
-    fs.mkdirSync(dir, { recursive: true });
+    // Since #318 the scrub verifies that a derived destination is genuinely
+    // ignored rather than trusting its name, so these fixtures are real
+    // repositories configured the way a consumer's is -- otherwise they would
+    // describe a configuration the tooling refuses to run in.
+    const dir = initProtectedRepo(path.join(tmp, name));
     fs.writeFileSync(path.join(dir, '.har-profile.json'),
         JSON.stringify({ salt: 'subs-location-salt', literals: {} }, null, 2));
     return dir;

@@ -13,6 +13,9 @@
  * plaintext values the scrub replaced, so a table is a reverse lookup of live
  * credentials; they default beside the raw capture in the gitignored
  * `.har-captures/` tree and never into the scrubbed output path (issue #294).
+ * That default is verified rather than assumed: git is asked whether the
+ * destination is actually ignored, and the run is refused when it is not
+ * (issue #318).
  *
  * Scrubbing is TWO controls, not one:
  *
@@ -49,6 +52,7 @@ const crypto = require('crypto');
 const pii = require(path.join(__dirname, 'pii.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -83,12 +87,39 @@ const CAPTURES_DIR = '.har-captures';
  * matches that name at any depth, so the containment holds either way.
  *
  * What is never used: the output directory. That is the whole point.
+ *
+ * This function picks a destination by NAME, which is a proposal and not a
+ * guarantee -- `.har-captures` is only gitignored where a `.gitignore` says
+ * so. Whether the proposal is safe is a separate question, answered by
+ * subs-destination.js before anything is written (issue #318).
  */
 function deriveSubsDir(inPath) {
     const dir = path.dirname(path.resolve(inPath));
     const segments = dir.split(path.sep);
     if (segments.includes(CAPTURES_DIR)) return dir;
     return path.join(dir, CAPTURES_DIR);
+}
+
+/**
+ * Refuse any derived table destination git will not confirm is ignored.
+ *
+ * Only *derived* destinations are gated. An explicit --subs / --pii-subs is a
+ * deliberate act by an operator who has said where the table goes, and both
+ * extract-har-reference.js and run-agent.js rely on it to write into a temp
+ * working directory outside any repository which they then delete.
+ *
+ * This runs before the input is read and before --out is written, so a refused
+ * run leaves the filesystem exactly as it found it.
+ */
+function assertDerivedDestinationsProtected(candidates) {
+    for (const { path: dest, flag, derived } of candidates) {
+        if (!derived) continue;
+        const status = subsDestination.classifyDestination(dest);
+        const message = subsDestination.refusalMessage(dest, status, flag);
+        if (!message) continue;
+        console.error(`sanitize-har: ${message}`);
+        process.exit(1);
+    }
 }
 
 function usage() {
@@ -98,7 +129,9 @@ function usage() {
         `  --subs       default: <captures-dir>/${LEGACY_SUBS_FILENAME} (never the output path)`,
         `  --pii-subs   default: <captures-dir>/${PII_SUBS_FILENAME} (never the output path)`,
         `                <captures-dir> is the ${CAPTURES_DIR} session directory the input`,
-        `                came from, else a ${CAPTURES_DIR}/ beside it -- gitignored either way`,
+        `                came from, else a ${CAPTURES_DIR}/ beside it. A derived destination is`,
+        '                verified gitignored before use and the run is refused otherwise;',
+        '                an explicit --subs / --pii-subs is taken as deliberate and is not.',
         `  --profile    default: nearest ${harProfile.PROFILE_FILENAME} at or above the working directory`,
         '  --fixed-time determinism for tests',
     ].join('\n'));
@@ -340,6 +373,13 @@ function main() {
     const subsDir = deriveSubsDir(args.in);
     const subsPath = args.subs || path.join(subsDir, LEGACY_SUBS_FILENAME);
     const piiSubsPath = args['pii-subs'] || path.join(subsDir, PII_SUBS_FILENAME);
+
+    // Before any read or write: a derived destination is only safe if git says
+    // it is ignored. `.har-captures` is a name, not a protection (issue #318).
+    assertDerivedDestinationsProtected([
+        { path: subsPath, flag: '--subs', derived: !args.subs },
+        { path: piiSubsPath, flag: '--pii-subs', derived: !args['pii-subs'] },
+    ]);
 
     let raw;
     try {

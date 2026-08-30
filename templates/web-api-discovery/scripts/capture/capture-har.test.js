@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 
 const capture = require(path.join(__dirname, 'capture-har.js'));
+const { initProtectedRepo } = require(path.join(__dirname, '..', 'har', 'har-test-repo.js'));
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-har-test-'));
 
@@ -673,7 +674,10 @@ test('the digest reduces the start URL to an origin, dropping any credential in 
 // only that the stub works, and the property under test is precisely that the
 // real one ran.
 function withSandbox(name, entries, fn) {
-    const dir = tmpDir(name);
+    // A real repository with the tables gitignored: postProcess shells out to
+    // the actual scrub, which since #318 refuses a destination git will not
+    // confirm is ignored.
+    const dir = initProtectedRepo(tmpDir(name));
     const sessionDir = path.join(dir, '.har-captures', '2026-01-01-120000');
     const outputPath = path.join(dir, 'docs', 'har-reference');
     fs.mkdirSync(sessionDir, { recursive: true });
