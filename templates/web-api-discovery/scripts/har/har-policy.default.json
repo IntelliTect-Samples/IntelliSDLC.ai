@@ -26,6 +26,14 @@
     "entries here are generic patterns only; a specific provider's field name is",
     "a consumer concept and belongs in .har-policy.project.json, which appends.",
     "",
+    "An entry is a SEGMENT PATTERN, never a regular expression. A field name is",
+    "split into segments on _ - . and camel-case boundaries, so `*id` matches",
+    "media_id, item-id and objectId while leaving valid, paid and android alone.",
+    "The five forms are `word`, `*word`, `word*`, `word*word` and `*word*`; a",
+    "word is alphanumeric segments joined by _ or -. The language is restricted",
+    "on purpose: a pattern here runs against field names taken from CAPTURED",
+    "response bodies, and an arbitrary regex there can hang the gate outright.",
+    "",
     "`cardIssuers` is EMPTY here on purpose. Issuer identification numbers are a",
     "public payment-network standard, so the shipped table lives in har-shapes.js;",
     "this list only ADDS to it, for a market whose cards the standard table does",
@@ -60,10 +68,10 @@
   },
 
   "identifierFields": [
-    "/(^|[_.-])ids?$/i",
-    "/(^|[_.-])pks?$/i",
-    "/(^|[_.-])(uuid|guid)s?$/i",
-    "/[a-z0-9](Id|Pk|Uuid|Guid)s?$/"
+    "*id", "*ids",
+    "*pk", "*pks",
+    "*uuid", "*uuids",
+    "*guid", "*guids"
   ],
 
   "secretFields": [

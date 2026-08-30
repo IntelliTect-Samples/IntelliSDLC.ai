@@ -206,9 +206,13 @@ function only(findings, kind) {
     assert.ok(Array.isArray(policy.identifierFields) && policy.identifierFields.length > 0,
         '6.a: the default policy ships no identifier patterns, so the mechanism has nothing to match');
     for (const pattern of policy.identifierFields) {
-        assert.ok(/^\/.*\/[a-z]*$/.test(pattern),
+        assert.ok(pattern.includes('*'),
             `6.b: default identifier entry ${JSON.stringify(pattern)} is a literal name -- the ` +
             'upstream default carries generic patterns only; a specific name is a consumer concept');
+        assert.ok(!/^\//.test(pattern),
+            `6.c: default identifier entry ${JSON.stringify(pattern)} is a regular expression -- ` +
+            'the accepted language is a restricted segment matcher, precisely so a policy cannot ' +
+            'carry a pattern that backtracks');
     }
 }
 
@@ -300,9 +304,11 @@ function only(findings, kind) {
 // A policy that loads and does not mean what its author wrote is worse than
 // one that fails: the author reads the file and believes it is in force.
 {
-    assert.throws(() => loadPolicy({ identifierFields: ['/(unclosed/'] }),
-        (e) => e instanceof policyModule.PolicyError && /identifierFields/.test(e.message),
-        '11.a: an invalid identifier regex loaded silently');
+    for (const bad of ['/(unclosed/', 'has space', 'two**stars', '*', '**', 'trailing_', '']) {
+        assert.throws(() => loadPolicy({ identifierFields: [bad] }),
+            (e) => e instanceof policyModule.PolicyError && /identifierFields/.test(e.message),
+            `11.a: the invalid identifier pattern ${JSON.stringify(bad)} loaded silently`);
+    }
 }
 
 // --- 12. No policy means no downgrade. ---
@@ -378,46 +384,90 @@ function only(findings, kind) {
         '14.a: a finding with no resolved key path was downgraded on the enclosing node name');
 }
 
-// --- 16. A pathological pattern cannot hang the gate. (ReDoS) ---
-// `identifierFields` compiles a project-supplied regular expression and runs
-// it against field names taken from a CAPTURED body -- third-party data, in a
-// tool whose entire purpose is capturing third-party APIs. An ordinary regex
-// anti-pattern in a policy plus a long field name in a response is a denial of
-// service on the gate this issue exists to make trustworthy again.
+// --- 16. The pattern language cannot express catastrophic backtracking. ---
+// `identifierFields` runs a POLICY-supplied pattern against field names lifted
+// out of a CAPTURED body -- third-party data, in a tool whose whole purpose is
+// capturing third-party APIs. While the pattern was an arbitrary regular
+// expression, an ordinary anti-pattern in a policy file plus a long field name
+// in a response hung both verifiers.
 //
-// Two independent defences, and this asserts the PAIR rather than either one,
-// because neither is complete alone:
+// Detecting the bad ones was tried and abandoned. Probing a compiled regex for
+// backtracking means deriving an adversarial alphabet, and character classes,
+// `\w`, `\d`, backreferences and lookaround each defeat that in a different
+// way -- a whack-a-mole nobody wins. These two reproductions were measured
+// against a probe that looked convincing:
 //
-//   * A key-length cap. Total and un-gameable -- a field name longer than the
-//     cap is simply not a field name -- but on its own it only bounds the
-//     INPUT, and an exponential pattern is still hopeless at 128 characters.
-//   * A load-time complexity probe. Bounds the WORK, but static/dynamic
-//     detection of catastrophic backtracking is never complete.
+//   /(?:12345678)?(a+)+b/                     loaded in  9 ms, then  83,949 ms
+//   /^(stripe|square|adyen|klarna)_(\w+)+id$/i loaded in 12 ms, then   6,243 ms
 //
-// So: for every pattern the loader ACCEPTS, matching must be bounded.
+// The second is what a project author actually writes to catch several
+// providers' id-suffixed fields. It hangs on a 38-character field name, well
+// inside the length cap.
+//
+// So the language is restricted instead, and the vulnerability is
+// unrepresentable rather than detected. Both must be refused as INVALID
+// SYNTAX at load -- not merely bounded at match time.
 {
-    const nested = '/(a+)+b/';
-    let policy = null;
-    try {
-        policy = loadPolicy({ identifierFields: [nested] });
-    } catch (e) {
-        assert.ok(e instanceof policyModule.PolicyError,
-            `16.a: a nested-quantifier pattern failed to load, but not as a PolicyError: ${e}`);
+    const reproductions = [
+        '/(?:12345678)?(a+)+b/',
+        '/^(stripe|square|adyen|klarna)_(\w+)+id$/i',
+    ];
+    for (const pattern of reproductions) {
+        assert.throws(() => loadPolicy({ identifierFields: [pattern] }),
+            (e) => e instanceof policyModule.PolicyError && /identifierFields/.test(e.message),
+            `16.a: ${JSON.stringify(pattern)} was accepted. A regular expression is not in the ` +
+            'accepted language, and the reason it is not is that this one hangs the gate.');
     }
+}
 
-    if (policy) {
-        // The loader accepted it, so the cap is now the only thing standing
-        // between a captured field name and unbounded backtracking.
-        const key = 'a'.repeat(28);
-        const doc = bodyHar(JSON.stringify({ [key]: CARD }));
-        const started = Date.now();
-        shapes.findLeaksInHar(doc, policy);
-        const elapsed = Date.now() - started;
-        assert.ok(elapsed < 2000,
-            `16.b: matching an accepted pattern against a ${key.length}-character field name took ` +
-            `${elapsed} ms. A policy the loader accepts must be bounded at match time -- either ` +
-            'refuse the pattern at load, or cap the key length below where backtracking bites.');
+// --- 16a2. ...and the whole regex family goes with it. ---
+{
+    for (const pattern of ['/(a+)+b/', '/(a|a)+b/', '/(.*)*c/', '/(x+x+)+y/', '/^(\w+\s?)*$/']) {
+        assert.throws(() => loadPolicy({ identifierFields: [pattern] }),
+            (e) => e instanceof policyModule.PolicyError,
+            `16a2.a: the regular expression ${JSON.stringify(pattern)} was accepted`);
     }
+}
+
+// --- 16a3. Everything the language DOES accept is bounded, by construction. ---
+// The property that replaces the probe: there is nothing in the accepted
+// language to backtrack over, so an accepted pattern against a worst-case
+// field name at the cap costs no more than reading it.
+{
+    const accepted = ['*id', '*ids', '*pk', '*uuid', 'trip_slug', 'user*', 'stripe*id', '*media*'];
+    const policy = loadPolicy({ identifierFields: accepted });
+    const cap = policyModule.IDENTIFIER_LIMITS.maxFieldNameChars;
+    const adversarial = [
+        'a'.repeat(cap),
+        'a'.repeat(cap - 1) + 'b',
+        ('a_'.repeat(cap)).slice(0, cap),
+        ('aB'.repeat(cap)).slice(0, cap),
+        'stripe_' + 'x'.repeat(cap - 8) + 'y',
+        'user_' + '1'.repeat(cap - 6) + 'z',
+    ];
+    const started = Date.now();
+    for (let round = 0; round < 200; round++) {
+        for (const key of adversarial) policyModule.isIdentifierField(policy, key);
+    }
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 2000,
+        `16a3.a: ${200 * adversarial.length} matches of ${accepted.length} accepted patterns ` +
+        `against cap-length adversarial names took ${elapsed} ms. An accepted pattern must be ` +
+        'linear in the length of the name -- if this is slow, the language grew something that ' +
+        'backtracks.');
+}
+
+// --- 16a4. A long pattern list cannot make the LOAD expensive either. ---
+// The probe had unbounded aggregate cost across a policy's pattern list: 100
+// near-threshold patterns took 3,868 ms before refusing. Compiling a
+// restricted pattern is a parse, so the cost is linear in the list.
+{
+    const many = Array.from({ length: 200 }, (_, i) => `*seg${i}`);
+    const started = Date.now();
+    loadPolicy({ identifierFields: many });
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 2000,
+        `16a4.a: loading 200 identifier patterns took ${elapsed} ms`);
 }
 
 // --- 16b. The key-length cap, pinned directly. ---
@@ -426,9 +476,11 @@ function only(findings, kind) {
     const limits = policyModule.IDENTIFIER_LIMITS;
     assert.ok(limits && limits.maxFieldNameChars > 0, '16b.a: the identifier key cap is not exposed');
 
-    const policy = loadPolicy({ identifierFields: ['/a/'] });
+    // An exact pattern that is itself cap-length, so the ONLY thing separating
+    // the two names below is the cap.
     const atCap = 'a'.repeat(limits.maxFieldNameChars);
     const pastCap = 'a'.repeat(limits.maxFieldNameChars + 1);
+    const policy = loadPolicy({ identifierFields: [atCap, pastCap] });
     assert.strictEqual(policyModule.isIdentifierField(policy, atCap), true,
         '16b.b: a name at the cap was refused -- the cap must be a ceiling, not an off-by-one');
     assert.strictEqual(policyModule.isIdentifierField(policy, pastCap), false,

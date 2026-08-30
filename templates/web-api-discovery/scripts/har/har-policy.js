@@ -368,173 +368,174 @@ function validateWaiver(waiver, at, file, index, allKinds) {
  * "this field is documented to hold an id", which is a claim about
  * provenance that a human wrote down and a reviewer can read in a diff.
  *
- * An entry is either `/pattern/flags` -- a regular expression over the field
- * name -- or a literal name, matched case-insensitively and whole. The
- * upstream default carries generic patterns only; a specific provider's field
- * name is a consumer concept and belongs in `.har-policy.project.json`.
+ * An entry is a SEGMENT PATTERN, not a regular expression. See
+ * `IDENTIFIER_SYNTAX` below for the accepted language and why it is restricted.
+ * The upstream default carries generic patterns only; a specific provider's
+ * field name is a consumer concept and belongs in `.har-policy.project.json`.
  */
-const IDENTIFIER_REGEX_RE = /^\/(.*)\/([A-Za-z]*)$/;
 
 /**
- * The two bounds that keep a policy pattern from hanging the gate.
+ * Why this is a restricted language and not a regular expression.
  *
- * `identifierFields` compiles a PROJECT-supplied regular expression and runs
- * it against field names lifted out of a CAPTURED body -- third-party data, in
- * a tool whose whole purpose is capturing third-party APIs. An ordinary regex
- * anti-pattern in a policy file plus a long field name in a response is a
- * denial of service on the gate this issue exists to make trustworthy again:
- * `/(a+)+b/` against 28 characters was measured at 51 SECONDS, and it grows
- * exponentially from there.
+ * `isIdentifierField` runs a POLICY-supplied pattern against field names
+ * lifted out of a CAPTURED body -- third-party data, in a tool whose whole
+ * purpose is capturing third-party APIs. While the pattern was an arbitrary
+ * regular expression, an ordinary anti-pattern in a policy file plus a long
+ * field name in a response hung both verifiers: `/(a+)+b/` against 28
+ * characters was measured at 51 SECONDS.
  *
- * Two defences, because neither is complete on its own:
+ * DETECTING the bad ones was tried and abandoned, and it is worth saying why
+ * so nobody re-proposes it. A probe has to derive an adversarial alphabet for
+ * the pattern, and character classes, `\w`, `\d`, backreferences and
+ * lookaround each defeat that in a different way. Two patterns that sailed
+ * through a probe which looked convincing:
  *
- *   maxFieldNameChars  Total and un-gameable: past the cap nothing is matched
- *                      at all. But it only bounds the INPUT. A cap large
- *                      enough to admit every real field name -- and 128 is
- *                      already five times the longest name in the shipped
- *                      vocabulary, `x-instagram-rupload-params` at 26 -- is
- *                      still hopeless against an exponential pattern, which
- *                      was already unusable at 28. A cap alone is NOT a fix,
- *                      whatever intuition says about "far below where
- *                      backtracking bites"; the measurements say otherwise.
+ *     /(?:12345678)?(a+)+b/                      loads in  9 ms -> 83,949 ms
+ *     /^(stripe|square|adyen|klarna)_(\w+)+id$/i loads in 12 ms ->  6,243 ms
  *
- *   probeLengths       So the pattern is also probed AT LOAD TIME against
- *   maxProbeMs         adversarial inputs built from its own literal alphabet,
- *                      at rising lengths, and refused the moment one probe
- *                      runs long. That bounds the WORK rather than the input.
- *                      Detection of catastrophic backtracking is never
- *                      complete, which is exactly why it is the SECOND
- *                      defence and not the only one.
+ * The second is exactly what a project author writes to catch several
+ * providers' id-suffixed fields, and it hangs on a 38-character name. That is
+ * a whack-a-mole nobody wins, and passing it means certifying arbitrary regex
+ * as safe -- a claim no cheap check can make.
  *
- * The probe lengths rise gently at the start because that is where an
- * exponential pattern must be caught: the cost of the probe that catches it is
- * the cost of the LAST probe run, so stepping 8 -> 12 -> 16 -> 20 catches
- * `/(a+)+b/` at a few hundred milliseconds instead of at the fifty seconds a
- * jump straight to 32 would have cost.
+ * So the vulnerability is made UNREPRESENTABLE instead of detected. This is
+ * the design rule this subsystem keeps relearning, one level up: stop
+ * inspecting shape for badness, restrict the input space so badness cannot be
+ * expressed. Same lesson as requiring an assigned issuer identifier instead of
+ * tuning Luhn, and as deciding "already scrubbed" by identity rather than by
+ * what a value looks like.
+ *
+ * Narrowing the syntax is safe TODAY and would not be later: `identifierFields`
+ * ships empty, this has not merged, and there are no consumers. The day a
+ * project writes a regular expression into `.har-policy.project.json` it
+ * becomes a breaking change forever.
+ *
+ * THE LANGUAGE. A field name is first split into SEGMENTS on `_`, `-`, `.`
+ * and camel-case boundaries, lowercased. A pattern is one of five forms, where
+ * `word` is one or more segments written with `_` or `-` between them:
+ *
+ *     word            the whole name is exactly these segments
+ *     *word           the name ENDS WITH these segments
+ *     word*           the name STARTS WITH these segments
+ *     word*word       the name starts with the first and ends with the second
+ *     *word*          these segments appear anywhere, as whole segments
+ *
+ * Matching is array comparison over segments: linear in the length of the
+ * name, with nothing to backtrack over. Segment awareness is the point -- it
+ * is what makes `*id` match `media_id`, `item-id` and `objectId` while
+ * leaving `valid`, `paid` and `android` alone. A substring matcher could not
+ * tell those apart, and a regular expression could, at the cost above.
+ *
+ * What the language deliberately cannot express is alternation. A project
+ * wanting four providers writes four entries, which a reviewer reads more
+ * easily than one pattern anyway.
  */
+const IDENTIFIER_SYNTAX =
+    'a segment pattern: "word", "*word", "word*", "word*word" or "*word*", where word is one or ' +
+    'more alphanumeric segments joined by "_" or "-" (for example "*id", "user*", "trip_slug"). ' +
+    'Regular expressions are NOT accepted -- a policy pattern runs against field names taken from ' +
+    'captured response bodies, and an arbitrary regex there can hang the gate.';
+
 const IDENTIFIER_LIMITS = Object.freeze({
-    // A JSON key or HTTP field name longer than this is not a field name.
+    // A JSON key or HTTP field name longer than this is not a field name, so
+    // there is nothing to decide. Kept alongside the restricted language
+    // because it costs nothing and bounds the input space regardless: it is
+    // five times the longest name in the shipped vocabulary,
+    // `x-instagram-rupload-params` at 26.
     maxFieldNameChars: 128,
-    probeLengths: Object.freeze([8, 12, 16, 20, 24, 32, 48, 64, 96, 128]),
-    // A legitimate pattern matches in microseconds, so this is roughly a
-    // thousandfold margin -- slow enough never to fire on CI noise, fast
-    // enough that nothing exponential survives it.
-    maxProbeMs: 50,
-    // Distinct probe characters. Bounded so a pattern with a large literal
-    // alphabet cannot make the load itself expensive.
-    maxProbeChars: 8,
 });
 
-/**
- * Probe characters drawn from the pattern's OWN literal alphabet.
- *
- * A catastrophic pattern backtracks on input made of the characters it is
- * written to consume, so the pattern names its own worst case. `a` is the
- * fallback for a pattern with no literals at all (`/.+/`, say), which is
- * pathological in a different way and still worth probing.
- */
-function identifierProbeChars(source) {
-    const chars = [];
-    for (const ch of source) {
-        if (/[A-Za-z0-9_-]/.test(ch) && !chars.includes(ch)) chars.push(ch);
-        if (chars.length >= IDENTIFIER_LIMITS.maxProbeChars) break;
-    }
-    return chars.length ? chars : ['a'];
-}
+// One or more alphanumeric segments joined by `_` or `-`. No `*`, no
+// whitespace, no leading or trailing separator.
+const IDENTIFIER_WORD_RE = /^[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*$/;
 
 /**
- * Probe strings of one length.
+ * Split a field name into lowercase segments.
  *
- * Two families, because a pattern blows up on a FAILED match far more often
- * than on a successful one: the engine only exhausts every alternative when
- * no alternative works. So each run of the pattern's own characters is probed
- * both plain and with a foreign character appended to deny the tail -- which
- * is what turns `/(.*)*c/` from an instant match on `ccc` into an exhaustive
- * search on `ccc!`. A run of the foreign character alone is probed too, for a
- * pattern whose literal alphabet says nothing about what it consumes.
+ * Separator characters and camel-case boundaries both start a new segment, so
+ * `media_id`, `item-id`, `media.id` and `mediaId` all segment identically.
+ * The second replacement keeps an acronym whole -- `HTTPServer` is
+ * `http`,`server`, not `h`,`t`,`t`,`p`,`server` -- and requires two or more
+ * capitals so that `mediaIDs` stays `media`,`ids` rather than splitting the
+ * plural off its acronym.
  */
-function identifierProbes(chars, length) {
-    const foreign = ['!', '~', '0'].find((c) => !chars.includes(c)) || '!';
-    const probes = [foreign.repeat(length)];
-    for (const ch of chars) {
-        probes.push(ch.repeat(length));
-        if (length > 1) probes.push(ch.repeat(length - 1) + foreign);
-    }
-    return probes;
+function identifierSegments(name) {
+    return name
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1 $2')
+        .split(/[\s_.-]+/)
+        .filter((part) => part !== '')
+        .map((part) => part.toLowerCase());
 }
 
-/**
- * Refuse a pattern that backtracks catastrophically, measured rather than
- * guessed.
- *
- * Structural analysis of a regular expression -- "does it contain a quantified
- * group containing a quantifier" -- misses whole families (`/(a|a)+b/` has no
- * nested quantifier and is just as exponential). Running the thing and timing
- * it makes no such claim about which constructions are dangerous: it observes
- * the only property that matters.
- */
-function assertIdentifierPatternIsBounded(re, at) {
-    const chars = identifierProbeChars(re.source);
-    // Length OUTERMOST, so every probe family is tried at the cheap lengths
-    // before any is tried at an expensive one. The cost of catching a bad
-    // pattern is the cost of the last probe run, and that ordering is what
-    // keeps it in the hundreds of milliseconds.
-    for (const length of IDENTIFIER_LIMITS.probeLengths) {
-        for (const probe of identifierProbes(chars, length)) {
-            const started = process.hrtime.bigint();
-            try { re.test(probe); } catch { /* a pattern that throws matches nothing */ }
-            const ms = Number(process.hrtime.bigint() - started) / 1e6;
-            if (ms <= IDENTIFIER_LIMITS.maxProbeMs) continue;
-            throw new PolicyError(
-                `${at}: this pattern backtracks catastrophically -- it took ${ms.toFixed(0)} ms on a ` +
-                `${length}-character input, and the cost grows exponentially with length. Field names ` +
-                `come from CAPTURED response bodies, so a pattern like this lets a third party hang ` +
-                `the scrub gate. Rewrite it without nested or overlapping quantifiers (prefer ` +
-                `"(^|[_-])ids?$" over "(.+)+id").`);
+function startsWithSegments(segments, prefix) {
+    if (prefix.length > segments.length) return false;
+    for (let i = 0; i < prefix.length; i++) if (segments[i] !== prefix[i]) return false;
+    return true;
+}
+
+function endsWithSegments(segments, suffix) {
+    if (suffix.length > segments.length) return false;
+    const offset = segments.length - suffix.length;
+    for (let i = 0; i < suffix.length; i++) if (segments[offset + i] !== suffix[i]) return false;
+    return true;
+}
+
+function containsSegments(segments, run) {
+    if (run.length > segments.length) return false;
+    for (let start = 0; start + run.length <= segments.length; start++) {
+        let hit = true;
+        for (let i = 0; i < run.length; i++) {
+            if (segments[start + i] !== run[i]) { hit = false; break; }
         }
+        if (hit) return true;
     }
+    return false;
 }
 
+/**
+ * Parse one entry into a matcher, or fail the load.
+ *
+ * A pattern that cannot be parsed must fail the LOAD, not match nothing at
+ * match time: a policy that loads without meaning what its author wrote is the
+ * silent failure this loader exists to refuse.
+ */
 function compileIdentifierField(entry, file, index) {
     const at = `${file}: identifierFields[${index}]`;
-    const asRegex = IDENTIFIER_REGEX_RE.exec(entry);
-    if (!asRegex) {
-        if (entry.trim() === '') {
-            throw new PolicyError(`${at}: an empty identifier field name matches nothing.`);
-        }
-        return { name: entry.toLowerCase(), source: entry };
+    const refuse = (why) => {
+        throw new PolicyError(`${at}: ${JSON.stringify(entry)} ${why}. Expected ${IDENTIFIER_SYNTAX}`);
+    };
+    if (typeof entry !== 'string' || entry === '') refuse('is empty');
+
+    const stars = (entry.match(/\*/g) || []).length;
+    if (stars > 2) refuse('has more than two "*"');
+
+    const parts = entry.split('*');
+    const words = parts.map((part) => {
+        if (part === '') return null;
+        if (!IDENTIFIER_WORD_RE.test(part)) refuse(`contains ${JSON.stringify(part)}, which is not a word`);
+        return identifierSegments(part);
+    });
+
+    // Five forms, keyed on where the stars fall. Anything else is refused --
+    // including a bare `*`, which would match every field in every payload and
+    // so disable the identity shape classes wholesale without ever saying so.
+    if (parts.length === 1) return { kind: 'exact', segments: words[0], source: entry };
+    if (parts.length === 2) {
+        const [head, tail] = words;
+        if (head && tail) return { kind: 'bracket', head, tail, source: entry };
+        if (tail) return { kind: 'suffix', segments: tail, source: entry };
+        if (head) return { kind: 'prefix', segments: head, source: entry };
+        refuse('is a bare "*", which would match every field name');
     }
-    const [, body, flags] = asRegex;
-    // `g` and `y` make `RegExp.test` STATEFUL: it resumes from `lastIndex`, so
-    // the same pattern would match on one call and not the next. A policy that
-    // loads and then behaves differently on alternate findings is worse than
-    // one that refuses to load.
-    if (/[gy]/.test(flags)) {
-        throw new PolicyError(
-            `${at}: the "${flags}" flags are not allowed -- "g" and "y" make the match stateful, ` +
-            `so the same field name would match only every other time.`);
+    if (parts.length === 3 && !words[0] && words[1] && !words[2]) {
+        return { kind: 'contains', segments: words[1], source: entry };
     }
-    let re;
-    try {
-        re = new RegExp(body, flags);
-    } catch (e) {
-        throw new PolicyError(`${at}: ${JSON.stringify(entry)} is not a valid regular expression -- ${e.message}`);
-    }
-    // Compiling only proves it PARSES. What it costs to RUN is the half that
-    // can hang a gate, and it is checked here so a bad pattern fails the load
-    // rather than the capture.
-    assertIdentifierPatternIsBounded(re, at);
-    return { re, source: entry };
+    return refuse('does not match any accepted form');
 }
 
 /**
  * Compile at LOAD time, not at match time.
- *
- * A pattern that cannot compile must fail the load. Deferring it to the first
- * match means an unparseable rule reads as "matched nothing", and a policy
- * that loads without meaning what its author wrote is the silent failure this
- * loader exists to refuse -- the author reads the file back and believes the
- * rule is in force.
  */
 function validateIdentifierFields(entries, file) {
     entries.forEach((entry, index) => compileIdentifierField(entry, file, index));
@@ -554,6 +555,22 @@ function identifierMatchers(policy) {
     return matchers;
 }
 
+function matchesIdentifierPattern(matcher, segments) {
+    switch (matcher.kind) {
+        case 'exact':
+            return segments.length === matcher.segments.length
+                && startsWithSegments(segments, matcher.segments);
+        case 'suffix': return endsWithSegments(segments, matcher.segments);
+        case 'prefix': return startsWithSegments(segments, matcher.segments);
+        case 'contains': return containsSegments(segments, matcher.segments);
+        case 'bracket':
+            return segments.length >= matcher.head.length + matcher.tail.length
+                && startsWithSegments(segments, matcher.head)
+                && endsWithSegments(segments, matcher.tail);
+        default: return false;
+    }
+}
+
 /**
  * True when `key` names a field the policy declares to hold an object id.
  *
@@ -564,13 +581,16 @@ function identifierMatchers(policy) {
  */
 function isIdentifierField(policy, key) {
     if (!policy || typeof key !== 'string' || key === '') return false;
-    // The cap comes FIRST, before any pattern runs. It is the defence that
-    // cannot be gamed by a pattern nobody analysed correctly: a field name
-    // longer than this is not a field name, so there is nothing to decide.
+    // The cap comes FIRST. A field name longer than this is not a field name,
+    // so there is nothing to decide, and it bounds the input regardless of
+    // what the language grows later.
     if (key.length > IDENTIFIER_LIMITS.maxFieldNameChars) return false;
-    const lowered = key.toLowerCase();
-    for (const matcher of identifierMatchers(policy)) {
-        if (matcher.re ? matcher.re.test(key) : matcher.name === lowered) return true;
+    const matchers = identifierMatchers(policy);
+    if (matchers.length === 0) return false;
+    const segments = identifierSegments(key);
+    if (segments.length === 0) return false;
+    for (const matcher of matchers) {
+        if (matchesIdentifierPattern(matcher, segments)) return true;
     }
     return false;
 }
