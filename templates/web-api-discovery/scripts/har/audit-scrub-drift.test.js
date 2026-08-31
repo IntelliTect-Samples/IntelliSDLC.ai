@@ -647,4 +647,138 @@ function snapshot(dir) {
     passed++;
 }
 
+// ===========================================================================
+// Case 18: a replacement that is NOT all digits, which is the only thing that
+// reaches `countWholeRuns`.
+//
+// This case exists because a review falsified a claim about the suite. The
+// boundary check was reported as mutation-verified, and it was not: every
+// fixture's replacement came from `fakeFor('credit-card', ...)`, which is always
+// sixteen digits, so every fixture took the maximal-digit-run fast path and the
+// fallback was never executed at all. Deleting the boundary check left all
+// seventeen tests green.
+//
+// The fallback is not dead code. The audit does not GENERATE substitution
+// tables, it READS them: the table is operator-supplied input, and a row from an
+// older scrubber, another tool, or a hand edit is not obliged to hold sixteen
+// bare digits. So the path is tested rather than removed, and the boundary rule
+// is asserted where it actually runs.
+// ===========================================================================
+{
+    // Non-digit, so `/^\d+$/` fails and `locateReplacements` must fall through.
+    const HYPHENATED = '4242-5018-8805-8382';
+    const subWith = (value, replacement) => ({
+        type: 'credit-card', originalHash: hashOf(value), replacement, locations: []
+    });
+
+    // Positive control: standing alone, it is an occurrence and adjudicates.
+    const rootHit = tmpRoot('nondigit-hit');
+    const hit = writeSession(rootHit, {
+        stamp: '2026-01-01-000001',
+        raw: { started_at_ms: TIMESTAMP },
+        substitutions: [subWith(TIMESTAMP, HYPHENATED)],
+        reference: { started_at_ms: HYPHENATED }
+    });
+    const a = audit(rootHit, hit.referencePath);
+    assert.strictEqual(a.ref.outcome, 'CORRUPTED',
+        'a non-digit replacement standing alone must still be found, got ' + a.ref.outcome
+        + ' (' + a.ref.reason + ' / ' + JSON.stringify(a.ref.findings) + ')');
+    assert.strictEqual(a.ref.findings[0].occurrences, 1, 'it should be counted exactly once');
+
+    // The boundary rule, on the path that owns it: a leading digit makes this a
+    // different value that was never substituted.
+    const rootMiss = tmpRoot('nondigit-miss');
+    const miss = writeSession(rootMiss, {
+        stamp: '2026-01-01-000001',
+        raw: { started_at_ms: TIMESTAMP },
+        substitutions: [subWith(TIMESTAMP, HYPHENATED)],
+        reference: { sequence: '9' + HYPHENATED }
+    });
+    const b = audit(rootMiss, miss.referencePath);
+    assert.strictEqual(b.ref.outcome, 'CLEAN',
+        'a non-digit replacement behind a digit is not an occurrence, got ' + b.ref.outcome
+        + ' (' + JSON.stringify(b.ref.findings) + ')');
+    assert.strictEqual(b.ref.findings.length, 0, 'no finding should be raised');
+    passed++;
+}
+
+// ===========================================================================
+// Case 19: UNADJUDICABLE -- the same value sat under an identifier field in one
+// place and a non-identifier field in another.
+//
+// Picking either reading would be a guess with a repair behind it: call it an
+// identifier and a genuinely corrupted field is excused, call it a card and a
+// rewritten object id is blessed. Refuse, as everywhere else.
+// ===========================================================================
+{
+    const root = tmpRoot('conflict');
+    const { referencePath } = writeSession(root, {
+        stamp: '2026-01-01-000001',
+        raw: { media_id: REAL_CARD, unrelated_note: REAL_CARD },
+        substitutions: [subFor(REAL_CARD)],
+        reference: { media_id: fakeOf(REAL_CARD) }
+    });
+    const a = audit(root, referencePath);
+    assert.strictEqual(a.ref.outcome, 'UNADJUDICABLE',
+        'a value with conflicting field context is UNADJUDICABLE, got ' + a.ref.outcome
+        + ' (' + JSON.stringify(a.ref.findings) + ')');
+    assert.strictEqual(a.ref.findings[0].reason, 'conflicting-field-context',
+        'unexpected reason ' + a.ref.findings[0].reason);
+    passed++;
+}
+
+// ===========================================================================
+// Case 20: the human summary names the policy it actually used.
+//
+// `identifierFields` is what separates a false CLEAN from a correct CORRUPTED,
+// and an absent project policy is NOT an error -- the loader silently falls back
+// to the shipped default. So an operator whose references live in a different
+// repo from the captures can get a CLEAN/CORRUPTED split driven by the wrong
+// rules. The stderr summary is the surface a terminal reader sees, so the
+// resolved policy and the fallback have to be stated there, not only in the JSON.
+// ===========================================================================
+{
+    const root = tmpRoot('policy');
+    const { referencePath } = writeSession(root, {
+        stamp: '2026-01-01-000001',
+        raw: { started_at_ms: TIMESTAMP },
+        substitutions: [subFor(TIMESTAMP)],
+        reference: { started_at_ms: fakeOf(TIMESTAMP) }
+    });
+    const a = audit(root, referencePath);
+
+    assert.strictEqual(a.report.policy.projectPolicyFound, false,
+        'a fixture under the temp directory has no project policy');
+    assert.ok(/har-policy\.default\.json$/.test(a.report.policy.defaultPath),
+        'the report must name the default policy it fell back to, got ' + a.report.policy.defaultPath);
+    assert.strictEqual(a.report.policy.path, null,
+        'no project policy path should be claimed when none was found');
+
+    // Assert on the POLICY LINE itself, not merely on the whole stream. The
+    // provisional footer also contains the words "no project policy", so a loose
+    // match over stderr stays green with the header line deleted -- which is
+    // exactly the false-coverage shape that a review caught in this suite once
+    // already, and it is not allowed to recur one case later.
+    const policyLine = a.stderr.split('\n').find(l => /^\s*policy\s+:/.test(l));
+    assert.ok(policyLine,
+        'the human summary must carry a policy line, got:\n' + a.stderr);
+    assert.ok(policyLine.includes('har-policy.default.json'),
+        'the policy line must name the policy actually used, got: ' + policyLine);
+    assert.ok(/no project policy/i.test(policyLine),
+        'the policy line must say no project policy was found, got: ' + policyLine);
+
+    // The fallback is a SECOND reason the verdict columns are provisional, on top
+    // of the identifierFields alignment. Both have to be visible.
+    assert.ok(Array.isArray(a.report.provisionalReasons),
+        'the report must carry its provisional reasons as a list');
+    assert.strictEqual(a.report.provisionalReasons.length, 2,
+        'both the alignment and the policy fallback are reasons, got '
+        + JSON.stringify(a.report.provisionalReasons));
+    assert.ok(a.report.provisionalReasons.some(r => /project policy/i.test(r)),
+        'the policy fallback must be one of the stated reasons');
+    assert.strictEqual(a.report.provisional.UNADJUDICABLE, false,
+        'the UNADJUDICABLE count does not depend on the policy and stays trustworthy');
+    passed++;
+}
+
 console.log('All audit-scrub-drift tests passed (' + passed + ').');
