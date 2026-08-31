@@ -618,7 +618,8 @@ function expandReferencePaths(paths) {
 /**
  * Why the CLEAN and CORRUPTED columns cannot be taken at face value.
  *
- * Always at least one reason, because the alignment has not landed. A SECOND
+ * Always at least one reason, because a reference is an artifact of the rules
+ * in force when it was written, not of the rules in force now. A SECOND
  * arrives when no project policy was found: the loader falls back to the shipped
  * default without complaint, and on a corpus whose references live in a
  * different repo from its captures that means the verdict split was decided by
@@ -627,8 +628,9 @@ function expandReferencePaths(paths) {
  */
 function provisionalReasons(policy) {
     const reasons = [
-        'CLEAN and CORRUPTED are provisional until the identifierFields alignment '
-        + 'lands in pii.js (#335); the UNADJUDICABLE count is not.',
+        'CLEAN and CORRUPTED are provisional: the identifierFields alignment landed '
+        + 'in pii.js (#360), so a reference scrubbed BEFORE it may carry replacements '
+        + 'the current rules would decline to make. The UNADJUDICABLE count is not.',
     ];
     if (!(policy && policy.path)) {
         reasons.push(

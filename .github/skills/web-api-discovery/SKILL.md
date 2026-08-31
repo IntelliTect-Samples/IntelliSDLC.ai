@@ -505,11 +505,27 @@ What a project **can** steer on the scrub side today:
 | `piiFields` | `pii.js` — which key names denote which type |
 | `cardIssuers` | `pii.js`, through the shared card predicate |
 | `secretFields` / `notSecretFields` | `sanitize-har.js` — which names are credentials |
+| `identifierFields` | `pii.js`, through the gate's own `isIdentifierShaped` |
 
-`identifierFields` is **gate-only**: it stops the *verifier* reporting a
-project's own long identifiers as card-shaped, and the scrubber does not consult
-it. So a `trip_id` that looks like a card still gets rewritten even though the
-gate has been told what it is. Aligning the two is open work.
+`identifierFields` reaches **both** engines. On the gate it stops the verifier
+reporting a project's own long identifiers as card-shaped; on the scrub it stops
+them being rewritten. Three limits, and they are the point rather than
+incidental:
+
+- **Identity class only, and a secret class never.** A high-entropy token under
+  a field named `session_id` is still a session token. A field name does not
+  argue entropy away.
+- **A resolved key path only.** A header, a cookie, a query parameter and the
+  URL reach the detectors with no structural key, so nothing there is
+  suppressed — reading the enclosing node's name instead would decline a
+  replacement on no evidence.
+- **One occurrence at an id field does not make the VALUE an id.** The same
+  digits echoed at a field with no id declaration promote the value back and it
+  is replaced everywhere. The alternative rewrites one occurrence and leaves the
+  identical string beside it.
+
+Declining a replacement never hides the finding: it is still detected, still
+reported, and the run says so.
 
 ##### Worked override
 
@@ -552,11 +568,11 @@ What this achieves, split by which engine honours it:
   is the whole point for a project whose captures document places.
   `x-my-app-token` is treated as a secret, `x-asbd-id` stops being one, and the
   waiver applies until it expires.
-- **Gate only.** `identifierFields` stops `trip_id` / `step_id` being *reported*
-  as cards. The scrubber does not consult it, so **a `trip_id` that looks like a
-  card is still rewritten** even though the gate has been told what it is.
-  Aligning the two is open work; until it lands, this is the one line in the
-  example whose effect stops at the gate.
+- **Both engines, with a narrower scope.** `identifierFields` stops `trip_id` /
+  `step_id` being *reported* as cards and stops them being *rewritten*. It
+  applies to identity classes only, never to a secret class, and only where the
+  value sits at a resolved JSON key — a `trip_id` in a header or a query string
+  is still replaced, because there is no field there to have been declared.
 
 It cannot disable a secret class; attempting that is a load-time error.
 
