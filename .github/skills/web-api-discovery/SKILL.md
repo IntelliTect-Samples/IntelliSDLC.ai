@@ -445,22 +445,23 @@ the runs where everything passes, which is when nobody is looking. A finding
 that vanished outright would be an invisible loosening, and invisible loosening
 is this issue's own diagnosis of what went wrong.
 
-> **`classes` governs the GATE, not the scrubber — today.** `verify-scrub.js`
-> and `verify-har-reference.js` read these settings; `pii.js` does not consult
-> `classes` at all. So setting an identity class to `off` changes what is
-> *blocked and reported*, and the scrubber still replaces the values.
+> **Both engines honour these settings, and they agree by construction.** The
+> scrubber consumes the same `settingFor` the gate uses rather than carrying its
+> own copy, so `off` cannot come to mean one thing to the gate and another to
+> the scrub.
 >
-> Which means **there is currently no supported way to reduce what the scrubber
-> rewrites for an identity class.** That is the open half of requirement 1 and
-> it is tracked as its own work; until it lands, a project whose captures *are*
-> the identity data cannot express that to the scrub. Do not read the settings
-> above as scrub controls, and check the code rather than this table if the
-> distinction matters to you.
+> **One narrower truth worth knowing:** only the *identity* axis reaches the
+> scrubber. Secrets are removed by a separate pass over the known-secret names,
+> so the secret settings constrain the gate and the loader's floor rather than
+> the scrub path. The floor still holds either way — a secret class cannot be
+> lowered at all — but if you are reasoning about what a policy change does to a
+> scrubbed artifact, the identity classes are the ones that move it.
 
 What a project **can** steer on the scrub side today:
 
 | key | reaches the scrub via |
 |---|---|
+| `classes.identity` | `pii.js` — whether a detected type is replaced at all |
 | `piiFields` | `pii.js` — which key names denote which type |
 | `cardIssuers` | `pii.js`, through the shared card predicate |
 | `secretFields` / `notSecretFields` | `sanitize-har.js` — which names are credentials |
@@ -504,17 +505,18 @@ is one kind, not a `geo-lat` / `geo-lng` pair (those are `piiFields` dictionary
 names, which is a different vocabulary). An unknown class is a load-time error
 rather than a silent no-op, so a typo here fails loudly; that is deliberate.
 
-What this achieves **today**, split by which engine honours it:
+What this achieves, split by which engine honours it:
 
-- **Gate only.** The six identity classes stop being reported as violations, and
-  `trip_id` / `step_id` stop being read as cards.
-- **Scrub too.** `x-my-app-token` is treated as a secret and `x-asbd-id` stops
-  being one; the waiver applies until it expires.
-
-So the two lines that are gate-only are gate-only *in both directions*: the
-scrubber still replaces those identity values, **and it still rewrites a
-`trip_id` that happens to look like a card**, even though the gate has been told
-what it is. Configuring this file does not stop that today.
+- **Both engines.** The six identity classes stop being reported as violations
+  *and* stop being replaced — the place data survives into the reference, which
+  is the whole point for a project whose captures document places.
+  `x-my-app-token` is treated as a secret, `x-asbd-id` stops being one, and the
+  waiver applies until it expires.
+- **Gate only.** `identifierFields` stops `trip_id` / `step_id` being *reported*
+  as cards. The scrubber does not consult it, so **a `trip_id` that looks like a
+  card is still rewritten** even though the gate has been told what it is.
+  Aligning the two is open work; until it lands, this is the one line in the
+  example whose effect stops at the gate.
 
 It cannot disable a secret class; attempting that is a load-time error.
 
