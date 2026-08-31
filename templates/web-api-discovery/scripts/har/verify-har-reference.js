@@ -8,7 +8,7 @@
  * parsing the artifact, not by reading the description of it -- so this script
  * parses every committed reference and asserts on its content.
  *
- * Five gates:
+ * Seven gates:
  *
  *   1. A truncated request body. Only responses may be capped; a reference
  *      whose request bodies were shortened cannot be replayed or diffed, and
@@ -30,6 +30,12 @@
  *      reverse lookup of live credentials one `git add -A` away from a
  *      remote. The scrub no longer writes them here, but a copy left by an
  *      earlier run is exactly what a gate is for (issue #294).
+ *   7. A request body that is PRESENT but carries no payload structure -- a
+ *      placeholder standing in for a body. Gate 1 catches a body that was
+ *      SHORTENED; nothing caught one that was REPLACED, so a reference could
+ *      carry a 29-character sentinel where a form body used to be, pass every
+ *      gate, and be catalogued as documenting a protocol it contains none of
+ *      (issue #358).
  *
  * No failure message ever echoes an offending value: that would relocate the
  * leak into the CI log that reports it.
@@ -189,6 +195,116 @@ function checkTruncation(entries, report) {
     }
 }
 
+// Gate 7 -- a request body that is present but is only a placeholder.
+//
+// SAY THE CONCEPT OUT LOUD, because the predicate below is an approximation of
+// it and the two must be checked against each other: "this body carries no
+// payload structure -- nothing in it separates one component from another, so
+// it stands in for a body rather than being one."
+//
+// The predicate is deliberately NOT a match against a known sentinel string.
+// The one that prompted this gate, `REDACTED_FORM_URLENCODED_BODY`, was never
+// emitted by any tool in this repo -- it was written by a hand this repo has
+// never seen, and the next one will be written by a different hand again. A
+// gate keyed to the spelling would pass the next one. So judge the shape.
+//
+// Two components, and both directions matter:
+//
+//   * A composite JSON root is a payload, full stop. `{}` and `[]` are legal
+//     minimal bodies and carry structure even though they hold no characters
+//     between their delimiters, so the character scan below cannot see them
+//     and the parse is what clears them. A JSON SCALAR root -- `"REDACTED"`,
+//     `1`, `null` -- is NOT cleared here: a body that is one bare string
+//     literal is exactly the shape a cautious hand leaves behind, and it names
+//     no field either.
+//   * An INTERIOR separator is a payload. `a=1` is a form body, `a: 1` is a
+//     header-ish body, `x,y` is a list. "Interior" is what keeps the wrapped
+//     sentinels -- `[REDACTED]`, `<redacted>`, `{SCRUBBED}`, `**removed**` --
+//     on the failing side: their brackets sit at the two ends and join
+//     nothing. A separator at position 0 or at the last position is a wrapper,
+//     not a join.
+//
+// NO LENGTH THRESHOLD, on purpose. A threshold is a second predicate with its
+// own false positives, and the check that clears a predicate is itself a
+// predicate (docs/designs/297-detector-predicates.md, beat 3). The structural
+// test alone decides; `{}` is two characters and passes, a 29-character
+// sentinel is longer and fails, so length was never the signal.
+//
+// RESIDUAL FALSE POSITIVES, stated rather than papered over: a body that is a
+// single opaque run of characters -- raw base64 with no padding or slashes, a
+// bare numeric id, a line of plain prose -- has no interior separator and is
+// reported. That is the correct direction for this path. Beat 2 of the same
+// design doc: fail toward a MISS on a replace path and toward a REPORT on a
+// gate path. This gate only reports, and it names a file and an entry index,
+// so a false positive costs an operator one look at the file.
+const BODY_SEPARATORS = /[=&:,;{}[\]()<>"']/;
+
+// A composite (object or array) JSON root. The leading-character test is not an
+// optimisation for its own sake: JSON.parse over a several-hundred-KB body for
+// every entry is work this gate does not need, and only `{` or `[` can open a
+// composite anyway.
+function hasCompositeJsonRoot(text) {
+    if (!/^[[{]/.test(text)) return false;
+    try {
+        const value = JSON.parse(text);
+        return value !== null && typeof value === 'object';
+    } catch {
+        return false;
+    }
+}
+
+// A separator that actually joins two parts, i.e. one with text on both sides
+// of it. See the wrapper reasoning above for why the two end positions do not
+// count.
+function hasInteriorSeparator(text) {
+    for (let i = 1; i < text.length - 1; i++) {
+        if (BODY_SEPARATORS.test(text[i])) return true;
+    }
+    return false;
+}
+
+function bodyCarriesPayloadStructure(text) {
+    return hasCompositeJsonRoot(text) || hasInteriorSeparator(text);
+}
+
+// THREE STATES, DECIDED SEPARATELY rather than left to a truthiness check --
+// `undefined` falling through an `if (text)` would have collapsed all three:
+//
+//   * `postData` absent entirely -- a GET. Legal, and the majority of entries.
+//   * `postData` present with no `text` string (a decoded `params[]` only, or
+//     a body the exporter recorded structurally) -- nothing to judge, so this
+//     gate says nothing. `params[]` is itself decomposed structure.
+//   * `text` present but empty or whitespace-only -- LEGAL, deliberately. A
+//     zero-length body is a real wire state (`Content-Length: 0`) and, more to
+//     the point, it is VISIBLY empty. This gate exists for the body that looks
+//     like content and is not; an empty string misleads nobody.
+function checkHollowRequestBody(entries, report) {
+    for (const [i, entry] of entries.entries()) {
+        const postData = entry.request && entry.request.postData;
+        if (!postData || typeof postData.text !== 'string') continue;
+
+        // Already reported by gate 1 as truncated. Reporting the same entry a
+        // second time as "replaced" would contradict the first finding and
+        // send the reader hunting for the wrong repair.
+        if (postData.truncated) continue;
+
+        const text = postData.text.trim();
+        if (text === '') continue;
+        if (bodyCarriesPayloadStructure(text)) continue;
+
+        // Names the file (the caller prefixes it) and the entry index, and
+        // quotes NOTHING of the body: a finding that echoed the placeholder
+        // would be one habit away from echoing a real payload.
+        report(
+            `entry ${i}: request body is present but carries NO payload structure -- ` +
+            'nothing in it separates one component from another, so it stands in for a ' +
+            'body rather than being one. This is a wholesale REPLACEMENT, not a ' +
+            'truncation: there is no truncation marker to go looking for. Re-extract ' +
+            'this entry from the preserved raw capture, or drop the reference -- as ' +
+            'committed it documents the response and nothing about what a client sends');
+    }
+}
+
 // Does a finding fail the run? One definition, in har-shapes.js, so the gate
 // on the committed reference cannot drift away from the gate on the
 // intermediate it came from. See `blocksLeak` there for what each setting
@@ -265,6 +381,7 @@ function main() {
 
         const entries = (har.log && har.log.entries) || [];
         checkTruncation(entries, report);
+        checkHollowRequestBody(entries, report);
         harSecrets.walkForUnredactedSecrets(har, (name, where) => {
             report(`${where}: credential '${name}' is readable in the clear`);
         }, { policy });

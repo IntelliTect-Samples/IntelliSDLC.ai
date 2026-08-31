@@ -889,6 +889,21 @@ and in CI. It fails on:
 - a truncated request **or response** body, in either spelling — the structured
   `content.truncated` marker, or an inline `[... body truncated ...]` string
   written into the payload;
+- a request body that is **present but carries no payload structure** — a
+  placeholder standing in for a body rather than a body. The truncation rule
+  above catches a body that was *shortened*; nothing caught one that was
+  *replaced*, so a reference could carry a short sentinel where a form body
+  used to be, pass every gate, and be catalogued as documenting request-side
+  behaviour it contains none of. Judge the **shape**, never a known sentinel
+  string: the placeholder that prompted this was emitted by no tool in this
+  pipeline, and the next one will be spelled differently. A body carries
+  structure when it parses as a JSON object or array — `{}` and `[]` are legal
+  minimal bodies — or when a separator joins two non-empty parts of it, which
+  is what keeps `[REDACTED]`, `<redacted>` and `**removed**` on the failing
+  side while `a=1` passes. No length threshold: a threshold is a second
+  predicate with its own false positives, and length was never the signal. An
+  entry with no `postData` is a `GET` and stays legal, and so does a body
+  whose text is empty — an empty body misleads nobody;
 - an unredacted credential header, parameter, or multipart field;
 - a secret nested inside a JSON-valued parameter;
 - any caller-supplied forbidden literal;
