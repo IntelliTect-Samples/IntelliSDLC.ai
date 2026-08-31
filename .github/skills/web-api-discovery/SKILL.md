@@ -504,12 +504,17 @@ is one kind, not a `geo-lat` / `geo-lng` pair (those are `piiFields` dictionary
 names, which is a different vocabulary). An unknown class is a load-time error
 rather than a silent no-op, so a typo here fails loudly; that is deliberate.
 
-What this achieves **today**: the gate stops blocking and reporting those
-identity classes as violations, `trip_id` / `step_id` values stop being read as
-cards, `x-my-app-token` is treated as a secret, `x-asbd-id` stops being one, and
-one specific vendor hash is waived until it expires. What it does **not** yet
-achieve is stopping the scrubber replacing those identity values — see the note
-above.
+What this achieves **today**, split by which engine honours it:
+
+- **Gate only.** The six identity classes stop being reported as violations, and
+  `trip_id` / `step_id` stop being read as cards.
+- **Scrub too.** `x-my-app-token` is treated as a secret and `x-asbd-id` stops
+  being one; the waiver applies until it expires.
+
+So the two lines that are gate-only are gate-only *in both directions*: the
+scrubber still replaces those identity values, **and it still rewrites a
+`trip_id` that happens to look like a card**, even though the gate has been told
+what it is. Configuring this file does not stop that today.
 
 It cannot disable a secret class; attempting that is a load-time error.
 
