@@ -269,10 +269,25 @@ function discoverCaptures(capturesRoot) {
     return found;
 }
 
-/** Is `child` inside `parent` (or the same path)? */
+/**
+ * Is `child` inside `parent` (or the same path)?
+ *
+ * Case-folded where the platform's own paths are, because `session.json` records
+ * the spelling the recorder happened to receive and the reference is named by
+ * whoever invokes this. Two spellings of one Windows directory naming the same
+ * place must link, or an operator gets an extra UNADJUDICABLE for a difference
+ * the filesystem does not recognise. It fails SAFE either way -- a missed link
+ * is a refusal, never a wrong verdict -- but a refusal nobody can explain wastes
+ * exactly the attention this report exists to direct.
+ */
 function contains(parent, child) {
     const rel = path.relative(parent, child);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    if (rel === '') return true;
+    if (path.isAbsolute(rel)) return false;
+    if (!rel.startsWith('..')) return true;
+    if (path.sep !== '\\') return false;
+    const folded = path.relative(parent.toLowerCase(), child.toLowerCase());
+    return folded === '' || (!folded.startsWith('..') && !path.isAbsolute(folded));
 }
 
 /**
@@ -600,6 +615,31 @@ function expandReferencePaths(paths) {
     return [...new Set(out)].sort();
 }
 
+/**
+ * Why the CLEAN and CORRUPTED columns cannot be taken at face value.
+ *
+ * Always at least one reason, because the alignment has not landed. A SECOND
+ * arrives when no project policy was found: the loader falls back to the shipped
+ * default without complaint, and on a corpus whose references live in a
+ * different repo from its captures that means the verdict split was decided by
+ * rules the operator never wrote. Neither reason touches UNADJUDICABLE, which
+ * depends on what the store can link and stays trustworthy either way.
+ */
+function provisionalReasons(policy) {
+    const reasons = [
+        'CLEAN and CORRUPTED are provisional until the identifierFields alignment '
+        + 'lands in pii.js (#335); the UNADJUDICABLE count is not.',
+    ];
+    if (!(policy && policy.path)) {
+        reasons.push(
+            'No project policy (.har-policy.project.json) was found from the captures root, '
+            + 'so the shipped default decided identifierFields. If these references were '
+            + 'produced under a project policy, the CLEAN/CORRUPTED split was decided by '
+            + 'the wrong rules.');
+    }
+    return reasons;
+}
+
 function runAudit({ capturesRoot, referencePaths, policy }) {
     const captures = discoverCaptures(capturesRoot);
     const references = expandReferencePaths(referencePaths)
@@ -624,11 +664,18 @@ function runAudit({ capturesRoot, referencePaths, policy }) {
         // link, so it is trustworthy today -- and it is the number worth running
         // this early for.
         provisional: { [CLEAN]: true, [CORRUPTED]: true, [UNADJUDICABLE]: false },
-        provisionalBecause:
-            'CLEAN and CORRUPTED are provisional until the identifierFields alignment lands '
-            + 'in pii.js; the UNADJUDICABLE count is not.',
+        provisionalReasons: provisionalReasons(policy),
         capturesRoot: path.resolve(capturesRoot),
-        policyPath: (policy && policy.path) || (policy && policy.defaultPath) || null,
+        // Which rules actually decided CLEAN from CORRUPTED. An absent project
+        // policy is NOT an error to the loader -- it silently returns the shipped
+        // default -- so the fallback has to be stated rather than inferred from a
+        // null. `identifierFields` is the whole difference between a false CLEAN
+        // and a correct CORRUPTED, and a reader cannot check rules they cannot see.
+        policy: {
+            path: (policy && policy.path) || null,
+            defaultPath: (policy && policy.defaultPath) || null,
+            projectPolicyFound: !!(policy && policy.path),
+        },
         captures: captures.map(c => ({
             sessionDir: c.sessionDir,
             outputPath: c.outputPath,
@@ -656,6 +703,13 @@ function renderSummary(report) {
     const noTable = report.captures.filter(c => !c.tablePath).length;
     L.push(`  captures      : ${report.captures.length}`
         + ` (${noRaw} with no preserved raw, ${noTable} with no substitution table)`);
+    // The rules that decided CLEAN from CORRUPTED, on the surface a terminal
+    // reader actually looks at. Leaving this to the JSON means the one input that
+    // can invert a verdict is invisible to everyone reading the story.
+    L.push(report.policy.projectPolicyFound
+        ? `  policy        : ${report.policy.path}`
+        : `  policy        : ${report.policy.defaultPath}`
+          + '  (NO project policy found -- shipped default used)');
     L.push('');
     L.push(`  references : ${s.references.total} total`
         + `   ${CLEAN} ${s.references[CLEAN]}`
@@ -694,8 +748,8 @@ function renderSummary(report) {
     L.push('health. A high UNADJUDICABLE count is the expected result until #341 lands a');
     L.push('per-invocation correlation id; it measures how much of the corpus is un-repairable.');
     L.push('');
-    L.push('The CLEAN and CORRUPTED columns are PROVISIONAL until the identifierFields');
-    L.push('alignment lands in pii.js (#335); the UNADJUDICABLE count is not provisional.');
+    L.push('The CLEAN and CORRUPTED columns are PROVISIONAL:');
+    for (const reason of report.provisionalReasons) L.push(`  * ${reason}`);
     L.push('Repair is a separate, human-approved step -- this tool only reports.');
     return L.join('\n');
 }
