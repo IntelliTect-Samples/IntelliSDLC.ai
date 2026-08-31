@@ -6,13 +6,19 @@
  * Exports:
  *   detectPii(har, policy?)     -> [{ type, value, location }]
  *   fakeFor(type, original)     -> string (deterministic, obviously-fake)
- *   scrubPii(har, policy?)      -> { substitutions: [...] }  (mutates har)
+ *   scrubPii(har, policy?)      -> { substitutions: [...], retained: [...] }
+ *                                  (mutates har)
  *   PII_TYPES                   -> array of supported type strings
  *
  * `policy` is the MERGED scrub policy (`har-policy.loadPolicy`). It is
  * OPTIONAL and absent means the shipped defaults, so no caller breaks; passing
  * it is what makes a consuming project's `piiFields` and `cardIssuers` govern
- * the SCRUB as well as the gate (issue #334).
+ * the SCRUB as well as the gate (issue #334), and its `classes` too (issue
+ * #346): an identity class set to `off` is still DETECTED and still REPORTED --
+ * in `retained`, as counts and never values -- but is not replaced. That is the
+ * meaning `off` already carries on the gate side, where a disabled finding is
+ * returned marked rather than dropped. Secret classes are exempt from the
+ * setting entirely; see `scrubSettingFor`.
  *
  * Determinism: seed = SHA-256(original).hexSlice(0, 16). Same input always
  * yields same fake. No external dependencies; pure Node stdlib.
@@ -78,7 +84,7 @@ const harPolicy = require('./har-policy.js');
 // CORRUPTED, rewriting provider object ids into generated fake card numbers in
 // committed references. A second copy of the predicate here would only drift
 // again, so the predicate is imported and the issuer table is not duplicated.
-const { hasAssignedIin, LEAK_PATTERNS } = require('./har-shapes.js');
+const { hasAssignedIin, LEAK_PATTERNS, settingFor } = require('./har-shapes.js');
 
 /**
  * One slot of the gate's own leak table, taken from the gate rather than
@@ -125,6 +131,60 @@ function gateSlot(name) {
 const GATE_CARD = gateSlot('credit-card');
 
 const DEFAULT_PII_POLICY = harPolicy.loadDefaultPolicy();
+
+// The secret axis, taken from the default policy rather than listed again here
+// -- adding a secret class upstream must not require a second edit, and two
+// lists are how the scrubber and the gate come to disagree.
+const SECRET_KINDS = new Set(Object.keys(DEFAULT_PII_POLICY.classes.secret));
+
+/**
+ * What the policy says about REPLACING one PII type -- `gate`, `advise` or
+ * `off` (issue #346).
+ *
+ * `off` means DETECT, REPORT, DO NOT ACT. That is not a new semantic invented
+ * for the scrubber: it is exactly what `off` already means on the gate, where
+ * `findLeaks` still returns a disabled finding carrying `setting: 'off'` and
+ * `gating: false`, and `blocksLeak` declines to fail on it. The finding has
+ * left the gate, not the report. Mirroring it here is the point -- a second
+ * meaning of `off` would be the same drift that produced the card predicate,
+ * the fake markers, `piiFields` and `cardIssuers` in turn.
+ *
+ * `gate` and `advise` both replace. The distinction between them is about
+ * whether a SURVIVING value fails the build, which is the gate's question; on
+ * this side there is nothing to distinguish, because a replaced value cannot
+ * survive either way. Only `off` reaches the scrub as a decision.
+ *
+ * THE FLOOR, ENFORCED HERE AND NOT ONLY IN THE LOADER. The loader refuses a
+ * project file that lowers a secret class, and that is the check operators
+ * meet. It is not the check that makes the guarantee true: this function is
+ * reachable with a policy object nobody loaded. So a secret kind resolves to
+ * `gate` before any lookup happens, on EITHER axis -- a caller cannot forget a
+ * check it never makes, and a secret grants access, so it is removed
+ * unconditionally. Per-value relief is a waiver, never a class setting.
+ *
+ * An identity type is read from `classes.identity` alone, so a setting parked
+ * on the secret axis loosens nothing. An absent policy, or a type the policy
+ * does not name, is `gate` -- `settingFor`'s own default, and the only safe
+ * reading: a missing file must never be the thing that quietly stops a scrub.
+ */
+function scrubSettingFor(policy, type) {
+    if (SECRET_KINDS.has(type)) return 'gate';
+    return settingFor(policy, 'identity', type);
+}
+
+/**
+ * The identity classes this policy turns off, sorted.
+ *
+ * Read from the policy rather than from what a capture happened to contain:
+ * disabling a class is a standing decision to publish personal data, and it is
+ * true of the run whether or not this particular capture exercised it.
+ */
+function disabledIdentityClasses(policy) {
+    const identity = (policy && policy.classes && policy.classes.identity) || {};
+    return Object.keys(identity)
+        .filter((kind) => identity[kind] === 'off' && !SECRET_KINDS.has(kind))
+        .sort();
+}
 
 function compileDictionaries(policy) {
     const source = (policy && policy.piiFields) || DEFAULT_PII_POLICY.piiFields;
@@ -694,11 +754,25 @@ function tryWalkJsonText(text, entryIndex, basePath, out, policy) {
 // --- scrubbing: apply faker substitutions in-place on the HAR ---
 function scrubPii(har, policy) {
     const detections = detectPii(har, policy);
-    if (detections.length === 0) return { substitutions: [] };
+    if (detections.length === 0) return { substitutions: [], retained: [] };
+
+    // Split out the detections the policy asked us to leave alone (issue #346).
+    // DETECTION is untouched above: a disabled class is still found, and is
+    // still reported below, exactly as the gate reports one. What a setting of
+    // `off` changes is only whether the value gets rewritten.
+    const replaceable = [];
+    const retainedDetections = [];
+    for (const d of detections) {
+        if (scrubSettingFor(policy, d.type) === 'off') retainedDetections.push(d);
+        else replaceable.push(d);
+    }
+    if (replaceable.length === 0) {
+        return { substitutions: [], retained: summariseRetained(retainedDetections, new Set()) };
+    }
 
     // Group by (type, original value) so we record one substitution per unique original.
     const byKey = new Map();
-    for (const d of detections) {
+    for (const d of replaceable) {
         const key = `${d.type}\u0001${d.value}`;
         if (!byKey.has(key)) {
             byKey.set(key, {
@@ -735,7 +809,45 @@ function scrubPii(har, policy) {
         if (a.type !== b.type) return a.type < b.type ? -1 : 1;
         return a.originalHash < b.originalHash ? -1 : 1;
     });
-    return { substitutions: safe };
+    const replacedValues = new Set(replacements.map((r) => String(r.value)));
+    return { substitutions: safe, retained: summariseRetained(retainedDetections, replacedValues) };
+}
+
+/**
+ * What a disabled class actually cost this run, per class, and never a value.
+ *
+ * `replacedValues` is the set of originals the replacement pass DID rewrite.
+ * The replacement set is keyed on the value, not on the location, so a string
+ * detected as a disabled type in one field and an enabled type in another is
+ * rewritten everywhere -- the safe direction, and the only coherent one: the
+ * alternative rewrites one occurrence and leaves the identical string beside
+ * it. Such a value is therefore NOT retained, and must not be counted as if it
+ * were: a report that overstates what shipped is the noise this subsystem
+ * measured at 1134 findings and 3 real ones.
+ *
+ * The finding wears the gate's vocabulary -- `kind`, `class`, `setting` --
+ * because it is the same decision, taken on the other axis. Counts only: this
+ * is exactly the `occurrences` / `distinct` shape #346 published, which is what
+ * a report of identity data may safely carry.
+ */
+function summariseRetained(detections, replacedValues) {
+    const byType = new Map();
+    for (const d of detections) {
+        if (replacedValues.has(String(d.value))) continue;
+        if (!byType.has(d.type)) byType.set(d.type, { occurrences: 0, values: new Set() });
+        const bucket = byType.get(d.type);
+        bucket.occurrences += 1;
+        bucket.values.add(String(d.value));
+    }
+    return [...byType.entries()]
+        .map(([kind, bucket]) => ({
+            kind,
+            class: 'identity',
+            setting: 'off',
+            occurrences: bucket.occurrences,
+            distinct: bucket.values.size,
+        }))
+        .sort((a, b) => (a.kind < b.kind ? -1 : 1));
 }
 
 function applyReplacementsToEntry(entry, replacements, policy) {
@@ -806,7 +918,14 @@ function replaceInJson(node, parentKey, replacements, policy) {
     }
     if (typeof node === 'number') {
         const fType = fieldTypeFor(parentKey, policy);
-        if (fType === 'geo-lat' || fType === 'geo-lng') {
+        // A coordinate is the one type replaced by FIELD NAME alone, without
+        // consulting the replacement set -- a number has no string form to
+        // enrol. That makes it the one path a class setting could not reach by
+        // being applied to the replacement set, so it is asked here directly
+        // (issue #346). Miss this and `geo-coordinates: off` reads as honoured
+        // while 37,422 coordinates are still zeroed.
+        if ((fType === 'geo-lat' || fType === 'geo-lng')
+            && scrubSettingFor(policy, 'geo-coordinates') !== 'off') {
             return 0;
         }
         return node;
@@ -1070,6 +1189,8 @@ module.exports = {
     detectPii,
     fakeFor,
     scrubPii,
+    scrubSettingFor,
+    disabledIdentityClasses,
     hashPrefix,
     luhnOk
 };

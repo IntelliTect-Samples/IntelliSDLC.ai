@@ -631,6 +631,33 @@ function main() {
         substitutions: piiResult.substitutions
     }, null, 2), 'utf8');
 
+    // A class the project set to `off` means REAL personal data is still in the
+    // file that was just written, on purpose (issue #346). That is what #297
+    // requirement 1 asks for and it is the right answer to 125,000
+    // correct-but-unwanted replacements -- but it is a standing decision to
+    // PUBLISH personal data, and it must not be discoverable only by reading a
+    // policy diff months later. So it is said on EVERY run, clean or not, in
+    // the terms of the decision rather than as one more advisory line: the same
+    // reason `verify-scrub.js` prints `loosenedSecretNames` unconditionally.
+    //
+    // Printed from the POLICY, so it fires whether or not this capture happened
+    // to contain any -- the decision stands either way -- with the counts
+    // appended when it did. Counts and class names only; echoing a value would
+    // relocate the data into the log that reports it.
+    const disabledClasses = pii.disabledIdentityClasses(policy);
+    if (disabledClasses.length) {
+        const found = piiResult.retained.length
+            ? piiResult.retained
+                .map((r) => `${r.kind} x${r.occurrences} (${r.distinct} distinct)`).join(', ')
+            : 'none present in this capture';
+        console.error(
+            `sanitize-har: NOTE -- IDENTITY DATA IS BEING PUBLISHED. ` +
+            `${policy.path || 'the merged policy'} disables ${disabledClasses.length} ` +
+            `identity class(es): ${disabledClasses.join(', ')}. Values of those classes are ` +
+            `detected and reported but NOT replaced, so real personal data remains in ` +
+            `${outPath} -- retained: ${found}.`);
+    }
+
     // Hit counts name the sentinel only. Echoing the literal would relocate
     // the leak into the log that reports it.
     const literalSummary = literalPass.hits.length
