@@ -7,8 +7,10 @@
   argument and the measurements behind them.
 - **It describes the subsystem as of this commit, not necessarily as of the day
   you are reading it.** #297 closed with follow-on work still open — the scrub's
-  `classes` consumption, the `identifierFields` alignment, query-string
-  coverage, unquoted JSON numbers. Some of what is described below as a defect
+  `classes` consumption — as of this commit `pii.js` does not reference
+  `policy.classes` at all, so gate/advise/off govern the gate and not the scrub
+  — the `identifierFields` alignment, query-string coverage, and unquoted JSON
+  numbers. Some of what is described below as a defect
   is fixed by now, and the descriptions are kept as they were because the point
   is the *shape* of each failure, not its current status. Check the code before
   concluding anything here is still true of it.
