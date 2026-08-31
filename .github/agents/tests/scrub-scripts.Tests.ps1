@@ -360,6 +360,31 @@ Describe 'Invoke-SanitizeHar.ps1 -RemoveSource' {
                 -ProfilePath $script:Profile -RemoveSource:$RemoveSource -WhatIf:$AsWhatIf 2>&1 | Out-Null
         }
 
+        # A raw where the RECORDER puts one. `.har-captures` is a constant in
+        # capture-har.js that no option redirects, and deriveSubsDir returns
+        # the directory itself when the input is already inside one -- so the
+        # tables land beside this raw rather than in a nested second captures
+        # directory. Called from the tests that need it rather than declared in
+        # a nested BeforeEach, which Pester 6 will not accept under a Describe
+        # that already has one.
+        function New-CapturesRaw {
+            New-Item -ItemType Directory -Path $script:SubsDir -Force | Out-Null
+            $raw = Join-Path $script:SubsDir 'raw.har'
+            New-FixtureHar -Path $raw
+            $raw
+        }
+
+        # Every stream that matters, in ONE list, in emission order. Warnings
+        # ride stream 3 and the "removed ..." lines ride stream 6, so merging
+        # both is the only way to see either -- and keeping the order is what
+        # lets a test assert the caution came BEFORE the deletion.
+        function Invoke-CapturingStreams {
+            param([Parameter(Mandatory)][string]$In, [switch]$OmitRemoveSource)
+            $lines = & $script:WrapperPs1 -InputHar $In -OutputHar $script:OutHar `
+                -ProfilePath $script:Profile -RemoveSource:(-not $OmitRemoveSource) 6>&1 3>&1 2>&1
+            @($lines | ForEach-Object { "$_" })
+        }
+
         # Make the scrub leave the card alone, so the GATE is the one that
         # judges it. `off` means detect, report, do not act (#346).
         function Set-ScrubBlindToCards {
@@ -520,6 +545,95 @@ Describe 'Invoke-SanitizeHar.ps1 -RemoveSource' {
         # switch at a raw they already have -- and it is not this issue's.
         $capture = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
         (Get-Content -LiteralPath $capture -Raw) | Should -Not -Match 'RemoveSource'
+    }
+
+    # -----------------------------------------------------------------------
+    # The provenance caution (#353). Scrubbing an already-scrubbed HAR is not
+    # idempotent: generated person-names are realistic by design and carry no
+    # marker, so a second pass replaces the first pass's fakes with different
+    # ones and the first pass's substitution table stops describing the
+    # artifact. With -RemoveSource on both runs the source is gone and there is
+    # nothing left to regenerate from.
+    #
+    # #355 is the real fix and refuses on a provenance stamp -- which does not
+    # exist yet. Until it does, the wrapper says something before it deletes.
+    #
+    # The signal is LOCATION and must never become content. capture-har.js
+    # writes every raw under `.har-captures/`; a content test for
+    # `@example.invalid` or `4242...` would fire on exactly the captures that
+    # most need scrubbing, and would miss an already-scrubbed file whose fakes
+    # omitted those markers.
+    # -----------------------------------------------------------------------
+    Context 'provenance caution -- interim, until #355 has a stamp to read' {
+
+        It 'cautions BEFORE it deletes a source that is not under .har-captures/, and deletes it anyway' {
+            # Before, so the sentence is on screen beside the thing it is
+            # about and survives a deletion that later fails. And a caution,
+            # not a refusal: sanitize-har.js's own usage text names
+            # samples/har-original/ as a legitimate raw location, so "not under
+            # .har-captures/" is not a verdict and must not block the run.
+            $text = (Invoke-CapturingStreams -In $script:InHar) -join "`n"
+            $LASTEXITCODE | Should -Be 0
+
+            $cautionAt = $text.IndexOf('does not look like a capture-recorder raw')
+            $removedAt = $text.IndexOf("removed $($script:InHar)")
+            $cautionAt | Should -BeGreaterThan -1 -Because 'the operator is told what is at risk'
+            $removedAt | Should -BeGreaterThan -1 -Because 'the caution does not cancel the deletion'
+            $cautionAt | Should -BeLessThan $removedAt -Because 'it is said before the file goes'
+
+            # Anchored AFTER the caution rather than matched over the whole
+            # transcript: a bare '353' would be satisfied by a temp path that
+            # happened to contain those digits, which would make this assertion
+            # pass without the caution ever naming the issue.
+            $text.IndexOf('(#353)') | Should -BeGreaterThan $cautionAt `
+                -Because 'the caution names the corruption it is about'
+            Test-Path -LiteralPath $script:InHar | Should -BeFalse
+        }
+
+        It 'says nothing for a raw under .har-captures/, and still deletes it' {
+            $capturesRaw = New-CapturesRaw
+            $text = (Invoke-CapturingStreams -In $capturesRaw) -join "`n"
+            $LASTEXITCODE | Should -Be 0
+            $text | Should -Not -Match 'capture-recorder raw' -Because 'the recorder wrote it, so its provenance is not in doubt'
+            $text.IndexOf("removed $capturesRaw") | Should -BeGreaterThan -1
+            Test-Path -LiteralPath $capturesRaw | Should -BeFalse
+        }
+
+        It 'stays silent for a .har-captures/ raw whose CONTENT is full of scrub markers' {
+            # The guard against the defect class #355 names: a content test for
+            # `@example.invalid`, `4242...`, `ZZ00`, `+1555` or `06:F0:0D` would
+            # call this file already-scrubbed. It is a recorder raw of a test
+            # environment, and those are values a capture legitimately carries.
+            $capturesRaw = New-CapturesRaw
+            $doc = Get-Content -LiteralPath $capturesRaw -Raw | ConvertFrom-Json
+            $doc.log.entries[0].response.content.text =
+                '{"email":"user@example.invalid","card":"4242424242424242",' +
+                '"iban":"ZZ00","phone":"+15550100","mac":"06:F0:0D:11:22:33"}'
+            Set-Content -LiteralPath $capturesRaw -Encoding utf8 -Value ($doc | ConvertTo-Json -Depth 20)
+
+            $text = (Invoke-CapturingStreams -In $capturesRaw) -join "`n"
+            $LASTEXITCODE | Should -Be 0 -Because 'a vacuous pass on a rejected scrub would prove nothing'
+            $text | Should -Not -Match 'capture-recorder raw'
+        }
+
+        It 'says nothing without -RemoveSource, because nothing is being deleted' {
+            # There is no caution to give when the file is not going anywhere.
+            # The operator can re-scrub the raw whenever they like.
+            $text = (Invoke-CapturingStreams -In $script:InHar -OmitRemoveSource) -join "`n"
+            $LASTEXITCODE | Should -Be 0
+            $text | Should -Not -Match 'capture-recorder raw'
+            Test-Path -LiteralPath $script:InHar | Should -BeTrue
+        }
+
+        It 'says nothing when the gate REJECTS, because nothing is deleted then either' {
+            Set-ScrubBlindToCards
+            Set-Content -LiteralPath (Join-Path $script:Dst '.har-policy.project.json') -Encoding utf8 `
+                -Value '{"schemaVersion":1,"classes":{"identity":{"credit-card":"gate"}}}'
+            $text = (Invoke-CapturingStreams -In $script:InHar) -join "`n"
+            $LASTEXITCODE | Should -Be 3
+            $text | Should -Not -Match 'capture-recorder raw' -Because 'the source is kept, so it is not at risk'
+            Test-Path -LiteralPath $script:InHar | Should -BeTrue
+        }
     }
 }
 
