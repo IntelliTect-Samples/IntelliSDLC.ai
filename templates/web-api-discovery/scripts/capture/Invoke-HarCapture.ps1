@@ -297,9 +297,16 @@ switch ($exit) {
         # in the session directory instead and the recorder says so. An arm
         # that asserted the usual place would send the operator looking for a
         # file that is not there, in exactly the case they most need to read it.
+        #
+        # And the loop closes without re-recording. Waiving a false positive
+        # used to leave the operator with "run the capture again", which for a
+        # session a human drove by hand is not a repeat of anything.
+        # Invoke-HarCatalogue.ps1 re-enters at the catalogue stage instead
+        # (#352); it is named here rather than implemented here.
         Write-Warning ('Recorded and catalogued, but the leak gate reported ADVISORY findings. ' +
             'The recorder printed each finding and the path to the full report -- review ' +
-            'them, then waive or correct each one.')
+            'them, then waive or correct each one. To rebuild the catalogue afterwards ' +
+            'without re-recording, run Invoke-HarCatalogue.ps1.')
     }
     default {
         Write-Error "capture-har exited $exit -- no catalogue was produced."
