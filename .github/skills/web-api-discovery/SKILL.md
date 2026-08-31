@@ -228,6 +228,24 @@ must not proceed without explicit user acknowledgement.
 
 ### Phase 2 -- Record the session
 
+> **Precondition, not advice: record as a DEDICATED TEST ACCOUNT.** Never a
+> personal account, never a default workspace, never a production tenant. This
+> is a condition of starting a recording — if there is no test account, make one
+> before capturing, do not capture and plan to scrub harder afterwards.
+>
+> The scrub is a control, not a guarantee. It removes what it can name, shape or
+> match, and the whole of this document is an account of the ways that turns out
+> to be less than everything. A capture taken as a test account is one whose
+> worst case is disclosing fake data; a capture taken as a real account is one
+> whose worst case depends on a detector nobody has written yet.
+>
+> It also removes the hardest category outright. Third-party PII — other
+> people's names in a friend list, a search result, an order recipient — is the
+> majority of identity data in a real capture, and it is the part
+> `.har-profile.json` cannot help with, because that file holds *the operator's*
+> identifiers. A test account with no real relationships has no third parties in
+> it.
+
 The operator's entire surface is a URL:
 
 ```powershell
@@ -367,6 +385,150 @@ of these has cost real diagnosis time when skipped.
   capture) must never be committable even transiently; treat a missing
   gitignore rule as a hard stop for the phase, not a warning.
 
+#### The scrub policy: three files, one merge
+
+What gets removed is **data, not code**. Three files feed one merged policy that
+the scrubber and both gates all read, so they cannot hold different ideas of
+what is sensitive.
+
+| file | owner | committed | holds |
+|---|---|---|---|
+| `har-policy.default.json` | IntelliSDLC.ai (synced) | yes | the stringent baseline — **do not edit; the next sync overwrites it** |
+| `.har-policy.project.json` | the consuming project | yes | overrides merged over the baseline |
+| `.har-profile.json` | the operator | **no — gitignored** | literals: the operator's own raw identifiers |
+
+**The split that matters is values vs rules, not project vs operator.** The two
+policy files hold names, patterns and decisions — safe to commit, reviewable in
+a diff. The profile is the only place a raw identity value may ever live.
+
+##### Why a policy at all
+
+The gate this replaced hardcoded one project's threat model. Measured on a real
+capture set, it produced **1134 findings, 3 of them real** — and the three
+genuine leaks had no distinctive shape, so the shape layer never had a chance.
+It fired hardest where it was least needed and was blind where it mattered.
+Worse, a rejected scrub *deleted* its own output, so a false positive emitted
+nothing at all: 1413 trip ids read as credit cards meant no reference and no
+catalogue.
+
+A gate whose false-positive path destroys its own output is a shredder. The
+policy exists so a project can say what its threat model actually is.
+
+##### Two axes: class and evidence
+
+|  | gates (blocks) | advises (reports, artifact kept) |
+|---|---|---|
+| **secret** — grants access | name, literal **and shape** | — |
+| **identity** — names a person | literal (operator-declared) | shape |
+
+Shape is weak evidence for an identity and meaningfully stronger for a secret,
+because high entropy is itself evidence of secret-ness. A Luhn-valid 16-digit
+run is a card, a trip id, or roughly one digit run in ten by chance — so gating
+on it is how 1413 identifiers became "leaked cards".
+
+**The floor:** a project may lower any identity class. It may **not** lower a
+secret class — not to `off`, and not to `advise`, which is `off` wearing a hat.
+The loader rejects it by name at load time, so a caller cannot forget a check it
+never makes. Per-value relief is a **waiver**.
+
+##### The settings, and what `off` really means
+
+| setting | gate | scrubber |
+|---|---|---|
+| `gate` | blocks | replaces |
+| `advise` | reports, does not block | replaces |
+| `off` | reports, does not block | **detects and reports, does not replace** |
+
+`off` is not "stop looking". A disabled class is still detected and still
+reported, so **the cost of a loosening stays visible on every run** — including
+the runs where everything passes, which is when nobody is looking. A finding
+that vanished outright would be an invisible loosening, and invisible loosening
+is this issue's own diagnosis of what went wrong.
+
+Two consequences to be clear-eyed about when you set something to `off`:
+
+- **The PII stays in the artifact.** The reference ships containing it. That is
+  the point — for a travel-domain capture where place names *are* the payload
+  being documented, over 125,000 correct identity replacements destroyed the
+  thing the artifact existed to preserve.
+- **The reference is a different artifact** from one scrubbed under a stricter
+  policy. The policy version is stamped into the reference so it stays knowable
+  which references a later policy change requires re-extracting.
+
+##### Worked override: loosen to credentials only
+
+A project whose captures are diagnostic artifacts about its own product, where
+names and addresses are the payload rather than a leak:
+
+```jsonc
+// .har-policy.project.json
+{
+  "classes": {
+    "identity": {
+      "person-name": "off",
+      "street-address": "off",
+      "city": "off",
+      "region": "off",
+      "country": "off",
+      "postal-code": "off",
+      "geo-lat": "off",
+      "geo-lng": "off"
+    }
+  },
+  "secretFields": ["x-my-app-token"],
+  "notSecretFields": ["x-asbd-id"],
+  "identifierFields": ["trip_id", "step_id"],
+  "waivers": [
+    { "kind": "hex32", "fingerprint": "a1b2c3d4e5f6",
+      "reason": "vendor build sha, not a session token", "expires": "2026-12-01" }
+  ]
+}
+```
+
+That leaves credentials, tokens, secrets and display names removed
+unconditionally, and stops the scrub rewriting the data the capture is *for*.
+It cannot disable a secret class; attempting to is a load-time error.
+
+**Merge semantics**, because they are not guessable:
+
+- name lists **append** — adding one `secretFields` entry keeps every default;
+- `notSecretFields` **subtracts after** the append, so it can remove a default
+  name and veto one the same file just added;
+- `classes.*` replaces **per kind**, so naming one does not reset its siblings;
+- `qualifiers` **replaces** — copy the defaults and extend, do not list only
+  your new word;
+- an **unknown key is a hard error**, never a silent ignore. A typo that quietly
+  does nothing is how a repo comes to believe it changed a gate it never
+  touched.
+
+##### Removing a secret NAME is allowed, and is recorded
+
+`notSecretFields` may remove a name the synced default shipped — a name list has
+false positives, and a gate with no escape hatch is the undisableable gate this
+design replaces. But `named-credential` is caught by **name or not at all**, so
+a subtraction is the one input that can hollow out a secret class while its
+setting still reads `gate`.
+
+So every upstream secret name a project removes is recorded in
+`loosenedSecretNames` and printed by the gates **on every run, including clean
+ones**. Allowed, never silent.
+
+##### Waivers
+
+The sanctioned relief for one specific false positive. A waiver keys on the
+12-hex non-reversible `fingerprint` a finding already reports, must carry a
+`reason`, and expires:
+
+```jsonc
+{ "kind": "hex32", "fingerprint": "a1b2c3d4e5f6",
+  "reason": "vendor build sha", "expires": "2026-12-01" }
+```
+
+The fingerprint is not reversible, so a waiver is safe to commit: a reviewer
+sees **that** something was waived and **why**, without the value entering the
+repo. The expiry is what stops a one-off exception becoming a permanent hole
+nobody revisits.
+
 #### Scrubbing is two controls, not one
 
 This is the part that is easy to get wrong, because the first control looks
@@ -453,6 +615,30 @@ Implementation rules that mattered in practice:
   leak into the CI log that reports it -- name the sentinel instead.
 - The profile is gitignored and therefore absent in CI, where the literal
   check cannot run. Report it as **skipped**, never as a silent pass.
+
+#### Writing or changing a detector
+
+Every control here is a predicate approximating a concept. Six rules, each
+learned from a defect that shipped -- the cases and the measurements are in
+[`docs/designs/297-detector-predicates.md`](../../../docs/designs/297-detector-predicates.md).
+
+- **Say the concept out loud, then check the predicate is it.** "Six hex pairs"
+  is not "a MAC address" when more pairs follow.
+- **Weigh the predicate against what it DRIVES.** Behind a report, a loose
+  predicate makes noise somebody eventually reads. Behind a replace it makes
+  plausible corruption nobody can detect afterwards. On a replace path, fail
+  toward a miss.
+- **The fix and the test are predicates too.** Prefer a property over a list of
+  cases, seed the generator with the inputs that would trap you, and ablate the
+  fix to confirm the test fails without it. A signature is not reachability: a
+  test that a function accepts a parameter passes while nothing ever passes one.
+- **Narrow a category twice, then remove the option.** Having to fix a third
+  member of the same set means the set is the wrong unit of work; restrict the
+  language so the dangerous input cannot be expressed.
+- **Consume a predicate whole -- pattern and check -- from the engine that owns
+  it.** Unifying one half moves the divergence rather than closing it.
+- **Measure the residue, not the delta**, and when you tighten a predicate,
+  check every engine holding a copy of it.
 
 #### Do not over-redact placeholders
 
