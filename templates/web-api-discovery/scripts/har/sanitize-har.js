@@ -631,6 +631,23 @@ function main() {
         substitutions: piiResult.substitutions
     }, null, 2), 'utf8');
 
+    // Name the tables THIS run wrote, one per line under a stable prefix.
+    //
+    // Not a new option -- output, and output a caller can act on. Both tables
+    // are keyed by the plaintext originals, so each is a reverse lookup table
+    // of the live credentials the raw carried, and anything that disposes of
+    // the raw has to dispose of them too. Where they went depends on
+    // deriveSubsDir, on --subs and on --pii-subs; the only way for a caller to
+    // be sure is to be TOLD, because a caller that re-derives the paths for
+    // itself is a second copy of that rule waiting to disagree with this one
+    // and delete the wrong file -- or, worse, none.
+    //
+    // Paths only. Never a key, never a value: the whole point of the tables is
+    // that their contents do not belong in a log.
+    for (const { path: table } of tableDestinations) {
+        console.log(`sanitize-har: subs-table: ${table}`);
+    }
+
     // A class the project set to `off` means REAL personal data is still in the
     // file that was just written, on purpose (issue #346). That is what #297
     // requirement 1 asks for and it is the right answer to 125,000

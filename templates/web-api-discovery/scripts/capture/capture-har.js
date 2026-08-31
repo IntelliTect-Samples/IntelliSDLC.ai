@@ -53,6 +53,20 @@
  * renamed to `scrubbed.rejected.har` where it stands, never deleted. One false
  * positive used to destroy the whole capture (#297).
  *
+ * NOTHING IN THIS FILE EVER DELETES A RAW, and the rejected-scrub path above is
+ * unconditional: a capture the gate refused keeps both its raw and its refused
+ * candidate, because that is the case where losing either is unrecoverable.
+ *
+ * What that rule no longer says is "a raw is never deleted by anything". An
+ * operator may now ask for one to be removed, through
+ * `har/Invoke-SanitizeHar.ps1 -RemoveSource`, and only when the scrub of it
+ * VERIFIED CLEAN -- never on a rejection and never on an advisory verdict,
+ * since advisory means "waive or correct, then scrub again" and scrubbing
+ * again needs the raw. The lever exists because raws carry live session
+ * cookies and accumulate; it is opt-in per run, it takes the substitution
+ * tables with it because they are keyed by the plaintext originals, and there
+ * is deliberately no age sweep and no bulk delete command (#352).
+ *
  * ## Phases
  *
  *   record -> scrub -> verify -> digest     this process, on every ending
@@ -1254,10 +1268,15 @@ function isFindingsReport(p) {
 /**
  * A name in `dir` that is not taken yet: `base.ext`, then `base.2.ext`, ...
  *
- * Nothing under `.har-captures/` is ever deleted or overwritten, and a second
- * rejection in a session that already holds one is exactly where a careless
- * implementation would overwrite the first -- which is the evidence the
- * operator is still triaging.
+ * Nothing under `.har-captures/` is ever deleted or overwritten BY THIS TOOL,
+ * and a second rejection in a session that already holds one is exactly where a
+ * careless implementation would overwrite the first -- which is the evidence
+ * the operator is still triaging.
+ *
+ * The qualifier is not a loophole. An operator can now ask for a verified
+ * scrub's source to be removed (`Invoke-SanitizeHar.ps1 -RemoveSource`, #352),
+ * which is a request, per run, about one raw. It cannot reach a rejected
+ * scrub's evidence: that path never verifies, so the removal never runs.
  */
 function freeName(dir, base, ext) {
     let candidate = path.join(dir, `${base}${ext}`);
@@ -2185,6 +2204,26 @@ function catalogueTarget(scrubbedPath, args, session) {
 }
 
 /**
+ * How many rows in the catalogue at `p` carry a description.
+ *
+ * The discriminator between "a scaffold nobody has worked on" and "a catalogue
+ * with something in it to lose". Keyed on Description and not on Status, and
+ * for the reason Invoke-HarCapture.ps1 already gives: a real AI pass may
+ * legitimately conclude that every group was Observed and none Exercised, so
+ * Status cannot tell the two apart. Describing an action is the one thing the
+ * AI does that the scaffold never can.
+ *
+ * A file that is not a catalogue at all counts as no work -- the refusal below
+ * exists to protect somebody's segmentation, not to bounce off anything that
+ * occupies the name.
+ */
+function describedRowCount(p) {
+    const rows = readJson(p);
+    if (!Array.isArray(rows)) return 0;
+    return rows.filter((r) => r && typeof r === 'object' && r.Description).length;
+}
+
+/**
  * Catalogue a capture that was recorded and scrubbed some other time.
  *
  * This is an ENTRY POINT to the phases postProcess already runs, and nothing
@@ -2209,6 +2248,43 @@ function catalogueCommand(args) {
     if (target.error) {
         process.stderr.write(`capture-har: ${target.error}\n`);
         return target.code || 2;
+    }
+
+    // WHAT HAPPENS WHEN THE CATALOGUE STAGE RUNS TWICE: it refuses, when there
+    // is work in the catalogue to lose.
+    //
+    // The segmentation is an AI reading catalogue-prompt.md, so two runs over
+    // the same digest can legitimately disagree -- this is not a deterministic
+    // recomputation, and `catalogue.json` is a fixed name. Silently replacing a
+    // catalogue a human reviewed (or corrected by hand) with a fresh,
+    // differently-grouped one is the more expensive of the two mistakes, and it
+    // is invisible after the fact.
+    //
+    // But refusing on EXISTENCE alone would block the case this command exists
+    // for. The advisory loop is: capture, waive a false positive, catalogue
+    // again -- and by then a scaffold is already sitting there. So the test is
+    // whether the catalogue carries WORK, using the same discriminator
+    // Invoke-HarCapture.ps1 already uses to tell a finished catalogue from a
+    // provisional one: a Description is the one thing the AI writes that the
+    // scaffold never can. A scaffold is regenerated without comment; anything
+    // described is left exactly as it is.
+    //
+    // Deliberately NOT behind an override option. An option would let a caller
+    // ASK for the destructive branch, which is precisely the request that
+    // should cost a moment's thought; moving the file you want replaced is an
+    // unambiguous statement of the same intent, and is already possible.
+    const cataloguePath = path.join(target.outputPath, CATALOGUE_FILE);
+    const described = describedRowCount(cataloguePath);
+    if (described) {
+        process.stderr.write(
+            `capture-har: ${cataloguePath} already carries ${described} described ` +
+            'action(s), so nothing was written.\n' +
+            '  Cataloguing is an AI pass, not a recomputation: a second run over the same\n' +
+            '  digest may group the session differently, and replacing a catalogue somebody\n' +
+            '  reviewed or corrected would discard that silently.\n' +
+            '  To catalogue afresh, move the existing file aside (or catalogue into another\n' +
+            '  --output-path) and run this again.\n');
+        return 2;
     }
 
     const state = { startedUtc: new Date().toISOString(), errors: [], warnings: [] };

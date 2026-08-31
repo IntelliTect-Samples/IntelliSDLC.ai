@@ -382,10 +382,11 @@ test('an advisory scrub can be re-catalogued, and still exits 7', () => {
 // 6 -- an existing catalogue is never clobbered
 // ---------------------------------------------------------------------------
 
-test('cataloguing over an existing catalogue does not erase it', () => {
-    // A re-capture must not erase the actions a previous run's AI phase already
-    // named and exercised, and a re-CATALOGUE is the door where that is most
-    // likely to be attempted on purpose.
+test('a catalogue that carries work is never replaced by a second AI pass', () => {
+    // Cataloguing is an AI pass over the digest, not a recomputation: two runs
+    // may group the same session differently. So a catalogue somebody reviewed
+    // -- or corrected by hand, which is the case with no other copy anywhere --
+    // must not be silently replaced by a fresh one.
     const dir = repo('keep-catalogue');
     const { session: s } = published(dir);
     const cataloguePath = path.join(s.outputPath, CATALOGUE_FILE);
@@ -395,12 +396,41 @@ test('cataloguing over an existing catalogue does not erase it', () => {
         Status: 'Exercised', HarFile: 'list-things.har', CapturedUtc: '2026-01-01T12:00:00Z'
     }];
     fs.writeFileSync(cataloguePath, JSON.stringify(finished, null, 2), 'utf8');
+    const digestBefore = fs.readFileSync(path.join(s.outputPath, DIGEST_FILE), 'utf8');
+
+    let said = '';
+    const code = withStderr((line) => { said += line; },
+        () => runCatalogue(dir, { _: [s.outputPath] }));
+
+    assert.strictEqual(code, 2,
+        'a refusal to overwrite reviewed work must be reported, not swallowed as success');
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(cataloguePath, 'utf8')), finished,
+        'a described catalogue must survive a catalogue-only re-run untouched');
+    assert.strictEqual(fs.readFileSync(path.join(s.outputPath, DIGEST_FILE), 'utf8'), digestBefore,
+        'and the run must write NOTHING, not merely spare the catalogue');
+    // A refusal the operator cannot act on is an obstruction, not a safeguard.
+    assert.ok(/move the existing file aside|--output-path/.test(said),
+        `the refusal must say how to catalogue afresh:
+${said}`);
+});
+
+test('a scaffold nobody has worked on is regenerated without comment', () => {
+    // The other half, and the case this command exists for: the advisory loop
+    // is capture, waive a false positive, catalogue again -- and by then a
+    // scaffold is already sitting in the output path. Refusing on EXISTENCE
+    // rather than on work would block the common path to protect the rare one.
+    const dir = repo('scaffold-rerun');
+    const { session: s } = published(dir);
+    const cataloguePath = path.join(s.outputPath, CATALOGUE_FILE);
+    const scaffold = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
+    assert.ok(scaffold.length && scaffold.every((r) => !r.Description),
+        'fixture: a scaffold is exactly a catalogue with nothing described in it');
 
     const code = runCatalogue(dir, { _: [s.outputPath] });
-    assert.strictEqual(code, 0);
-    const after = JSON.parse(fs.readFileSync(cataloguePath, 'utf8'));
-    assert.deepStrictEqual(after, finished,
-        'a finished catalogue must survive a catalogue-only re-run untouched');
+    assert.strictEqual(code, 0,
+        'a scaffold carries no work, so re-cataloguing over it is not destructive');
+    assert.ok(fs.existsSync(path.join(s.outputPath, DIGEST_FILE)),
+        'and the run must actually do its work rather than decline');
 });
 
 // ---------------------------------------------------------------------------
