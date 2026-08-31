@@ -58,6 +58,19 @@
  *   record -> scrub -> verify -> digest     this process, on every ending
  *   catalogue (segment, extract, rows)      an AI, once the digest exists
  *
+ * ## The pipeline is RE-ENTERABLE at the catalogue stage
+ *
+ * `catalogue` runs the digest and delegation phases against a capture that was
+ * recorded and scrubbed some other time, so regenerating a catalogue no longer
+ * means re-recording a browser session a human drove by hand (#352). Scrubbing
+ * alone was already re-enterable through Invoke-SanitizeHar.ps1; this is the
+ * other half.
+ *
+ * It is an ENTRY POINT, not a second pipeline. It asks the same leak gate, runs
+ * the same digest, and asks the same decideCatalogueRunner. It does not publish
+ * and does not quarantine -- those belong to the scrub stage, and a second copy
+ * of them behind a second door is how the invariants in #343 get lost.
+ *
  * Usage:
  *   node capture-har.js start --uri <url> [--profile <name|path>] [--isolated]
  *                             [--port <n>] [--output-path <dir>]
@@ -66,6 +79,8 @@
  *                             [--validate-only]
  *   node capture-har.js stop  [--session <dir>] [--min-bytes <n>] [--dir <d>]
  *   node capture-har.js status [--session <dir>] [--dir <d>]
+ *   node capture-har.js catalogue [<scrubbed.har | session dir | output dir>]
+ *                                 [--session <dir>] [--output-path <dir>]
  *
  *   --profile        a NAME keeps a separate signed-in identity under the
  *                    capture root; a PATH records as an identity another tool
@@ -330,6 +345,8 @@ function usage(msg) {
         '                                 [--output-path <dir>] [--describe <text>]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
         '       node capture-har.js status\n' +
+        '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
+        '                                     [--session <dir>] [--output-path <dir>]\n' +
         '\n' +
         '  --log-level normal|verbose  how much the console says (default normal).\n' +
         '                              Invoke-HarCapture sets it from -Verbose.\n');
@@ -1022,6 +1039,84 @@ function runNode(script, argv, cwd) {
 }
 
 /**
+ * Put `candidate` in front of the leak gate and record its verdict on `state`.
+ *
+ * ONE implementation, because there are now two doors into the pipeline. A
+ * full capture arrives here from postProcess with a scrub it just wrote; the
+ * `catalogue` command arrives here with a HAR somebody hands it. Both need the
+ * same three-way verdict, and a second copy of it in the second door is
+ * exactly how "advisory" quietly becomes "rejected" on one path only.
+ *
+ * Exit 4 is not a rejection. It says the only findings are identity evidence
+ * by SHAPE, which carries no provenance -- a Luhn-valid 16-digit run is a
+ * card, a trip id, or ~10% of digit runs by chance. Withholding the capture
+ * over that is what cost 1413 trip ids their reference; the artifact is kept
+ * and the findings are surfaced, so a false positive costs a review step
+ * instead of the capture.
+ *
+ * @returns {{path: string, verified: boolean, advisory: boolean}} state.scrubbed
+ */
+function askTheGate(candidate, state, run) {
+    const verify = (run || runNode)(
+        path.join(__dirname, '..', 'har', 'verify-scrub.js'), ['--in', candidate]);
+    const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
+    state.scrubbed = { path: candidate, verified: verify.ok, advisory };
+    // verify-scrub.js already names itself in what it prints, so a second
+    // prefix would read as two tools reporting the same thing.
+    const spoke = verify.stderr.trim();
+    const said = spoke.startsWith('verify-scrub')
+        ? spoke : `verify-scrub: ${spoke || `exit ${verify.status}`}`;
+    if (advisory) state.warnings.push(said);
+    else if (!verify.ok) state.errors.push(said);
+    return state.scrubbed;
+}
+
+/**
+ * Digest the scrubbed capture at `state.scrubbed.path`, then hand the result to
+ * whoever catalogues.
+ *
+ * Split out of postProcess so the `catalogue` command can run THIS code rather
+ * than a copy of it. Nothing about the phase changed in the move: it still
+ * derives from the scrubbed capture, still refuses to clobber an existing
+ * catalogue, and still asks decideCatalogueRunner -- once, in runCatalogue --
+ * who does the segmenting.
+ *
+ * It does not publish and it does not quarantine. Those belong to the scrub
+ * stage, and a second implementation of them behind a second door is the
+ * two-engines defect this subsystem has spent a dozen PRs removing.
+ */
+function catalogueScrubbed(session, state) {
+    try {
+        const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
+        // capturedUtc is when the RECORDING happened, not when it was
+        // processed. A catalogue row dated to the scrub would answer "how old
+        // is this evidence of their API" with the wrong number -- and that
+        // question is most of why the date is in the filename convention.
+        const digest = buildDigest(har, {
+            uri: session.uri,
+            describe: session.describe,
+            capturedUtc: session.startedUtc
+        });
+        const digestPath = path.join(session.outputPath, DIGEST_FILE);
+        writeJson(digestPath, digest);
+        state.digest = { path: digestPath };
+
+        const cataloguePath = path.join(session.outputPath, CATALOGUE_FILE);
+        // Never clobber an existing catalogue: a re-capture must not erase the
+        // actions a previous run's AI phase already named and exercised.
+        if (!fs.existsSync(cataloguePath)) {
+            writeJson(cataloguePath, buildCatalogueScaffold(digest));
+        }
+        state.catalogue = Object.assign(
+            { path: cataloguePath, actions: [], files: [] },
+            runCatalogue(session, digestPath, cataloguePath, state));
+    } catch (e) {
+        state.errors.push(`digest: ${e.message}`);
+    }
+    return state;
+}
+
+/**
  * The mechanical phases, run in this process on every ending that is not a
  * cancel. Recording success dominates: a scrub failure is reported and exits
  * 6, but it never reports a good capture as lost, and the raw is always kept.
@@ -1058,22 +1153,7 @@ function postProcess(session, opts = {}) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false, advisory: false };
     } else {
-        const verify = run(path.join(harDir, 'verify-scrub.js'), ['--in', candidate]);
-        // Exit 4 is not a rejection. It says the only findings are identity
-        // evidence by SHAPE, which carries no provenance -- a Luhn-valid
-        // 16-digit run is a card, a trip id, or ~10% of digit runs by chance.
-        // Withholding the capture over that is what cost 1413 trip ids their
-        // reference; the artifact is kept and the findings are surfaced, so a
-        // false positive costs a review step instead of the capture.
-        const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
-        state.scrubbed = { path: candidate, verified: verify.ok, advisory };
-        // verify-scrub.js already names itself in what it prints, so a second
-        // prefix would read as two tools reporting the same thing.
-        const spoke = verify.stderr.trim();
-        const said = spoke.startsWith('verify-scrub')
-            ? spoke : `verify-scrub: ${spoke || `exit ${verify.status}`}`;
-        if (advisory) state.warnings.push(said);
-        else if (!verify.ok) state.errors.push(said);
+        askTheGate(candidate, state, run);
     }
 
     // Phase B input -- the digest an AI segments from.
@@ -1151,33 +1231,7 @@ function postProcess(session, opts = {}) {
         state.completedUtc = new Date().toISOString();
         return state;
     }
-    try {
-        const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
-        // capturedUtc is when the RECORDING happened, not when it was
-        // processed. A catalogue row dated to the scrub would answer "how old
-        // is this evidence of their API" with the wrong number -- and that
-        // question is most of why the date is in the filename convention.
-        const digest = buildDigest(har, {
-            uri: session.uri,
-            describe: session.describe,
-            capturedUtc: session.startedUtc
-        });
-        const digestPath = path.join(session.outputPath, DIGEST_FILE);
-        writeJson(digestPath, digest);
-        state.digest = { path: digestPath };
-
-        const cataloguePath = path.join(session.outputPath, CATALOGUE_FILE);
-        // Never clobber an existing catalogue: a re-capture must not erase the
-        // actions a previous run's AI phase already named and exercised.
-        if (!fs.existsSync(cataloguePath)) {
-            writeJson(cataloguePath, buildCatalogueScaffold(digest));
-        }
-        state.catalogue = Object.assign(
-            { path: cataloguePath, actions: [], files: [] },
-            runCatalogue(session, digestPath, cataloguePath, state));
-    } catch (e) {
-        state.errors.push(`digest: ${e.message}`);
-    }
+    catalogueScrubbed(session, state);
 
     state.completedUtc = new Date().toISOString();
     return state;
@@ -2054,6 +2108,138 @@ async function stop(args) {
     return postProcessExitCode(session.postProcess, assembled || session.assembledFromLog);
 }
 
+// ---------------------------------------------------------------------------
+// catalogue -- the pipeline's second door
+// ---------------------------------------------------------------------------
+
+/**
+ * What the `catalogue` command was pointed at, and where its output goes.
+ *
+ * Three shapes, because an operator re-entering the pipeline has three things
+ * to hand and none of them is reliably the same one:
+ *
+ *   a FILE            the scrubbed HAR itself. Output lands beside it.
+ *   a SESSION dir     one holding session.json. Its own outputPath is used,
+ *                     and its uri/describe/startedUtc are carried through --
+ *                     the provenance a re-catalogue would otherwise lose.
+ *   any other dir     an output path that already holds a scrubbed.har.
+ *
+ * With none of them, `resolveSession` answers -- the same resolution `stop`
+ * and `status` use, whose whole point is that it still works after a session
+ * has ended.
+ */
+function resolveCatalogueTarget(args) {
+    const given = args._ && args._.length ? path.resolve(args._[0]) : null;
+    if (given && !fs.existsSync(given)) {
+        return { error: `${given} does not exist`, code: 3 };
+    }
+    if (given && fs.statSync(given).isFile()) {
+        return catalogueTarget(given, args, null);
+    }
+    const dir = given || resolveSession(args);
+    if (!dir) return { error: 'no capture session found to catalogue', code: 3 };
+    const session = readJson(path.join(dir, SESSION_FILE));
+    const outputPath = args['output-path']
+        ? path.resolve(args['output-path'])
+        : (session && session.outputPath) || dir;
+    return catalogueTarget(path.join(outputPath, SCRUBBED_HAR), args, session);
+}
+
+function catalogueTarget(scrubbedPath, args, session) {
+    const outputPath = args['output-path']
+        ? path.resolve(args['output-path'])
+        : path.dirname(scrubbedPath);
+    if (!fs.existsSync(scrubbedPath)) {
+        // Said, not guessed at. The likeliest reason a session has no scrubbed
+        // HAR in its output path is that the gate refused the scrub and #343
+        // quarantined it -- in which case the file to look at is the rejected
+        // one, and re-cataloguing is not what the operator needs next.
+        const rejected = session && session.sessionDir
+            && path.join(session.sessionDir, REJECTED_HAR);
+        return {
+            code: 3,
+            error: rejected && fs.existsSync(rejected)
+                ? `${scrubbedPath} does not exist -- this capture's scrub was REJECTED by the ` +
+                  `leak gate and quarantined at ${rejected}. There is nothing verified to ` +
+                  'catalogue: triage the findings, re-scrub, and catalogue then.'
+                : `${scrubbedPath} does not exist -- nothing to catalogue.`
+        };
+    }
+    // Provenance the digest would otherwise lose on a second pass. The
+    // previous digest is the fallback because capturedUtc means WHEN THE
+    // RECORDING HAPPENED: re-cataloguing must not re-date a capture to the day
+    // somebody regenerated its catalogue.
+    const previous = readJson(path.join(outputPath, DIGEST_FILE)) || {};
+    return {
+        scrubbedPath,
+        outputPath,
+        session: {
+            uri: (session && session.uri) || previous.uri || null,
+            describe: (session && session.describe) || previous.describe || null,
+            startedUtc: (session && session.startedUtc) || previous.capturedUtc || null,
+            harPath: (session && session.harPath) || null,
+            sessionDir: (session && session.sessionDir) || null,
+            outputPath
+        }
+    };
+}
+
+/**
+ * Catalogue a capture that was recorded and scrubbed some other time.
+ *
+ * This is an ENTRY POINT to the phases postProcess already runs, and nothing
+ * more. It re-decides nothing: the gate verdict comes from `askTheGate`, the
+ * digest and the delegation from `catalogueScrubbed`, and the exit code from
+ * `postProcessExitCode` -- the same three functions a full capture goes
+ * through, so an advisory verdict still exits 7 here and a refusal still
+ * exits 6.
+ *
+ * It asks the gate again rather than trusting the file's location, because
+ * "the digest and catalogue derive from a capture that PASSED the gate" is a
+ * property of the pipeline and not of the capture path. The new door makes it
+ * possible for the first time to point the catalogue phase at a HAR nobody
+ * scrubbed, so the door has to hold the property itself.
+ *
+ * It never publishes and never quarantines. A scrub is judged and promoted by
+ * the scrub stage; re-implementing that here would put a second copy of #343's
+ * invariants behind a second door.
+ */
+function catalogueCommand(args) {
+    const target = resolveCatalogueTarget(args);
+    if (target.error) {
+        process.stderr.write(`capture-har: ${target.error}\n`);
+        return target.code || 2;
+    }
+
+    const state = { startedUtc: new Date().toISOString(), errors: [], warnings: [] };
+    const verdict = askTheGate(target.scrubbedPath, state);
+    if (verdict.verified || verdict.advisory) {
+        const findings = path.join(target.outputPath, FINDINGS_FILE);
+        if (isFindingsReport(findings)) state.scrubbed.findings = findings;
+        fs.mkdirSync(target.outputPath, { recursive: true });
+        catalogueScrubbed(target.session, state);
+    } else {
+        // No path is claimed, because claiming one would make the summary read
+        // as though a verified artifact is sitting there.
+        state.scrubbed = { path: null, verified: false, advisory: false };
+        state.errors.push(
+            `capture-har: ${target.scrubbedPath} did not pass the leak gate, so no digest and ` +
+            'no catalogue were derived from it. Nothing was written. Re-scrub it, or waive ' +
+            'the findings, and catalogue again.');
+    }
+    state.completedUtc = new Date().toISOString();
+
+    // The shared placement guard, not a second opinion about where output may
+    // land: this command writes into the same committable directory a capture
+    // does, so it owes the same notice.
+    const placement = repoGuard.inspectCheckout(process.cwd());
+    log.lines(postProcessLines(Object.assign({}, target.session, {
+        placement: placement.shouldWarn ? placement : null,
+        postProcess: state
+    })));
+    return postProcessExitCode(state, false);
+}
+
 function status(args) {
     const root = args.dir ? path.resolve(args.dir) : capturesRoot();
     const sessionDir = resolveSession(args);
@@ -2099,6 +2285,7 @@ async function main() {
         case 'start': return await start(args);
         case 'stop': return await stop(args);
         case 'status': return status(args);
+        case 'catalogue': return catalogueCommand(args);
         default: return usage(command ? `unknown command '${command}'` : 'a command is required');
     }
 }
@@ -2122,6 +2309,7 @@ module.exports = {
     buildCatalogueScaffold,
     decideCatalogueRunner,
     postProcess,
+    catalogueCommand,
     postProcessExitCode,
     publishFile,
     sweepAbandonedTemps,
