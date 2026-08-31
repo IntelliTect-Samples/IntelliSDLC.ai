@@ -1,9 +1,24 @@
 # When a detector stands in for a concept
 
 - **Issue:** [#297](https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/297)
-- **Status:** record of a moment. The rules are summarised as imperatives in
+- **Status:** a record of a moment, **closed on the day #297's stages landed**.
+  Do not append to it. The rules are summarised as imperatives in
   `.github/skills/web-api-discovery/SKILL.md` (Phase 3); this file carries the
   argument and the measurements behind them.
+- **It describes the subsystem as of this commit, not necessarily as of the day
+  you are reading it.** #297 closed with follow-on work still open — the scrub's
+  `classes` consumption, the `identifierFields` alignment, query-string
+  coverage, unquoted JSON numbers. Some of what is described below as a defect
+  is fixed by now, and the descriptions are kept as they were because the point
+  is the *shape* of each failure, not its current status. Check the code before
+  concluding anything here is still true of it.
+- **Where a later finding goes.** If it changes what an agent should DO, the
+  imperative goes in `SKILL.md` and the evidence goes in *that* issue's design
+  doc. If it is another instance of an imperative already here, nothing changes
+  — record the measurement on the issue where it was found and move on. Linking
+  to this file is correct; appending to it is not. An append-only defect log has
+  no reader: nobody opens five hundred lines of past bugs to learn how to write
+  a detector.
 - **Why it is here and not in SKILL.md:** SKILL.md is operational and read as
   current instruction. The measurements below are what make these rules
   survive disagreement, and they are also what will date them -- a stale
