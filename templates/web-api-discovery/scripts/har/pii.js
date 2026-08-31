@@ -13,12 +13,15 @@
  * `policy` is the MERGED scrub policy (`har-policy.loadPolicy`). It is
  * OPTIONAL and absent means the shipped defaults, so no caller breaks; passing
  * it is what makes a consuming project's `piiFields` and `cardIssuers` govern
- * the SCRUB as well as the gate (issue #334), and its `classes` too (issue
- * #346): an identity class set to `off` is still DETECTED and still REPORTED --
- * in `retained`, as counts and never values -- but is not replaced. That is the
- * meaning `off` already carries on the gate side, where a disabled finding is
- * returned marked rather than dropped. Secret classes are exempt from the
- * setting entirely; see `scrubSettingFor`.
+ * the SCRUB as well as the gate (issue #334), its `classes` too (issue
+ * #346), and its `identifierFields` (issue #360): an identity class set to
+ * `off` is still DETECTED and still REPORTED -- in `retained`, as counts and
+ * never values -- but is not replaced. That is the meaning `off` already
+ * carries on the gate side, where a disabled finding is returned marked rather
+ * than dropped. An identity value at a declared identifier field is reported
+ * the same way, carrying `identifierField: true`, which is the mark the gate
+ * puts on the same decision. Secret classes are exempt from the setting
+ * entirely and can never reach the identifier rule; see `scrubSettingFor`.
  *
  * Determinism: seed = SHA-256(original).hexSlice(0, 16). Same input always
  * yields same fake. No external dependencies; pure Node stdlib.
@@ -84,7 +87,7 @@ const harPolicy = require('./har-policy.js');
 // CORRUPTED, rewriting provider object ids into generated fake card numbers in
 // committed references. A second copy of the predicate here would only drift
 // again, so the predicate is imported and the issuer table is not duplicated.
-const { hasAssignedIin, LEAK_PATTERNS, settingFor } = require('./har-shapes.js');
+const { hasAssignedIin, LEAK_PATTERNS, settingFor, isIdentifierShaped } = require('./har-shapes.js');
 
 /**
  * One slot of the gate's own leak table, taken from the gate rather than
@@ -136,6 +139,53 @@ const DEFAULT_PII_POLICY = harPolicy.loadDefaultPolicy();
 // -- adding a secret class upstream must not require a second edit, and two
 // lists are how the scrubber and the gate come to disagree.
 const SECRET_KINDS = new Set(Object.keys(DEFAULT_PII_POLICY.classes.secret));
+
+// The identity axis, read the same way and from the same place. Which class a
+// kind belongs to is ESTABLISHED here rather than assumed from "not a secret":
+// a kind the shipped policy names on neither axis has no class, and a decision
+// that keys off `class === 'identity'` must not silently claim it.
+const IDENTITY_KINDS = new Set(Object.keys(DEFAULT_PII_POLICY.classes.identity));
+
+/**
+ * Which class the SHIPPED policy puts a detector kind on, or null.
+ *
+ * Read from the default document, never from the merged one. A project may set
+ * a kind's SETTING; it may not move a kind between axes, and reading the merged
+ * classes here would make the axis itself project-controlled -- which is the
+ * one lever that could walk a secret kind onto the identity path.
+ */
+function piiClassFor(type) {
+    if (SECRET_KINDS.has(type)) return 'secret';
+    if (IDENTITY_KINDS.has(type)) return 'identity';
+    return null;
+}
+
+/**
+ * Is this detection an identity value sitting at a field the policy declares
+ * to hold object ids -- the question the GATE already asks?
+ *
+ * Asked THROUGH `har-shapes.isIdentifierShaped`, not re-derived here. That
+ * function states the scope in one place (identity class only, secret never, a
+ * resolved key path only) and owns the field-name extraction; a second copy of
+ * it in this file is exactly the divergence that let the gate agree a value was
+ * an object id while this pass rewrote it into a fake card number.
+ *
+ * `fieldKey` is the JSON key that DIRECTLY holds the scanned string, and it is
+ * `null` for every value that has no structural key: headers, cookies, query
+ * parameters, the request URL, a non-JSON body, and the elements of a top-level
+ * array. A finding with no resolved path gets no suppression -- reading the
+ * enclosing HAR node's name (`request.url`, `response.content`) instead would
+ * decline a replacement on no evidence at all.
+ */
+function atIdentifierField(type, fieldKey, policy) {
+    if (typeof fieldKey !== 'string' || fieldKey === '') return false;
+    // The floor, restated on this path and not merely inherited. `piiClassFor`
+    // already refuses a secret kind, and `isIdentifierShaped` refuses anything
+    // that is not identity; a secret kind must fail BOTH, because a caller
+    // cannot forget a check it never makes.
+    if (SECRET_KINDS.has(type)) return false;
+    return isIdentifierShaped({ class: piiClassFor(type) }, fieldKey, policy);
+}
 
 /**
  * What the policy says about REPLACING one PII type -- `gate`, `advise` or
@@ -491,8 +541,14 @@ function fakeFor(type, original) {
 }
 
 // --- detection ---
-function pushDetection(out, type, value, location) {
-    out.push({ type, value, location });
+function pushDetection(out, type, value, location, identifierField) {
+    const detection = { type, value, location };
+    // Present only when true, and never removed from the detection list. The
+    // finding stays visible and marked -- exactly what the gate does with one
+    // (`blocksLeak` reads the mark rather than the finding being dropped).
+    // A loosening that made findings disappear would be an invisible one.
+    if (identifierField) detection.identifierField = true;
+    out.push(detection);
 }
 
 // The scrubber emits `+1555XXXXXXX` and nothing else, so the exemption is that
@@ -546,25 +602,33 @@ function isFakePhone(value) {
     return /^\+1555\d{7}$/.test(String(value));
 }
 
-function detectInString(str, entryIndex, loc, out, policy) {
+/**
+ * The context-free shape detectors.
+ *
+ * `fieldKey` is the JSON key directly holding `str`, or null/absent when there
+ * is none -- see `atIdentifierField`. It marks findings, and never suppresses
+ * one.
+ */
+function detectInString(str, entryIndex, loc, out, policy, fieldKey) {
     if (typeof str !== 'string' || str.length === 0) return;
+    const atId = (type) => atIdentifierField(type, fieldKey, policy);
     // emails
     (str.match(RE.email) || []).forEach(m => {
         // skip already-fake markers
         if (/@example\.invalid$/i.test(m)) return;
-        pushDetection(out, 'email', m, { entryIndex, ...loc });
+        pushDetection(out, 'email', m, { entryIndex, ...loc }, atId('email'));
     });
     // phones -- E.164 and the punctuated national spellings
     for (const re of [RE.phone, RE.phonePunctuated]) {
         (str.match(re) || []).forEach(m => {
             if (isFakePhone(m)) return;
-            pushDetection(out, 'phone', m, { entryIndex, ...loc });
+            pushDetection(out, 'phone', m, { entryIndex, ...loc }, atId('phone'));
         });
     }
     // ssn
     (str.match(RE.ssn) || []).forEach(m => {
         if (/^9\d{2}-/.test(m)) return;
-        pushDetection(out, 'ssn', m, { entryIndex, ...loc });
+        pushDetection(out, 'ssn', m, { entryIndex, ...loc }, atId('ssn'));
     });
     // credit card -- the GATE's predicate, not a looser local one (issue #334).
     // An assigned issuer identifier at a length that issuer mints, AND Luhn.
@@ -574,27 +638,27 @@ function detectInString(str, entryIndex, loc, out, policy) {
     (str.match(RE.creditDigits) || []).forEach(m => {
         if (!hasAssignedIin(m, policy) || !luhnOk(m)) return;
         if (GATE_CARD.isFake(m)) return;
-        pushDetection(out, 'credit-card', m, { entryIndex, ...loc });
+        pushDetection(out, 'credit-card', m, { entryIndex, ...loc }, atId('credit-card'));
     });
     // iban -- shape AND checksum, which is what licenses a context-free match
     (str.match(RE.iban) || []).forEach(m => {
         if (!ibanChecksumOk(m) || isFakeIban(m)) return;
-        pushDetection(out, 'iban', m, { entryIndex, ...loc });
+        pushDetection(out, 'iban', m, { entryIndex, ...loc }, atId('iban'));
     });
     // mac address
     (str.match(RE.mac) || []).forEach(m => {
         if (!isMacRun(m) || isFakeMac(m)) return;
-        pushDetection(out, 'mac-address', m, { entryIndex, ...loc });
+        pushDetection(out, 'mac-address', m, { entryIndex, ...loc }, atId('mac-address'));
     });
     // ipv4
     (str.match(RE.ipv4) || []).forEach(m => {
         if (/^192\.0\.2\./.test(m)) return; // fake range
-        pushDetection(out, 'ip-address', m, { entryIndex, ...loc });
+        pushDetection(out, 'ip-address', m, { entryIndex, ...loc }, atId('ip-address'));
     });
     // ipv6
     (str.match(RE.ipv6) || []).forEach(m => {
         if (!isIpv6Run(m)) return;
-        pushDetection(out, 'ip-address', m, { entryIndex, ...loc });
+        pushDetection(out, 'ip-address', m, { entryIndex, ...loc }, atId('ip-address'));
     });
 }
 
@@ -655,7 +719,7 @@ function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
     if (node === null || node === undefined) return;
     if (typeof node === 'string') {
         const handled = detectInValue(node, key, entryIndex, { jsonPath }, out, policy);
-        if (!handled) detectInString(node, entryIndex, { jsonPath }, out, policy);
+        if (!handled) detectInString(node, entryIndex, { jsonPath }, out, policy, key);
         return;
     }
     if (typeof node === 'number' || typeof node === 'boolean') {
@@ -763,9 +827,42 @@ function scrubPii(har, policy) {
     const replaceable = [];
     const retainedDetections = [];
     for (const d of detections) {
-        if (scrubSettingFor(policy, d.type) === 'off') retainedDetections.push(d);
-        else replaceable.push(d);
+        if (scrubSettingFor(policy, d.type) === 'off') {
+            retainedDetections.push({ detection: d, reason: 'off' });
+        } else {
+            replaceable.push(d);
+        }
     }
+
+    // --- identifierFields alignment (issue #360) ---------------------------
+    //
+    // The gate already declines to FAIL a card-shaped identity value sitting
+    // at a declared identifier field. Until now this pass still REPLACED it,
+    // so the two engines disagreed on the half where a false positive is
+    // silent and permanent rather than noisy and reversible.
+    //
+    // The decision is taken per (type, value) over the WHOLE run and not per
+    // site, because the replacement set is keyed on the value: one entry is
+    // applied to every occurrence by a blind text pass. That is not a
+    // limitation being worked around -- it is the same rule the gate states in
+    // `findLeaksInHar` and this file states in `summariseRetained`. ONE
+    // OCCURRENCE AT AN ID FIELD DOES NOT MAKE THE VALUE AN ID: the same digits
+    // echoed at `card_number` are evidence the field-name downgrade was wrong,
+    // so the value is PROMOTED BACK and replaced everywhere. The alternative --
+    // rewriting one occurrence and leaving the identical string beside it --
+    // publishes the value it claims to have removed.
+    const promoted = new Set();
+    for (const d of replaceable) {
+        if (!d.identifierField) promoted.add(`${d.type}${d.value}`);
+    }
+    const survivors = [];
+    for (const d of replaceable) {
+        if (promoted.has(`${d.type}${d.value}`)) survivors.push(d);
+        else retainedDetections.push({ detection: d, reason: 'identifier-field' });
+    }
+    replaceable.length = 0;
+    replaceable.push(...survivors);
+
     if (replaceable.length === 0) {
         return { substitutions: [], retained: summariseRetained(retainedDetections, new Set()) };
     }
@@ -814,7 +911,7 @@ function scrubPii(har, policy) {
 }
 
 /**
- * What a disabled class actually cost this run, per class, and never a value.
+ * What this run did NOT replace, per class and reason, and never a value.
  *
  * `replacedValues` is the set of originals the replacement pass DID rewrite.
  * The replacement set is keyed on the value, not on the location, so a string
@@ -830,24 +927,38 @@ function scrubPii(har, policy) {
  * is exactly the `occurrences` / `distinct` shape #346 published, which is what
  * a report of identity data may safely carry.
  */
-function summariseRetained(detections, replacedValues) {
-    const byType = new Map();
-    for (const d of detections) {
+function summariseRetained(entries, replacedValues) {
+    const byBucket = new Map();
+    for (const { detection: d, reason } of entries) {
         if (replacedValues.has(String(d.value))) continue;
-        if (!byType.has(d.type)) byType.set(d.type, { occurrences: 0, values: new Set() });
-        const bucket = byType.get(d.type);
+        const key = `${d.type}${reason}`;
+        if (!byBucket.has(key)) {
+            byBucket.set(key, { kind: d.type, reason, occurrences: 0, values: new Set() });
+        }
+        const bucket = byBucket.get(key);
         bucket.occurrences += 1;
         bucket.values.add(String(d.value));
     }
-    return [...byType.entries()]
-        .map(([kind, bucket]) => ({
-            kind,
-            class: 'identity',
-            setting: 'off',
-            occurrences: bucket.occurrences,
-            distinct: bucket.values.size,
-        }))
-        .sort((a, b) => (a.kind < b.kind ? -1 : 1));
+    return [...byBucket.values()]
+        .map((bucket) => {
+            const row = {
+                kind: bucket.kind,
+                class: 'identity',
+                // A field-name downgrade is not a class being switched off. The
+                // class is still `gate`; what declined to act is the identifier
+                // rule, and the row says which -- reading `setting: 'off'` here
+                // would report a standing policy decision nobody made.
+                setting: bucket.reason === 'off' ? 'off' : 'gate',
+                occurrences: bucket.occurrences,
+                distinct: bucket.values.size,
+            };
+            if (bucket.reason === 'identifier-field') row.identifierField = true;
+            return row;
+        })
+        .sort((a, b) => {
+            if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+            return (a.identifierField ? 1 : 0) - (b.identifierField ? 1 : 0);
+        });
 }
 
 function applyReplacementsToEntry(entry, replacements, policy) {

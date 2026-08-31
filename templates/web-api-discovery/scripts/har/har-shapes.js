@@ -935,6 +935,7 @@ module.exports = {
     walkJsonBody,
     enclosingFieldName,
     capturedFieldName,
+    isIdentifierShaped,
     settingFor,
     findLeaks,
     findLeaksDeep,

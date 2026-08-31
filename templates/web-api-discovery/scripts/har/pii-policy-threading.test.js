@@ -138,8 +138,17 @@ function scrub(name, projectPolicy, body) {
 // card. The gate stopped flagging it in #295; the scrubber must stop rewriting
 // it. This is the corruption case, and it is the bulk of what the corpus
 // measurement counts.
+//
+// THE FIELD NAME IS DELIBERATELY NOT AN IDENTIFIER FIELD. These cases test
+// the CARD PREDICATE, and the fixture used to say `objectId`, which the
+// shipped `identifierFields` matches on `*id`. Once #360 landed, 1.a and 2.a
+// passed whether or not the predicate did anything -- the field name alone
+// was sufficient -- and 2.b, which requires a REPLACEMENT, failed for a
+// reason that had nothing to do with `cardIssuers`. `ledgerRef` matches no
+// identifier pattern and no `piiFields` name, so the predicate is once again
+// the only thing that decides these three.
 check('1.a unassigned IIN survives the scrub', () => {
-    const out = scrub('unassigned-iin', null, { objectId: UNASSIGNED_LUHN_16 });
+    const out = scrub('unassigned-iin', null, { ledgerRef: UNASSIGNED_LUHN_16 });
     assert.ok(out.includes(UNASSIGNED_LUHN_16),
         'a Luhn-valid run with an unassigned issuer prefix was rewritten as a card');
 });
@@ -157,7 +166,7 @@ check('1.b a published test card is still replaced', () => {
 // observing that it accepts one proves nothing about whether the scrubber ever
 // supplies it. Only the difference between these two runs does.
 check('2.a without the project policy, a Maestro run is not a card', () => {
-    const out = scrub('maestro-default', null, { objectId: MAESTRO_16 });
+    const out = scrub('maestro-default', null, { ledgerRef: MAESTRO_16 });
     assert.ok(out.includes(MAESTRO_16),
         'the shipped table claimed a range it deliberately does not carry');
 });
@@ -165,7 +174,7 @@ check('2.a without the project policy, a Maestro run is not a card', () => {
 check('2.b a project cardIssuers range makes the scrubber replace it', () => {
     const out = scrub('maestro-policy',
         { schemaVersion: 1, cardIssuers: [MAESTRO_ISSUER] },
-        { objectId: MAESTRO_16 });
+        { ledgerRef: MAESTRO_16 });
     assert.ok(!out.includes(MAESTRO_16),
         'the merged policy never reached the scrubber: a project-declared issuer '
         + 'range is honoured by the gate and ignored by the replace');

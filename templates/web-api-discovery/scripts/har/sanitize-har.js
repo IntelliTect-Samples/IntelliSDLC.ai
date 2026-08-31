@@ -661,10 +661,28 @@ function main() {
     // to contain any -- the decision stands either way -- with the counts
     // appended when it did. Counts and class names only; echoing a value would
     // relocate the data into the log that reports it.
+    const identifierRetained = piiResult.retained.filter((r) => r.identifierField);
+    const disabledRetained = piiResult.retained.filter((r) => !r.identifierField);
+    // The identifier-field rule declines a REPLACEMENT, so it has to be as
+    // visible as the class rule that declines one. An invisible loosening is
+    // how this gate lost its authority (#297 root-cause, failure mode 4), and a
+    // suppression nobody can see in the run output is invisible whatever the
+    // returned object carries. Counts and kinds only.
+    if (identifierRetained.length) {
+        console.error(
+            `sanitize-har: NOTE -- ${identifierRetained.length} identity kind(s) were ` +
+            `detected at fields the policy declares to hold object ids, and were ` +
+            `therefore NOT replaced: ` +
+            identifierRetained
+                .map((r) => `${r.kind} x${r.occurrences} (${r.distinct} distinct)`).join(', ') +
+            `. The gate makes the same call on the same values (identifierFields in ` +
+            `${policy && policy.path || 'the merged policy'}).`);
+    }
+
     const disabledClasses = pii.disabledIdentityClasses(policy);
     if (disabledClasses.length) {
-        const found = piiResult.retained.length
-            ? piiResult.retained
+        const found = disabledRetained.length
+            ? disabledRetained
                 .map((r) => `${r.kind} x${r.occurrences} (${r.distinct} distinct)`).join(', ')
             : 'none present in this capture';
         console.error(
