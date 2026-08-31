@@ -457,10 +457,18 @@ is this issue's own diagnosis of what went wrong.
 > above as scrub controls, and check the code rather than this table if the
 > distinction matters to you.
 
-What a project **can** steer on the scrub side today: `piiFields` (which key
-names denote which type), `identifierFields` (keys whose values are the
-project's own identifiers), `cardIssuers`, and `secretFields` /
-`notSecretFields`.
+What a project **can** steer on the scrub side today:
+
+| key | reaches the scrub via |
+|---|---|
+| `piiFields` | `pii.js` — which key names denote which type |
+| `cardIssuers` | `pii.js`, through the shared card predicate |
+| `secretFields` / `notSecretFields` | `sanitize-har.js` — which names are credentials |
+
+`identifierFields` is **gate-only**: it stops the *verifier* reporting a
+project's own long identifiers as card-shaped, and the scrubber does not consult
+it. So a `trip_id` that looks like a card still gets rewritten even though the
+gate has been told what it is. Aligning the two is open work.
 
 ##### Worked override
 

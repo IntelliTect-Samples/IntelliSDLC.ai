@@ -14,6 +14,16 @@
   is fixed by now, and the descriptions are kept as they were because the point
   is the *shape* of each failure, not its current status. Check the code before
   concluding anything here is still true of it.
+- **A note on how this file was wrong twice before it landed.** Both errors were
+  the same: it described work as done that was in a branch or in a plan. An
+  author writing at the end of a stage describes the system as they understand
+  it, and their understanding runs ahead of `main` by exactly the work they are
+  holding in their head — one colleague's open PR, one's own next task. That is
+  not carelessness; it is what "I know how this works" feels like when part of
+  what you know has not merged. The defence is mechanical rather than
+  attentional: point a reviewer at `main` rather than at the prose, and run any
+  example you print. Both errors were caught that way and neither was caught by
+  re-reading.
 - **Where a later finding goes.** If it changes what an agent should DO, the
   imperative goes in `SKILL.md` and the evidence goes in *that* issue's design
   doc. If it is another instance of an imperative already here, nothing changes
