@@ -38,11 +38,19 @@ const { spawnSync } = require('child_process');
 const verifyRef = path.join(__dirname, 'verify-har-reference.js');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'har-hollow-body-'));
 
-// spawnSync, not execFileSync: the latter throws on a non-zero exit and returns
-// only STDOUT on a zero one, so a finding printed to stderr alongside a
-// success exit would be invisible here. That is exactly the state test 2.b
-// exists to rule out, and a harness that cannot see it would pass 2.b
-// vacuously.
+// spawnSync, not execFileSync -- and NOT because the suite needs it today.
+// Every finding this gate makes goes through `report()`, which pushes a
+// violation and therefore forces a non-zero exit, so the one state
+// execFileSync cannot see -- output on stderr alongside a SUCCESS exit --
+// does not arise here. A reviewer checked exactly that, swapping a faithful
+// execFileSync back in, and all assertions still passed.
+//
+// It stays because "a finding implies a non-zero exit" is a fact about this
+// gate's current design and not about the script's interface: the first
+// ADVISORY finding added to it (gate 5 already emits some) would make an
+// execFileSync harness silently blind, and the test that noticed would be the
+// one asserting a clean reference is clean. spawnSync reads both streams
+// unconditionally and costs nothing.
 function runNode(script, args, cwd) {
     const r = spawnSync(process.execPath, [script, ...args], {
         encoding: 'utf8', cwd, stdio: ['ignore', 'pipe', 'pipe'],
@@ -128,11 +136,24 @@ const SHAPES = [
     { label: 'json array of numbers', hollow: false, post: body('[1,2]') },
     { label: 'minimal form body', hollow: false, post: body('a=1') },
     { label: 'form body', hollow: false, post: body('alpha=one&beta=two') },
-    { label: 'colon but no braces', hollow: false, post: body('alpha: one') },
+    // VERDICT CHANGED, deliberately. `alpha: one` is character-for-character
+    // the same shape as `REDACTED: form body`, which must fail -- one word, a
+    // colon, more words. Nothing structural tells them apart, so they cannot
+    // get opposite verdicts, and `alpha: one` is not a member of any wire
+    // grammar a capture carries. It goes on the reported side.
+    { label: 'one word, a colon, more words', hollow: true, post: body('alpha: one') },
     {
         label: 'multipart body', hollow: false,
         post: body('--b\r\nContent-Disposition: form-data; name="alpha"\r\n\r\none\r\n--b--'),
     },
+    // A single form field with an EMPTY value. The `=` lands at the last
+    // position, so a rule reading only INTERIOR punctuation calls this a
+    // placeholder. It is a real minimal form body and the form grammar clears
+    // it -- this is the false positive the review measured at entry 9.
+    { label: 'form pair with an empty value', hollow: false, post: body('token=') },
+    { label: 'markup with a closing tag', hollow: false, post: body('<root><a>1</a></root>') },
+    { label: 'graphql source body', hollow: false, post: body('query { me { id } }') },
+    { label: 'newline-delimited json', hollow: false, post: body('{"a":1}\n{"b":2}') },
 
     // --- not a body at all: must PASS ---
     { label: 'GET, no postData', hollow: false, post: null },
@@ -154,6 +175,25 @@ const SHAPES = [
     { label: 'asterisks', hollow: true, post: body('***') },
     { label: 'one json string literal', hollow: true, post: body('"REDACTED"') },
     { label: 'prose placeholder', hollow: true, post: body('body removed by operator') },
+    // The four the review measured against the first predicate. Every one is
+    // ONE STEP SIDEWAYS from a shape the first fixture list covered, and every
+    // one is a MORE natural thing for a hand to write than the bare token:
+    // a single colon, or a single apostrophe, defeated the gate.
+    { label: 'wrapped token with an interior colon', hollow: true, post: body('[REDACTED: form body]') },
+    { label: 'angle-wrapped token with a colon', hollow: true, post: body('<redacted:body>') },
+    { label: 'prose with an apostrophe', hollow: true, post: body("it's been redacted for privacy") },
+    { label: 'token then a dash then prose', hollow: true, post: body('REDACTED - see notes') },
+    // The two below exist because an ablation SURVIVED without them: the form
+    // recogniser could be loosened in two ways and nothing failed. Both are
+    // about how much a body has to look like a form before it counts as one.
+    //
+    // A form name never carries a raw space -- it percent-encodes it -- so the
+    // space is what stops a hand-written note with an equals sign in it from
+    // passing itself off as a field.
+    { label: 'a note containing an equals sign', hollow: true, post: body('body = redacted') },
+    // EVERY `&`-part must be a pair, not merely one of them: a single real
+    // field does not make the rest of a half-scrubbed body into a payload.
+    { label: 'one real field beside a bare token', hollow: true, post: body('REDACTED&token=') },
 ];
 
 // --- 1. The classification, over adjacent shapes, in ONE file. ---
@@ -264,18 +304,59 @@ const SHAPES = [
         `6.c: gate 7 double-reported an entry gate 1 already reported as truncated: ${r.out}`);
 }
 
+// --- 6b. An INLINE truncation marker in a REQUEST body is gate 1's too. ---
+//
+// This body has no structural `truncated` flag -- the consumer-side exporter
+// writes the marker into the payload instead -- and it also has no payload
+// structure, so gate 7 would happily claim it. It must not: gate 7's message
+// says "there is no truncation marker to go looking for", and here the marker
+// is sitting in the body. That is not a mislabel, it is an affirmatively false
+// statement that sends an operator away with confidence in the wrong direction.
+// Gate 1 already owns this spelling on the RESPONSE side; the request side is
+// the same defect and takes the same finding.
+{
+    const dir = project('inline-request-marker');
+    writeHar(dir, 'reference.har', [
+        entry({ mimeType: 'application/json', text: '[request body truncated]' }),
+    ]);
+    const r = verify(dir);
+    assert.strictEqual(r.code, 3, '6b.a: an inline-truncated request body did not fail the run');
+    assert.ok(/entry 0: request body carries an INLINE truncation marker/.test(r.out),
+        `6b.b: gate 1 does not claim the inline marker on the request side: ${r.out}`);
+    assert.deepStrictEqual(hollowIndexes(r.out), [],
+        `6b.c: gate 7 claimed an inline-truncated body and told the reader there is no marker: ${r.out}`);
+    assert.ok(!/no truncation marker to go looking for/.test(r.out),
+        `6b.d: the run still tells the reader there is no marker while one is in the body: ${r.out}`);
+}
+
 // --- 7. The property, over a generator, in both directions. ---
 //
-// A case list covers what its author imagined. These two properties are stated
-// independently of the implementation -- they are not a restatement of the
-// predicate, they are claims about constructed inputs:
+// A case list covers what its author imagined; a generator covers shapes
+// nobody sat down and listed. But A GENERATOR IS A PREDICATE TOO, and the
+// first version of this one was wrong IN THE SAME DIRECTION AS THE CODE it
+// was meant to falsify: it paired a clean token with a wrapper and never put
+// punctuation INSIDE the wrapped text, so it could not express
+// `[REDACTED: form body]`. A shape a generator cannot express is a shape it
+// cannot falsify, and that hole is why a false negative survived a review.
+// The injected marks below are the repair, and they are the reason the
+// predicate's own repair is worth anything.
 //
-//   A. A bare token, under ANY of the wrappers a redaction sentinel is
-//      conventionally written with, is reported. This is the direction that
-//      catches a gate keyed to one spelling.
-//   B. A body built by JOINING two non-empty parts with a separator is never
-//      reported, whatever the parts are. This is the direction that catches a
-//      gate that swallows real minimal payloads.
+//   A.  A bare token, under ANY wrapper a redaction sentinel is conventionally
+//       written with, carrying AT MOST ONE punctuation mark inside it, is
+//       reported. One colon, or the apostrophe in "it's", is what a human
+//       writing a note produces; it is not what makes a payload.
+//   B1. A well-formed form-urlencoded body is never reported -- including a
+//       single pair, and including a pair with an empty value.
+//   B2. A JSON composite is never reported, down to `{}` and `[]`.
+//   B3. A markup element with a closing tag is never reported.
+//
+// B1-B3 are claims about real wire formats rather than restatements of the
+// predicate: each names a grammar an operator's captures actually contain.
+//
+// `=` is deliberately NOT among the marks injected in A. `[a=b]` is a
+// well-formed form pair whose name happens to open with a bracket -- real form
+// names do exactly that (`user[name]=x`) -- so the gate clears it on purpose,
+// and generating it under property A would assert a falsehood.
 //
 // Deterministic PRNG so a failure is reproducible rather than a rumour.
 {
@@ -283,22 +364,30 @@ const SHAPES = [
     const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
     const pick = (xs) => xs[Math.floor(rnd() * xs.length) % xs.length];
 
-    const TOKEN_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-. *';
-    const token = () => {
-        const n = 1 + Math.floor(rnd() * 40);
+    const WORD_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.';
+    const TOKEN_CHARS = WORD_CHARS + ' *';
+    const draw = (alphabet, max) => {
+        const n = 1 + Math.floor(rnd() * max);
         let s = '';
-        for (let i = 0; i < n; i++) s += pick(TOKEN_CHARS.split(''));
-        // A leading or trailing space would be trimmed away; keep the token the
-        // thing under test rather than the trimmer.
-        return s.trim() === '' ? 'REDACTED' : s.trim();
+        for (let i = 0; i < n; i++) s += pick(alphabet.split(''));
+        return s;
     };
+    // A leading or trailing space would be trimmed away; keep the token the
+    // thing under test rather than the trimmer.
+    const token = () => draw(TOKEN_CHARS, 40).trim() || 'REDACTED';
+    const word = () => draw(WORD_CHARS, 12);
+
     const WRAPPERS = [['', ''], ['[', ']'], ['<', '>'], ['{', '}'], ['(', ')'], ['"', '"'],
         ["'", "'"], ['*', '*'], ['**', '**'], ['--', '--']];
+    // At most one of these lands inside the wrapped text. `=` is excluded for
+    // the reason given in the header.
+    const MARKS = ['', ':', ';', ',', "'", '"', '<', '>', '(', ')', '{', '}', '[', ']', '&', '/', '|'];
 
     const hollowCases = [];
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 80; i++) {
         const [open, close] = pick(WRAPPERS);
-        hollowCases.push(open + token() + close);
+        const mark = pick(MARKS);
+        hollowCases.push(open + token() + mark + (mark === '' ? '' : token()) + close);
     }
 
     const dirA = project('property-hollow');
@@ -306,21 +395,52 @@ const SHAPES = [
     const gotA = hollowIndexes(verify(dirA).out);
     const missedA = hollowCases.map((_, i) => i).filter((i) => !gotA.includes(i));
     assert.deepStrictEqual(missedA, [],
-        `7.a: a wrapped bare token went unreported at ${missedA.length} of ${hollowCases.length} ` +
-        'generated shapes -- the gate is keyed to a spelling, not to structure');
+        `7.a: a wrapped bare token carrying at most one punctuation mark went unreported at ` +
+        `${missedA.length} of ${hollowCases.length} generated shapes -- the gate is keyed to a ` +
+        'spelling, or one mark is enough to defeat it');
 
-    const SEPARATORS = ['=', '&', ':', ',', ';', '<', '>', '(', ')', '"', "'", '{', '}', '[', ']'];
-    const structuredCases = [];
-    for (let i = 0; i < 60; i++) {
-        structuredCases.push(token() + pick(SEPARATORS) + token());
+    // B1 -- form-urlencoded, the grammar `a=1` and `token=` both belong to.
+    const formCases = [];
+    for (let i = 0; i < 40; i++) {
+        const pairs = 1 + Math.floor(rnd() * 3);
+        const parts = [];
+        for (let p = 0; p < pairs; p++) {
+            // Every third pair carries an empty value: `token=` is a real
+            // minimal form body and the gate must not call it a placeholder.
+            parts.push(word() + '=' + (p % 3 === 2 ? '' : word()));
+        }
+        formCases.push(parts.join('&'));
     }
 
-    const dirB = project('property-structured');
-    writeHar(dirB, 'reference.har', structuredCases.map((t) => entry(body(t))));
-    const gotB = hollowIndexes(verify(dirB).out);
-    assert.deepStrictEqual(gotB, [],
-        `7.b: the gate reported ${gotB.length} of ${structuredCases.length} bodies that join two ` +
-        'non-empty parts with a separator -- it swallows real minimal payloads');
+    // B2 -- JSON composites, including the two empty ones.
+    const jsonCases = ['{}', '[]'];
+    for (let i = 0; i < 38; i++) {
+        const value = rnd() < 0.5
+            ? Object.fromEntries(Array.from({ length: 1 + Math.floor(rnd() * 3) },
+                () => [word(), word()]))
+            : Array.from({ length: 1 + Math.floor(rnd() * 4) }, () => word());
+        jsonCases.push(JSON.stringify(value));
+    }
+
+    // B3 -- a markup element. `<redacted>` is a lone tag and must fail; a tag
+    // WITH its closing partner is a document and must pass.
+    const markupCases = [];
+    for (let i = 0; i < 20; i++) {
+        const tag = draw('abcdefghijklmnopqrstuvwxyz', 8);
+        markupCases.push(`<${tag}>${word()}</${tag}>`);
+    }
+
+    for (const [label, cases, why] of [
+        ['7.b', formCases, 'well-formed form-urlencoded bodies -- it swallows real minimal payloads'],
+        ['7.c', jsonCases, 'JSON composites -- it swallows the commonest request body there is'],
+        ['7.d', markupCases, 'markup elements with a closing tag -- it swallows a whole wire format'],
+    ]) {
+        const dirB = project(`property-${label.replace('.', '-')}`);
+        writeHar(dirB, 'reference.har', cases.map((t) => entry(body(t))));
+        const got = hollowIndexes(verify(dirB).out);
+        assert.deepStrictEqual(got, [],
+            `${label}: the gate reported ${got.length} of ${cases.length} ${why}`);
+    }
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

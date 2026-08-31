@@ -10,9 +10,12 @@
  *
  * Seven gates:
  *
- *   1. A truncated request body. Only responses may be capped; a reference
- *      whose request bodies were shortened cannot be replayed or diffed, and
- *      it looks authoritative anyway.
+ *   1. A truncated request body, in either spelling -- the structured
+ *      `truncated` marker or one written into the payload. Only responses may
+ *      be capped; a reference whose request bodies were shortened cannot be
+ *      replayed or diffed, and it looks authoritative anyway. The inline
+ *      spelling is claimed HERE rather than by gate 7, which would otherwise
+ *      call it a replacement and tell the reader no marker exists.
  *   2. An unredacted credential header or parameter (the key-name control),
  *      including a multipart field, where the name lives in a header and the
  *      value on its own line.
@@ -30,12 +33,14 @@
  *      reverse lookup of live credentials one `git add -A` away from a
  *      remote. The scrub no longer writes them here, but a copy left by an
  *      earlier run is exactly what a gate is for (issue #294).
- *   7. A request body that is PRESENT but carries no payload structure -- a
+ *   7. A request body that is PRESENT but belongs to no wire grammar -- a
  *      placeholder standing in for a body. Gate 1 catches a body that was
  *      SHORTENED; nothing caught one that was REPLACED, so a reference could
  *      carry a 29-character sentinel where a form body used to be, pass every
  *      gate, and be catalogued as documenting a protocol it contains none of
- *      (issue #358).
+ *      (issue #358). A body is a body when it parses as a JSON composite, or
+ *      is well-formed form-urlencoded, or carries two or more interior
+ *      separators. One separator is what prose reaches on its own.
  *
  * No failure message ever echoes an offending value: that would relocate the
  * leak into the CI log that reports it.
@@ -160,6 +165,22 @@ function checkTruncation(entries, report) {
         const postData = entry.request && entry.request.postData;
         if (postData && postData.truncated) {
             report(`entry ${i}: request body is marked truncated -- request bodies are never capped`);
+        } else if (postData && typeof postData.text === 'string'
+            && INLINE_TRUNCATION_MARKER.test(postData.text)) {
+            // The same spelling the response rule below already claims, on the
+            // request side, where the consumer-side exporter also writes it.
+            // Without this the entry falls through to gate 7, which reports it
+            // as a wholesale REPLACEMENT and tells the reader there is no
+            // truncation marker to go looking for -- while the marker is
+            // sitting in the body. An ambiguous finding is survivable; a
+            // finding that is affirmatively false sends an operator away
+            // confident in the wrong direction.
+            report(
+                `entry ${i}: request body carries an INLINE truncation marker. Request bodies ` +
+                'are never capped, and a cut written into the payload is invisible to a ' +
+                'structured audit -- re-extract from the preserved raw capture. If the client ' +
+                'genuinely SENT this text (posting a log, say), this is a false positive; to ' +
+                'tell them apart, a cut body no longer parses and sent text still does');
         }
 
         // Responses, on exactly the reasoning the request rule already used. A
@@ -197,46 +218,63 @@ function checkTruncation(entries, report) {
 
 // Gate 7 -- a request body that is present but is only a placeholder.
 //
-// SAY THE CONCEPT OUT LOUD, because the predicate below is an approximation of
-// it and the two must be checked against each other: "this body carries no
-// payload structure -- nothing in it separates one component from another, so
-// it stands in for a body rather than being one."
+// SAY THE CONCEPT OUT LOUD, because everything below is an approximation of it
+// and the two must be checked against each other: "this body is not a body --
+// it stands in for one."
 //
 // The predicate is deliberately NOT a match against a known sentinel string.
-// The one that prompted this gate, `REDACTED_FORM_URLENCODED_BODY`, was never
-// emitted by any tool in this repo -- it was written by a hand this repo has
-// never seen, and the next one will be written by a different hand again. A
-// gate keyed to the spelling would pass the next one. So judge the shape.
+// The one that prompted this gate, a 29-character token, was never emitted by
+// any tool in this repo -- it was written by a hand this repo has never seen,
+// and the next one will be written by a different hand again. A gate keyed to
+// the spelling would pass the next one. So RECOGNISE THE GRAMMARS a body can
+// belong to, and report a body that belongs to none of them.
 //
-// Two components, and both directions matter:
+// THE FIRST VERSION OF THIS GATE ASKED THE WRONG QUESTION, and the way it was
+// wrong is worth keeping: it asked whether ANY separator character sat
+// somewhere in the interior of the body. One did, in `[REDACTED: form body]`
+// and in `it's been redacted for privacy` -- so a single colon, or the
+// apostrophe in "it's", cleared a placeholder. Those are MORE natural things
+// for a hand to write than the bare token the fixtures covered, so the gate
+// was blind to its own primary shape. A single punctuation mark is what prose
+// contains; it is not what makes a payload.
 //
-//   * A composite JSON root is a payload, full stop. `{}` and `[]` are legal
-//     minimal bodies and carry structure even though they hold no characters
-//     between their delimiters, so the character scan below cannot see them
-//     and the parse is what clears them. A JSON SCALAR root -- `"REDACTED"`,
-//     `1`, `null` -- is NOT cleared here: a body that is one bare string
-//     literal is exactly the shape a cautious hand leaves behind, and it names
-//     no field either.
-//   * An INTERIOR separator is a payload. `a=1` is a form body, `a: 1` is a
-//     header-ish body, `x,y` is a list. "Interior" is what keeps the wrapped
-//     sentinels -- `[REDACTED]`, `<redacted>`, `{SCRUBBED}`, `**removed**` --
-//     on the failing side: their brackets sit at the two ends and join
-//     nothing. A separator at position 0 or at the last position is a wrapper,
-//     not a join.
+// Three recognisers, each naming a way a body can actually be a body:
 //
-// NO LENGTH THRESHOLD, on purpose. A threshold is a second predicate with its
+//   1. A COMPOSITE JSON ROOT. `{}` and `[]` are legal minimal bodies whose
+//      structure no character scan can see, so the parse is what clears them.
+//      A JSON SCALAR root -- `"REDACTED"`, `1`, `null` -- is NOT cleared: a
+//      body that is one bare string literal names no field either.
+//   2. A WELL-FORMED FORM-URLENCODED BODY: every `&`-separated part is
+//      `name=value` with a non-empty, whitespace-free name. This is what
+//      clears `a=1` and, importantly, `token=` -- a single field with an empty
+//      value is a real minimal body, and its `=` sits at the last position
+//      where no interior scan would ever find it.
+//   3. TWO OR MORE INTERIOR separator characters. This is the general net,
+//      and it is what catches the formats not enumerated above -- markup
+//      (`<root><a>1</a></root>`), GraphQL source, NDJSON, multipart. TWO,
+//      not one, because one is the count a hand-written note reaches on its
+//      own. INTERIOR, because a separator at the first or last position is a
+//      WRAPPER and joins nothing: that is what keeps `[REDACTED]`,
+//      `<redacted>`, `{SCRUBBED}` and `**removed**` on the failing side.
+//
+// NO LENGTH THRESHOLD, on purpose. A threshold is a further predicate with its
 // own false positives, and the check that clears a predicate is itself a
-// predicate (docs/designs/297-detector-predicates.md, beat 3). The structural
-// test alone decides; `{}` is two characters and passes, a 29-character
-// sentinel is longer and fails, so length was never the signal.
+// predicate (docs/designs/297-detector-predicates.md, beat 3). `{}` is two
+// characters and passes; a 29-character sentinel is longer and fails. Length
+// was never the signal. The "two marks" count in rule 3 IS a threshold of a
+// kind, and it is stated here rather than buried: it is a threshold on how
+// much structural EVIDENCE a body carries, not on how big it is, and the
+// generator in the test suite is seeded with the one-mark shapes on both
+// sides of it.
 //
 // RESIDUAL FALSE POSITIVES, stated rather than papered over: a body that is a
-// single opaque run of characters -- raw base64 with no padding or slashes, a
-// bare numeric id, a line of plain prose -- has no interior separator and is
-// reported. That is the correct direction for this path. Beat 2 of the same
-// design doc: fail toward a MISS on a replace path and toward a REPORT on a
-// gate path. This gate only reports, and it names a file and an entry index,
-// so a false positive costs an operator one look at the file.
+// single opaque run carrying at most one punctuation mark -- raw base64 with
+// no padding or slashes, a bare numeric id, a short line of plain prose, a
+// `key: value` line belonging to no wire grammar -- is reported. That is the
+// correct direction for this path. Beat 2 of the same design doc: fail toward
+// a MISS on a replace path and toward a REPORT on a gate path. This gate only
+// reports, and it names a file and an entry index, so a false positive costs
+// an operator one look at the file.
 const BODY_SEPARATORS = /[=&:,;{}[\]()<>"']/;
 
 // A composite (object or array) JSON root. The leading-character test is not an
@@ -253,18 +291,30 @@ function hasCompositeJsonRoot(text) {
     }
 }
 
-// A separator that actually joins two parts, i.e. one with text on both sides
-// of it. See the wrapper reasoning above for why the two end positions do not
-// count.
-function hasInteriorSeparator(text) {
-    for (let i = 1; i < text.length - 1; i++) {
-        if (BODY_SEPARATORS.test(text[i])) return true;
-    }
-    return false;
+// One `name=value` pair. The name must be non-empty and free of whitespace --
+// real form names never carry a raw space, they percent-encode it -- which is
+// what stops a hand-written `body = redacted` from passing itself off as a
+// form field. The value may be empty, because `token=` is a real minimal body.
+const FORM_PAIR = /^[^&=\s]+=[^&]*$/;
+
+function isFormUrlEncodedBody(text) {
+    return text.split('&').every((part) => FORM_PAIR.test(part));
+}
+
+// Two separators with text on either side of them. `search` twice rather than
+// a per-character loop: both are native scans, neither allocates a match array
+// for a body that may run to hundreds of KB.
+function hasTwoInteriorSeparators(text) {
+    const inner = text.slice(1, -1);
+    const first = inner.search(BODY_SEPARATORS);
+    if (first < 0) return false;
+    return inner.slice(first + 1).search(BODY_SEPARATORS) >= 0;
 }
 
 function bodyCarriesPayloadStructure(text) {
-    return hasCompositeJsonRoot(text) || hasInteriorSeparator(text);
+    return hasCompositeJsonRoot(text)
+        || isFormUrlEncodedBody(text)
+        || hasTwoInteriorSeparators(text);
 }
 
 // THREE STATES, DECIDED SEPARATELY rather than left to a truthiness check --
@@ -283,10 +333,11 @@ function checkHollowRequestBody(entries, report) {
         const postData = entry.request && entry.request.postData;
         if (!postData || typeof postData.text !== 'string') continue;
 
-        // Already reported by gate 1 as truncated. Reporting the same entry a
-        // second time as "replaced" would contradict the first finding and
-        // send the reader hunting for the wrong repair.
-        if (postData.truncated) continue;
+        // Already reported by gate 1 as truncated -- in either spelling, the
+        // structural flag or the marker written into the payload. Reporting
+        // the same entry a second time as "replaced" would contradict the
+        // first finding and send the reader hunting for the wrong repair.
+        if (postData.truncated || INLINE_TRUNCATION_MARKER.test(postData.text)) continue;
 
         const text = postData.text.trim();
         if (text === '') continue;
