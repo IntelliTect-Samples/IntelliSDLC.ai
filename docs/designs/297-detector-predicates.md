@@ -90,7 +90,8 @@ run is exactly six pairs*, checked over generated inputs, catches what a case
 list cannot. And **verify the check bites** — ablate the fix and watch the test
 fail — because a test that cannot fail certifies nothing.
 
-**4. Narrow a category twice, then remove the option.**
+**4. Fixing a third member of the same set means the set is the wrong unit of
+work.**
 
 Three rounds each found the same defect in a different member of the
 `qualifiers: "any"` set — first `region`/`country`/`zip`, then
@@ -130,7 +131,29 @@ The same shape appeared in the redaction sentinels: the "already redacted"
 *check* was unified between the verifiers while the fake *markers* stayed
 divergent. Consume the whole slot, not the half you were looking at.
 
-**6. A fix's effect is what remains after it, not what it removed.**
+**6. A widening change lands after the narrowing change that constrains it.**
+
+Some changes make a detector **see more**; others narrow **what it does with
+what it sees**. Order them, and the order is not the order the issues were
+filed in.
+
+`#344` widens the scrubber to unquoted JSON numbers, which are currently
+invisible to it. The `identifierFields` alignment narrows it, so a card-shaped
+value at a declared identifier field stops being replaced. Landing `#344` first
+would put a newly-visible population on the replace path with nothing
+suppressing the false positives among them — which is the 20-of-22 object-id
+corruption, applied to a fresh node class. `#330` (query-string values, dense
+with `sort_`, `filter_` and `order_by_` parameters) has the same shape.
+
+This composes with beat 2. Widening a **report** path is cheap: more noise,
+visible, reversible. Widening a **replace** path before its constraint exists is
+how silent corruption arrives, and it arrives at the scale of whatever
+population you just made visible.
+
+The rule in practice: before landing a change that makes a detector see more,
+ask what limits what it does with what it sees, and land that first.
+
+**7. A fix's effect is what remains after it, not what it removed.**
 
 `#295` tightened the card predicate and the finding count fell from 2,841 to
 176 — a 12-capture cross-provider run. (That is a different measurement from

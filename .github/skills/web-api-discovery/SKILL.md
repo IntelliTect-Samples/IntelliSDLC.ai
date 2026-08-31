@@ -628,15 +628,23 @@ learned from a defect that shipped -- the cases and the measurements are in
   predicate makes noise somebody eventually reads. Behind a replace it makes
   plausible corruption nobody can detect afterwards. On a replace path, fail
   toward a miss.
-- **The fix and the test are predicates too.** Prefer a property over a list of
-  cases, seed the generator with the inputs that would trap you, and ablate the
-  fix to confirm the test fails without it. A signature is not reachability: a
-  test that a function accepts a parameter passes while nothing ever passes one.
-- **Narrow a category twice, then remove the option.** Having to fix a third
-  member of the same set means the set is the wrong unit of work; restrict the
-  language so the dangerous input cannot be expressed.
+- **Ablate the fix and confirm the test fails without it.** Minutes, pass/fail,
+  and it is what separates a test from a comment. A test asserting a function
+  *accepts* a policy parameter passed while nothing ever *passed* one.
+- **Prefer a property over a list of cases.** A list covers the inputs you
+  imagined; a property covers the ones you did not.
+- **Seed a generator with the shapes ADJACENT to the one you are fixing.** The
+  gaps that got through were one step sideways, not exotic: nested overlaps but
+  never staggered ones, MAC contexts but no prefix ending in `a`-`f`.
+- **Fixing a THIRD member of the same set means the set is the wrong unit of
+  work.** Stop narrowing and remove the option -- restrict the language so the
+  dangerous input cannot be expressed.
 - **Consume a predicate whole -- pattern and check -- from the engine that owns
   it.** Unifying one half moves the divergence rather than closing it.
+- **Land a widening change AFTER the narrowing change that constrains it.**
+  Before making a detector see more, ask what limits what it does with what it
+  sees, and land that first. Widening a report path is cheap; widening a replace
+  path before its constraint exists is how silent corruption arrives.
 - **Measure the residue, not the delta**, and when you tighten a predicate,
   check every engine holding a copy of it.
 
