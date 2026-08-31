@@ -140,6 +140,32 @@ Describe 'Invoke-HarCatalogue.ps1' {
         finally { Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'is not suppressed by an ambient $WhatIfPreference' {
+        # The catalogue wrapper declares no SupportsShouldProcess and invokes
+        # node directly, so a $WhatIfPreference set in an outer scope or a
+        # user's profile cannot silently turn it into a no-op. Pinned because
+        # the failure it would cause is invisible: a run that reports success
+        # and writes nothing.
+        $sandbox = New-Sandbox
+        try {
+            $har = Join-Path $sandbox 'scrubbed.har'
+            New-CleanHar -Path $har
+
+            $WhatIfPreference = $true
+            $env:CLAUDECODE = ''
+            $env:CLAUDE_CODE_ENTRYPOINT = ''
+            & $script:CataloguePs1 -Path $har 2>&1 | Out-Null
+            $LASTEXITCODE | Should -Be 0
+
+            Test-Path -LiteralPath (Join-Path $sandbox 'catalogue.json') | Should -BeTrue -Because (
+                'a dry-run preference the operator never asked this command for must not ' +
+                'silently reduce it to nothing')
+        }
+        finally {
+            Remove-Item -LiteralPath $sandbox -Recurse -Force -WhatIf:$false -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'does not restate where files may go or what a finding means' {
         # PowerShell orchestrates; the recorder decides. A wrapper that grew its
         # own copy of the promotion rule, the quarantine rule or the advisory /
@@ -157,5 +183,58 @@ Describe 'Invoke-HarCatalogue.ps1' {
         # No arm that reinterprets an exit code -- it is propagated whole.
         $code | Should -Not -Match '(?m)^\s*switch\s*\('
         $code | Should -Match 'exit \$LASTEXITCODE'
+    }
+}
+
+Describe 'ShouldProcess cannot silently disable a stage' {
+    BeforeAll {
+        $script:CapturePs1 = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
+        $script:SanitizePs1 = Join-Path $script:ScriptsDir 'har/Invoke-SanitizeHar.ps1'
+    }
+
+    It 'Invoke-HarCapture.ps1 does not accept -WhatIf' {
+        # A recording session has no meaningful "what if", so the parameter is
+        # rejected rather than accepted and ignored. GUARD: this passes because
+        # SupportsShouldProcess was never added there, and exists to keep it
+        # that way.
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:CapturePs1, [ref]$null, [ref]$null)
+        $text = $ast.Extent.Text
+        $text | Should -Not -Match 'SupportsShouldProcess'
+
+        { & $script:CapturePs1 -Uri 'https://example.com' -WhatIf } |
+            Should -Throw -ExpectedMessage '*WhatIf*'
+    }
+
+    It 'every internal call to the scrub wrapper passes -WhatIf:$false' {
+        # TRIPWIRE, and VACUOUS TODAY -- there are currently no internal call
+        # sites, because Invoke-HarCapture.ps1 delegates the whole pipeline to
+        # capture-har.js rather than composing the PowerShell stages. That was
+        # a deliberate stop, not an oversight: composing would have to restate
+        # promotion, quarantine and the exit-code mapping in PowerShell, and
+        # the rationale is written out above `$captureArgs` in that file.
+        #
+        # It is here because the day somebody adds the first call site is the
+        # day the trap becomes reachable: Invoke-SanitizeHar.ps1 now declares
+        # SupportsShouldProcess, so an ambient $WhatIfPreference would make the
+        # composed pipeline record traffic and silently skip scrubbing it.
+        #
+        # Reported as a guard, not as evidence: it asserts nothing about the
+        # current tree beyond the absence of call sites.
+        $callers = Get-ChildItem -LiteralPath (Join-Path $script:ScriptsDir 'capture') -File -Filter '*.ps1'
+        $offenders = foreach ($file in $callers) {
+            $raw = Get-Content -LiteralPath $file.FullName -Raw
+            $withoutBlocks = [regex]::Replace($raw, '(?s)<#.*?#>', ' ')
+            $code = ($withoutBlocks -split "`r?`n" | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n"
+            foreach ($line in ($code -split "`n")) {
+                if ($line -match 'Invoke-SanitizeHar\.ps1' -and $line -notmatch '-WhatIf:\$false') {
+                    "$($file.Name): $($line.Trim())"
+                }
+            }
+        }
+        @($offenders) -join "`n" | Should -BeNullOrEmpty -Because (
+            'Invoke-SanitizeHar.ps1 supports ShouldProcess, so an ambient $WhatIfPreference ' +
+            'would suppress the scrub in a composed pipeline while the run still looked ' +
+            'successful. Pass -WhatIf:$false on the call.')
     }
 }

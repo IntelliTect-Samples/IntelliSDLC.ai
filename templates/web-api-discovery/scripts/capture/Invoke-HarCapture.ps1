@@ -247,6 +247,37 @@ if (-not (Assert-NotPrimaryCheckoutOnProtectedBranch -Placement $placement)) {
 # keeps an operator coming through this front door from being warned twice.
 $env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
 
+# WHY THIS STILL HANDS THE WHOLE PIPELINE TO THE RECORDER, and does not call
+# Invoke-SanitizeHar.ps1 and Invoke-HarCatalogue.ps1 in turn (#352).
+#
+# Re-entry was the ask, and re-entry now exists: the scrub stage has been
+# re-runnable through Invoke-SanitizeHar.ps1 for some time, and the catalogue
+# stage is re-runnable through Invoke-HarCatalogue.ps1 as of this change. An
+# operator can enter the pipeline at either one against a capture recorded some
+# other time. What was NOT done is rewriting this front door as a sequence of
+# those two wrappers, because doing so loses invariants that #343 exists to
+# hold, and the issue says to stop rather than lose them:
+#
+#   1. `capture-har.js start` records AND post-processes in one process. There
+#      is no way to ask it for the recording alone, and adding one would be a
+#      new command-line option -- which needs approval, not initiative.
+#   2. The scrub stage inside postProcess is not "run sanitize-har, then
+#      verify-scrub". It writes the candidate into the gitignored session
+#      directory, promotes it to the output path by atomic rename ONLY after
+#      the gate passes, and quarantines it as scrubbed.rejected.har when the
+#      gate refuses. Invoke-SanitizeHar.ps1 does none of that -- it is a
+#      general-purpose HAR scrubber -- so a composed front door would have to
+#      write an unjudged file straight into the committable output path and
+#      then clean up, which is precisely the window #343 closed.
+#   3. Promotion and quarantine would then live in PowerShell, and the exit
+#      3 / 4 -> 6 / 7 mapping with them. Three of the four invariants restated
+#      on this side of the process boundary, drifting from the Node ones.
+#
+# So the composition is left undone deliberately, and the front door goes on
+# delegating. If it is wanted, the honest shape is a `scrub` command on
+# capture-har.js exposing postProcess's phase A whole -- another entry point to
+# existing code, the same move the `catalogue` command makes -- rather than a
+# PowerShell reassembly of it.
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
 if ($Describe) { $captureArgs += @('--describe', $Describe) }
