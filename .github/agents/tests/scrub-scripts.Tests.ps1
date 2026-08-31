@@ -532,10 +532,35 @@ Describe 'Invoke-SanitizeHar.ps1 -RemoveSource' {
         Test-Path -LiteralPath $script:OutHar | Should -BeFalse
     }
 
-    It 'says under -WhatIf that the source would be removed' {
+    It 'says under -WhatIf that the source would be removed, AND cautions about it' {
+        # A dry run's job is to be an accurate preview, and the preview is where
+        # the decision is made. A caution that only appears on the real run
+        # arrives after the choice rather than before it -- backwards for the
+        # one case where it matters most. The plan already commits to the
+        # consequence ("would be removed"); omitting the caution about that
+        # consequence is the inaccuracy.
         $out = & $script:WrapperPs1 -InputHar $script:InHar -OutputHar $script:OutHar `
-            -ProfilePath $script:Profile -RemoveSource -WhatIf -InformationAction Continue 6>&1 2>&1
-        ($out | Out-String) | Should -Match '(?i)removed once the scrub verifies'
+            -ProfilePath $script:Profile -RemoveSource -WhatIf -InformationAction Continue 6>&1 3>&1 2>&1
+        $text = ($out | Out-String)
+        $text | Should -Match '(?i)removed once the scrub verifies'
+        $text | Should -Match 'does not look like a capture-recorder raw'
+        $text.IndexOf('(#353)') | Should -BeGreaterThan `
+            $text.IndexOf('does not look like a capture-recorder raw') `
+            -Because 'the preview names the same corruption the real run names'
+        Test-Path -LiteralPath $script:InHar | Should -BeTrue -Because 'a preview changes no state'
+    }
+
+    It 'stays silent under -WhatIf for a raw under .har-captures/' {
+        # The preview matches the real run in BOTH directions, not only the
+        # noisy one. A dry run that cautioned about every input would be as
+        # useless as one that cautioned about none.
+        $capturesRaw = New-CapturesRaw
+        $out = & $script:WrapperPs1 -InputHar $capturesRaw -OutputHar $script:OutHar `
+            -ProfilePath $script:Profile -RemoveSource -WhatIf -InformationAction Continue 6>&1 3>&1 2>&1
+        $text = ($out | Out-String)
+        $text | Should -Match '(?i)removed once the scrub verifies' -Because 'the plan is still reported'
+        $text | Should -Not -Match 'capture-recorder raw'
+        Test-Path -LiteralPath $capturesRaw | Should -BeTrue
     }
 
     It 'is not offered by Invoke-HarCapture.ps1' {

@@ -72,8 +72,11 @@
         HAR that has already been scrubbed is corrupted by a second scrub
         (#353), and deleting the source leaves nothing to regenerate from. The
         signal is LOCATION and deliberately not content; it is a warning rather
-        than a refusal, because a raw can legitimately live elsewhere. Interim
-        until #355's provenance stamp makes the question answerable.
+        than a refusal, because a raw can legitimately live elsewhere. The DRY
+        RUN says it too, from the same function: a preview is where the decision
+        gets made, so a caution that appeared only on the real run would arrive
+        after the choice. Interim until #355's provenance stamp makes the
+        question answerable.
 
 .EXAMPLE
     .\Invoke-SanitizeHar.ps1 -InputHar capture.har -OutputHar clean.har
@@ -164,6 +167,36 @@ function Test-UnderCapturesDirectory {
     return $segments -contains '.har-captures'
 }
 
+# The caution itself: ONE message, ONE location test, two call sites -- the dry
+# run's plan and the real run, immediately before the deletion. Copying the text
+# into both is how a preview and a run drift apart, and a preview that no longer
+# describes the run is precisely the inaccuracy this exists to close.
+#
+# A CAUTION, NOT A VERDICT. It cannot know the file was already scrubbed; it
+# knows only that the file is not where the recorder leaves a raw, and
+# sanitize-har.js's own usage text names samples/har-original/ as a legitimate
+# raw location. So it does not refuse -- refusing would block a documented
+# workflow on an inference. It names what is at risk and gets out of the way.
+#
+# The wording is deliberately true in BOTH contexts: it says what -RemoveSource
+# does, not that a deletion is imminent, so the dry run does not claim an action
+# it is not about to take.
+#
+# INTERIM (#353). The real fix is #355: sanitize-har.js stamps its output with
+# provenance and refuses an input carrying one. That stamp does not exist yet --
+# it is #297 Stage 10 -- and building a second one here is the two-engines
+# failure this subsystem has spent fourteen PRs undoing.
+function Write-ProvenanceCaution {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (Test-UnderCapturesDirectory -Path $Path) { return }
+    Write-Warning ("$Path is not under a .har-captures/ directory, so it does not look like a " +
+        'capture-recorder raw. Scrubbing an already-scrubbed HAR corrupts it: the second pass ' +
+        "replaces the first pass's generated names with different ones, and the first pass's " +
+        'substitution table stops describing the artifact (#353). -RemoveSource deletes this file ' +
+        'once the scrub verifies clean, so check it is the raw before relying on this run.')
+}
+
 # What a dry run says. The conventional ShouldProcess line names the operation
 # and the target, which tells an operator nothing they did not already know, so
 # the destinations are listed as well -- including the substitution table, which
@@ -192,6 +225,12 @@ function Write-ScrubPlan {
     Write-Information "  findings report:    scrub-findings.json, beside the verified file, if it is not clean"
     if ($RemoveSource) {
         Write-Information "  and $InputHar would be removed once the scrub verifies clean, with the substitution tables the run wrote"
+        # A dry run's job is to be an accurate preview, and the preview is where
+        # the decision gets made. A caution that appears only on the real run
+        # arrives after the choice rather than before it. The plan already
+        # commits to the consequence on the line above; omitting the caution
+        # about that consequence is what would make it inaccurate.
+        Write-ProvenanceCaution -Path $InputHar
     }
 }
 
@@ -276,27 +315,9 @@ $verifyExit = $LASTEXITCODE
 # this script has never heard of must keep the source, not lose it.
 if ($RemoveSource -and $verifyExit -eq 0) {
     # Said BEFORE anything is removed, so the sentence is on screen beside the
-    # thing it is about and survives a deletion that later fails.
-    #
-    # A CAUTION, NOT A VERDICT. This cannot know the file was already scrubbed;
-    # it knows only that it is not where the recorder leaves a raw, and
-    # sanitize-har.js's own usage text names samples/har-original/ as a
-    # legitimate raw location. So it does not refuse -- refusing would block a
-    # documented workflow on an inference. It names what is at risk and gets out
-    # of the way.
-    #
-    # INTERIM (#353). The real fix is #355: sanitize-har.js stamps its output
-    # with provenance and refuses an input that carries one. That stamp does not
-    # exist yet -- it is #297 Stage 10 -- and building a second one here is the
-    # two-engines failure this subsystem has spent thirteen PRs undoing. This
-    # holds the line until it lands.
-    if (-not (Test-UnderCapturesDirectory -Path $InputHar)) {
-        Write-Warning ("$InputHar is not under a .har-captures/ directory, so it does not look like a " +
-            'capture-recorder raw. Scrubbing an already-scrubbed HAR corrupts it: the second pass ' +
-            "replaces the first pass's generated names with different ones, and the first pass's " +
-            'substitution table stops describing the artifact (#353). -RemoveSource is about to delete ' +
-            'this file, so check it is the raw before relying on this run.')
-    }
+    # thing it is about and survives a deletion that later fails. Same function
+    # the dry run calls, so the preview and the run cannot disagree.
+    Write-ProvenanceCaution -Path $InputHar
 
     # THIS run's source and THIS run's tables, and nothing else. Not another
     # session's raw, not session.json, not the recording log; there is
