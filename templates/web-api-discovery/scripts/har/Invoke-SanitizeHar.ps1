@@ -67,6 +67,13 @@
       * NOTHING ELSE. This run's source and this run's tables. Not another
         session, not session.json, not a recording log. There is deliberately
         no age sweep and no Remove-HarCaptures.
+      * IT CAUTIONS FIRST when -InputHar is not under a `.har-captures/`
+        directory, which is where the recorder puts a raw and nowhere else. A
+        HAR that has already been scrubbed is corrupted by a second scrub
+        (#353), and deleting the source leaves nothing to regenerate from. The
+        signal is LOCATION and deliberately not content; it is a warning rather
+        than a refusal, because a raw can legitimately live elsewhere. Interim
+        until #355's provenance stamp makes the question answerable.
 
 .EXAMPLE
     .\Invoke-SanitizeHar.ps1 -InputHar capture.har -OutputHar clean.har
@@ -125,6 +132,37 @@ if (-not (Test-Path -LiteralPath $verifyJs)) {
 }
 
 $profileArgs = if ($ProfilePath) { @('--profile', $ProfilePath) } else { @() }
+
+# Does -InputHar sit where the RECORDER puts a raw?
+#
+# capture-har.js writes every raw under a `.har-captures/` directory --
+# CAPTURES_DIR is a constant there and no option redirects it -- and
+# sanitize-har.js's deriveSubsDir makes the same path-segment test to place the
+# substitution tables. So an input under such a segment came from the recorder;
+# an input anywhere else MIGHT have, and might equally be a HAR some earlier run
+# already scrubbed.
+#
+# THE SIGNAL IS LOCATION, AND IT MUST NOT BECOME CONTENT. Scanning the file for
+# `@example.invalid`, `4242...`, `ZZ00`, `+1555`, `9XX` or `06:F0:0D` would flag
+# exactly the captures that most need scrubbing -- a payment-test environment
+# legitimately carries the card, a test harness legitimately carries the address
+# -- and would miss an already-scrubbed file whose fakes happened to omit those
+# markers. That is the defect class #355 rules out explicitly.
+#
+# GetFullPath alone would resolve against [Environment]::CurrentDirectory, which
+# PowerShell does not keep in step with $PWD, so a relative -InputHar is joined
+# to the provider path first. Combine returns an absolute Path unchanged.
+function Test-UnderCapturesDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $full = [IO.Path]::GetFullPath([IO.Path]::Combine($PWD.ProviderPath, $Path))
+    $segments = [IO.Path]::GetDirectoryName($full).Split(
+        [IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    # -contains is case-insensitive, which is the right reading of a Windows
+    # path and the forgiving direction for a caution: a near-miss on case stays
+    # quiet rather than crying wolf.
+    return $segments -contains '.har-captures'
+}
 
 # What a dry run says. The conventional ShouldProcess line names the operation
 # and the target, which tells an operator nothing they did not already know, so
@@ -237,6 +275,29 @@ $verifyExit = $LASTEXITCODE
 # for zero rather than a negative test for the codes known to be bad -- a code
 # this script has never heard of must keep the source, not lose it.
 if ($RemoveSource -and $verifyExit -eq 0) {
+    # Said BEFORE anything is removed, so the sentence is on screen beside the
+    # thing it is about and survives a deletion that later fails.
+    #
+    # A CAUTION, NOT A VERDICT. This cannot know the file was already scrubbed;
+    # it knows only that it is not where the recorder leaves a raw, and
+    # sanitize-har.js's own usage text names samples/har-original/ as a
+    # legitimate raw location. So it does not refuse -- refusing would block a
+    # documented workflow on an inference. It names what is at risk and gets out
+    # of the way.
+    #
+    # INTERIM (#353). The real fix is #355: sanitize-har.js stamps its output
+    # with provenance and refuses an input that carries one. That stamp does not
+    # exist yet -- it is #297 Stage 10 -- and building a second one here is the
+    # two-engines failure this subsystem has spent thirteen PRs undoing. This
+    # holds the line until it lands.
+    if (-not (Test-UnderCapturesDirectory -Path $InputHar)) {
+        Write-Warning ("$InputHar is not under a .har-captures/ directory, so it does not look like a " +
+            'capture-recorder raw. Scrubbing an already-scrubbed HAR corrupts it: the second pass ' +
+            "replaces the first pass's generated names with different ones, and the first pass's " +
+            'substitution table stops describing the artifact (#353). -RemoveSource is about to delete ' +
+            'this file, so check it is the raw before relying on this run.')
+    }
+
     # THIS run's source and THIS run's tables, and nothing else. Not another
     # session's raw, not session.json, not the recording log; there is
     # deliberately no age sweep and no Remove-HarCaptures command. The table
