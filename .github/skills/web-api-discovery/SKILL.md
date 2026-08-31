@@ -433,11 +433,11 @@ never makes. Per-value relief is a **waiver**.
 
 ##### The settings, and what `off` really means
 
-| setting | gate | scrubber |
-|---|---|---|
-| `gate` | blocks | replaces |
-| `advise` | reports, does not block | replaces |
-| `off` | reports, does not block | **detects and reports, does not replace** |
+| setting | effect |
+|---|---|
+| `gate` | the finding blocks |
+| `advise` | reported, does not block |
+| `off` | still detected, still reported, does not block |
 
 `off` is not "stop looking". A disabled class is still detected and still
 reported, so **the cost of a loosening stays visible on every run** — including
@@ -445,20 +445,28 @@ the runs where everything passes, which is when nobody is looking. A finding
 that vanished outright would be an invisible loosening, and invisible loosening
 is this issue's own diagnosis of what went wrong.
 
-Two consequences to be clear-eyed about when you set something to `off`:
+> **`classes` governs the GATE, not the scrubber — today.** `verify-scrub.js`
+> and `verify-har-reference.js` read these settings; `pii.js` does not consult
+> `classes` at all. So setting an identity class to `off` changes what is
+> *blocked and reported*, and the scrubber still replaces the values.
+>
+> Which means **there is currently no supported way to reduce what the scrubber
+> rewrites for an identity class.** That is the open half of requirement 1 and
+> it is tracked as its own work; until it lands, a project whose captures *are*
+> the identity data cannot express that to the scrub. Do not read the settings
+> above as scrub controls, and check the code rather than this table if the
+> distinction matters to you.
 
-- **The PII stays in the artifact.** The reference ships containing it. That is
-  the point — for a travel-domain capture where place names *are* the payload
-  being documented, over 125,000 correct identity replacements destroyed the
-  thing the artifact existed to preserve.
-- **The reference is a different artifact** from one scrubbed under a stricter
-  policy. The policy version is stamped into the reference so it stays knowable
-  which references a later policy change requires re-extracting.
+What a project **can** steer on the scrub side today: `piiFields` (which key
+names denote which type), `identifierFields` (keys whose values are the
+project's own identifiers), `cardIssuers`, and `secretFields` /
+`notSecretFields`.
 
-##### Worked override: loosen to credentials only
+##### Worked override
 
 A project whose captures are diagnostic artifacts about its own product, where
-names and addresses are the payload rather than a leak:
+place names are documented payload rather than a leak, and whose object ids are
+long digit runs a card detector would otherwise claim:
 
 ```jsonc
 // .har-policy.project.json
@@ -466,18 +474,16 @@ names and addresses are the payload rather than a leak:
   "classes": {
     "identity": {
       "person-name": "off",
-      "street-address": "off",
       "city": "off",
       "region": "off",
       "country": "off",
       "postal-code": "off",
-      "geo-lat": "off",
-      "geo-lng": "off"
+      "geo-coordinates": "off"
     }
   },
+  "identifierFields": ["trip_id", "step_id"],
   "secretFields": ["x-my-app-token"],
   "notSecretFields": ["x-asbd-id"],
-  "identifierFields": ["trip_id", "step_id"],
   "waivers": [
     { "kind": "hex32", "fingerprint": "a1b2c3d4e5f6",
       "reason": "vendor build sha, not a session token", "expires": "2026-12-01" }
@@ -485,9 +491,19 @@ names and addresses are the payload rather than a leak:
 }
 ```
 
-That leaves credentials, tokens, secrets and display names removed
-unconditionally, and stops the scrub rewriting the data the capture is *for*.
-It cannot disable a secret class; attempting to is a load-time error.
+**The class names are the ones the default policy declares** — `geo-coordinates`
+is one kind, not a `geo-lat` / `geo-lng` pair (those are `piiFields` dictionary
+names, which is a different vocabulary). An unknown class is a load-time error
+rather than a silent no-op, so a typo here fails loudly; that is deliberate.
+
+What this achieves **today**: the gate stops blocking and reporting those
+identity classes as violations, `trip_id` / `step_id` values stop being read as
+cards, `x-my-app-token` is treated as a secret, `x-asbd-id` stops being one, and
+one specific vendor hash is waived until it expires. What it does **not** yet
+achieve is stopping the scrubber replacing those identity values — see the note
+above.
+
+It cannot disable a secret class; attempting that is a load-time error.
 
 **Merge semantics**, because they are not guessable:
 
