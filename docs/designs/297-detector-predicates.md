@@ -133,7 +133,8 @@ The same shape appeared in the redaction sentinels: the "already redacted"
 *check* was unified between the verifiers while the fake *markers* stayed
 divergent. Consume the whole slot, not the half you were looking at.
 
-**6. A widening change lands after the narrowing change that constrains it.**
+**6. Widen after you narrow.** A widening change lands after the narrowing
+change that constrains it.
 
 Some changes make a detector **see more**; others narrow **what it does with
 what it sees**. Order them, and the order is not the order the issues were

@@ -657,10 +657,10 @@ learned from a defect that shipped -- the cases and the measurements are in
   dangerous input cannot be expressed.
 - **Consume a predicate whole -- pattern and check -- from the engine that owns
   it.** Unifying one half moves the divergence rather than closing it.
-- **Land a widening change AFTER the narrowing change that constrains it.**
-  Before making a detector see more, ask what limits what it does with what it
-  sees, and land that first. Widening a report path is cheap; widening a replace
-  path before its constraint exists is how silent corruption arrives.
+- **Widen after you narrow.** Before landing a change that makes a detector see
+  more, ask what limits what it does with what it sees, and land that first.
+  Widening a report path is cheap; widening a replace path before its constraint
+  exists is how silent corruption arrives.
 - **Measure the residue, not the delta**, and when you tighten a predicate,
   check every engine holding a copy of it.
 
