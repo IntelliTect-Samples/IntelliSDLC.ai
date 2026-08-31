@@ -118,6 +118,36 @@ Example:
 - Local PostgreSQL on port 5432 (see `docker-compose.dev.yml`)
 -->
 
+## Captured-Traffic Scrub Posture
+
+<!--
+Only relevant if this project captures HTTP traffic with the web-api-discovery
+skill. Delete this section otherwise.
+
+What gets removed from a capture is DATA, not code. The stringent baseline is
+`har-policy.default.json`, which is synced from IntelliSDLC.ai and must not be
+edited -- the next sync overwrites it. Declare this project's posture in
+`.har-policy.project.json` at the repo root, which merges over the baseline
+and is COMMITTED.
+
+Record here WHY this project's posture is what it is, because the file itself
+says what and not why. Example:
+
+- `person-name`, `city`, `region` set to `off`: this project's captures are
+  diagnostic artifacts about its own product, so place names and display names
+  are the payload being documented rather than a leak. They are still detected
+  and reported on every run; they are not replaced.
+- `identifierFields` lists `trip_id` and `step_id`: our object ids are long
+  digit runs that a card-shaped detector would otherwise rewrite.
+- Waivers are per-value, carry a reason, and expire. Do not add one to silence
+  a class -- change the class setting, so the loosening is visible in one place.
+
+A secret class CANNOT be disabled and attempting it is a load-time error.
+Raw identity VALUES never go here: they belong in the gitignored
+`.har-profile.json`, which is an operator secret rather than project
+configuration.
+-->
+
 ## Known Limitations / Don'ts
 
 <!--

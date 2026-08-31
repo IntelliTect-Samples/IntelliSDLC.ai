@@ -32,6 +32,8 @@ templates/web-api-discovery/
 │   │   ├── extract-har-reference.js # emit the reviewable API reference
 │   │   ├── verify-har-reference.js  # re-check the emitted reference for leaks
 │   │   ├── detect-auth.js           # classify the observed auth model
+│   │   ├── har-policy.js            # loads + merges the scrub policy
+│   │   ├── har-policy.default.json  # the stringent baseline (synced; do not edit)
 │   │   └── ...                      # har-profile / har-literals / har-secrets /
 │   │                                #   har-shapes / pii / pii-enrich
 │   └── codegen/         # optional continuation: emit a buildable wrapper
