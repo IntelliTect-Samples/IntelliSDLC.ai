@@ -29,6 +29,7 @@ BeforeAll {
     $script:InvokePs1  = Join-Path $script:ScriptsDir 'capture/Invoke-HarCapture.ps1'
     $script:StopPs1    = Join-Path $script:ScriptsDir 'capture/Stop-HarRecording.ps1'
     $script:CataloguePs1 = Join-Path $script:ScriptsDir 'capture/Invoke-HarCatalogue.ps1'
+    $script:CaptureJs   = Join-Path $script:ScriptsDir 'capture/capture-har.js'
 
     function Get-ParamAst {
         param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
@@ -135,8 +136,31 @@ Describe 'Invoke-HarCapture.ps1 -Describe is required and hard-fails (#366)' {
         # Whitespace identifies nothing, so it is refused on the same terms.
         $out = & (Get-Command pwsh).Source -NoProfile -File $script:InvokePs1 `
             -Uri 'https://example.com' -Describe '   ' 2>&1
-        $LASTEXITCODE | Should -Not -Be 0
+        $LASTEXITCODE | Should -Be 2
         ($out | Out-String) | Should -Match '(?i)refusing to record without -Describe'
+    }
+
+    It 'exits with the SAME code the recorder does, not merely a non-zero one' {
+        # "Fail identically" is the reason this is a hard failure rather than a
+        # prompt, and the exit code is part of what a failure says. `throw` gave
+        # 1 while capture-har.js gives 2 -- both non-zero, so every caller
+        # testing truthiness was satisfied and the disagreement stayed invisible.
+        #
+        # Asserted as an EQUALITY between the two doors rather than as two
+        # separate literals: pinning each to 2 independently would let them
+        # drift apart later with both assertions still passing, which is the
+        # shape of bug this whole suite exists to catch.
+        & (Get-Command pwsh).Source -NoProfile -File $script:InvokePs1 `
+            -Uri 'https://example.com' 2>&1 | Out-Null
+        $frontDoor = $LASTEXITCODE
+
+        & node $script:CaptureJs start --uri 'https://example.com' --validate-only 2>&1 | Out-Null
+        $recorder = $LASTEXITCODE
+
+        $frontDoor | Should -Be $recorder -Because (
+            'the front door and the recorder must refuse on identical terms -- ' +
+            "front door exited $frontDoor, recorder exited $recorder")
+        $recorder | Should -Be 2 -Because 'refusing an invocation is a usage error at either door'
     }
 
     It 'says the same thing the Node side says, example included' {
