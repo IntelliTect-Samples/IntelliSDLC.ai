@@ -492,8 +492,21 @@ test('P1: no shape ever anchors a capture root inside a linked worktree', () => 
                 `(${root}) -- one \`git worktree remove\` from deletion`);
         }
         if (shape.main) {
-            assert.ok(isInside(root, shape.main) || path.dirname(root) === shape.main,
-                `${shape.name}: expected the root under ${shape.main}, got ${root}`);
+            // EXACT, not `isInside`. The disjunct this replaces --
+            // `isInside(root, shape.main) || path.dirname(root) === shape.main`
+            // -- admitted precisely what the assertion exists to forbid. For the
+            // `subdirectory of the primary checkout` shape, the OLD
+            // working-directory answer `repo/sub/deep/.har-captures` IS inside
+            // `repo`, so it satisfied the first disjunct and the case passed
+            // while the behaviour it names was broken. Reverting only the
+            // subdirectory half of the anchoring left all 16 tests green.
+            //
+            // Every shape carrying a main working tree wants the same thing --
+            // the root sits DIRECTLY in it -- so one exact equality serves them
+            // all and there is nothing here to split.
+            assert.strictEqual(root, path.join(shape.main, CAPTURES_DIR),
+                `${shape.name}: the root must sit directly in the main working tree ` +
+                `${shape.main}, not merely somewhere beneath it; got ${root}`);
         } else {
             // No main working tree exists, so the working directory is the only
             // answer -- and inventing one would be worse than keeping today's.

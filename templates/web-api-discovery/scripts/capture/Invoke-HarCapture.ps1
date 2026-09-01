@@ -204,7 +204,15 @@ if ([string]::IsNullOrWhiteSpace($Describe)) {
         '  re-captured, what you were doing cannot.'
         "  Try: -Describe 'example.com: create a post with two photos, then delete it'"
     ) -join [Environment]::NewLine))
-    throw 'Invoke-HarCapture: refusing to record without -Describe.'
+    # EXIT 2, matching capture-har.js's usage-error code exactly.
+    #
+    # `throw` was the first shape here and it disagreed quietly: an uncaught
+    # throw exits 1, so the two doors were both non-zero -- enough for any
+    # caller testing truthiness -- while still not saying the same thing. "Fail
+    # identically" is the whole reason this is a hard failure rather than a
+    # prompt, and a code is part of what a failure says. Refusing an invocation
+    # is a usage error at either door, so both answer 2.
+    exit 2
 }
 
 # The placement guard is SHARED, not reimplemented here. Bespoke per-script
