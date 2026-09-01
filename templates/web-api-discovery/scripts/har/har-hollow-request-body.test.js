@@ -177,6 +177,11 @@ const SHAPES = [
     // The self-closing root, the other side of the same limit: not recognised,
     // so it IS reported.
     { label: 'self-closing root element', hollow: true, post: body('<redacted/>') },
+    // KNOWN, ACCEPTED LIMITS -- false positives, pinned so a later tightening
+    // finds them here rather than in a consumer's capture. Both are rare
+    // shapes for a REQUEST body and cost one glance on a report path.
+    { label: 'doctype before the root element', hollow: true, post: body('<!DOCTYPE a><a>1</a>') },
+    { label: 'comment after the root element', hollow: true, post: body('<a>1</a><!--c-->') },
     // X4 -- a document must START with its root. Without the `^` anchor an
     // element found ANYWHERE would clear the body, so a note that happens to
     // mention markup would pass. Found by mutation: nothing else in the suite
@@ -189,6 +194,24 @@ const SHAPES = [
     { label: 'multipart with an epilogue, boundary only in mimeType', hollow: false,
         post: body(multipartBody({ boundary: 'epi7' }) + 'epilogue after the close\r\n',
             'multipart/form-data; boundary=epi7') },
+    // KNOWN, ACCEPTED LIMITS -- false negatives, pinned as current behaviour.
+    //
+    // The recogniser checks delimiter STRUCTURE and never checks that any
+    // content sits BETWEEN the delimiters. That is a real, stated limit of the
+    // grammar test rather than an oversight: a body that is nothing but an
+    // opening and a closing delimiter satisfies the grammar while carrying no
+    // payload at all, and no structural test of the delimiters can tell that
+    // apart from a genuine empty part.
+    //
+    // Not chased, because writing either of these by hand means writing MIME
+    // boundary syntax deliberately -- far less natural than the bracket-and-
+    // colon placeholders that defeated rounds 1 and 2, which is where the real
+    // risk lives.
+    { label: 'zero-content multipart shell', hollow: false, post: body('--REDACTED\r\n--REDACTED--') },
+    // Clears only because the closing delimiter is now found ANYWHERE rather
+    // than at end-of-string -- the epilogue widening, seen from its cost side.
+    { label: 'zero-content multipart shell with an epilogue', hollow: false,
+        post: body('--B\r\n--B--\r\ntrailing epilogue text', 'multipart/form-data; boundary=B') },
     {
         label: 'multipart body', hollow: false,
         post: body('--b\r\nContent-Disposition: form-data; name="alpha"\r\n\r\none\r\n--b--'),
@@ -298,6 +321,26 @@ const SHAPES = [
     // N3 -- two non-empty lines that are not JSON. Without this, NDJSON
     // degrades to "has more than one line", which every prose note satisfies.
     { label: 'two lines of prose', hollow: true, post: body('body removed\nsee notes') },
+    // The NDJSON `.every()` -- LOAD-BEARING, and this is what pins it.
+    //
+    // Not to be confused with the inert `>= 2` line count documented in the
+    // gate: that clause cannot change a verdict, whereas this one decides
+    // these two entries today. Weaken `.every` to `.some` and both clear,
+    // because one valid JSON line would vouch for every other line beside it.
+    // A placeholder line sitting next to a real JSON line is a plausible hand
+    // edit -- exactly the shape this issue exists to catch -- so the rule that
+    // stops it gets a fixture rather than a comment.
+    { label: 'placeholder line beside a json line', hollow: true, post: body('REDACTED\n{}') },
+    { label: 'prose line beside a json object', hollow: true,
+        post: body('body removed by operator\n{"a":1}') },
+    // The per-line COMPOSITE requirement, likewise load-bearing and found
+    // unpinned by mutation: relax it to "any valid JSON per line" and a body
+    // of bare scalars becomes a document. A stream of quoted strings is not
+    // NDJSON, and `"REDACTED"` on its own line is the single-line placeholder
+    // this gate already rejects -- stacking two of them must not launder it.
+    { label: 'two json string scalars, one per line', hollow: true,
+        post: body(`${JSON.stringify('x')}\n${JSON.stringify('y')}`) },
+    { label: 'two json number scalars, one per line', hollow: true, post: body('1\n2') },
     // The two below exist because an ablation SURVIVED without them: the form
     // recogniser could be loosened in two ways and nothing failed. Both are
     // about how much a body has to look like a form before it counts as one.
