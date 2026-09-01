@@ -789,15 +789,37 @@ function enclosingFieldName(keyPath) {
  * is taken from the walk: only a path that descends INTO a parsed body names a
  * captured field.
  *
- * A top-level array element gets null: `[V]` under `response.content.text`
- * resolves to `response.content.text[0]`, and an element has no key of its
- * own. Reading `text` there is exactly the confusion this exists to prevent.
+ * An ARRAY ELEMENT gets null wherever the array sits: `[V]` under
+ * `response.content.text` resolves to `response.content.text[0]`, and an
+ * element has no key of its own. Reading `text` there is exactly the confusion
+ * this exists to prevent.
+ *
+ * But an element is not a dead end. A TOP-LEVEL ARRAY OF OBJECTS is what a
+ * list endpoint returns -- one of the most ordinary response shapes there is
+ * -- and `response.content.text[0].media_id` names a key the document chose
+ * just as plainly as `response.content.text.media_id` does. So the subscript
+ * is skipped, not treated as a wall: what matters is whether a KEY appears
+ * anywhere below the envelope node, not whether one appears immediately.
+ *
+ * The suffix must still begin at a structural boundary -- `.` or `[` -- so a
+ * sibling node whose name merely starts with the base (`…text` against
+ * `…textual.value`) is refused rather than mined for a field name.
  */
 function capturedFieldName(keyPath, base) {
     if (typeof keyPath !== 'string' || typeof base !== 'string') return null;
     if (keyPath === base || !keyPath.startsWith(base)) return null;
-    const suffix = keyPath.slice(base.length).replace(/(\[\d+\])+$/, '');
-    if (!suffix.startsWith('.')) return null;
+    const suffix = keyPath.slice(base.length);
+    if (!suffix.startsWith('.') && !suffix.startsWith('[')) return null;
+    // No key anywhere below the envelope node -- the suffix is subscripts all
+    // the way down -- so the captured document named nothing here.
+    //
+    // Trailing subscripts are NOT stripped first. `enclosingFieldName` already
+    // owns that rule (`media_ids[4]` is held by `media_ids`), and stripping
+    // here as well changes no answer: a suffix that is only subscripts has no
+    // dot either way. A second copy of a rule that cannot disagree with the
+    // first is a line no test can kill, which is how a redundant check gets
+    // mistaken for a working one.
+    if (suffix.lastIndexOf('.') === -1) return null;
     return enclosingFieldName(suffix);
 }
 
