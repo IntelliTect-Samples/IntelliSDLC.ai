@@ -519,13 +519,22 @@ incidental:
   URL reach the detectors with no structural key, so nothing there is
   suppressed — reading the enclosing node's name instead would decline a
   replacement on no evidence.
-- **One occurrence at an id field does not make the VALUE an id.** The same
-  digits echoed at a field with no id declaration promote the value back and it
-  is replaced everywhere. The alternative rewrites one occurrence and leaves the
-  identical string beside it.
+- **Mixed evidence is resolved differently by each engine, deliberately.** When
+  the same value appears at a declared identifier field in one place and a plain
+  field in another, the GATE promotes it back and blocks; the SCRUB declines to
+  replace it anywhere. That is not the two engines disagreeing — it is beat 2
+  applied to each axis. On a report path, err toward more findings: noisy,
+  visible, reversible. On a replace path, err toward a miss: a false positive
+  there rewrites an object id into a fake the scrubber itself recognises, after
+  which no gate can ever report it. The composition is what makes the miss safe,
+  and it must stay that way: the scrub fails toward a miss, and the gate refuses
+  to pass what the scrub declined. A run carrying mixed evidence therefore keeps
+  the value and then FAILS at the verify step, which is the loud outcome.
 
 Declining a replacement never hides the finding: it is still detected, still
-reported, and the run says so.
+reported, the run says so, and a mixed-evidence decline says that it was mixed —
+an operator otherwise cannot tell a finished run from one the gate is about to
+fail.
 
 ##### Worked override
 

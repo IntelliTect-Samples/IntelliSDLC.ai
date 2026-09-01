@@ -843,22 +843,50 @@ function scrubPii(har, policy) {
     //
     // The decision is taken per (type, value) over the WHOLE run and not per
     // site, because the replacement set is keyed on the value: one entry is
-    // applied to every occurrence by a blind text pass. That is not a
-    // limitation being worked around -- it is the same rule the gate states in
-    // `findLeaksInHar` and this file states in `summariseRetained`. ONE
-    // OCCURRENCE AT AN ID FIELD DOES NOT MAKE THE VALUE AN ID: the same digits
-    // echoed at `card_number` are evidence the field-name downgrade was wrong,
-    // so the value is PROMOTED BACK and replaced everywhere. The alternative --
-    // rewriting one occurrence and leaving the identical string beside it --
-    // publishes the value it claims to have removed.
-    const promoted = new Set();
+    // applied to every occurrence by a blind text pass. So a value seen at an
+    // identifier field in one place and a plain field in another has to be
+    // decided ONE WAY for the whole run, and the direction is what matters.
+    //
+    // ANY declared-identifier-field site declines the replacement everywhere.
+    //
+    // The gate's `findLeaksInHar` resolves the same mixed evidence the OTHER
+    // way -- it promotes the finding back and blocks. That is not a
+    // contradiction and this must not be "made consistent" with it: the two
+    // engines sit on opposite axes and beat 2 gives them opposite safe
+    // directions. On the gate, erring toward more findings is noisy, visible
+    // and reversible. On the replace path, erring toward more replacements is
+    // plausible corruption that nobody can detect afterwards -- and worse here
+    // than anywhere, because the replacement is this scrubber's own recognised
+    // fake, so no gate will ever report the corrupted id again. Fail toward a
+    // MISS on a replace path.
+    //
+    // What makes the miss safe is the gate, measured rather than assumed:
+    // `findLeaksInHar` groups on (kind, fingerprint) and promotes the whole
+    // group when ANY site is not an identifier field, order-independently. So a
+    // mixed-evidence value left in place FAILS THE RUN LOUDLY. A real card
+    // cannot ship silently through this path; it is stopped by the engine whose
+    // false positives are cheap. The two compose exactly as designed -- and
+    // `pii-identifier-fields-scrub.test.js` asserts that composition directly,
+    // because it is now load-bearing rather than incidental.
+    const declined = new Set();
+    const alsoAtPlainField = new Set();
     for (const d of replaceable) {
-        if (!d.identifierField) promoted.add(`${d.type}${d.value}`);
+        const key = `${d.type}${d.value}`;
+        if (d.identifierField) declined.add(key); else alsoAtPlainField.add(key);
     }
     const survivors = [];
     for (const d of replaceable) {
-        if (promoted.has(`${d.type}${d.value}`)) survivors.push(d);
-        else retainedDetections.push({ detection: d, reason: 'identifier-field' });
+        const key = `${d.type}${d.value}`;
+        if (!declined.has(key)) survivors.push(d);
+        else retainedDetections.push({
+            detection: d,
+            reason: 'identifier-field',
+            // MIXED EVIDENCE, carried rather than smoothed over. The audit's
+            // `verdictFor` calls this shape UNADJUDICABLE and refuses to guess;
+            // the scrub cannot refuse -- it either rewrites or does not -- so it
+            // takes the safe direction and SAYS which values it took it on.
+            mixed: alsoAtPlainField.has(key),
+        });
     }
     replaceable.length = 0;
     replaceable.push(...survivors);
@@ -929,11 +957,11 @@ function scrubPii(har, policy) {
  */
 function summariseRetained(entries, replacedValues) {
     const byBucket = new Map();
-    for (const { detection: d, reason } of entries) {
+    for (const { detection: d, reason, mixed } of entries) {
         if (replacedValues.has(String(d.value))) continue;
-        const key = `${d.type}${reason}`;
+        const key = `${d.type}${reason}${mixed ? 'mixed' : 'pure'}`;
         if (!byBucket.has(key)) {
-            byBucket.set(key, { kind: d.type, reason, occurrences: 0, values: new Set() });
+            byBucket.set(key, { kind: d.type, reason, mixed: !!mixed, occurrences: 0, values: new Set() });
         }
         const bucket = byBucket.get(key);
         bucket.occurrences += 1;
@@ -953,11 +981,19 @@ function summariseRetained(entries, replacedValues) {
                 distinct: bucket.values.size,
             };
             if (bucket.reason === 'identifier-field') row.identifierField = true;
+            // The operator needs to tell the two apart. A PURE row is a value
+            // the gate also passes; a MIXED row is one the gate will BLOCK on,
+            // and that is the difference between "this run is finished" and
+            // "this run is about to fail and here is why".
+            if (bucket.mixed) row.mixedEvidence = true;
             return row;
         })
         .sort((a, b) => {
             if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
-            return (a.identifierField ? 1 : 0) - (b.identifierField ? 1 : 0);
+            if (!!a.identifierField !== !!b.identifierField) {
+                return (a.identifierField ? 1 : 0) - (b.identifierField ? 1 : 0);
+            }
+            return (a.mixedEvidence ? 1 : 0) - (b.mixedEvidence ? 1 : 0);
         });
 }
 

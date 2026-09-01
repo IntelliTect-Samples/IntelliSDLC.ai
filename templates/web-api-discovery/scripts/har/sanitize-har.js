@@ -674,9 +674,26 @@ function main() {
             `detected at fields the policy declares to hold object ids, and were ` +
             `therefore NOT replaced: ` +
             identifierRetained
-                .map((r) => `${r.kind} x${r.occurrences} (${r.distinct} distinct)`).join(', ') +
-            `. The gate makes the same call on the same values (identifierFields in ` +
-            `${policy && policy.path || 'the merged policy'}).`);
+                .map((r) => `${r.kind} x${r.occurrences} (${r.distinct} distinct)`
+                    + (r.mixedEvidence ? ' [MIXED EVIDENCE]' : '')).join(', ') +
+            `. identifierFields in ${policy && policy.path || 'the merged policy'}.`);
+        // A MIXED row is not the same news as a pure one and must not read like
+        // it. The value also appeared at a field with no id declaration, so the
+        // scrub took the safe direction -- fail toward a miss on a replace path
+        // -- and handed the decision to the engine whose false positives are
+        // cheap. The gate WILL fail on these. Saying so here is the difference
+        // between an operator reading a finished run and one reading a run that
+        // is about to stop.
+        const mixed = identifierRetained.filter((r) => r.mixedEvidence);
+        if (mixed.length) {
+            console.error(
+                `sanitize-har: NOTE -- ${mixed.length} of those also appeared at a field ` +
+                `with no id declaration (${mixed.map((r) => r.kind).join(', ')}). Mixed ` +
+                `evidence is not decided here: the value is left in place rather than ` +
+                `rewritten into a fake that no gate could ever report again, and the GATE ` +
+                `blocks on it. Expect the verify step to fail until the field names or the ` +
+                `policy say which it is.`);
+        }
     }
 
     const disabledClasses = pii.disabledIdentityClasses(policy);
