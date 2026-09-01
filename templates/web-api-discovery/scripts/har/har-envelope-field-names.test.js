@@ -29,12 +29,25 @@
 // G1-G3 and the property both pin it.
 //
 // HARNESS NOTE, from a false negative this cost during investigation: a merged
-// policy is FROZEN and its compiled matchers are cached in a WeakMap keyed on
-// the policy object. `policy.identifierFields = [...]` after loading silently
-// does nothing, and a probe that mutates one measures the DEFAULT policy while
-// believing it measured a project's. Every policy here comes from the loader
-// with a real project file, and `livePolicy` ASSERTS the patterns bite before
-// any conclusion is drawn from a run.
+// policy is FROZEN, and its compiled matchers are additionally cached in a
+// WeakMap keyed on the policy object, so a policy that were mutated in place
+// would keep answering with the matchers it was loaded with.
+//
+// WHERE THAT ACTUALLY BITES, stated precisely, because the imprecise version
+// invites the next reader to delete the guard. In a file like this one, which
+// declares `'use strict'`, `policy.identifierFields = [...]` THROWS -- strict
+// mode turns the frozen-object write into a TypeError, and the mistake is
+// loud. The silent no-op is a SLOPPY-MODE failure, and sloppy mode is exactly
+// where this kind of probing happens: an ad hoc `node -e` one-liner has no
+// directive, so the assignment is discarded without a word and the run
+// measures the SHIPPED DEFAULT while its author believes it measured a
+// project's. That is how a real defect was nearly cleared.
+//
+// So the guard is not there to catch an assignment in this file. It is there
+// so that whatever route a policy arrives by -- including one lifted out of a
+// throwaway probe -- the suite refuses to draw a conclusion until it has
+// watched the patterns bite. Every policy here comes from the loader with a
+// real project file, and `livePolicy` ASSERTS that before any case runs.
 //
 // No finding, message or assertion in this file prints a detected value.
 
@@ -202,10 +215,16 @@ test('F5 a card-shaped QUERY-STRING VALUE blocks under `*value`', () => {
 test('F6 a query parameter actually NAMED `value` still blocks under `*value`', () => {
     // The adjacent shape, and the one that looks like an over-correction until
     // it is followed through: the parameter's own name really is `value`, so
-    // the envelope path and the plausible captured name coincide. It still
-    // blocks -- query parameters reach the SCRUBBER with no key and are
-    // structurally unreachable by its identifier rule, so a gate that
-    // suppressed here would be looser than the engine it backstops.
+    // the envelope path and the plausible captured name coincide.
+    //
+    // It still blocks, because the identifier rule is scoped to a RESOLVED
+    // KEY PATH and a query parameter has none -- its name is a wire-format
+    // label the HAR writer put in a `name` property, not a key in a parsed
+    // document. That is the same scoping the scrubber applies, which reaches
+    // the detectors for a query value with no key at all. (Note what that
+    // does NOT say: the scrubber never DECLINES here, it always replaces, so
+    // there is no scrub decline for the gate to back up. The two engines agree
+    // on the constraint, not on the outcome.)
     const policy = livePolicy(ENVELOPE_NAMES, ENVELOPE_EXPECT);
     assertBlocks(har({ queryString: [{ name: 'value', value: CARD }] }), policy,
         'a query parameter is not a JSON key, whatever it is named');
@@ -300,6 +319,38 @@ test('G7 a PERCENT-DECODED finding, which has no structural path, blocks', () =>
         'a decoded finding has no field name to consult');
 });
 
+test('G9 a TOP-LEVEL ARRAY OF OBJECTS keeps its captured keys (declared -> suppressed)', () => {
+    // What a list endpoint returns. `response.content.text[0].media_id` names
+    // a key the document chose just as plainly as `…text.media_id` does, and
+    // treating the subscript as a wall would put spurious blocks on a
+    // project's own legitimately declared object ids. Noise, not a leak -- and
+    // noise is what cost this gate its authority the first time.
+    assertSuppressed(har({ body: JSON.stringify([{ media_id: CARD }, { other: 'x' }]) }),
+        defaultPolicy(), 'a key inside a top-level array element is captured data');
+});
+
+test('G10 a NESTED ARRAY inside a top-level array element is held by its field', () => {
+    // `…text[0].media_ids[0]`: two subscripts, one on each side of the key.
+    assertSuppressed(har({ body: JSON.stringify([{ media_ids: [CARD] }]) }),
+        defaultPolicy(), 'the array field holds its elements at any depth');
+});
+
+test('G11 a top-level array element at an UNDECLARED field still blocks', () => {
+    // The other half of G9: skipping the subscript must reach the real key,
+    // not wave the whole element through.
+    assertBlocks(har({ body: JSON.stringify([{ price_note: CARD }]) }),
+        defaultPolicy(), 'an undeclared key is an undeclared key wherever it sits');
+});
+
+test('G12 a top-level array element under `*text` is not rescued by the ENVELOPE name', () => {
+    // The dangerous direction of the same shape: `*text` matches the envelope
+    // node, and no amount of descending into a top-level array may make that
+    // name reachable.
+    const policy = livePolicy(ENVELOPE_NAMES, ENVELOPE_EXPECT);
+    assertBlocks(har({ body: JSON.stringify([{ price_note: CARD }]) }), policy,
+        'response.content.text is a HAR property however deep the walk goes');
+});
+
 test('G8 capturedFieldName refuses every envelope node it is handed', () => {
     const cases = [
         ['request.url', 'request.url', null],
@@ -307,6 +358,17 @@ test('G8 capturedFieldName refuses every envelope node it is handed', () => {
         ['response.content.text', 'response.content.text', null],
         ['response.content.text[0]', 'response.content.text', null],
         ['response.content.text[0][3]', 'response.content.text', null],
+        // A subscript IMMEDIATELY after the envelope node: a top-level array
+        // of objects, which is what a list endpoint returns. The key follows
+        // the subscript instead of preceding it, and it is still a key the
+        // captured document chose.
+        ['response.content.text[0].media_id', 'response.content.text', 'media_id'],
+        ['response.content.text[2].a.b.value', 'response.content.text', 'value'],
+        ['response.content.text[0].media_ids[4]', 'response.content.text', 'media_ids'],
+        ['response.content.text[0][1].media_id', 'response.content.text', 'media_id'],
+        // A sibling whose NAME merely starts with the base is still refused;
+        // skipping subscripts must not open that door.
+        ['response.content.textual.value', 'response.content.text', null],
         ['response.content.text.value', 'response.content.text', 'value'],
         ['response.content.text.a.b.value', 'response.content.text', 'value'],
         ['response.content.text.media_ids[4]', 'response.content.text', 'media_ids'],
@@ -358,6 +420,7 @@ function builtCarries(document, site) {
     switch (site.kind) {
         case 'body-key': return holderIn(body, site)[site.field] === CARD;
         case 'body-nested': return holderIn(body, site)[site.field] === CARD;
+        case 'body-top-scalar': return Array.isArray(body) && body[site.index] === CARD;
         case 'body-array': {
             const held = holderIn(body, site)[site.field];
             return Array.isArray(held) && held.indexOf(CARD) >= 0;
@@ -390,9 +453,12 @@ test('P1 suppressed iff every occurrence is at a declared CAPTURED field', () =>
     const idTails = ['_id', '_ids', '_uuid', 'Id', '_value', 'Value', '_name', '_url', '_text'];
     const plainTails = ['_note', '_ref', '_label', '_code'];
 
+    // Kinds whose site sits at a key the CAPTURED document chose. Everything
+    // else -- envelope properties, and an array element, which has no key of
+    // its own wherever the array sits -- carries no captured name.
     const BODY_KINDS = ['body-key', 'body-nested', 'body-array'];
-    const KINDS = BODY_KINDS.concat(['header', 'response-header', 'request-cookie',
-        'response-cookie', 'cookie-name', 'query-value', 'url']);
+    const KINDS = BODY_KINDS.concat(['body-top-scalar', 'header', 'response-header',
+        'request-cookie', 'response-cookie', 'cookie-name', 'query-value', 'url']);
 
     const producedKinds = new Set();
     let mixedDocs = 0;
@@ -409,24 +475,46 @@ test('P1 suppressed iff every occurrence is at a declared CAPTURED field', () =>
             });
         }
 
-        // THE ORACLE. Only a body key is a captured field name; every other
-        // kind carries none, and a site with no name is never declared.
+        // THE ORACLE. Only a body key is a captured field name. Every other
+        // kind carries none -- an envelope property because the captured
+        // document contributed no key, a bare array element because an
+        // element has no key of its own -- and a site with no name is never
+        // declared. Note this is INDEPENDENT of the body root: a key inside an
+        // element of a top-level array is still a key the document chose.
         const declaredHere = (site) => BODY_KINDS.indexOf(site.kind) >= 0
             && policyModule.isIdentifierField(policy, site.field);
 
         const parts = { requestHeaders: [], responseHeaders: [], requestCookies: [], queryString: [] };
-        const bodyObject = {};
+
+        // THE BODY ROOT IS GENERATED, not fixed. A top-level ARRAY is what a
+        // list endpoint returns and is one of the most ordinary response
+        // shapes there is; a generator that always builds `{}` cannot express
+        // it, and a shape a generator cannot express is a shape it can never
+        // falsify. This half of the corpus is what catches an index sitting
+        // IMMEDIATELY after the envelope node -- `response.content.text[0].id`
+        // -- where the captured key follows the subscript instead of
+        // preceding it.
+        const arrayRooted = rand() < 0.4;
+        const bodyRoot = arrayRooted ? [] : {};
+
         // Each body site gets its own container, so two sites in one document
         // cannot overwrite each other and quietly reduce the corpus to
-        // single-site shapes. The chain is recorded so the coverage guard can
-        // find the site in the BUILT document.
+        // single-site shapes. The chain is recorded -- keys and array indices
+        // alike -- so the coverage guard can find the site in the BUILT
+        // document.
         let bodySlots = 0;
         const container = (site) => {
-            if (bodySlots++ === 0) { site.chain = []; return bodyObject; }
+            if (arrayRooted) {
+                const index = bodyRoot.length;
+                bodyRoot.push({});
+                site.chain = [index];
+                return bodyRoot[index];
+            }
+            if (bodySlots++ === 0) { site.chain = []; return bodyRoot; }
             const key = 'group' + bodySlots;
-            bodyObject[key] = bodyObject[key] || {};
+            bodyRoot[key] = bodyRoot[key] || {};
             site.chain = [key];
-            return bodyObject[key];
+            return bodyRoot[key];
         };
         let anyBodySite = false;
         for (const site of sites) {
@@ -447,6 +535,22 @@ test('P1 suppressed iff every occurrence is at a declared CAPTURED field', () =>
                 case 'body-array': {
                     anyBodySite = true;
                     container(site)[site.field] = [CARD];
+                    break;
+                }
+                case 'body-top-scalar': {
+                    // A bare scalar element. Only a top-level array can hold
+                    // one with no key above it; in an object-rooted document
+                    // the nearest equivalent is an element of a named array,
+                    // which IS held by that field, so this kind degrades to a
+                    // header rather than pretending to be something it is not.
+                    if (!arrayRooted) {
+                        parts.requestHeaders.push({ name: 'x-echo', value: CARD });
+                        site.kind = 'header';
+                        break;
+                    }
+                    anyBodySite = true;
+                    site.index = bodyRoot.length;
+                    bodyRoot.push(CARD);
                     break;
                 }
                 case 'response-cookie':
@@ -474,8 +578,11 @@ test('P1 suppressed iff every occurrence is at a declared CAPTURED field', () =>
                 default: throw new Error('unreachable site kind');
             }
         }
-        if (!anyBodySite) bodyObject.unrelated_note = CARD_B;
-        parts.body = JSON.stringify(bodyObject);
+        if (!anyBodySite) {
+            if (arrayRooted) bodyRoot.push({ unrelated_note: CARD_B });
+            else bodyRoot.unrelated_note = CARD_B;
+        }
+        parts.body = JSON.stringify(bodyRoot);
 
         // Coverage is read off the BUILT document rather than off the plan: a
         // builder that silently dropped a shape would otherwise leave the
