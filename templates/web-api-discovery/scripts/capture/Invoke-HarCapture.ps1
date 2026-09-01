@@ -86,7 +86,10 @@
     ../lib/RepoWorkflowGuard.ps1.
 
 .PARAMETER Describe
-    REQUIRED. What this recording is for, in your own words. It helps the
+    REQUIRED. What this recording is for, in your own words. Omitting it is a
+    terminating error, not a prompt: this front door and capture-har.js refuse
+    on identical terms, so a person recording by hand and an agent driving the
+    same script hit the same wall in the same way. It helps the
     cataloguing step segment the session into actions, but that is the smaller
     half of its job.
 
@@ -154,11 +157,18 @@ param(
 
     [string]$OutputPath,
 
-    # Mandatory (#366). PowerShell prompts for a missing mandatory parameter,
-    # which is the right prompt to get: it arrives before the browser opens,
-    # and answering it costs a sentence.
-    [Parameter(Mandatory)]
-    [ValidateNotNullOrWhiteSpace()]
+    # Required (#366), and DELIBERATELY NOT [Parameter(Mandatory)].
+    #
+    # Mandatory would make PowerShell PROMPT for it when a host is attached and
+    # only hard-fail when one is not. That was considered and rejected: it gives
+    # a human recording by hand a different failure from an agent driving the
+    # same script, and #366 exists because the description is the one part of a
+    # capture that cannot be reconstructed afterwards. The moment of refusal has
+    # to look the same however you arrived at it -- which is also the only way
+    # it can match what capture-har.js does, since the Node side has no prompt
+    # to offer. So the check lives in the body, below, and terminates.
+    #
+    # Whitespace is empty, for the same reason it is on the Node side.
     [string]$Describe,
 
     [string]$Profile,
@@ -169,6 +179,33 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# THE REFUSAL, before anything else runs and before any host is consulted.
+#
+# It is a terminating error rather than a prompt so that this front door and
+# `capture-har.js` fail IDENTICALLY -- same reason, same example, same
+# non-zero exit -- whether a person or an agent invoked it. Nothing here reads
+# $Host, $PSCmdlet.MyInvocation, or whether a TTY is attached: a refusal that
+# varied by how the script was launched would be a second behaviour to reason
+# about, and the one the operator would hit least often is the one that would
+# rot.
+if ([string]::IsNullOrWhiteSpace($Describe)) {
+    # The explanation goes to stderr as its own lines, and only then does the
+    # terminating error fire. Throwing the whole paragraph instead would hand it
+    # to PowerShell's error renderer, which reflows it into one run-on line and
+    # takes the `Try:` example -- the actionable half -- with it. Node prints
+    # clean lines; so does this.
+    [Console]::Error.WriteLine((@(
+        'Invoke-HarCapture: refusing to record without -Describe.'
+        '  A capture nobody can identify is a capture nobody can use: the store is'
+        '  shared and append-only, the directory name is a START time, and several'
+        '  sessions record into it at once. The description is the only part of a'
+        '  capture that cannot be reconstructed afterwards -- the bytes can be'
+        '  re-captured, what you were doing cannot.'
+        "  Try: -Describe 'example.com: create a post with two photos, then delete it'"
+    ) -join [Environment]::NewLine))
+    throw 'Invoke-HarCapture: refusing to record without -Describe.'
+}
 
 # The placement guard is SHARED, not reimplemented here. Bespoke per-script
 # logic about where output may land is how the defect in #300 arrived, so every
