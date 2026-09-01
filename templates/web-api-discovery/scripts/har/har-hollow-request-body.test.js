@@ -91,7 +91,17 @@ function entry(postData) {
     };
 }
 
-const body = (text) => ({ mimeType: 'application/x-www-form-urlencoded', text });
+const body = (text, mimeType) => ({
+    mimeType: mimeType || 'application/x-www-form-urlencoded', text,
+});
+
+// A multipart body, assembled rather than pasted, so the preamble and the
+// leading-CRLF variants differ from the plain one in exactly one way each.
+const multipartBody = ({ boundary = "b1", preamble = "", leadingCrlf = false } = {}) =>
+    (leadingCrlf ? '\r\n' : '') + preamble
+    + `--${boundary}\r\nContent-Disposition: form-data; name="alpha"\r\n\r\none\r\n`
+    + `--${boundary}\r\nContent-Disposition: form-data; name="beta"\r\n\r\ntwo\r\n`
+    + `--${boundary}--\r\n`;
 
 function writeHar(dir, name, entries) {
     fs.writeFileSync(path.join(dir, name), JSON.stringify({
@@ -142,6 +152,43 @@ const SHAPES = [
     // get opposite verdicts, and `alpha: one` is not a member of any wire
     // grammar a capture carries. It goes on the reported side.
     { label: 'one word, a colon, more words', hollow: true, post: body('alpha: one') },
+    { label: 'multipart, boundary declared in mimeType', hollow: false,
+        post: body(multipartBody({ boundary: 'xYz123' }),
+            'multipart/form-data; boundary=xYz123') },
+    // A MIME preamble before the first delimiter is legal. A check keyed to
+    // the first line is blind to the whole body, not just the preamble.
+    { label: 'multipart with a preamble', hollow: false,
+        post: body(multipartBody({ preamble: 'this preamble is legal and ignored\r\n' })) },
+    { label: 'multipart with a leading CRLF', hollow: false,
+        post: body(multipartBody({ leadingCrlf: true })) },
+    // No mimeType at all: a hand-edited reference may have lost it, and the
+    // body still declares its own delimiter.
+    { label: 'multipart with no declared mimeType', hollow: false,
+        post: { text: multipartBody({ boundary: 'noMime' }) } },
+    // THE PRICE OF RECOGNISING XML, pinned rather than hidden. A placeholder
+    // written as a well-formed element belongs to the markup grammar and is
+    // cleared. No structural test separates it from a real one-element body,
+    // because there is no structural difference -- the same trade
+    // `body=redacted` makes against the form grammar. This fixture asserts the
+    // CURRENT behaviour, so anyone who later tightens the recogniser finds out
+    // here rather than in a consumer's capture.
+    { label: 'placeholder written as a well-formed element', hollow: false,
+        post: body('<REDACTED>body was removed</REDACTED>') },
+    // The self-closing root, the other side of the same limit: not recognised,
+    // so it IS reported.
+    { label: 'self-closing root element', hollow: true, post: body('<redacted/>') },
+    // X4 -- a document must START with its root. Without the `^` anchor an
+    // element found ANYWHERE would clear the body, so a note that happens to
+    // mention markup would pass. Found by mutation: nothing else in the suite
+    // pinned the anchor.
+    { label: 'prose that happens to contain an element', hollow: true,
+        post: body('body removed, see <note>docs</note>') },
+    // M6 -- recognised ONLY through the declared boundary. A legal MIME
+    // epilogue after the closing delimiter defeats derivation from the body,
+    // so a gate that ignored the mimeType would report this real body.
+    { label: 'multipart with an epilogue, boundary only in mimeType', hollow: false,
+        post: body(multipartBody({ boundary: 'epi7' }) + 'epilogue after the close\r\n',
+            'multipart/form-data; boundary=epi7') },
     {
         label: 'multipart body', hollow: false,
         post: body('--b\r\nContent-Disposition: form-data; name="alpha"\r\n\r\none\r\n--b--'),
@@ -151,8 +198,28 @@ const SHAPES = [
     // placeholder. It is a real minimal form body and the form grammar clears
     // it -- this is the false positive the review measured at entry 9.
     { label: 'form pair with an empty value', hollow: false, post: body('token=') },
+    // A REAL bracketed field name. Without this the bracket rule could quietly
+    // become a flat ban on brackets and every test would still pass.
+    { label: 'form pair with a bracketed name', hollow: false, post: body('user[name]=x&user[id]=2') },
+    // XML is a recognised grammar. It occurred ZERO times in 755 sampled
+    // bodies, and that is a fact about the three JSON-era providers sampled
+    // rather than about XML: this template ships to consumers nobody sampled,
+    // and one wrapping a SOAP API would meet a gate firing on 100% of its
+    // traffic. The root element must be CLOSED, which is the whole of the
+    // test -- see the negatives below.
     { label: 'markup with a closing tag', hollow: false, post: body('<root><a>1</a></root>') },
-    { label: 'graphql source body', hollow: false, post: body('query { me { id } }') },
+    { label: 'xml with a declaration', hollow: false,
+        post: body('<?xml version="1.0" encoding="utf-8"?><a>one</a>') },
+    { label: 'namespaced soap envelope', hollow: false,
+        post: body('<soap:Envelope xmlns:soap="http://example.invalid/e">'
+            + '<soap:Body><op>one</op></soap:Body></soap:Envelope>') },
+    // RAW GraphQL source stays on the reported side, and it looks like a
+    // bigger gap than it is: GraphQL over HTTP is conventionally POSTed as
+    // `{"query": "..."}`, which is composite JSON and already cleared by
+    // recogniser 1. A raw body like this one needs `application/graphql`,
+    // which is genuinely uncommon -- so this is a rare accepted residual, not
+    // an oversight.
+    { label: 'raw graphql source body', hollow: true, post: body('query { me { id } }') },
     { label: 'newline-delimited json', hollow: false, post: body('{"a":1}\n{"b":2}') },
 
     // --- not a body at all: must PASS ---
@@ -183,6 +250,54 @@ const SHAPES = [
     { label: 'angle-wrapped token with a colon', hollow: true, post: body('<redacted:body>') },
     { label: 'prose with an apostrophe', hollow: true, post: body("it's been redacted for privacy") },
     { label: 'token then a dash then prose', hollow: true, post: body('REDACTED - see notes') },
+    // The six the round-2 review measured. The first four each carry TWO
+    // punctuation marks, which is exactly what a hand-written note reaches:
+    // a colon introducing the reason, then a comma or semicolon inside it.
+    // They are why counting marks was abandoned rather than retuned.
+    { label: 'wrapped note, colon and comma', hollow: true, post: body('[REDACTED: form body, unused]') },
+    { label: 'prose, apostrophe and comma', hollow: true, post: body("it's, redacted") },
+    { label: 'note, colon and semicolon', hollow: true, post: body('redacted: value; omitted') },
+    { label: 'note, colon and parentheses', hollow: true, post: body('body: (removed)') },
+    // The other two cleared the FORM recogniser: `[redacted` really does
+    // read as a field name until you ask whether its bracket ever closes.
+    { label: 'bracket-wrapped pseudo-pair', hollow: true, post: body('[redacted=x]') },
+    { label: 'angle-wrapped pseudo-pair', hollow: true, post: body('<redacted=x>') },
+    // A bare `null` body. It is the reason the composite check needs no null
+    // clause -- the leading-character gate excludes it -- and this fixture is
+    // what makes that gate load-bearing rather than merely present, since
+    // `typeof null === "object"` would otherwise clear it.
+    { label: 'bare json null', hollow: true, post: body('null') },
+    { label: 'bare json number', hollow: true, post: body('42') },
+    // One lone real pair beside a placeholder is not a form body; 26 real
+    // pairs beside one valueless flag IS one, and that case is generated in
+    // property B1 rather than pinned here.
+    { label: 'lone delimiter that nominates itself', hollow: true, post: body('--redacted--') },
+    // --- the five mutants that SURVIVED the previous ablation matrix ---
+    //
+    // Each of these was added because a mutation of the shipped code changed
+    // no verdict in the suite. A rule nothing pins is a rule that can be
+    // deleted by accident, so the gap is the finding, not the mutation.
+    //
+    // F5 -- a name whose brackets do not balance is not the `user[name]=x`
+    // shape, in either direction: one that opens and never closes, and one
+    // that closes without opening.
+    { label: 'form name with an unclosed bracket', hollow: true, post: body('user[name=x') },
+    { label: 'form name with a stray closing bracket', hollow: true, post: body('redacted]=x') },
+    // M4 -- delimiters but no closing delimiter at all. A multipart body that
+    // stops mid-stream is not a multipart body.
+    //
+    // The mimeType MUST declare the boundary here, and that is the whole point
+    // of the fixture. With no declared boundary the gate derives one FROM the
+    // closing delimiter, so a body without one is rejected before the closing
+    // check is ever consulted -- the first version of this fixture omitted the
+    // mimeType and so exercised a branch it never entered, which is why
+    // deleting the closing check changed nothing and that mutation SURVIVED.
+    { label: 'multipart with no closing delimiter', hollow: true,
+        post: body('--b9\r\nContent-Disposition: form-data; name="alpha"\r\n\r\none\r\n--b9\r\n',
+            'multipart/form-data; boundary=b9') },
+    // N3 -- two non-empty lines that are not JSON. Without this, NDJSON
+    // degrades to "has more than one line", which every prose note satisfies.
+    { label: 'two lines of prose', hollow: true, post: body('body removed\nsee notes') },
     // The two below exist because an ablation SURVIVED without them: the form
     // recogniser could be loosened in two ways and nothing failed. Both are
     // about how much a body has to look like a form before it counts as one.
@@ -332,31 +447,36 @@ const SHAPES = [
 // --- 7. The property, over a generator, in both directions. ---
 //
 // A case list covers what its author imagined; a generator covers shapes
-// nobody sat down and listed. But A GENERATOR IS A PREDICATE TOO, and the
-// first version of this one was wrong IN THE SAME DIRECTION AS THE CODE it
-// was meant to falsify: it paired a clean token with a wrapper and never put
-// punctuation INSIDE the wrapped text, so it could not express
-// `[REDACTED: form body]`. A shape a generator cannot express is a shape it
-// cannot falsify, and that hole is why a false negative survived a review.
-// The injected marks below are the repair, and they are the reason the
-// predicate's own repair is worth anything.
+// nobody sat down and listed. But A GENERATOR IS A PREDICATE TOO, and this one
+// has twice been wrong in the same direction as the code it was meant to
+// falsify. First it paired a clean token with a wrapper and never put
+// punctuation inside the wrapped text, so it could not express
+// `[REDACTED: form body]`. Then it injected AT MOST ONE mark, so it could not
+// express `[REDACTED: form body, unused]` -- and a two-mark rule shipped. A
+// shape a generator cannot express is a shape it cannot falsify.
 //
-//   A.  A bare token, under ANY wrapper a redaction sentinel is conventionally
-//       written with, carrying AT MOST ONE punctuation mark inside it, is
-//       reported. One colon, or the apostrophe in "it's", is what a human
-//       writing a note produces; it is not what makes a payload.
+// It now injects UP TO THREE marks, which is not a third guess at the right
+// number: the predicate no longer counts punctuation at all, so no quantity of
+// marks should change a verdict. That is the property.
+//
+//   A.  A bare token under any wrapper a redaction sentinel is conventionally
+//       written with, carrying ANY number of punctuation marks, is reported.
 //   B1. A well-formed form-urlencoded body is never reported -- including a
-//       single pair, and including a pair with an empty value.
+//       single pair, a pair with an empty value, and the measured real case of
+//       one valueless flag segment among several real pairs.
 //   B2. A JSON composite is never reported, down to `{}` and `[]`.
-//   B3. A markup element with a closing tag is never reported.
+//   B3. A multipart body is never reported -- with and without a declared
+//       boundary, with and without a preamble, with and without a leading
+//       CRLF. This is the false-positive guard most likely to break.
+//   B4. An NDJSON body is never reported.
 //
-// B1-B3 are claims about real wire formats rather than restatements of the
-// predicate: each names a grammar an operator's captures actually contain.
+// B1-B4 are claims about real wire formats rather than restatements of the
+// predicate: each names a grammar the sampled captures actually contained,
+// and together they are 100% of 755 real request bodies.
 //
-// `=` is deliberately NOT among the marks injected in A. `[a=b]` is a
-// well-formed form pair whose name happens to open with a bracket -- real form
-// names do exactly that (`user[name]=x`) -- so the gate clears it on purpose,
-// and generating it under property A would assert a falsehood.
+// `=` is deliberately NOT among the marks injected in A. A token carrying an
+// `=` may legitimately BE a form pair, so generating one under property A
+// would assert a falsehood.
 //
 // Deterministic PRNG so a failure is reproducible rather than a rumour.
 {
@@ -374,20 +494,20 @@ const SHAPES = [
     };
     // A leading or trailing space would be trimmed away; keep the token the
     // thing under test rather than the trimmer.
-    const token = () => draw(TOKEN_CHARS, 40).trim() || 'REDACTED';
+    const token = () => draw(TOKEN_CHARS, 30).trim() || 'REDACTED';
     const word = () => draw(WORD_CHARS, 12);
 
     const WRAPPERS = [['', ''], ['[', ']'], ['<', '>'], ['{', '}'], ['(', ')'], ['"', '"'],
         ["'", "'"], ['*', '*'], ['**', '**'], ['--', '--']];
-    // At most one of these lands inside the wrapped text. `=` is excluded for
-    // the reason given in the header.
-    const MARKS = ['', ':', ';', ',', "'", '"', '<', '>', '(', ')', '{', '}', '[', ']', '&', '/', '|'];
+    const MARKS = [':', ';', ',', "'", '"', '<', '>', '(', ')', '{', '}', '[', ']', '&', '/', '|', '!', '?'];
 
     const hollowCases = [];
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 90; i++) {
         const [open, close] = pick(WRAPPERS);
-        const mark = pick(MARKS);
-        hollowCases.push(open + token() + mark + (mark === '' ? '' : token()) + close);
+        let inner = token();
+        const marks = Math.floor(rnd() * 4);
+        for (let m = 0; m < marks; m++) inner += pick(MARKS) + token();
+        hollowCases.push(open + inner + close);
     }
 
     const dirA = project('property-hollow');
@@ -395,51 +515,87 @@ const SHAPES = [
     const gotA = hollowIndexes(verify(dirA).out);
     const missedA = hollowCases.map((_, i) => i).filter((i) => !gotA.includes(i));
     assert.deepStrictEqual(missedA, [],
-        `7.a: a wrapped bare token carrying at most one punctuation mark went unreported at ` +
-        `${missedA.length} of ${hollowCases.length} generated shapes -- the gate is keyed to a ` +
-        'spelling, or one mark is enough to defeat it');
+        `7.a: a wrapped bare token went unreported at ${missedA.length} of ${hollowCases.length} `
+        + 'generated shapes -- the gate is keyed to a spelling, or punctuation still buys a pass');
 
     // B1 -- form-urlencoded, the grammar `a=1` and `token=` both belong to.
-    const formCases = [];
+    const formPosts = [];
     for (let i = 0; i < 40; i++) {
         const pairs = 1 + Math.floor(rnd() * 3);
         const parts = [];
-        for (let p = 0; p < pairs; p++) {
-            // Every third pair carries an empty value: `token=` is a real
-            // minimal form body and the gate must not call it a placeholder.
-            parts.push(word() + '=' + (p % 3 === 2 ? '' : word()));
-        }
-        formCases.push(parts.join('&'));
+        // Every third pair carries an empty value: `token=` is a real minimal
+        // body and the gate must not call it a placeholder.
+        for (let p = 0; p < pairs; p++) parts.push(word() + '=' + (p % 3 === 2 ? '' : word()));
+        formPosts.push(body(parts.join('&')));
+    }
+    // The measured real case: one valueless flag segment among real pairs. 7 of
+    // 755 sampled bodies look like this, so requiring EVERY part to be a pair
+    // would report them.
+    for (let i = 0; i < 10; i++) {
+        const parts = [word() + '=' + word(), word(), word() + '=' + word(), word() + '=' + word()];
+        formPosts.push(body(parts.join('&')));
     }
 
     // B2 -- JSON composites, including the two empty ones.
-    const jsonCases = ['{}', '[]'];
+    const jsonPosts = [body('{}'), body('[]')];
     for (let i = 0; i < 38; i++) {
         const value = rnd() < 0.5
             ? Object.fromEntries(Array.from({ length: 1 + Math.floor(rnd() * 3) },
                 () => [word(), word()]))
             : Array.from({ length: 1 + Math.floor(rnd() * 4) }, () => word());
-        jsonCases.push(JSON.stringify(value));
+        jsonPosts.push(body(JSON.stringify(value)));
     }
 
-    // B3 -- a markup element. `<redacted>` is a lone tag and must fail; a tag
-    // WITH its closing partner is a document and must pass.
-    const markupCases = [];
+    // B3 -- multipart, across the four axes that break a first-line check.
+    const multipartPosts = [];
+    for (let i = 0; i < 32; i++) {
+        const boundary = word() + word();
+        const text = multipartBody({
+            boundary,
+            preamble: rnd() < 0.5 ? '' : `${token()}\r\n`,
+            leadingCrlf: rnd() < 0.5,
+        });
+        multipartPosts.push(rnd() < 0.5
+            ? body(text, `multipart/form-data; boundary=${boundary}`)
+            : body(text));
+    }
+
+    // B4 -- NDJSON. 13 of the 14 sampled declared `text/plain`, so the
+    // recogniser must not consult the mimeType; half of these declare it and
+    // half do not.
+    const ndjsonPosts = [];
     for (let i = 0; i < 20; i++) {
-        const tag = draw('abcdefghijklmnopqrstuvwxyz', 8);
-        markupCases.push(`<${tag}>${word()}</${tag}>`);
+        const lines = 2 + Math.floor(rnd() * 4);
+        const text = Array.from({ length: lines },
+            () => JSON.stringify({ [word()]: word() })).join('\n');
+        ndjsonPosts.push(rnd() < 0.5 ? body(text, 'text/plain') : body(text));
     }
 
-    for (const [label, cases, why] of [
-        ['7.b', formCases, 'well-formed form-urlencoded bodies -- it swallows real minimal payloads'],
-        ['7.c', jsonCases, 'JSON composites -- it swallows the commonest request body there is'],
-        ['7.d', markupCases, 'markup elements with a closing tag -- it swallows a whole wire format'],
+    // B5 -- XML documents: with and without a declaration, with and without a
+    // namespace prefix, with and without attributes. Never gated on the
+    // mimeType, for the reason NDJSON already established.
+    const xmlPosts = [];
+    for (let i = 0; i < 24; i++) {
+        const prefix = rnd() < 0.5 ? '' : `${draw('abcdefghijklmnopqrstuvwxyz', 5)}:`;
+        const tag = prefix + draw('abcdefghijklmnopqrstuvwxyz', 8);
+        const attr = rnd() < 0.5 ? ` id="${word()}"` : '';
+        const decl = rnd() < 0.5 ? '<?xml version="1.0"?>' : '';
+        const text = `${decl}<${tag}${attr}><item>${word()}</item></${tag}>`;
+        xmlPosts.push(rnd() < 0.5 ? body(text, 'application/xml') : body(text));
+    }
+
+    for (const [label, posts, why] of [
+        ['7.b', formPosts, 'well-formed form-urlencoded bodies -- it swallows real minimal payloads'],
+        ['7.c', jsonPosts, 'JSON composites -- it swallows the commonest request body there is'],
+        ['7.d', multipartPosts, 'multipart bodies -- 10.9% of real traffic, and the delimiter is not always on line one'],
+        ['7.e', ndjsonPosts, 'NDJSON bodies -- and most of them do not declare a JSON mimeType'],
+        ['7.f', xmlPosts, 'XML documents -- a consumer wrapping a SOAP API would meet a gate firing on all of its traffic'],
     ]) {
-        const dirB = project(`property-${label.replace('.', '-')}`);
-        writeHar(dirB, 'reference.har', cases.map((t) => entry(body(t))));
-        const got = hollowIndexes(verify(dirB).out);
+        const dir = project(`property-${label.replace('.', '-')}`);
+        writeHar(dir, 'reference.har', posts.map((post) => entry(post)));
+        const got = hollowIndexes(verify(dir).out);
         assert.deepStrictEqual(got, [],
-            `${label}: the gate reported ${got.length} of ${cases.length} ${why}`);
+            `${label}: the gate reported ${got.length} of ${posts.length} ${why}`);
     }
 }
 
