@@ -1,30 +1,26 @@
 #Requires -Modules Pester
 
 <#
-    Behavior tests for Cleanup-Worktree.ps1's capture guard (issue #371).
+    Behavior tests for Cleanup-Worktree.ps1's two safety gates:
+    the capture guard (issue #371) and the safe-location check (issue #383).
 
-    These exercise the two guard functions directly rather than running the
-    whole script, because the script's side effects are repo-wide (checkout,
-    pull, branch deletion) and cannot be safely driven from a test.
+    These exercise the functions directly rather than running the whole
+    script, because its side effects are repo-wide (checkout, pull, branch
+    deletion) and cannot be safely driven from a test.
 
-    Every case here corresponds to a way the guard could be wrong in a manner
+    Every case here corresponds to a way a gate could be wrong in a manner
     that destroys data or blocks work forever -- not to a line of code.
 #>
 
 BeforeAll {
     $script:ScriptPath = Join-Path $PSScriptRoot 'Cleanup-Worktree.ps1'
 
-    # Load the functions without executing the script body. The body starts at
-    # the "Resolve context" banner and immediately touches the live repo.
-    $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
-    $marker = '# --- Resolve context'
-    $cut = $raw.IndexOf($marker)
-    if ($cut -lt 0) { throw "Could not find the '$marker' banner in Cleanup-Worktree.ps1." }
-    $functionsOnly = $raw.Substring(0, $cut)
-
-    # param() cannot be re-declared in this scope; strip it and the help block.
-    $functionsOnly = $functionsOnly -replace '(?s)^.*?\)\s*\r?\n\s*Set-StrictMode', 'Set-StrictMode'
-    . ([scriptblock]::Create($functionsOnly))
+    # Issue #383: the script returns early when dot-sourced, so its functions
+    # load without the body running. This replaces the #371 loader, which cut
+    # the file at the "Resolve context" banner and re-parsed the front half --
+    # a text hack that would have silently loaded nothing had that banner
+    # moved, and the tests would have failed obscurely rather than usefully.
+    . $script:ScriptPath
 
     function New-TestWorktree {
         <# A real git repo, so `git status --ignored` behaves as in production. #>
@@ -247,5 +243,133 @@ Describe 'Cleanup-Worktree.ps1 wiring' {
         # The refusal's remedy is to move the captures, not to pass a switch.
         $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
         $raw | Should -Not -Match 'AllowCaptureLoss|SkipCaptureCheck|IgnoreCaptures'
+    }
+}
+
+# --- Issue #383: safe-location recognition -------------------------------
+
+Describe 'ConvertTo-NormalizedPath' {
+    It 'strips a trailing backslash' {
+        ConvertTo-NormalizedPath -Path 'C:\Git\Repo\' | Should -Be 'C:\Git\Repo'
+    }
+
+    It 'strips a trailing forward slash' {
+        ConvertTo-NormalizedPath -Path 'C:/Git/Repo/' | Should -Be 'C:\Git\Repo'
+    }
+
+    It 'converts forward slashes to backslashes (git porcelain format)' {
+        ConvertTo-NormalizedPath -Path 'C:/Git/Repo/.worktrees/foo' |
+            Should -Be 'C:\Git\Repo\.worktrees\foo'
+    }
+
+    It 'returns empty for empty input' {
+        ConvertTo-NormalizedPath -Path '' | Should -Be ''
+    }
+}
+
+Describe 'Test-WorktreeInSafeLocation' {
+
+    Context 'Legit {repo}\.worktrees\{slug} layout (regression)' {
+        It 'accepts a worktree directly under .worktrees/' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Git\MyRepo\.worktrees\42-feature' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @() |
+                Should -BeTrue
+        }
+
+        It 'accepts a nested worktree under .worktrees/' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Git\MyRepo\.worktrees\group\42-feature' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @() |
+                Should -BeTrue
+        }
+
+        It 'accepts .worktrees/ layout even when git porcelain uses forward slashes' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:/Git/MyRepo/.worktrees/42-feature' `
+                -MainRepoRoot  'C:/Git/MyRepo' `
+                -RegisteredWorktreePaths @() |
+                Should -BeTrue
+        }
+    }
+
+    Context 'Legit Copilot desktop app layout' {
+        It 'accepts **\copilot-worktrees\{repoName}\{slug} when git worktree list registers it' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\copilot-worktrees\MyRepo\musical-adventure' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Users\Me\copilot-worktrees\MyRepo\musical-adventure') |
+                Should -BeTrue
+        }
+
+        It 'accepts the {mainRepoRoot}\..\copilot-worktrees\{repoName}\{slug} variant when registered' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Git\copilot-worktrees\MyRepo\my-slug' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Git\copilot-worktrees\MyRepo\my-slug') |
+                Should -BeTrue
+        }
+
+        It 'accepts when the registered list uses forward-slash porcelain output' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\copilot-worktrees\MyRepo\musical-adventure' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:/Users/Me/copilot-worktrees/MyRepo/musical-adventure') |
+                Should -BeTrue
+        }
+
+        It 'is case-insensitive on the copilot-worktrees segment' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\Copilot-Worktrees\MyRepo\slug' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Users\Me\Copilot-Worktrees\MyRepo\slug') |
+                Should -BeTrue
+        }
+    }
+
+    Context 'copilot-worktrees segment without git registration' {
+        It 'rejects a **\copilot-worktrees path that git does NOT list' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\copilot-worktrees\MyRepo\stray' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Users\Me\copilot-worktrees\MyRepo\real') |
+                Should -BeFalse
+        }
+
+        It 'rejects a copilot-worktrees path for a different repo name' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\copilot-worktrees\OtherRepo\slug' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Users\Me\copilot-worktrees\OtherRepo\slug') |
+                Should -BeFalse
+        }
+
+        It 'rejects when the registered-list is empty' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Users\Me\copilot-worktrees\MyRepo\slug' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @() |
+                Should -BeFalse
+        }
+    }
+
+    Context 'Off-tree foreign paths' {
+        It 'rejects an unrelated off-tree path' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Temp\bogus\MyRepo-checkout' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @('C:\Temp\bogus\MyRepo-checkout') |
+                Should -BeFalse
+        }
+
+        It 'rejects a sibling directory that resembles .worktrees but is not' {
+            Test-WorktreeInSafeLocation `
+                -WorktreePath 'C:\Git\MyRepo.worktrees-backup\42' `
+                -MainRepoRoot  'C:\Git\MyRepo' `
+                -RegisteredWorktreePaths @() |
+                Should -BeFalse
+        }
     }
 }
