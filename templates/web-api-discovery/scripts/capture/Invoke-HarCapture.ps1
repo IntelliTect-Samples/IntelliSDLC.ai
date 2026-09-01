@@ -10,9 +10,10 @@
     capture profile, records every request, then scrubs, verifies, digests and
     catalogues what it recorded.
 
-    The operator's entire surface is a URL:
+    The operator's surface is a URL and a sentence saying what the recording
+    is for:
 
-        Invoke-HarCapture https://example.com
+        Invoke-HarCapture https://example.com -Describe 'create, then delete, a post'
 
     Browse, perform the operations worth documenting -- including the failure
     paths, which are frequently the highest-value entries because they
@@ -41,6 +42,15 @@
                        gitignored, and CANNOT be redirected -- there is no
                        option for it, so an unignored credential-bearing
                        capture is not reachable by any argument.
+
+                       WHICH .har-captures: the one in the repository's MAIN
+                       working tree, never a linked worktree's. A worktree is
+                       disposable by design and `git worktree remove` deletes a
+                       gitignored capture outright with nothing to prompt
+                       about; a raw is the one artifact that cannot be
+                       regenerated. Outside a repository it is relative to the
+                       current directory, as before. The recorder prints the
+                       resolved path as it starts.
       -OutputPath      scrubbed, verified artifacts only: the per-action
                        reference HARs, the session digest, and the catalogue.
 
@@ -76,9 +86,20 @@
     ../lib/RepoWorkflowGuard.ps1.
 
 .PARAMETER Describe
-    An optional hint about what you intend to do, which helps the cataloguing
-    step segment the session into actions. It is never the source of action
-    names -- those come from the traffic.
+    REQUIRED. What this recording is for, in your own words. It helps the
+    cataloguing step segment the session into actions, but that is the smaller
+    half of its job.
+
+    THE CAPTURE STORE IS SHARED AND APPEND-ONLY, and its directory names are
+    capture START times while session.json's mtime is when post-processing
+    FINISHED -- so with several sessions recording at once neither orders
+    reliably, and a time window wide enough to hold your runs holds other
+    people's too. The host directory groups by site, not by intent. In that
+    setting the description is the only reliable way to tell one capture from
+    another, and it is the one part of a capture that cannot be reconstructed
+    afterwards: the bytes can be re-captured, what you were doing cannot.
+
+    It is never the source of action names -- those come from the traffic.
 
 .PARAMETER Profile
     Which signed-in identity to record as.
@@ -111,10 +132,11 @@
     IntelliSDLC.HarCapture.CatalogueEntry
 
 .EXAMPLE
-    Invoke-HarCapture https://example.com
+    Invoke-HarCapture https://example.com -Describe 'sign in, then sign out'
 
 .EXAMPLE
-    Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+    Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+        Where-Object Status -eq Observed
 
 .EXAMPLE
     Invoke-HarCapture https://example.com -Describe 'create, edit and delete a post' |
@@ -132,6 +154,11 @@ param(
 
     [string]$OutputPath,
 
+    # Mandatory (#366). PowerShell prompts for a missing mandatory parameter,
+    # which is the right prompt to get: it arrives before the browser opens,
+    # and answering it costs a sentence.
+    [Parameter(Mandatory)]
+    [ValidateNotNullOrWhiteSpace()]
     [string]$Describe,
 
     [string]$Profile,
@@ -280,7 +307,7 @@ $env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
 # PowerShell reassembly of it.
 $captureArgs = @('start', '--uri', $Uri, '--port', $Port)
 if ($OutputPath) { $captureArgs += @('--output-path', $OutputPath) }
-if ($Describe) { $captureArgs += @('--describe', $Describe) }
+$captureArgs += @('--describe', $Describe)
 if ($Profile) { $captureArgs += @('--profile', $Profile) }
 if ($Isolated) { $captureArgs += '--isolated' }
 # -Verbose is the only verbosity switch. capture-har.js prints its own console

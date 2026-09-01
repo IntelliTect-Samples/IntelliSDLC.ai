@@ -1006,7 +1006,9 @@ test('the placement guard warns before any capture begins', () => {
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            // Required since #366; this case is about the guard's ORDERING.
+            '--describe', 'placement-guard fixture'],
         { cwd: work, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0, 'the guard must not turn an advisory into a failure');
@@ -1053,7 +1055,8 @@ test('the recorder keeps the closing notice even when a front door warned (#300)
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--describe', 'closing-notice fixture'],
         {
             cwd: work,
             encoding: 'utf8',
@@ -1095,7 +1098,7 @@ test('the placement guard stays silent in a worktree', () => {
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
-            '--uri', 'https://app.example.com', '--port', '0', '--validate-only'],
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only', '--describe', 'worktree-guard fixture'],
         { cwd: wt, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0);
