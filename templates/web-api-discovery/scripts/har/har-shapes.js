@@ -836,14 +836,26 @@ function capturedFieldName(keyPath, base) {
  *     in `_id` would be a false negative of exactly the kind this gate exists
  *     to prevent. Entropy is evidence of secret-ness; a field name does not
  *     argue it away.
- *   * A CAPTURED FIELD NAME only. `field` is the key the captured document
- *     itself carried, and nothing else may be spelled here: not a HAR
- *     envelope property, and not a key path to derive one from. A
- *     percent-decoded finding has no structural path and a header value has
- *     no key at all, so both arrive as null and are refused. The caller that
- *     knows the provenance -- the walk -- resolves the name; this predicate
- *     cannot be handed an envelope path to mistake for one, which is a
- *     restriction of the language rather than a check a caller could forget.
+ *   * A CAPTURED FIELD NAME only. `field` must be the key the captured
+ *     document itself carried -- never a HAR envelope property, and never a
+ *     key path. A percent-decoded finding has no structural path and a header
+ *     value has no key at all; both arrive as null and are refused.
+ *
+ *     THIS FUNCTION DOES NOT ENFORCE THAT, and an earlier version of this
+ *     comment claimed it did. `field` is passed straight to
+ *     `harPolicy.isIdentifierField`, which tokenises whatever string it is
+ *     given: hand it `request.headers[0].value` directly and a policy
+ *     declaring `*value` matches, returning true. The restriction lives
+ *     ENTIRELY IN THE CALL SITES, which resolve the name through
+ *     `capturedFieldName` first -- an envelope node is passed as its own base
+ *     and so yields null. Both current callers do this, and the scrub side
+ *     (`pii.js`) never derives a name from a path at all: it hands over the
+ *     bare JSON key the walk is already holding.
+ *
+ *     So this is a CALLER CONTRACT, not a language restriction, and a new
+ *     consumer that resolves the name some other way can defeat it. Saying so
+ *     plainly matters more than the comment reading well: the difference is
+ *     whether the next caller thinks it has to do anything.
  */
 function isIdentifierShaped(leak, field, policy) {
     if (!policy || leak.class !== 'identity') return false;

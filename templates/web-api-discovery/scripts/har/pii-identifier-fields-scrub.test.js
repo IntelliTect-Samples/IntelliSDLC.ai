@@ -204,9 +204,27 @@ function allSitesDeclared(sites) {
         && harPolicy.isIdentifierField(POLICY, s.name));
 }
 
-/** Does the GATE fail the run on this document, for this kind? */
-function gateBlocks(har, kind) {
-    return harShapes.findLeaksInHar(har, POLICY)
+/**
+ * Does the GATE fail the run on this document, for this kind?
+ *
+ * `policy` is REQUIRED and deliberately not defaulted. `8.a` shipped for one
+ * review round asserting against the DEFAULT policy while its scrub ran under a
+ * `*value` one -- so the assertion asked a question whose answer is `true`
+ * whether or not the #369 defect is present, and a test named for #369 could
+ * not observe #369. Reintroducing the defect left it green.
+ *
+ * The composition these cases assert is a statement about the scrub and the
+ * gate reading THE SAME POLICY. A defaulted parameter is exactly what let the
+ * two halves drift apart silently, so the default is removed rather than the
+ * call sites merely corrected: the mismatch is now unexpressible instead of
+ * discouraged. Same move as restricting `identifierFields`' language after the
+ * third round of narrowing it.
+ */
+function gateBlocks(har, kind, policy) {
+    if (!policy) {
+        throw new Error('gateBlocks: pass the SAME policy the scrub ran under');
+    }
+    return harShapes.findLeaksInHar(har, policy)
         .filter(l => l.kind === kind)
         .some(l => harShapes.blocksLeak(l));
 }
@@ -252,7 +270,7 @@ check('1.a survival matches the identifier-field oracle over generated documents
             // scrub failing toward a miss is only safe because the gate refuses
             // to pass what the scrub declined on mixed evidence.
             const mixedEvidence = !allSitesDeclared(sites);
-            assert.strictEqual(gateBlocks(har, 'credit-card'), mixedEvidence,
+            assert.strictEqual(gateBlocks(har, 'credit-card', POLICY), mixedEvidence,
                 'case ' + i + ' (' + shape + '): a value the scrub left in place must be '
                 + (mixedEvidence
                     ? 'BLOCKED by the gate, because its evidence was mixed'
@@ -557,7 +575,7 @@ check('7.a the gate BLOCKS a mixed-evidence value the scrub left in place', () =
         pii.scrubPii(har, POLICY);
         assert.strictEqual(siteCount(har, value), before,
             'order ' + order.join(',') + ': the scrub must fail toward a miss here');
-        assert.strictEqual(gateBlocks(har, 'credit-card'), true,
+        assert.strictEqual(gateBlocks(har, 'credit-card', POLICY), true,
             'order ' + order.join(',') + ': the gate must fail the run on a value the '
             + 'scrub declined on mixed evidence -- without this the scrub is simply '
             + 'not removing a card');
@@ -571,7 +589,7 @@ check('7.b the gate PASSES a value declined on unmixed identifier evidence', () 
         { where: 'array', name: 'trip_uuids' },
     ]);
     pii.scrubPii(har, POLICY);
-    assert.strictEqual(gateBlocks(har, 'credit-card'), false,
+    assert.strictEqual(gateBlocks(har, 'credit-card', POLICY), false,
         'every site is a declared id field, so the gate has already agreed to allow it; '
         + 'blocking here would make the two engines disagree in the other direction');
     const still = harShapes.findLeaksInHar(har, POLICY).filter(l => l.kind === 'credit-card');
@@ -585,7 +603,7 @@ check('7.c a plain-field value is replaced, and the gate then finds nothing', ()
     const har = harWith(value, [{ where: 'field', name: 'ledger_ref' }]);
     pii.scrubPii(har, POLICY);
     assert.strictEqual(siteCount(har, value), 0, 'no id declaration, so it is replaced');
-    assert.strictEqual(gateBlocks(har, 'credit-card'), false,
+    assert.strictEqual(gateBlocks(har, 'credit-card', POLICY), false,
         'the replacement is the scrubber own fake, which the gate ignores');
 });
 
@@ -675,7 +693,10 @@ check('8.a a header echo under a `*value` policy is declined AND blocked', () =>
     const row = result.retained.find(x => x.kind === 'credit-card');
     assert.strictEqual(row.mixedEvidence, true,
         'a header carries no captured key, so the evidence is mixed and must say so');
-    assert.strictEqual(gateBlocks(har, 'credit-card'), true,
+    // THE SAME POLICY THE SCRUB RAN UNDER. Asking the default here is what made
+    // this case vacuous: the default never declares `*value`, so it blocks
+    // regardless and the assertion could not fail.
+    assert.strictEqual(gateBlocks(har, 'credit-card', valuePolicy), true,
         'the value the scrub left in place shipped UNBLOCKED -- the header must not '
         + 'be readable as a declared identifier field');
 });
