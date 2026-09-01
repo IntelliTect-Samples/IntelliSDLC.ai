@@ -78,6 +78,22 @@ Describe 'Get-WorktreeCaptureArtifact' {
         finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'finds a capture ignored as a FILE, not only one inside an ignored directory' {
+        # `git status --ignored` reports a whole DIRECTORY when the ignore rule
+        # names one (`.har-captures/`) and an individual FILE when the rule
+        # names the file. Those are two branches in Get-WorktreeCaptureArtifact,
+        # and only the directory branch was covered: the file branch checked the
+        # .har extension alone, so a lone ignored session.json -- the artifact
+        # that says what a capture was FOR -- was invisible to the guard.
+        $wt = New-TestWorktree -IgnorePatterns @('session.json', '*.har')
+        try {
+            New-Capture -WorktreePath $wt -Relative 'session.json' | Out-Null
+            @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count |
+                Should -Be 1 -Because 'an ignored session.json is a capture artifact wherever it sits'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'returns nothing for a worktree with no captures' {
         $wt = New-TestWorktree
         try {
@@ -194,15 +210,36 @@ Describe 'Cleanup-Worktree.ps1 wiring' {
             Should -Be 3 -Because 'the targeted removal and both sweep removals must each be guarded'
     }
 
-    It 'guards before the --force retry, not after' {
+    It 'guards before EVERY --force retry, not just the first' {
         # `worktree remove` refusing is not enough: the script escalates to
         # --force on refusal, so a git-layer guard defeats itself.
+        #
+        # Checked PER SITE, not on first occurrence. An earlier version compared
+        # $raw.IndexOf(guard) with $raw.IndexOf(force): both resolve to the
+        # TARGETED path, so swapping the guard and the --force call at either
+        # SWEEP site left this test green -- and the sweep sites are the
+        # unattended ones, where an unsupervised regression costs the most.
+        #
+        # The property is interleaving: walking the file, each --force call must
+        # be preceded by a guard that comes after the previous --force. Offsets
+        # rather than line numbers, so the assertion survives reformatting.
         $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
-        $firstGuard = $raw.IndexOf('Assert-WorktreeCaptureSafe -WorktreePath')
-        $firstForce = $raw.IndexOf("'worktree', 'remove', '--force'")
-        $firstGuard | Should -BeGreaterThan 0
-        $firstForce | Should -BeGreaterThan 0
-        $firstGuard | Should -BeLessThan $firstForce
+        $guards = @([regex]::Matches($raw, 'Assert-WorktreeCaptureSafe -WorktreePath') |
+            ForEach-Object { $_.Index })
+        $forces = @([regex]::Matches($raw, "'worktree', 'remove', '--force'") |
+            ForEach-Object { $_.Index })
+
+        $guards.Count | Should -Be 3 -Because 'each removal site needs its own guard'
+        $forces.Count | Should -Be 3 -Because 'the targeted retry and both sweep removals force'
+
+        $previousForce = -1
+        foreach ($force in $forces) {
+            $own = @($guards | Where-Object { $_ -lt $force -and $_ -gt $previousForce })
+            $own.Count | Should -BeGreaterThan 0 -Because (
+                "the --force call at offset $force must be preceded by its OWN guard, " +
+                'not merely by the guard belonging to an earlier site')
+            $previousForce = $force
+        }
     }
 
     It 'adds no new command-line option' {

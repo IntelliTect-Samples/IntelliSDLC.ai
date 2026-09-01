@@ -223,7 +223,14 @@ function Get-WorktreeCaptureArtifact {
             $found += Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Extension -eq '.har' -or $_.Name -eq 'session.json' }
         }
-        elseif ($item.Extension -eq '.har') {
+        elseif ($item.Extension -eq '.har' -or $item.Name -eq 'session.json') {
+            # Same filter as the container branch above. `git status --ignored`
+            # reports a whole ignored DIRECTORY when the rule names one, and an
+            # individual FILE when the rule names the file -- so a store ignored
+            # as `.har-captures/` arrives here as a directory, while a rule
+            # naming `session.json` directly arrives as a file. Checking only
+            # `.har` in this branch would see a raw capture and miss the file
+            # that says what the capture was for.
             $found += $item
         }
     }
