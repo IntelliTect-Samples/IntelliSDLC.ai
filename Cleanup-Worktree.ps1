@@ -34,6 +34,25 @@
     link loses nothing. The remedy is to move the captures to the shared
     store and re-run -- there is deliberately no override switch.
 
+    WHY A GUARD AND NOT A CHECK. The check that "found nothing" is the
+    failure mode here, not the deletion. Six ordinary commands each report
+    an empty result for a reason unrelated to emptiness:
+
+      git status --porcelain   omits ignored content entirely
+      ls (without -Force/-A)   hides dot-directories
+      git cat-file -e <r>:.x   false-negatives on a leading-dot path
+      git cherry / patch-id    unreliable across a directory rename
+      an absent symbol         work can land under a different name
+      git diff main..branch    counts are meaningless on a stale branch
+
+    That is what any proxy does at the edge of what it models, so a second
+    proxy is no safer than the first. For CODE the reliable question is
+    behavioural -- does the target actually do the thing? For DATA there is
+    no behaviour to run: the bytes exist or they do not, and the check is
+    destructive if wrong. So the remedy differs by kind: test the behaviour
+    for code, preserve before concluding for data. This guard is the second
+    case, which is why it refuses rather than reporting.
+
     The script is project-agnostic: it infers the worktree path, branch name
     and repository root from git, and only acts on worktrees that live under
     the .worktrees/ directory unless -AllowOutsideWorktreesDir is passed.
