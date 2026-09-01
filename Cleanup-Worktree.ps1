@@ -24,6 +24,16 @@
         leave the local branch "unmerged" from git's perspective.
       * Remove any worktree whose branch no longer exists.
 
+    CAPTURE SAFETY (both modes, issue #371):
+    Removing a worktree destroys its gitignored files outright -- no Recycle
+    Bin, no undo -- and `git status` reports such a worktree CLEAN, because
+    ignored content never appears there. Before any removal, this script
+    refuses if the worktree holds raw captures (`*.har` / `session.json`)
+    under a gitignored path. A capture store that is a junction or symbolic
+    link does NOT block removal: its bytes live elsewhere, so dropping the
+    link loses nothing. The remedy is to move the captures to the shared
+    store and re-run -- there is deliberately no override switch.
+
     The script is project-agnostic: it infers the worktree path, branch name
     and repository root from git, and only acts on worktrees that live under
     the .worktrees/ directory unless -AllowOutsideWorktreesDir is passed.
@@ -153,6 +163,99 @@ function Get-WorktreeList {
     return $entries
 }
 
+<#
+.SYNOPSIS
+    Raw capture artifacts inside a worktree that removing it would destroy.
+.DESCRIPTION
+    Capture stores are gitignored, so `git status --porcelain` reports the
+    worktree clean while a multi-gigabyte store sits inside it. The standard
+    "what would I lose?" check is structurally blind to the only thing worth
+    protecting, which is how a 71 MB raw HAR was permanently destroyed
+    (issue #371). This enumerates IGNORED entries instead.
+
+    Reparse points (junction / symbolic link) count as EMPTY on purpose: the
+    bytes live outside the worktree, so dropping the link loses nothing.
+    Following one would both misreport a shared store as worktree-local --
+    refusing every linked worktree forever -- and risk deleting through it,
+    since Windows PowerShell 5.1's `Remove-Item -Recurse` follows junctions
+    (pwsh 7 does not).
+#>
+function Get-WorktreeCaptureArtifact {
+    param([Parameter(Mandatory)][string]$WorktreePath)
+
+    if (-not (Test-Path -LiteralPath $WorktreePath)) { return @() }
+
+    $ignored = & git -C $WorktreePath status --porcelain --ignored 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $ignored) { return @() }
+
+    $found = @()
+    foreach ($line in ($ignored -split "`r?`n")) {
+        if ($line -notlike '!!*') { continue }
+        $relative = $line.Substring(3).Trim().Trim('"')
+        if (-not $relative) { continue }
+        $item = Get-Item -LiteralPath (Join-Path $WorktreePath $relative) -Force -ErrorAction SilentlyContinue
+        if (-not $item) { continue }
+        # A link's target is not ours to lose -- see .DESCRIPTION.
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+
+        if ($item.PSIsContainer) {
+            # -Recurse does not traverse reparse points in pwsh 7, so a linked
+            # store nested inside an ignored directory stays excluded too.
+            $found += Get-ChildItem -LiteralPath $item.FullName -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -eq '.har' -or $_.Name -eq 'session.json' }
+        }
+        elseif ($item.Extension -eq '.har') {
+            $found += $item
+        }
+    }
+    return $found
+}
+
+<#
+.SYNOPSIS
+    Refuse to remove a worktree holding raw captures that exist nowhere else.
+.DESCRIPTION
+    Throws rather than merely letting `git worktree remove` refuse, because
+    this script escalates to `--force` on refusal -- a guard at the git layer
+    would be defeated by the script's own retry.
+
+    Under -DryRun this reports instead of throwing, so the check can be used
+    to audit worktrees safely.
+#>
+function Assert-WorktreeCaptureSafe {
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        # Passed explicitly rather than read off the script scope: under
+        # Set-StrictMode -Version Latest an unset $DryRun throws, which would
+        # turn this guard into a crash in any context that dot-sources it.
+        [switch]$DryRun
+    )
+
+    $captures = @(Get-WorktreeCaptureArtifact -WorktreePath $WorktreePath)
+    if ($captures.Count -eq 0) { return }
+
+    # Scale the unit: a refusal that says "0 MB" reads like a rounding bug and
+    # invites the operator to dismiss it.
+    $bytes = ($captures | Measure-Object -Property Length -Sum).Sum
+    $size = if ($bytes -ge 1GB) { '{0:N2} GB' -f ($bytes / 1GB) }
+            elseif ($bytes -ge 1MB) { '{0:N1} MB' -f ($bytes / 1MB) }
+            elseif ($bytes -ge 1KB) { '{0:N0} KB' -f ($bytes / 1KB) }
+            else { "$bytes bytes" }
+    $roots = $captures | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique | Select-Object -First 3
+    $message = @(
+        "Refusing to remove '$WorktreePath': it holds $($captures.Count) raw capture file(s), $size, that git does not track."
+        'These are gitignored, so `git status` reports this worktree clean -- removing it would destroy them with no Recycle Bin and no undo.'
+        "Locations: $($roots -join '; ')"
+        'Move them to the shared capture store first, then re-run this script.'
+    ) -join [Environment]::NewLine
+
+    if ($DryRun) {
+        Write-Warning $message
+        return
+    }
+    throw $message
+}
+
 # --- Resolve context -------------------------------------------------------
 
 $startingDir = (Get-Location).Path
@@ -210,6 +313,10 @@ if ($WorktreePath) {
     if (-not $underDotWorktrees -and -not $AllowOutsideWorktreesDir) {
         throw "Worktree '$absWorktree' is not under '$worktreesDir'. Pass -AllowOutsideWorktreesDir to proceed."
     }
+
+    # Issue #371: refuse before anything is deleted, not at the git layer --
+    # the removal below escalates to --force on refusal.
+    Assert-WorktreeCaptureSafe -WorktreePath $absWorktree -DryRun:$DryRun
 }
 
 # --- Summary ---------------------------------------------------------------
@@ -319,6 +426,8 @@ if ($Sweep) {
             $wt = $refreshed | Where-Object { $_.Branch -eq $b } | Select-Object -First 1
             if ($wt) {
                 Write-Host "  Branch '$b' is checked out at '$($wt.Path)' -- removing worktree first." -ForegroundColor Yellow
+                # Issue #371: a sweep must not destroy captures either.
+                Assert-WorktreeCaptureSafe -WorktreePath $wt.Path -DryRun:$DryRun
                 Invoke-Git -Arguments @('worktree', 'unlock', $wt.Path) -IgnoreFailure | Out-Null
                 Invoke-Git -Arguments @('worktree', 'remove', '--force', $wt.Path) -IgnoreFailure | Out-Null
             }
@@ -333,6 +442,8 @@ if ($Sweep) {
         $exists = & git show-ref --verify --quiet "refs/heads/$($wt.Branch)"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  Worktree '$($wt.Path)' references missing branch '$($wt.Branch)' -- removing." -ForegroundColor Yellow
+            # Issue #371: a missing branch does not make the captures expendable.
+            Assert-WorktreeCaptureSafe -WorktreePath $wt.Path -DryRun:$DryRun
             Invoke-Git -Arguments @('worktree', 'unlock', $wt.Path) -IgnoreFailure | Out-Null
             Invoke-Git -Arguments @('worktree', 'remove', '--force', $wt.Path) -IgnoreFailure | Out-Null
         }
