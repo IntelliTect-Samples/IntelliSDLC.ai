@@ -57,9 +57,14 @@ blocks the most common request this skill gets.
    is genuinely ambiguous.
 2. **Where the capture lands.** Convention already answers this: both roots
    are keyed on the captured host, so raw captures go to
-   `.har-captures/<host>/<timestamp>/` (gitignored) and the committable
-   reference to `./<host>/`. Do not ask; follow the convention unless the user
-   named a path.
+   `.har-captures/<host>/<timestamp>/` (gitignored, in the repository's MAIN
+   working tree) and the committable reference to `./<host>/`. Do not ask;
+   follow the convention unless the user named a path.
+3. **What the recording is for**, one sentence, passed as `-Describe`. It is
+   mandatory and the recorder refuses to start without it. Derive it from the
+   request rather than interrogating the user -- "create a private post with
+   three photos, edit it, then delete it" is the shape that works: the site,
+   the operations, and their order.
 
 Nothing else is required. In particular, do **not** ask for a project name, a
 .NET namespace, an auth model, or a tracking issue to record a session.
@@ -68,14 +73,14 @@ Nothing else is required. In particular, do **not** ask for a project name, a
 
 **Additionally, before emitting a wrapper project:**
 
-3. Confirmed a project name + .NET namespace + output directory.
-4. Confirmed the auth model (or accepted "let the detector decide").
-5. **Asked the user whether the target service has a mobile app to include**
+4. Confirmed a project name + .NET namespace + output directory.
+5. Confirmed the auth model (or accepted "let the detector decide").
+6. **Asked the user whether the target service has a mobile app to include**
    (Phase 1.5). The agent must ask -- the user may still answer no.
-6. **Asked the user whether to seed the project with the IntelliSDLC.ai
+7. **Asked the user whether to seed the project with the IntelliSDLC.ai
    instructions and add the `sdlc.ai` remote** (Phase 10.5). The agent
    must ask -- the user may still answer no.
-7. Created a GitHub issue (or referenced an existing one) that describes
+8. Created a GitHub issue (or referenced an existing one) that describes
    the scope of the wrapper.
 
 ### Capture-only run
@@ -88,11 +93,15 @@ capture, or catalogue traffic and never asked for a client.
 # Record, scrub, verify, digest and catalogue -- one command. Browse, then
 # press ENTER; closing the browser window or calling Stop-HarRecording from an
 # agent does the same thing.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+    -Describe 'sign in, create a post, then delete it'
 
+# -Describe is MANDATORY: a shared, append-only capture store keyed on start
+# times is one where the description is the only way to tell captures apart.
 # -Verbose adds the resolved paths, the capture profile and the CDP endpoint an
 # agent attaches to. Warnings and errors print at either level.
-templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com -Verbose
+templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1 https://example.com `
+    -Describe 'sign in, create a post, then delete it' -Verbose
 ```
 
 A consuming project usually dot-sources or aliases that path once; the rest of
@@ -102,8 +111,10 @@ That is the whole capture-only path. `Invoke-HarCapture` emits the catalogue
 as objects, so the result composes rather than needing to be parsed:
 
 ```powershell
-Invoke-HarCapture https://example.com | ConvertTo-Json -Depth 4
-Invoke-HarCapture https://example.com | Where-Object Status -eq Observed
+Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+    ConvertTo-Json -Depth 4
+Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
+    Where-Object Status -eq Observed
 ```
 
 **Two directories, and the difference is the safety story.** The raw capture
@@ -112,7 +123,34 @@ construction** -- no option redirects it. `-OutputPath` (default: the current
 directory) receives only artifacts that have already been scrubbed and
 verified.
 
-That `.har-captures/` is *gitignored*, though, is a property of the repository,
+**WHICH `.har-captures/`, though, is a separate question, and it is the one
+that cost a capture.** The name is fixed; the *anchor* used to be the working
+directory, so recording from a linked worktree wrote the raw inside a directory
+that exists to be thrown away. An ordinary cleanup destroyed a 71 MB, 666-entry
+capture, and nothing warned -- because nothing could:
+
+- a directory listing hides dot-directories, so `.har-captures/` never appeared;
+  and
+- `git status --porcelain` reported clean. **Ignored content never appears
+  there.** The store is gitignored *by design*, so the standard "what would I
+  lose if I deleted this?" check is structurally blind to the only thing in the
+  worktree worth keeping.
+
+So the raw capture root now anchors to the repository's **main working tree**,
+whose lifetime is the clone's, and the recorder **prints the resolved absolute
+path as the run starts**. Recording from a worktree still works and says where
+the bytes went. Outside a repository the working-directory answer is
+unchanged. A raw is the one artifact that cannot be regenerated -- a scrubbed
+reference can be re-extracted from it, but it can only be re-captured against
+the live provider, and for an authentication or one-shot flow sometimes not at
+all.
+
+> A *link* from the worktree to the store is not an equivalent fix. On Windows
+> a directory junction is followed by Windows PowerShell 5.1's `Remove-Item
+> -Recurse`, which deletes the target's contents -- turning the loss of one
+> capture into the loss of the whole store.
+
+That `.har-captures/` is *gitignored* is likewise a property of the repository,
 not of the name: a directory is only ignored where a `.gitignore` says so. The
 scrub therefore **verifies** it rather than assuming it -- see the substitution
 tables below.
@@ -246,10 +284,12 @@ must not proceed without explicit user acknowledgement.
 > identifiers. A test account with no real relationships has no third parties in
 > it.
 
-The operator's entire surface is a URL:
+The operator's surface is a URL and one sentence saying what the recording is
+for:
 
 ```powershell
-Invoke-HarCapture https://example.com    # browse, then press ENTER
+Invoke-HarCapture https://example.com -Describe 'sign in, create a post, delete it'
+# browse, then press ENTER
 ```
 
 `templates/web-api-discovery/scripts/capture/capture-har.js` owns the browser
@@ -263,7 +303,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 |---|---|
 | `-Uri` | positional, mandatory |
 | `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
-| `-Describe` | optional intent hint that helps the AI segment; never the source of action names |
+| `-Describe` | **mandatory.** What the recording is for, in your own words. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one |
 

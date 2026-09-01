@@ -20,6 +20,24 @@
 // Hence: this module warns and never throws, and callers must call it before
 // they start work rather than before they write files.
 //
+// A SECOND, HARDER PLACEMENT QUESTION now lives here too (#367): where the RAW
+// capture root goes. That one is not advisory, because its failure mode is not
+// a dirty tree -- it is deletion. `resolveCaptureRoot` anchors the root to the
+// repository's MAIN working tree, so a routine worktree cleanup cannot take an
+// unrepeatable capture with it. Warn-and-proceed is right for output that
+// merely landed awkwardly; it is not right for bytes that stop existing.
+//
+// WHY THAT ONE CANNOT BE A WARNING AT ALL. The session that destroyed the
+// reported capture checked twice before deleting, and both checks were
+// structurally incapable of seeing it: a directory listing that hides
+// dot-directories, and `git status --porcelain` reporting clean. IGNORED
+// CONTENT NEVER APPEARS IN `git status`. The capture store is gitignored -- by
+// design, because it holds live session cookies -- so the standard "what would
+// I lose if I deleted this?" check is blind to the only thing worth
+// protecting. No warning printed at record time survives to the cleanup that
+// happens days later in another session, and the cleanup's own instruments say
+// there is nothing there. Placement is the only control that works.
+//
 // It lives in scripts/lib/ and is shared rather than reimplemented per script.
 // Bespoke per-script placement logic is how the defect arrived in the first
 // place. RepoWorkflowGuard.ps1 is its PowerShell twin; the two are held to one
@@ -208,6 +226,117 @@ function resolveDefaultOutputRoot(cwd) {
     return topLevelOf(dir) || path.resolve(dir);
 }
 
+/**
+ * The MAIN working tree of the repository containing `cwd` -- never a linked
+ * worktree -- or null when there is no main working tree to name.
+ *
+ * WHY THIS EXISTS (#367). A linked worktree is DISPOSABLE by design:
+ * `git worktree remove` deletes it outright, no prompt, nothing to the Recycle
+ * Bin. Anything gitignored inside it is invisible to git, so the operator is
+ * asked nothing and told nothing. A 71 MB raw capture was destroyed that way by
+ * an ordinary cleanup, and the cleanup was CORRECT -- the capture simply had no
+ * business being somewhere with a short lifetime.
+ *
+ * The main working tree has the lifetime of the clone, which is the lifetime an
+ * unrepeatable artifact needs.
+ *
+ * `git worktree list --porcelain` names the main working tree as its FIRST
+ * entry, by definition, which is why it is asked rather than derived. Deriving
+ * it from `--git-common-dir` by taking the parent is right for an ordinary
+ * clone and wrong for a submodule, whose common dir is
+ * `<super>/.git/modules/<name>` and whose parent is not a working tree at all.
+ * The worktree test itself stays `--git-dir` vs `--git-common-dir` -- the same
+ * comparison the repository's pre-commit hook uses -- so this module and the
+ * hook cannot disagree about what a worktree is.
+ *
+ * Returns null for: outside a repository, and a BARE main repository (whose
+ * first entry has no working tree to write into). Both fall back to the
+ * caller's working directory, which is exactly today's behaviour.
+ */
+function mainWorkingTreeOf(cwd) {
+    const dir = cwd || process.cwd();
+    const here = topLevelOf(dir);
+    if (!here) { return null; }
+    // The overwhelmingly common case, and it costs no extra process: a primary
+    // checkout IS the main working tree.
+    if (isPrimaryCheckout(dir)) { return here; }
+
+    const listed = git(dir, ['worktree', 'list', '--porcelain']);
+    if (!listed) { return null; }
+    // Blocks are separated by a blank line; the first block is the main working
+    // tree. Only the trailing CR is stripped -- a path is taken verbatim
+    // otherwise, so one containing spaces survives intact.
+    const firstBlock = listed.split(/\r?\n\s*\r?\n/)[0] || '';
+    const lines = firstBlock.split(/\r?\n/).map((l) => l.replace(/\r$/, ''));
+    if (lines.some((l) => l === 'bare')) { return null; }
+    const entry = lines.find((l) => l.startsWith('worktree '));
+    if (!entry) { return null; }
+    const p = entry.slice('worktree '.length);
+    return p ? realpath(p) : null;
+}
+
+/**
+ * Where a capture root of the given NAME belongs, and whether that differs from
+ * where the working directory alone would have put it.
+ *
+ * The name is the caller's -- this module decides the ANCHOR, never the folder,
+ * so nothing here can be used to redirect a raw capture somewhere else.
+ *
+ * `legacyRoot` is the working-directory answer this replaces. It is reported so
+ * a caller can still FIND a capture written before this change, or by an older
+ * copy of the tool, without any of them being moved: reading both places is
+ * safe, and relocating what is already on disk is precisely the operation that
+ * must never happen to a raw.
+ */
+function resolveCaptureRoot(cwd, dirName) {
+    const dir = cwd || process.cwd();
+    const here = topLevelOf(dir);
+    const main = mainWorkingTreeOf(dir);
+    const anchor = main || path.resolve(dir);
+    const root = path.join(anchor, dirName);
+    const legacyRoot = path.join(path.resolve(dir), dirName);
+    return {
+        root,
+        legacyRoot,
+        insideRepo: here !== null,
+        mainWorkingTree: main,
+        currentWorkingTree: here,
+        // Only a LINKED worktree is a durability problem. Anchoring a run made
+        // from a subdirectory of the main checkout also moves the root, and
+        // that is worth saying, but it is not the deletion hazard.
+        worktree: Boolean(main && here && main !== here),
+        relocated: root !== legacyRoot
+    };
+}
+
+/**
+ * One line the operator can act on, printed while the capture is STARTING.
+ *
+ * At record time and not only into `session.json`: the incident's session file
+ * recorded the doomed path perfectly, and nobody read it until after the bytes
+ * were gone. A path named on the way in is a path the operator can question.
+ *
+ * ALWAYS the path, even when nothing moved -- including outside a repository,
+ * where the working-directory answer is the only one there is. A notice that
+ * appeared only in the interesting case would leave "no line" meaning both
+ * "unchanged" and "this version does not tell you", and the second is what the
+ * operator would be relying on.
+ */
+function captureRootNotice(placement) {
+    if (!placement) { return null; }
+    const lines = ['Capture root: ' + placement.root];
+    if (placement.worktree) {
+        lines.push(
+            '  Recording from a linked worktree (' + placement.currentWorkingTree + '),',
+            '  so the raw capture is written to the MAIN working tree instead.',
+            '  `git worktree remove` deletes a gitignored capture outright, with nothing',
+            '  to prompt about, and a raw is the one artifact that cannot be regenerated.');
+    } else if (placement.relocated) {
+        lines.push('  (anchored to the repository root, not the working directory)');
+    }
+    return lines.join('\n');
+}
+
 function worktreeCommand(info) {
     const branchName = info.protectedBranch || 'main';
     return 'git worktree add .worktrees/<name> -b <type>/<issue#>-<name> ' + branchName;
@@ -263,6 +392,9 @@ function relocationNotice(info, writtenPaths) {
 module.exports = {
     inspectCheckout,
     resolveDefaultOutputRoot,
+    mainWorkingTreeOf,
+    resolveCaptureRoot,
+    captureRootNotice,
     guardMessage,
     relocationNotice,
     FALLBACK_TRUNKS

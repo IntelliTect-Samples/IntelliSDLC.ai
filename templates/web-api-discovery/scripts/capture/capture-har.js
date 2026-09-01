@@ -44,7 +44,15 @@
  * ## Raw captures are confined by construction
  *
  * The raw capture carries live session cookies. It always lands in the fixed,
- * gitignored `.har-captures/` and no option can redirect it. `--output-path`
+ * gitignored `.har-captures/` and no option can redirect it.
+ *
+ * WHICH `.har-captures/`, though, is the question that wording never asked, and
+ * it turned out to be the load-bearing one (#367). The root used to resolve
+ * against the working directory, so recording from a linked worktree put an
+ * unrepeatable capture somewhere `git worktree remove` deletes outright --
+ * gitignored, so git reports nothing to lose and no prompt appears. It now
+ * anchors to the repository's MAIN working tree, whose lifetime is the clone's,
+ * and the resolved path is announced while the recording starts. `--output-path`
  * receives only what has already been scrubbed and verified, so the guard is
  * structural rather than a check somebody has to remember to run. The scrub
  * therefore writes its candidate into the session directory and it is COPIED
@@ -86,9 +94,9 @@
  * of them behind a second door is how the invariants in #343 get lost.
  *
  * Usage:
- *   node capture-har.js start --uri <url> [--profile <name|path>] [--isolated]
+ *   node capture-har.js start --uri <url> --describe <text>
+ *                             [--profile <name|path>] [--isolated]
  *                             [--port <n>] [--output-path <dir>]
- *                             [--describe <text>]
  *                             [--snapshot-seconds <n>] [--no-wait]
  *                             [--validate-only]
  *   node capture-har.js stop  [--session <dir>] [--min-bytes <n>] [--dir <d>]
@@ -107,9 +115,15 @@
  *                    a profile Chrome created, hence channel:'chrome'.
  *   --port           default 9333, and it never has to be specified: a busy
  *                    port falls forward to the next free one.
- *   --describe       an intent hint that helps an AI segment the session. It
- *                    is never the source of action names -- those come from
- *                    the traffic.
+ *   --describe       REQUIRED (#366). What this recording is for, in the
+ *                    operator's own words. Segmenting the session is the
+ *                    smaller half of its job: a shared, append-only capture
+ *                    store whose directory names are START times is one where
+ *                    the description is the ONLY reliable way to tell one
+ *                    capture from another -- a time window wide enough to hold
+ *                    one session's runs holds other sessions' runs too. It is
+ *                    never the source of action names; those come from the
+ *                    traffic.
  *   --no-wait        do not read ENTER from stdin (for non-interactive use;
  *                    the session then ends via `stop`, SIGINT, or the window).
  *   --validate-only  resolve and print paths without launching a browser.
@@ -355,8 +369,8 @@ function parseArgs(argv) {
 function usage(msg) {
     if (msg) process.stderr.write(`capture-har: ${msg}\n`);
     process.stderr.write(
-        'usage: node capture-har.js start --uri <url> [--isolated] [--port <n>]\n' +
-        '                                 [--output-path <dir>] [--describe <text>]\n' +
+        'usage: node capture-har.js start --uri <url> --describe <text>\n' +
+        '                                 [--isolated] [--port <n>] [--output-path <dir>]\n' +
         '       node capture-har.js stop [--session <dir>] [--min-bytes <n>]\n' +
         '       node capture-har.js status\n' +
         '       node capture-har.js catalogue [<scrubbed.har|session dir|output dir>]\n' +
@@ -372,13 +386,38 @@ function usage(msg) {
  * option: the raw carries live session cookies, and the only reason the old
  * `--dir` existed was to move it -- which is exactly the leak this closes.
  *
- * It is resolved against the working directory rather than being absolute, so
- * a capture lands beside the project it belongs to -- and so a test harness
- * can contain one by choosing where it runs, without an override that would
+ * Still no option redirects the NAME. What changed in #367 is WHICH
+ * `.har-captures` -- the question the old wording never asked.
+ *
+ * It used to resolve against the working directory. Inside a linked worktree
+ * that put an unrepeatable capture somewhere DISPOSABLE: `git worktree remove`
+ * deletes the tree outright, the capture is gitignored so git reports nothing
+ * to lose, and no prompt appears at any point. A 71 MB, 666-entry raw was
+ * destroyed exactly that way by a correct, routine cleanup.
+ *
+ * So the root anchors to the repository's MAIN working tree, whose lifetime is
+ * the clone's. Outside a repository the working-directory answer is the only
+ * one there is and nothing changes -- which is also how a test harness contains
+ * a capture, by choosing where node runs rather than by an override that would
  * reopen the redirect for everyone else.
  */
-function capturesRoot() {
-    return path.resolve(CAPTURES_DIR);
+function capturePlacement(cwd) {
+    return repoGuard.resolveCaptureRoot(cwd || process.cwd(), CAPTURES_DIR);
+}
+
+/**
+ * Every root a capture might be FOUND under, newest convention first.
+ *
+ * Discovery is not resolution. `stop`, `status` and `catalogue` have to reach
+ * captures written before this change -- including a recording still in flight
+ * when the tool was updated, whose `current.json` sits in the old place. So
+ * they read both roots and never write to, move, or tidy the old one: reading
+ * is free, and relocating a raw is the one operation this pipeline will not
+ * perform.
+ */
+function capturesSearchRoots(cwd) {
+    const placement = capturePlacement(cwd);
+    return placement.relocated ? [placement.root, placement.legacyRoot] : [placement.root];
 }
 
 /**
@@ -461,15 +500,22 @@ function uriFolder(uri) {
  * to mean what they typed.
  */
 function resolveSessionPaths(opts = {}) {
-    const root = opts.capturesRoot ? path.resolve(opts.capturesRoot) : capturesRoot();
+    const cwd = opts.cwd || process.cwd();
+    const placement = opts.capturesRoot ? null : capturePlacement(cwd);
+    const root = opts.capturesRoot ? path.resolve(opts.capturesRoot) : placement.root;
     const folder = uriFolder(opts.uri);
     const sessionDir = path.join(root, folder, opts.stamp || stamp(new Date()));
-    const cwd = opts.cwd || process.cwd();
     const outputRoot = opts.outputPath
         ? path.resolve(cwd, opts.outputPath)
         : repoGuard.resolveDefaultOutputRoot(cwd);
     return {
         capturesRoot: root,
+        // Null when a caller pinned the root itself (tests do), because there
+        // is then nothing about the anchoring for the recorder to announce.
+        capturePlacement: placement,
+        // Where a session may be FOUND, as opposed to where this one is
+        // written. Identical unless #367's anchoring moved the root.
+        searchRoots: placement && placement.relocated ? [root, placement.legacyRoot] : [root],
         uriFolder: folder,
         sessionDir,
         harPath: path.join(sessionDir, RAW_HAR),
@@ -1487,6 +1533,9 @@ function startBannerLines(session) {
     }
     lines.push(['verbose', `  profile:  ${session.profileDir}`]);
     if (session.storageState) lines.push(['verbose', `  session:  ${session.storageState}`]);
+    // Still verbose: the capture ROOT is announced unconditionally before this
+    // banner (#367), and that is the durability-relevant half. The per-session
+    // path under it stays a diagnostic, as the rest of these do.
     lines.push(['verbose', `  raw:      ${session.harPath}  (never committed)`]);
     lines.push(['verbose', `  output:   ${session.outputPath}  (scrubbed artifacts only)`]);
     lines.push(['verbose', `  cdp:      ${session.cdpEndpoint}` +
@@ -1656,6 +1705,29 @@ async function start(args) {
         }
     }
 
+    // #366 -- A CAPTURE NOBODY CAN IDENTIFY IS A CAPTURE NOBODY CAN USE.
+    //
+    // Checked here, before anything is recorded, for the same reason the
+    // placement guard is: refusing a recording costs seconds now and a whole
+    // browsing session later. It is deliberately AFTER the option check above,
+    // so `--dir` still gets told why it was dropped rather than being answered
+    // with a complaint about a different flag.
+    //
+    // Not a warning. `describe` was already visibly null in session.json and
+    // nobody noticed across 82 captures -- a warning is what this effectively
+    // was. Whitespace is empty: `--describe "   "` identifies nothing.
+    if (typeof args.describe !== 'string' || !args.describe.trim()) {
+        process.stderr.write(
+            'capture-har: refusing to record without --describe.\n' +
+            '  A capture nobody can identify is a capture nobody can use: the store is\n' +
+            '  shared and append-only, the directory name is a START time, and several\n' +
+            '  sessions record into it at once. The description is the only part of a\n' +
+            '  capture that cannot be reconstructed afterwards -- the bytes can be\n' +
+            '  re-captured, what you were doing cannot.\n' +
+            '  Try: --describe "example.com: create a post with two photos, then delete it"\n');
+        return 2;
+    }
+
     const isTty = !!process.stdin.isTTY;
 
     // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
@@ -1699,6 +1771,15 @@ async function start(args) {
     }
 
     const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
+
+    // WHERE THE BYTES ARE GOING, said on the way IN (#367).
+    //
+    // session.json recorded the destroyed capture's path perfectly; nobody read
+    // it until the directory was gone. A path announced while the recording is
+    // starting is a path the operator can still question, so this is printed at
+    // info level, before the browser, and not gated on -Verbose.
+    const rootNotice = repoGuard.captureRootNotice(paths.capturePlacement);
+    if (rootNotice) log.info('capture-har: ' + rootNotice);
     const requestedPort = numberOr(args.port, DEFAULT_PORT);
     const port = args['validate-only'] && requestedPort === 0
         ? requestedPort
@@ -1714,7 +1795,7 @@ async function start(args) {
 
     const session = {
         uri: args.uri,
-        describe: args.describe || null,
+        describe: args.describe.trim(),
         sessionDir: paths.sessionDir,
         harPath: paths.harPath,
         recordLog: paths.recordLog,
@@ -1758,7 +1839,7 @@ async function start(args) {
     // A busy port is no longer a conflict -- we moved. A persistent profile
     // genuinely is single-instance, though, and that stays a hard error naming
     // what holds it.
-    const conflict = await findProfileConflict(profileDir, paths.capturesRoot);
+    const conflict = await findProfileConflict(profileDir, paths.searchRoots);
     if (conflict) {
         process.stderr.write(
             `capture-har: the capture profile is already recording.\n` +
@@ -1947,9 +2028,27 @@ function reportPostProcess(session) {
  * The stamp is returned alongside the directory because it, not the path, is
  * the ordering key -- the host sorts first in a joined path and would decide
  * which capture counts as newest.
+ *
+ * Accepts SEVERAL roots since #367 moved where new captures are written: an
+ * older capture still under a working-directory root has to remain findable,
+ * and a union is how it is found without anything being moved.
  */
 function listSessionDirs(root) {
-    if (!fs.existsSync(root)) return [];
+    const roots = Array.isArray(root) ? root : [root];
+    if (roots.length > 1) {
+        const seen = new Set();
+        const all = [];
+        for (const r of roots) {
+            for (const entry of listSessionDirs(r)) {
+                if (seen.has(entry.dir)) continue;
+                seen.add(entry.dir);
+                all.push(entry);
+            }
+        }
+        return all;
+    }
+    root = roots[0];
+    if (!root || !fs.existsSync(root)) return [];
     const found = [];
     for (const host of fs.readdirSync(root)) {
         const hostDir = path.join(root, host);
@@ -1996,8 +2095,13 @@ async function findProfileConflict(profileDir, root) {
  */
 function resolveSession(args) {
     if (args.session) return path.resolve(args.session);
-    const root = args.dir ? path.resolve(args.dir) : capturesRoot();
-    const current = readJson(path.join(root, CURRENT_FILE));
+    const roots = args.dir ? [path.resolve(args.dir)] : capturesSearchRoots();
+    // The pointer is looked for in every root for the same reason the sessions
+    // are: a recording that was in flight when the anchoring changed registered
+    // itself in the old place, and `stop` still has to end it cleanly.
+    const current = roots
+        .map((r) => readJson(path.join(r, CURRENT_FILE)))
+        .find((c) => c && c.sessionDir);
     if (current && current.sessionDir && fs.existsSync(current.sessionDir)) {
         // The pointer is only trustworthy while it names a session that has
         // not ended. A driver killed before its own cleanup leaves the file
@@ -2010,7 +2114,7 @@ function resolveSession(args) {
         const pointed = readJson(path.join(current.sessionDir, SESSION_FILE));
         if (pointed && !pointed.endedUtc && isDriverAlive(pointed)) return current.sessionDir;
     }
-    const candidates = listSessionDirs(root);
+    const candidates = listSessionDirs(roots);
     if (!candidates.length) return null;
     // Sort by STAMP, not by the joined path. The host now comes first in the
     // path, so a path sort would answer with the alphabetically-last host
@@ -2317,10 +2421,10 @@ function catalogueCommand(args) {
 }
 
 function status(args) {
-    const root = args.dir ? path.resolve(args.dir) : capturesRoot();
+    const roots = args.dir ? [path.resolve(args.dir)] : capturesSearchRoots();
     const sessionDir = resolveSession(args);
     if (!sessionDir) {
-        log.info(`capture-har: no captures under ${root}`);
+        log.info(`capture-har: no captures under ${roots.join(' or ')}`);
         return 0;
     }
     const session = readJson(path.join(sessionDir, SESSION_FILE)) || {};

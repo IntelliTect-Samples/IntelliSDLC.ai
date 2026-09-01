@@ -23,10 +23,16 @@ BeforeAll {
     $script:PromptMd   = Join-Path $script:CaptureDir 'catalogue-prompt.md'
     $script:SkillMd    = Join-Path $script:RepoRoot '.github/skills/web-api-discovery/SKILL.md'
 
-    # The raw capture location is FIXED and no flag can move it. It resolves
-    # against the WORKING DIRECTORY, so the only way a test contains one is by
-    # choosing where node runs -- which is exactly the containment being
-    # asserted, exercised rather than bypassed.
+    # The raw capture location is FIXED and no flag can move it. $script:Tmp is
+    # outside any repository, where the root still resolves against the WORKING
+    # DIRECTORY, so the only way a test contains one is by choosing where node
+    # runs -- which is exactly the containment being asserted, exercised rather
+    # than bypassed. Inside a repository the root now anchors to the MAIN
+    # working tree (#367); capture-durability.Tests.ps1 owns that.
+    #
+    # Every `start` below passes --describe because #366 made it required. The
+    # requirement itself is asserted in capture-durability.test.js, not here --
+    # these cases are about paths, ports and profiles.
     function Invoke-CaptureHar {
         param([Parameter(ValueFromRemainingArguments)][string[]]$CaptureArgs)
         Push-Location -LiteralPath $script:Tmp
@@ -252,7 +258,7 @@ Describe 'capture-har.js' {
     }
 
     It 'resolves a session without launching a browser under --validate-only' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --validate-only
         $r.ExitCode | Should -Be 0
         $r.Output | Should -Match 'no browser launched'
         $r.Output | Should -Match 'cdpEndpoint'
@@ -264,9 +270,9 @@ Describe 'capture-har.js' {
     }
 
     It 'accepts --log-level on start, and rejects a value that is not a level' {
-        $ok = Invoke-CaptureHar start --uri 'https://example.com' --log-level verbose --validate-only
+        $ok = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --log-level verbose --validate-only
         $ok.ExitCode | Should -Be 0
-        $bad = Invoke-CaptureHar start --uri 'https://example.com' --log-level loud --validate-only
+        $bad = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --log-level loud --validate-only
         $bad.ExitCode | Should -Be 2
         $bad.Output | Should -Match '(?i)log-level'
     }
@@ -276,7 +282,7 @@ Describe 'capture-har.js' {
         # would make `Invoke-HarCapture ... | ConvertFrom-Json` fail on exactly
         # the verbose run an operator reaches for when something is wrong.
         foreach ($level in 'normal', 'verbose') {
-            $r = Invoke-CaptureHar start --uri 'https://example.com' `
+            $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' `
                 --log-level $level --validate-only
             $r.ExitCode | Should -Be 0
             { $r.StdOut | ConvertFrom-Json } | Should -Not -Throw `
@@ -304,13 +310,13 @@ Describe 'capture-har.js' {
         # --dir was how a raw capture got redirected out of the gitignored
         # tree. Accepting and ignoring it would leave the operator believing
         # the raw had moved -- worse than rejecting it.
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --dir $script:Tmp --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --dir $script:Tmp --validate-only
         $r.ExitCode | Should -Be 2
         $r.Output | Should -Match '(?i)confined to \.har-captures'
     }
 
     It 'refuses --storage-state, which is now auto-discovered' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' `
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' `
             --storage-state (Join-Path $script:Tmp 'state.json') --validate-only
         $r.ExitCode | Should -Be 2
         $r.Output | Should -Match '(?i)discovered automatically'
@@ -320,7 +326,7 @@ Describe 'capture-har.js' {
         # The leak .gitignore documented in its own comment, closed by
         # construction rather than by a check.
         $outputPath = Join-Path $script:Tmp 'refs'
-        $r = Invoke-CaptureHar start --uri 'https://example.com' `
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' `
             --output-path $outputPath --validate-only
         $r.ExitCode | Should -Be 0
         $session = $r.StdOut | ConvertFrom-Json
@@ -332,7 +338,7 @@ Describe 'capture-har.js' {
         # scrubbed.har, digest.json and catalogue.json are fixed filenames, so
         # before this a second capture silently overwrote the first.
         $outputPath = Join-Path $script:Tmp 'refs'
-        $r = Invoke-CaptureHar start --uri 'https://app.example.com/login' `
+        $r = Invoke-CaptureHar start --uri 'https://app.example.com/login' --describe 'pester fixture' `
             --output-path $outputPath --validate-only
         $r.ExitCode | Should -Be 0
         $session = $r.StdOut | ConvertFrom-Json
@@ -343,7 +349,7 @@ Describe 'capture-har.js' {
     It 'names the folder from the host alone, never the rest of the URL' {
         # A magic-link or password-reset URL carries its token in the path or
         # the query, and the output path is the committable directory.
-        $r = Invoke-CaptureHar start --uri 'https://app.example.com/reset/PATHTOK?t=QUERYTOK' `
+        $r = Invoke-CaptureHar start --uri 'https://app.example.com/reset/PATHTOK?t=QUERYTOK' --describe 'pester fixture' `
             --validate-only
         $r.ExitCode | Should -Be 0
         $session = $r.StdOut | ConvertFrom-Json
@@ -353,7 +359,7 @@ Describe 'capture-har.js' {
     }
 
     It 'renders a port with an underscore, since a dash is legal in a hostname' {
-        $r = Invoke-CaptureHar start --uri 'https://localhost:5001/' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://localhost:5001/' --describe 'pester fixture' --validate-only
         $r.ExitCode | Should -Be 0
         ($r.StdOut | ConvertFrom-Json).outputPath | Should -BeLike '*localhost_5001'
     }
@@ -366,7 +372,7 @@ Describe 'capture-har.js' {
         $listener.Start()
         $busy = $listener.LocalEndpoint.Port
         try {
-            $r = Invoke-CaptureHar start --uri 'https://example.com' --port $busy --validate-only
+            $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --port $busy --validate-only
             $r.ExitCode | Should -Be 0
             $session = $r.StdOut | ConvertFrom-Json
             $session.port | Should -Not -Be $busy
@@ -419,13 +425,13 @@ Describe 'capture-har.js --profile' {
     }
 
     It 'gives a bare name its own capture profile' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile 'work' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --profile 'work' --validate-only
         $r.ExitCode | Should -Be 0
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'har-capture[\\/]profile-work$'
     }
 
     It 'folds an awkward name to a safe directory name' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile 'My Account!' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --profile 'My Account!' --validate-only
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'profile-my-account-$'
     }
 
@@ -433,13 +439,13 @@ Describe 'capture-har.js --profile' {
         # The integration point for a project that keys profiles off its own
         # concept: it computes the directory, we record as that identity.
         $external = Join-Path $script:Tmp 'someapp/profile-alias-1a2b3c4d'
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --profile $external --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --profile $external --validate-only
         $r.ExitCode | Should -Be 0
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Be ([IO.Path]::GetFullPath($external))
     }
 
     It 'defaults to the shared capture profile when none is named' {
-        $r = Invoke-CaptureHar start --uri 'https://example.com' --validate-only
+        $r = Invoke-CaptureHar start --uri 'https://example.com' --describe 'pester fixture' --validate-only
         ($r.StdOut | ConvertFrom-Json).profileDir | Should -Match 'har-capture[\\/]profile$'
     }
 }
@@ -666,12 +672,12 @@ Describe 'Invoke-HarCapture.ps1' {
         # Asserted on the arguments node actually RECEIVES, not on the source
         # text: a grep for 'VerbosePreference' passes just as happily when the
         # condition is inverted.
-        $plain = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }).Args
+        $plain = (Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture' }).Args
         $plain | Should -Match 'start --uri' -Because 'an args file node never wrote would satisfy the negative below for the wrong reason'
         $plain | Should -Not -Match '--log-level'
 
         (Invoke-FrontDoor -Script $script:InvokePs1 `
-            -Arguments @{ Uri = 'https://example.com'; Verbose = $true }).Args |
+            -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture'; Verbose = $true }).Args |
             Should -Match '--log-level verbose'
     }
 
@@ -680,7 +686,7 @@ Describe 'Invoke-HarCapture.ps1' {
         # too. Reading the preference rather than the binding is what keeps an
         # explicit opt-out from turning the level up.
         $off = (Invoke-FrontDoor -Script $script:InvokePs1 `
-            -Arguments @{ Uri = 'https://example.com'; Verbose = $false }).Args
+            -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture'; Verbose = $false }).Args
         $off | Should -Match 'start --uri'
         $off | Should -Not -Match '--log-level'
     }
@@ -695,12 +701,12 @@ Describe 'Invoke-HarCapture.ps1' {
         # SilentlyContinue only stops the HOST rendering it, so a redirect
         # cannot see the difference. Only Ignore drops the record -- and only
         # if the script stopped overriding the caller.
-        $loud = Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com' }
+        $loud = Invoke-FrontDoor -Script $script:InvokePs1 -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture' }
         $loud.Information | Should -Match 'press ENTER' `
             -Because 'status is on by default -- that is what the pinning bought'
 
         $quiet = Invoke-FrontDoor -Script $script:InvokePs1 `
-            -Arguments @{ Uri = 'https://example.com'; InformationAction = 'Ignore' }
+            -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture'; InformationAction = 'Ignore' }
         $quiet.Information | Should -BeNullOrEmpty
     }
 
@@ -708,7 +714,7 @@ Describe 'Invoke-HarCapture.ps1' {
         # Silencing chatter must not silence the report that the run produced
         # no catalogue.
         $quiet = Invoke-FrontDoor -Script $script:InvokePs1 `
-            -Arguments @{ Uri = 'https://example.com'; InformationAction = 'Ignore' }
+            -Arguments @{ Uri = 'https://example.com'; Describe = 'pester fixture'; InformationAction = 'Ignore' }
         $quiet.Warning | Should -Match 'no catalogue'
     }
 

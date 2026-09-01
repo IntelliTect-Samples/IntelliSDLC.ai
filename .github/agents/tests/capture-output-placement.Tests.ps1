@@ -424,14 +424,14 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
 
     It 'warns and still records -- the advisory never becomes a hard failure' {
         $work = New-Checkout -Name 'fd-warn' -TrackedHooks -HooksPath '.githooks'
-        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com' }
+        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
         $r.Warning | Should -Match 'git worktree add'
         $r.NodeRan | Should -BeTrue -Because 'the recording must proceed; nothing is discarded'
     }
 
     It 'tells the recorder the guard already ran, so the operator is warned once' {
         $work = New-Checkout -Name 'fd-once' -TrackedHooks -HooksPath '.githooks'
-        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com' }
+        $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
         $r.NodeEnv | Should -Match 'GUARD=1'
     }
 
@@ -439,7 +439,7 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
         $work = New-Checkout -Name 'fd-quiet' -TrackedHooks -HooksPath '.githooks'
         $wt = Join-Path $script:Tmp 'fd-quiet-tree'
         Invoke-Git $work @('worktree', 'add', $wt, '-b', 'feat/fd') | Out-Null
-        $r = Invoke-FrontDoorIn -Cwd $wt -Arguments @{ Uri = 'https://app.example.com' }
+        $r = Invoke-FrontDoorIn -Cwd $wt -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
         $r.Warning | Should -Not -Match 'git worktree add'
         $r.NodeRan | Should -BeTrue
     }
@@ -451,7 +451,7 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
         $work = New-Checkout -Name 'fd-anchor' -TrackedHooks -HooksPath '.githooks'
         $deep = Join-Path $work 'docs'
         New-Item -ItemType Directory -Path $deep -Force | Out-Null
-        $r = Invoke-FrontDoorIn -Cwd $deep -Arguments @{ Uri = 'https://app.example.com' }
+        $r = Invoke-FrontDoorIn -Cwd $deep -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
         # No catalogue exists, so the front door reports where it looked --
         # which is the observable proof of which root it anchored to.
         $r.Warning | Should -Match ([regex]::Escape((Join-Path $work 'app.example.com')))
