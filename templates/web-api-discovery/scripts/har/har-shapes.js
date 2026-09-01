@@ -724,14 +724,15 @@ function scanString(text, keyPath, policy, push) {
         const located = pathFor.get(key);
         const nth = taken.get(key) || 0;
         taken.set(key, nth + 1);
-        push(l, located && nth < located.paths.length ? located.paths[nth] : keyPath, null);
+        const at = located && nth < located.paths.length ? located.paths[nth] : keyPath;
+        push(l, at, null, capturedFieldName(at, keyPath));
     }
 
     // 3. Anything the structural pass found that the raw bytes did not -- a
     //    value spelled with JSON escapes, say, which is one occurrence the
     //    regex over the source text cannot match.
     for (const [key, { paths, leak }] of pathFor) {
-        if (!rawSeen.has(key)) for (const at of paths) push(leak, at, null);
+        if (!rawSeen.has(key)) for (const at of paths) push(leak, at, null, capturedFieldName(at, keyPath));
     }
 
     // 4. The percent-decoded view. A secret inside `variables=<encoded JSON>`
@@ -747,7 +748,7 @@ function scanString(text, keyPath, policy, push) {
             const key = `${l.kind}:${l.fingerprint}`;
             if (rawSeen.has(key) || pathFor.has(key)) continue;
             rawSeen.add(key);
-            push(l, null, keyPath);
+            push(l, null, keyPath, null);
         }
     }
 }
@@ -768,6 +769,39 @@ function enclosingFieldName(keyPath) {
 }
 
 /**
+ * The name of the CAPTURED-DATA field holding a value, or null when there is
+ * none.
+ *
+ * `base` is the node the string came from in the HAR ENVELOPE --
+ * `request.url`, `request.headers[3].value`, `response.content.text`. Anything
+ * `walkJsonBody` resolved beneath it is a key the captured document actually
+ * carried; `base` itself is a property of the HAR file format.
+ *
+ * The distinction matters because the two are spelled the same way once they
+ * are a path. `request.headers[0].value` ends in `value` and
+ * `response.content.text.value` ends in `value`, and only the second is a
+ * field name somebody's API chose. A policy declaring `*value` is reasoning
+ * about its own payloads; letting it also match HAR's envelope silently
+ * switches off reporting for every header, cookie and query parameter.
+ *
+ * A denylist of envelope names would be a predicate approximating this, and it
+ * would miss the next envelope property. The walk already KNOWS, so the answer
+ * is taken from the walk: only a path that descends INTO a parsed body names a
+ * captured field.
+ *
+ * A top-level array element gets null: `[V]` under `response.content.text`
+ * resolves to `response.content.text[0]`, and an element has no key of its
+ * own. Reading `text` there is exactly the confusion this exists to prevent.
+ */
+function capturedFieldName(keyPath, base) {
+    if (typeof keyPath !== 'string' || typeof base !== 'string') return null;
+    if (keyPath === base || !keyPath.startsWith(base)) return null;
+    const suffix = keyPath.slice(base.length).replace(/(\[\d+\])+$/, '');
+    if (!suffix.startsWith('.')) return null;
+    return enclosingFieldName(suffix);
+}
+
+/**
  * Is this finding an identity value sitting in a field declared to hold ids?
  *
  * THE SCOPE OF THIS IS THE WHOLE POINT, so it is stated once, here, rather
@@ -780,14 +814,19 @@ function enclosingFieldName(keyPath) {
  *     in `_id` would be a false negative of exactly the kind this gate exists
  *     to prevent. Entropy is evidence of secret-ness; a field name does not
  *     argue it away.
- *   * A RESOLVED key path only. A percent-decoded finding has no structural
- *     path; reading the enclosing HAR node's name instead would downgrade on
- *     no evidence at all.
+ *   * A CAPTURED FIELD NAME only. `field` is the key the captured document
+ *     itself carried, and nothing else may be spelled here: not a HAR
+ *     envelope property, and not a key path to derive one from. A
+ *     percent-decoded finding has no structural path and a header value has
+ *     no key at all, so both arrive as null and are refused. The caller that
+ *     knows the provenance -- the walk -- resolves the name; this predicate
+ *     cannot be handed an envelope path to mistake for one, which is a
+ *     restriction of the language rather than a check a caller could forget.
  */
-function isIdentifierShaped(leak, keyPath, policy) {
+function isIdentifierShaped(leak, field, policy) {
     if (!policy || leak.class !== 'identity') return false;
-    const field = enclosingFieldName(keyPath);
-    return field !== null && harPolicy.isIdentifierField(policy, field);
+    return typeof field === 'string' && field !== ''
+        && harPolicy.isIdentifierField(policy, field);
 }
 
 /**
@@ -831,9 +870,9 @@ function findLeaksInHar(har, policy) {
 
     entries.forEach((entry, entryIndex) => {
         if (!entry || typeof entry !== 'object') return;
-        const push = (leak, keyPath, enclosing) => {
+        const push = (leak, keyPath, enclosing, field) => {
             const key = `${leak.kind}:${leak.fingerprint}`;
-            const identifierField = isIdentifierShaped(leak, keyPath, policy);
+            const identifierField = isIdentifierShaped(leak, field, policy);
             const existing = grouped.get(key);
             if (existing) {
                 existing.count++;
@@ -873,6 +912,7 @@ module.exports = {
     blocksLeak,
     walkJsonBody,
     enclosingFieldName,
+    capturedFieldName,
     settingFor,
     findLeaks,
     findLeaksDeep,
