@@ -59,26 +59,95 @@ Describe 'a capture survives and can be identified (#367, #366)' {
     }
 }
 
-Describe 'Invoke-HarCapture.ps1 -Describe is mandatory (#366)' {
+Describe 'Invoke-HarCapture.ps1 -Describe is required and hard-fails (#366)' {
 
-    It 'declares -Describe Mandatory, so a recording cannot start unidentified' {
-        # Asserted on the AST rather than by grepping the source: a source match
-        # passes just as happily when the attribute is on the wrong parameter.
+    It 'HARD-FAILS in an interactive-capable context instead of prompting' {
+        # THE FALSIFIER, and the only assertion here that could have been
+        # written the lazy way and pinned nothing.
+        #
+        # `[Parameter(Mandatory)]` is the idiomatic PowerShell spelling of
+        # "required", and it was REJECTED for this parameter: it prompts when a
+        # host is attached and only hard-fails when one is not, so a human
+        # recording by hand gets a different failure from an agent driving the
+        # same script. capture-har.js has no prompt to offer, so the two entry
+        # points would diverge at exactly the moment that matters.
+        #
+        # WHY THIS SPAWNS A PROCESS WITH STDIN HELD OPEN. A test run
+        # `-NonInteractive`, or with stdin closed or redirected from a file,
+        # exits non-zero under BOTH designs -- Mandatory degrades to an error
+        # when it cannot prompt -- so it would pass either way and pin nothing.
+        # That is the "satisfied by something other than what it names" pattern
+        # this subsystem has already shipped six times.
+        #
+        # An open, silent stdin pipe is the discriminator. PowerShell treats the
+        # host as prompt-capable and BLOCKS on the mandatory prompt, waiting for
+        # a line that never comes; a body-level check terminates immediately.
+        # Measured before this test was written: with Mandatory the child was
+        # still running at 8s; without it, it exits in well under a second. So
+        # the assertion is "terminates promptly", and a prompt cannot satisfy it.
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = (Get-Command pwsh).Source
+        foreach ($a in @('-NoProfile', '-File', $script:InvokePs1,
+                         '-Uri', 'https://example.com')) {
+            [void]$psi.ArgumentList.Add($a)
+        }
+        # Redirected but never written and never closed: a host that WOULD
+        # prompt has somewhere to prompt to, and waits there forever.
+        $psi.RedirectStandardInput  = $true
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute = $false
+
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        try {
+            $exited = $proc.WaitForExit(20000)
+            if (-not $exited) {
+                $proc.Kill($true)
+                throw ('Invoke-HarCapture blocked instead of failing: it is waiting on a ' +
+                       'prompt for -Describe. The refusal must not depend on whether a ' +
+                       'host is attached -- see #366.')
+            }
+            $err = $proc.StandardError.ReadToEnd()
+            $proc.ExitCode | Should -Not -Be 0 -Because 'the refusal is a hard failure'
+            $err | Should -Match '(?i)refusing to record without -Describe'
+        }
+        finally {
+            $proc.Dispose()
+        }
+    }
+
+    It 'does not declare -Describe Mandatory -- that is the prompting behaviour' {
+        # The structural half of the case above. Asserted on the AST rather than
+        # by grepping the source: a source match passes just as happily when the
+        # attribute sits on a different parameter.
         $describe = Get-ParamAst -Path $script:InvokePs1 -Name 'Describe'
-        $describe | Should -Not -BeNullOrEmpty
+        $describe | Should -Not -BeNullOrEmpty -Because 'the parameter still exists'
 
         $attr = $describe.Attributes | Where-Object { $_.TypeName.Name -eq 'Parameter' }
         ($attr.NamedArguments | Where-Object { $_.ArgumentName -eq 'Mandatory' }) |
-            Should -Not -BeNullOrEmpty -Because 'a capture nobody can identify is a capture nobody can use'
+            Should -BeNullOrEmpty -Because (
+                'Mandatory prompts when a host is attached, which is the option that was ' +
+                'considered and rejected: both entry points must fail identically')
     }
 
-    It 'rejects a whitespace-only description rather than stamping it' {
-        # Mandatory alone accepts '   ': PowerShell only checks that the
-        # parameter was supplied. Whitespace identifies nothing.
-        $describe = Get-ParamAst -Path $script:InvokePs1 -Name 'Describe'
-        ($describe.Attributes | Where-Object {
-            $_.TypeName.Name -match 'ValidateNotNullOrWhiteSpace'
-        }) | Should -Not -BeNullOrEmpty
+    It 'refuses a whitespace-only description, not only an absent one' {
+        # Supplying '   ' satisfies any "was the parameter provided" test.
+        # Whitespace identifies nothing, so it is refused on the same terms.
+        $out = & (Get-Command pwsh).Source -NoProfile -File $script:InvokePs1 `
+            -Uri 'https://example.com' -Describe '   ' 2>&1
+        $LASTEXITCODE | Should -Not -Be 0
+        ($out | Out-String) | Should -Match '(?i)refusing to record without -Describe'
+    }
+
+    It 'says the same thing the Node side says, example included' {
+        # The two doors fail identically or the guarantee is only half true.
+        # The example is the actionable half and is the part PowerShell's error
+        # renderer would eat if the paragraph were thrown rather than written.
+        $out = & (Get-Command pwsh).Source -NoProfile -File $script:InvokePs1 `
+            -Uri 'https://example.com' 2>&1
+        $text = $out | Out-String
+        $text | Should -Match 'cannot be reconstructed afterwards'
+        $text | Should -Match ([regex]::Escape("Try: -Describe 'example.com:"))
     }
 
     It 'forwards the description unconditionally, with no truthiness test left behind' {
