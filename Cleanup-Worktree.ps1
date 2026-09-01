@@ -54,8 +54,11 @@
     case, which is why it refuses rather than reporting.
 
     The script is project-agnostic: it infers the worktree path, branch name
-    and repository root from git, and only acts on worktrees that live under
-    the .worktrees/ directory unless -AllowOutsideWorktreesDir is passed.
+    and repository root from git. By default it only acts on worktrees that
+    live in a known-safe layout (either <mainRepoRoot>\.worktrees\ or the
+    Copilot desktop app's <any>\copilot-worktrees\<repoName>\<slug> path,
+    confirmed via `git worktree list`). Anything else requires
+    -AllowOutsideWorktreesDir.
 
 .PARAMETER Branch
     Name of the feature branch to clean up (e.g. feat/42-user-auth).
@@ -80,8 +83,14 @@
     Do not run `git pull` after switching to the default branch.
 
 .PARAMETER AllowOutsideWorktreesDir
-    Permit removing a worktree that is not located under .worktrees/. By
-    default the script refuses, to avoid destroying unrelated checkouts.
+    Permit removing a worktree that is not located under one of the
+    known-safe layouts. By default the script refuses, to avoid destroying
+    unrelated checkouts. Known-safe layouts are:
+
+      * <mainRepoRoot>\.worktrees\<slug>
+      * <any>\copilot-worktrees\<repoName>\<slug> -- the Copilot desktop
+        app's layout -- provided `git worktree list` in the main repo
+        confirms the path is a registered worktree.
 
 .PARAMETER Sweep
     Also run a full sweep: fetch+prune remote-tracking refs, delete local
@@ -159,6 +168,94 @@ function Get-CommonDir {
         throw 'Unable to determine git common dir.'
     }
     return (Resolve-Path $common).Path
+}
+
+function ConvertTo-NormalizedPath {
+    <#
+    .SYNOPSIS
+        Normalizes a filesystem path for case-insensitive comparison.
+
+    .DESCRIPTION
+        Strips trailing directory separators and converts forward slashes to
+        backslashes. `git worktree list --porcelain` on Windows emits forward
+        slashes, so normalization is required before path comparisons.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) { return '' }
+    return $Path.Replace('/', '\').TrimEnd('\')
+}
+
+function Test-WorktreeInSafeLocation {
+    <#
+    .SYNOPSIS
+        Returns $true when a worktree path sits in a known-safe layout.
+
+    .DESCRIPTION
+        Safe layouts are:
+          1. <MainRepoRoot>\.worktrees\<anything>
+          2. <any>\copilot-worktrees\<repoName>\<slug> -- but only when
+             `git worktree list` in the main repo confirms the exact path is
+             a registered worktree. The registration check is what prevents
+             a random directory that happens to contain a
+             `copilot-worktrees` segment from being trusted.
+
+        The <MainRepoRoot>\..\copilot-worktrees\<repoName>\<slug> layout (the
+        one the Copilot desktop app uses when its storage_location is the
+        parent of the repo) is a natural subset of rule 2 and needs no
+        special-case.
+
+    .PARAMETER WorktreePath
+        Absolute path to the worktree under evaluation.
+
+    .PARAMETER MainRepoRoot
+        Absolute path to the main repository's working tree (not a linked
+        worktree).
+
+    .PARAMETER RegisteredWorktreePaths
+        Paths reported by `git worktree list` in the main repo. Used to
+        validate the Copilot desktop app layout.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][string]$MainRepoRoot,
+        [string[]]$RegisteredWorktreePaths = @()
+    )
+
+    $abs  = ConvertTo-NormalizedPath -Path $WorktreePath
+    $root = ConvertTo-NormalizedPath -Path $MainRepoRoot
+
+    if ([string]::IsNullOrEmpty($abs) -or [string]::IsNullOrEmpty($root)) {
+        return $false
+    }
+
+    # Rule 1: <MainRepoRoot>\.worktrees\...
+    $dotWorktrees = ConvertTo-NormalizedPath -Path (Join-Path $root '.worktrees')
+    if ($abs.StartsWith($dotWorktrees + '\', [System.StringComparison]::OrdinalIgnoreCase) -or
+        $abs.Equals($dotWorktrees, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    # Rule 2: **\copilot-worktrees\<repoName>\<slug>, cross-checked against
+    # the main repo's registered worktree list.
+    $repoName = Split-Path -Leaf $root
+    if ([string]::IsNullOrEmpty($repoName)) { return $false }
+
+    $pattern = '(?i)\\copilot-worktrees\\' + [regex]::Escape($repoName) + '\\[^\\]+'
+    if ($abs -notmatch $pattern) { return $false }
+
+    foreach ($registered in $RegisteredWorktreePaths) {
+        $reg = ConvertTo-NormalizedPath -Path $registered
+        if ($reg.Equals($abs, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Get-WorktreeList {
@@ -282,6 +379,11 @@ function Assert-WorktreeCaptureSafe {
     throw $message
 }
 
+# Skip the rest of the script when dot-sourced (e.g. by tests). Supersedes
+# the regex-slicing loader the #371 tests used, which cut the file at this
+# banner and re-parsed it -- fragile, and broken by moving the banner.
+if ($MyInvocation.InvocationName -eq '.') { return }
+
 # --- Resolve context -------------------------------------------------------
 
 $startingDir = (Get-Location).Path
@@ -327,7 +429,7 @@ if ($Branch -eq $DefaultBranch) {
     throw "Refusing to delete the default branch '$DefaultBranch'."
 }
 
-# --- Safety check: only touch worktrees under .worktrees/ by default -------
+# --- Safety check: only touch worktrees in a known-safe layout by default --
 
 if ($WorktreePath) {
     if (-not (Test-Path $WorktreePath)) {
@@ -335,13 +437,23 @@ if ($WorktreePath) {
     }
     $worktreesDir = Join-Path $repoRoot '.worktrees'
     $absWorktree = try { (Resolve-Path $WorktreePath -ErrorAction Stop).Path } catch { $WorktreePath }
-    $underDotWorktrees = $absWorktree.StartsWith($worktreesDir, [System.StringComparison]::OrdinalIgnoreCase)
-    if (-not $underDotWorktrees -and -not $AllowOutsideWorktreesDir) {
-        throw "Worktree '$absWorktree' is not under '$worktreesDir'. Pass -AllowOutsideWorktreesDir to proceed."
+
+    # Issue #383: the Copilot desktop app's layout is recognised as safe, but
+    # only when `git worktree list` registers the exact path -- the path shape
+    # alone is a proxy, the registration is the fact.
+    $registeredPaths = @($worktrees | ForEach-Object { $_.Path })
+    $isSafe = Test-WorktreeInSafeLocation `
+        -WorktreePath $absWorktree `
+        -MainRepoRoot $repoRoot `
+        -RegisteredWorktreePaths $registeredPaths
+    if (-not $isSafe -and -not $AllowOutsideWorktreesDir) {
+        throw ("Worktree '{0}' is not under '{1}' or a registered '**\copilot-worktrees\{2}\<slug>' layout. Pass -AllowOutsideWorktreesDir to proceed." -f $absWorktree, $worktreesDir, (Split-Path -Leaf $repoRoot))
     }
 
     # Issue #371: refuse before anything is deleted, not at the git layer --
-    # the removal below escalates to --force on refusal.
+    # the removal below escalates to --force on refusal. Ordered AFTER the
+    # location check on purpose: "that is not a worktree I should touch" is a
+    # better message than "that worktree holds captures".
     Assert-WorktreeCaptureSafe -WorktreePath $absWorktree -DryRun:$DryRun
 }
 
