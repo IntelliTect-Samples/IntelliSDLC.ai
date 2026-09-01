@@ -670,6 +670,14 @@ learned from a defect that shipped -- the cases and the measurements are in
 - **Fixing a THIRD member of the same set means the set is the wrong unit of
   work.** Stop narrowing and remove the option -- restrict the language so the
   dangerous input cannot be expressed.
+- **Recognise the grammar; do not count the punctuation.** A control that asks
+  "does this look structured enough" is a threshold, and a threshold on
+  punctuation has a human-written counterexample one mark past it every time --
+  measured twice on the same control, at one mark and then at two. Ask instead
+  which wire grammar the input belongs to, and enumerate the grammars from a
+  MEASUREMENT over real captures rather than from memory. When a new grammar
+  turns up, add a recogniser with its measurement; never relax an existing one
+  back into a count.
 - **Consume a predicate whole -- pattern and check -- from the engine that owns
   it.** Unifying one half moves the divergence rather than closing it.
 - **Widen after you narrow.** Before landing a change that makes a detector see
@@ -900,21 +908,14 @@ and in CI. It fails on:
   behaviour it contains none of. **Recognise the grammars, never a known
   sentinel string:** the placeholder that prompted this was emitted by no tool
   in this pipeline, and the next one will be spelled differently. A body is a
-  body when it parses as a **JSON composite** (`{}` and `[]` are legal minimal
-  bodies), when it is **well-formed form-urlencoded** (which is what clears
-  `token=`, whose only `=` sits at the last position), or when it carries **two
-  or more interior separators** (the general net for markup, GraphQL source,
-  NDJSON, multipart). **Two, not one** — a single colon, or the apostrophe in
-  "it's", is what a hand-written note reaches on its own, and a first version
-  of this rule that accepted one separator cleared `[REDACTED: form body]`,
-  which is a *more* natural thing for a human to write than the bare token the
-  fixtures covered. **Interior**, because a separator at the first or last
-  position is a wrapper and joins nothing — that is what keeps `[REDACTED]`,
-  `<redacted>` and `**removed**` on the failing side. No length threshold: a
-  threshold is a further predicate with its own false positives, and length
-  was never the signal. An entry with no `postData` is a `GET` and stays
-  legal, and so does a body whose text is empty — an empty body misleads
-  nobody;
+  body when it belongs to a recognised wire grammar — **composite JSON**
+  (`{}` and `[]` are legal minimal bodies), **form-urlencoded**, **multipart**,
+  **NDJSON**, or **XML** — and is reported otherwise. Enumerate the grammars
+  from a measurement over real captures, but do not let a measurement's SCOPE
+  masquerade as its authority: a corpus of JSON-era providers says nothing
+  about whether a consumer wraps a SOAP API, and this template ships to
+  consumers nobody sampled. A gate that fires on 100% of somebody's traffic
+  gets disabled, which costs them every other check it carries;
 - an unredacted credential header, parameter, or multipart field;
 - a secret nested inside a JSON-valued parameter;
 - any caller-supplied forbidden literal;

@@ -38,9 +38,11 @@
  *      SHORTENED; nothing caught one that was REPLACED, so a reference could
  *      carry a 29-character sentinel where a form body used to be, pass every
  *      gate, and be catalogued as documenting a protocol it contains none of
- *      (issue #358). A body is a body when it parses as a JSON composite, or
- *      is well-formed form-urlencoded, or carries two or more interior
- *      separators. One separator is what prose reaches on its own.
+ *      (issue #358). A body is a body when it belongs to a recognised wire
+ *      grammar: composite JSON, form-urlencoded, multipart, NDJSON, or XML. Two
+ *      earlier versions counted punctuation instead and both fell to a
+ *      hand-written note; see the gate for why the answer was not a third
+ *      threshold.
  *
  * No failure message ever echoes an offending value: that would relocate the
  * leak into the CI log that reports it.
@@ -216,105 +218,235 @@ function checkTruncation(entries, report) {
     }
 }
 
-// Gate 7 -- a request body that is present but is only a placeholder.
+// Gate 7 -- a request body that is present but belongs to no wire grammar.
 //
 // SAY THE CONCEPT OUT LOUD, because everything below is an approximation of it
 // and the two must be checked against each other: "this body is not a body --
 // it stands in for one."
 //
-// The predicate is deliberately NOT a match against a known sentinel string.
-// The one that prompted this gate, a 29-character token, was never emitted by
-// any tool in this repo -- it was written by a hand this repo has never seen,
-// and the next one will be written by a different hand again. A gate keyed to
-// the spelling would pass the next one. So RECOGNISE THE GRAMMARS a body can
-// belong to, and report a body that belongs to none of them.
+// The predicate is NOT a match against a known sentinel string. The one that
+// prompted this gate was written by a hand this repo has never seen, and the
+// next one will be written by a different hand again. So RECOGNISE THE
+// GRAMMARS a body can belong to, and report a body that belongs to none.
 //
-// THE FIRST VERSION OF THIS GATE ASKED THE WRONG QUESTION, and the way it was
-// wrong is worth keeping: it asked whether ANY separator character sat
-// somewhere in the interior of the body. One did, in `[REDACTED: form body]`
-// and in `it's been redacted for privacy` -- so a single colon, or the
-// apostrophe in "it's", cleared a placeholder. Those are MORE natural things
-// for a hand to write than the bare token the fixtures covered, so the gate
-// was blind to its own primary shape. A single punctuation mark is what prose
-// contains; it is not what makes a payload.
+// TWO EARLIER VERSIONS COUNTED PUNCTUATION, AND BOTH FELL TO A FRESH PROBE.
+// The first asked whether ANY separator sat in the body's interior: one colon
+// cleared `[REDACTED: form body]`. The second asked for TWO, on the reasoning
+// that "one is the count a hand-written note reaches on its own" -- and a note
+// is precisely where a second mark shows up, so `[REDACTED: form body,
+// unused]`, `it's, redacted` and `body: (removed)` all walked through.
 //
-// Three recognisers, each naming a way a body can actually be a body:
+// The response is NOT a third threshold. Design doc beat 4: fixing a third
+// member of the same set means the set is the wrong unit of work -- stop
+// narrowing and restrict the language so the dangerous input cannot be
+// expressed. A three-mark rule has a three-mark placeholder waiting for it.
+// So punctuation counting is GONE, replaced by positive recognition of the
+// grammars an operator's captures actually contain.
 //
-//   1. A COMPOSITE JSON ROOT. `{}` and `[]` are legal minimal bodies whose
-//      structure no character scan can see, so the parse is what clears them.
-//      A JSON SCALAR root -- `"REDACTED"`, `1`, `null` -- is NOT cleared: a
-//      body that is one bare string literal names no field either.
-//   2. A WELL-FORMED FORM-URLENCODED BODY: every `&`-separated part is
-//      `name=value` with a non-empty, whitespace-free name. This is what
-//      clears `a=1` and, importantly, `token=` -- a single field with an empty
-//      value is a real minimal body, and its `=` sits at the last position
-//      where no interior scan would ever find it.
-//   3. TWO OR MORE INTERIOR separator characters. This is the general net,
-//      and it is what catches the formats not enumerated above -- markup
-//      (`<root><a>1</a></root>`), GraphQL source, NDJSON, multipart. TWO,
-//      not one, because one is the count a hand-written note reaches on its
-//      own. INTERIOR, because a separator at the first or last position is a
-//      WRAPPER and joins nothing: that is what keeps `[REDACTED]`,
-//      `<redacted>`, `{SCRUBBED}` and `**removed**` on the failing side.
+// MEASURED, NOT GUESSED. Classified over 755 request bodies from 14 real
+// captures across three providers (counts only; no body content was printed or
+// retained): 80.3% form-urlencoded, 10.9% multipart, 7.0% composite JSON, 1.9%
+// NDJSON -- and ZERO belonging to none of the four. The punctuation net was
+// carrying nothing at the low end that a grammar does not carry better, and
+// deleting it without these two extra recognisers would have reported 39 of
+// 208 real bodies in an earlier sample. Noise on that scale destroys a gate's
+// authority, which is how real leaks survive.
 //
-// NO LENGTH THRESHOLD, on purpose. A threshold is a further predicate with its
-// own false positives, and the check that clears a predicate is itself a
-// predicate (docs/designs/297-detector-predicates.md, beat 3). `{}` is two
-// characters and passes; a 29-character sentinel is longer and fails. Length
-// was never the signal. The "two marks" count in rule 3 IS a threshold of a
-// kind, and it is stated here rather than buried: it is a threshold on how
-// much structural EVIDENCE a body carries, not on how big it is, and the
-// generator in the test suite is seeded with the one-mark shapes on both
-// sides of it.
-//
-// RESIDUAL FALSE POSITIVES, stated rather than papered over: a body that is a
-// single opaque run carrying at most one punctuation mark -- raw base64 with
-// no padding or slashes, a bare numeric id, a short line of plain prose, a
-// `key: value` line belonging to no wire grammar -- is reported. That is the
-// correct direction for this path. Beat 2 of the same design doc: fail toward
-// a MISS on a replace path and toward a REPORT on a gate path. This gate only
-// reports, and it names a file and an entry index, so a false positive costs
-// an operator one look at the file.
-const BODY_SEPARATORS = /[=&:,;{}[\]()<>"']/;
+// RESIDUAL FALSE POSITIVES, stated rather than papered over: a body in a
+// grammar not listed here -- raw GraphQL SOURCE (`application/graphql`),
+// protobuf, a raw base64 blob, plain prose -- is reported. GraphQL is the one
+// worth naming, because it looks like a bigger gap than it is: GraphQL over
+// HTTP is conventionally POSTed as `{"query": "..."}`, which is composite JSON
+// and already recognised. A raw `query { me { id } }` body needs
+// `application/graphql`, which is genuinely uncommon. This is the correct
+// direction for this path:
+// beat 2 says fail toward a MISS on a replace path and toward a REPORT on a
+// gate path. This gate only reports, and it names a file and an entry index,
+// so a false positive costs an operator one look at the file. A grammar that
+// starts showing up in real captures should be ADDED AS A RECOGNISER here,
+// with a measurement behind it -- never by relaxing one of these back into a
+// punctuation count.
 
-// A composite (object or array) JSON root. The leading-character test is not an
-// optimisation for its own sake: JSON.parse over a several-hundred-KB body for
-// every entry is work this gate does not need, and only `{` or `[` can open a
-// composite anyway.
+// A composite (object or array) JSON root.
+//
+// The leading-character test is load-bearing twice over. It keeps JSON.parse
+// off several-hundred-KB bodies that cannot be composites anyway -- and it is
+// what excludes a `null` root, since `typeof null === 'object'` would
+// otherwise sneak one through the check below. That is why there is no
+// separate null clause: it would be unreachable code asserting nothing.
 function hasCompositeJsonRoot(text) {
     if (!/^[[{]/.test(text)) return false;
     try {
-        const value = JSON.parse(text);
-        return value !== null && typeof value === 'object';
+        return typeof JSON.parse(text) === 'object';
     } catch {
         return false;
     }
 }
 
-// One `name=value` pair. The name must be non-empty and free of whitespace --
-// real form names never carry a raw space, they percent-encode it -- which is
-// what stops a hand-written `body = redacted` from passing itself off as a
-// form field. The value may be empty, because `token=` is a real minimal body.
+// One `name=value` pair.
+//
+// The name must be non-empty and free of whitespace -- real form names never
+// carry a raw space, they percent-encode it -- which is what stops a
+// hand-written `body = redacted` from passing itself off as a field.
+//
+// It must also not OPEN with a bracket, and its brackets must balance. Real
+// form names do carry brackets (`user[name]=x`, `items[0][id]=y`), so a flat
+// ban would reject real traffic; but a name that opens with `[` and never
+// closes it before the `=` is not that shape, it is a bracket-WRAPPED body.
+// That distinction is what separates `user[name]=x` from `[redacted=x]` and
+// `<redacted=x>` structurally, rather than by special-casing brackets.
 const FORM_PAIR = /^[^&=\s]+=[^&]*$/;
+const NAME_OPENS_WITH_DELIMITER = /^[[\]{}()<>"']/;
 
+function isFormPair(part) {
+    if (!FORM_PAIR.test(part)) return false;
+    const name = part.slice(0, part.indexOf('='));
+    if (NAME_OPENS_WITH_DELIMITER.test(name)) return false;
+    let depth = 0;
+    for (const ch of name) {
+        if (ch === '[') depth++;
+        else if (ch === ']' && --depth < 0) return false;
+    }
+    return depth === 0;
+}
+
+// A form-urlencoded body: every `&`-part is a pair, OR at least two of them
+// are.
+//
+// The second clause is not a ratio and not a tuning knob -- it is measured. 7
+// of 755 real bodies carry a single valueless flag-style segment (a bare token
+// with no `=`) among 26 well-formed pairs; requiring EVERY part would report
+// them. Two real pairs is the point at which a body carries named fields
+// whatever else is in it, and it still rejects `REDACTED&token=`, where one
+// lone pair sits beside a placeholder.
 function isFormUrlEncodedBody(text) {
-    return text.split('&').every((part) => FORM_PAIR.test(part));
+    const parts = text.split('&');
+    const pairs = parts.filter(isFormPair).length;
+    return pairs === parts.length || pairs >= 2;
 }
 
-// Two separators with text on either side of them. `search` twice rather than
-// a per-character loop: both are native scans, neither allocates a match array
-// for a body that may run to hundreds of KB.
-function hasTwoInteriorSeparators(text) {
-    const inner = text.slice(1, -1);
-    const first = inner.search(BODY_SEPARATORS);
-    if (first < 0) return false;
-    return inner.slice(first + 1).search(BODY_SEPARATORS) >= 0;
+const escapeForRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// The boundary a `multipart/*` mimeType declares, if it declares one.
+function declaredBoundary(mimeType) {
+    const m = /boundary=("?)([^";,\s]+)\1/i.exec(mimeType || '');
+    return m ? m[2] : null;
 }
 
-function bodyCarriesPayloadStructure(text) {
+// Does `text` carry a multipart body delimited by `boundary`?
+//
+// FIND THE DELIMITER ANYWHERE IN THE BODY, NOT ON LINE ONE. A leading CRLF or
+// a MIME preamble before the first delimiter is legal and common, and keying
+// off the first line blinds the check for the WHOLE body -- SKILL.md already
+// carries this warning for the scrubber's multipart split and it applies
+// identically here.
+//
+// Two delimiter occurrences are required, not one, and the closing `--B--`
+// must be present. That is what stops a lone `--redacted--` placeholder from
+// nominating itself as a multipart body: it produces one occurrence, not two.
+function isMultipartWithBoundary(text, boundary) {
+    if (!boundary) return false;
+    const escaped = escapeForRegExp(boundary);
+    const delimiters = new RegExp('(?:^|\\r?\\n)--' + escaped, 'g');
+    let seen = 0;
+    while (delimiters.exec(text) !== null) seen++;
+    // Found ANYWHERE, not anchored to the end: an epilogue after the closing
+    // delimiter is legal MIME, and anchoring here would reject a real body for
+    // the same reason anchoring the opener to line one would -- looking in one
+    // place because that is where it usually is.
+    const closing = new RegExp('(?:^|\\r?\\n)--' + escaped + '--');
+    return seen >= 2 && closing.test(text);
+}
+
+// Prefer the declared boundary, but never REQUIRE the mimeType: a hand-edited
+// reference may have lost it, and the body still declares its own delimiter.
+function isMultipartBody(text, mimeType) {
+    const declared = declaredBoundary(mimeType);
+    if (declared && isMultipartWithBoundary(text, declared)) return true;
+    const trailing = /(?:^|\r?\n)--(.+?)--[ \t]*(?:\r?\n)?$/.exec(text);
+    return trailing ? isMultipartWithBoundary(text, trailing[1]) : false;
+}
+
+// NDJSON: two or more non-empty lines, every one a JSON composite.
+//
+// TWO or more, because one line that parses as JSON is just a JSON body -- and
+// a body of `"REDACTED"` is one line that parses. Composites rather than any
+// JSON value, because a stream of bare scalars is not a document either.
+//
+// HONEST NOTE ON THE LINE COUNT: mutation testing showed `>= 2` cannot change
+// any verdict, because the text is trimmed before it gets here, so a body with
+// one non-empty line IS that line and the composite-JSON rule ahead of this one
+// has already cleared it. The clause is kept because it is the correct
+// DEFINITION of NDJSON and this function is judged on its own terms, not on its
+// position in the chain -- but it is inert, no test pins it, and it is
+// documented here rather than left looking load-bearing. The composite
+// requirement on each line is NOT inert and is pinned.
+// 13 of the 14 NDJSON bodies in the sample declared `text/plain`, so this
+// never consults the mimeType.
+function isNdjsonBody(text) {
+    const lines = text.split(/\r?\n/).filter((line) => line.trim() !== '');
+    return lines.length >= 2 && lines.every((line) => hasCompositeJsonRoot(line.trim()));
+}
+
+// XML, and NOTHING MORE THAN THAT. This answers "does this belong to the
+// markup grammar", not "is this valid XML": no parser, no well-formedness
+// check, no entity or namespace resolution. A gate that tried to validate
+// would reject real documents for reasons that have nothing to do with whether
+// a body was replaced by a placeholder.
+//
+// WHY IT IS HERE despite not occurring once in 755 sampled bodies. The sample
+// is three modern social providers, JSON and form-urlencoded by house style;
+// that is evidence about which providers were sampled, not evidence about XML.
+// This is an UPSTREAM TEMPLATE that ships to arbitrary consuming projects, and
+// a consumer wrapping a SOAP or XML-RPC API would meet a gate firing on 100%
+// of their traffic -- #297 failure mode 4 in its purest form, where noise
+// destroys a gate's authority and the operator's rational response is to
+// disable it, losing the sentinel detection this whole gate exists to provide.
+// Omitting a wire grammar from a predicate whose rule is "belongs to a wire
+// grammar" is an incomplete list, not a narrowing justified by measurement.
+//
+// The test is that the ROOT ELEMENT IS CLOSED. That is what separates a
+// document from a lone angle-bracketed token: `<redacted>`, `<redacted:body>`
+// and `<redacted=x>` all open something that never closes, and the last does
+// not even parse as a tag. Anchoring at both ends also keeps this linear --
+// a lazy scan for a closing tag that is not there is quadratic on a body that
+// may run to hundreds of KB.
+//
+// KNOWN LIMITS, both accepted and both pinned in the suite.
+//
+// FALSE POSITIVE: a document whose root is self-closing (`<a/>`), or which
+// carries a comment or processing instruction after the root, is not
+// recognised. Rare as a REQUEST body, and the cost is a report an operator
+// dismisses in a glance.
+//
+// FALSE NEGATIVE, and this is the one that costs something: a placeholder
+// written AS a well-formed element -- `<REDACTED>body was removed</REDACTED>`
+// -- belongs to the markup grammar and is cleared. That is the price of
+// recognising XML at all, and it is not payable by tightening the recogniser:
+// no structural test separates that document from a real one-element body,
+// because there is no structural difference. It is the same trade every
+// recogniser here makes (`body=redacted` is a valid form pair too), and the
+// alternative -- firing on 100% of a SOAP consumer's traffic -- is worse by
+// the margin that decided this gate's design.
+const XML_OPENING_TAG = /^<([A-Za-z_][A-Za-z0-9_.:-]*)(?:\s[^>]*)?>/;
+
+function isXmlBody(text) {
+    let rest = text;
+    if (rest.startsWith('<?xml')) {
+        const close = rest.indexOf('?>');
+        if (close < 0) return false;
+        rest = rest.slice(close + 2).trim();
+    }
+    const opening = XML_OPENING_TAG.exec(rest);
+    return opening ? rest.endsWith(`</${opening[1]}>`) : false;
+}
+
+function bodyCarriesPayloadStructure(text, mimeType) {
     return hasCompositeJsonRoot(text)
         || isFormUrlEncodedBody(text)
-        || hasTwoInteriorSeparators(text);
+        || isMultipartBody(text, mimeType)
+        || isNdjsonBody(text)
+        || isXmlBody(text);
 }
 
 // THREE STATES, DECIDED SEPARATELY rather than left to a truthiness check --
@@ -341,7 +473,7 @@ function checkHollowRequestBody(entries, report) {
 
         const text = postData.text.trim();
         if (text === '') continue;
-        if (bodyCarriesPayloadStructure(text)) continue;
+        if (bodyCarriesPayloadStructure(text, postData.mimeType)) continue;
 
         // Names the file (the caller prefixes it) and the entry index, and
         // quotes NOTHING of the body: a finding that echoed the placeholder
