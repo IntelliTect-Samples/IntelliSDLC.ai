@@ -13,9 +13,23 @@
 // documents, not a list of field names -- three review rounds on the gate side
 // each found a name a curated list had not imagined:
 //
-//   a card-shaped IDENTITY value survives the scrub if and only if every
-//   occurrence of it the detector resolves to a JSON key sits at a field the
-//   policy declares to hold ids, and it resolves at least one.
+//   a card-shaped IDENTITY value survives the scrub if and only if AT LEAST
+//   ONE occurrence of it resolves to a JSON key at a field the policy declares
+//   to hold ids.
+//
+// ANY, not EVERY, and the direction is the whole safety argument. A first cut
+// of this change resolved mixed evidence the way the GATE resolves it -- one
+// occurrence at a plain field promotes the value back and it is replaced
+// everywhere. Measured, that silently rewrote an object id at `media_id` into a
+// generated fake, and because the fake is one this scrubber recognises as its
+// own, no gate would ever report it again. Beat 2: on a REPLACE path, fail
+// toward a miss.
+//
+// What makes the miss safe is the gate, and it is asserted here rather than
+// assumed (case 7). `findLeaksInHar` groups on (kind, fingerprint) and promotes
+// the whole group when ANY site is not an identifier field, order-independently,
+// so a mixed-evidence value left in place FAILS THE RUN LOUDLY. The scrubber
+// fails toward a miss; the gate refuses to pass what the scrubber declined.
 //
 // The generator is seeded with the ADJACENT shapes rather than exotic ones,
 // because that is where the gaps got through before:
@@ -166,14 +180,29 @@ function siteCount(har, value) {
 }
 
 /**
- * The ORACLE. A site suppresses only when it resolves to a JSON key the policy
- * declares to hold ids; a header, a query parameter and the URL resolve to no
- * key at all. The value survives only when every site suppresses.
+ * The ORACLE. A site declines the replacement only when it resolves to a JSON
+ * key the policy declares to hold ids; a header, a cookie, a query parameter
+ * and the URL resolve to no key at all. ONE such site is enough for the whole
+ * value, on the replace path.
  */
 function shouldSurvive(sites) {
     if (sites.length === 0) return false;
+    return sites.some(s => (s.where === 'field' || s.where === 'array')
+        && harPolicy.isIdentifierField(POLICY, s.name));
+}
+
+/** Every site resolves to a declared identifier field -- evidence is not mixed. */
+function allSitesDeclared(sites) {
+    if (sites.length === 0) return false;
     return sites.every(s => (s.where === 'field' || s.where === 'array')
         && harPolicy.isIdentifierField(POLICY, s.name));
+}
+
+/** Does the GATE fail the run on this document, for this kind? */
+function gateBlocks(har, kind) {
+    return harShapes.findLeaksInHar(har, POLICY)
+        .filter(l => l.kind === kind)
+        .some(l => harShapes.blocksLeak(l));
 }
 
 function generateCase(r) {
@@ -190,6 +219,7 @@ check('1.a survival matches the identifier-field oracle over generated documents
     const r = rng(0x360C0DE);
     let identifierOnly = 0;
     let mixed = 0;
+    let mixedSurvivors = 0;
     for (let i = 0; i < 400; i++) {
         const { value, sites } = generateCase(r);
         const har = harWith(value, sites);
@@ -211,11 +241,24 @@ check('1.a survival matches the identifier-field oracle over generated documents
             assert.ok(!result.substitutions.some(s => s.type === 'credit-card'),
                 'case ' + i + ' (' + shape + '): the substitution table gained an entry for '
                 + 'a value the scrub declined to replace');
+            // THE COMPOSITION, as a property rather than a worked example. The
+            // scrub failing toward a miss is only safe because the gate refuses
+            // to pass what the scrub declined on mixed evidence.
+            const mixedEvidence = !allSitesDeclared(sites);
+            assert.strictEqual(gateBlocks(har, 'credit-card'), mixedEvidence,
+                'case ' + i + ' (' + shape + '): a value the scrub left in place must be '
+                + (mixedEvidence
+                    ? 'BLOCKED by the gate, because its evidence was mixed'
+                    : 'passed by the gate, because every site was a declared id field'));
+            if (mixedEvidence) mixedSurvivors++;
         }
     }
     assert.ok(identifierOnly >= 20 && mixed >= 20,
         'the generator must exercise BOTH directions; got ' + identifierOnly
         + ' identifier-only and ' + mixed + ' mixed/plain documents');
+    assert.ok(mixedSurvivors >= 10,
+        'the composition assertion above is vacuous unless the corpus contains '
+        + 'MIXED-evidence survivors; got ' + mixedSurvivors);
 });
 
 // A generator that cannot express a shape cannot falsify it. These pin the
@@ -262,24 +305,47 @@ check('1.b the generator actually produces every adjacent shape', () => {
         'the generator never gave a pathless site an identifier-field NAME: ' + idNamedPathless);
 });
 
-// --- 2. THE PROMOTION RULE, stated as its own case ----------------------
+// --- 2. MIXED EVIDENCE -------------------------------------------------
 //
-// One occurrence at an id field does not make the VALUE an id. The replacement
-// set is keyed on the value, so the alternative -- rewriting one occurrence and
-// leaving the identical string beside it -- publishes the value it claims to
-// have removed. This is the rule `findLeaksInHar` already states on the gate.
-check('2.a a value echoed at a plain field is replaced at the id field too', () => {
+// The same value at an id field in one place and a plain field in another. The
+// replacement set is keyed on the value, so this has to be decided one way for
+// the whole run, and the direction is the safety argument. Replacing it rewrites
+// the object id at the id field into a fake the scrubber itself recognises,
+// after which no gate can report it -- silent, permanent corruption of a value
+// the gate had ALREADY agreed to allow. Declining leaves a real card in place
+// for one pass, where the gate blocks on it (case 7).
+check('2.a a value ALSO seen at a plain field is not replaced anywhere', () => {
     const value = cardShaped(rng(7));
     const har = harWith(value, [
         { where: 'field', name: 'media_id' },
         { where: 'field', name: 'ledger_ref' },
     ]);
-    pii.scrubPii(har, POLICY);
-    assert.strictEqual(siteCount(har, value), 0,
-        'the value was echoed at a field with no id declaration, which promotes it back');
+    const before = siteCount(har, value);
+    assert.strictEqual(before, 2, 'the fixture must place the value at both kinds of field');
+    const result = pii.scrubPii(har, POLICY);
+    assert.strictEqual(siteCount(har, value), before,
+        'mixed evidence was resolved toward REPLACING, which corrupts the object id at '
+        + 'the declared identifier field into a fake no gate can report afterwards');
+    assert.deepStrictEqual(result.substitutions, [],
+        'a declined value must not be enrolled as a substitution');
 });
 
-check('2.b the same value at TWO id fields survives at both', () => {
+check('2.b mixed evidence is reported AS mixed, not as a settled decline', () => {
+    const value = cardShaped(rng(8));
+    const har = harWith(value, [
+        { where: 'field', name: 'media_id' },
+        { where: 'field', name: 'ledger_ref' },
+    ]);
+    const row = pii.scrubPii(har, POLICY).retained.find(x => x.kind === 'credit-card');
+    assert.ok(row, 'a declined replacement must be reported');
+    assert.strictEqual(row.identifierField, true);
+    assert.strictEqual(row.mixedEvidence, true,
+        'an operator cannot tell a run that is finished from one the gate is about '
+        + 'to fail unless the row says the evidence was mixed');
+    assert.strictEqual(row.occurrences, 2);
+});
+
+check('2.c the same value at TWO id fields survives at both, and is NOT mixed', () => {
     const value = cardShaped(rng(7));
     const har = harWith(value, [
         { where: 'field', name: 'media_id' },
@@ -287,9 +353,12 @@ check('2.b the same value at TWO id fields survives at both', () => {
     ]);
     const before = siteCount(har, value);
     assert.strictEqual(before, 2, 'the fixture must place the value twice');
-    pii.scrubPii(har, POLICY);
+    const result = pii.scrubPii(har, POLICY);
     assert.strictEqual(siteCount(har, value), before,
         'a value seen only at declared identifier fields must not be rewritten');
+    const row = result.retained.find(x => x.kind === 'credit-card');
+    assert.strictEqual(row.mixedEvidence, undefined,
+        'no site lacked an id declaration, so nothing here is mixed');
 });
 
 // --- 3. SCOPE: no resolved key path, no suppression ----------------------
@@ -348,6 +417,7 @@ check('4.b scrubPii reports it in `retained`, in the gate vocabulary', () => {
         'the class is not off -- reporting `off` would claim a policy decision nobody made');
     assert.strictEqual(row.occurrences, 1);
     assert.strictEqual(row.distinct, 1);
+    assert.strictEqual(row.mixedEvidence, undefined, 'the only site was an id field');
     assert.ok(!JSON.stringify(result.retained).includes(value),
         'the report must never carry the value');
 });
@@ -433,6 +503,77 @@ check('6.a sanitize-har reports the declined replacements on the run', () => {
     const out = fs.readFileSync(path.join(dir, 'samples', 'har', 'capture.har'), 'utf8');
     assert.ok(out.includes(value),
         'the value the run said it kept must actually still be there');
+});
+
+check('6.c the run flags MIXED evidence, because the gate is about to fail', () => {
+    const dir = path.join(tmp, 'says-mixed');
+    initProtectedRepo(dir);
+    fs.mkdirSync(path.join(dir, 'samples', 'har-original'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.har-profile.json'),
+        JSON.stringify({ salt: 'test-salt', literals: {} }, null, 2));
+    const value = cardShaped(rng(42));
+    const har = harWith(value, [
+        { where: 'field', name: 'media_id' },
+        { where: 'field', name: 'ledger_ref' },
+    ]);
+    const harPath = path.join(dir, 'samples', 'har-original', 'capture.har');
+    fs.writeFileSync(harPath, JSON.stringify(har, null, 2));
+    const run = spawnSync(process.execPath, [sanitize, '--in', harPath],
+        { cwd: dir, encoding: 'utf8' });
+    const said = (run.stderr || '') + (run.stdout || '');
+    assert.ok(/MIXED EVIDENCE/.test(said),
+        'a mixed row must not read like a settled decline -- the gate blocks on these');
+    assert.ok(/no id declaration/.test(said),
+        'the run must say WHY the evidence is mixed, not merely that it is');
+    assert.ok(!said.includes(value), 'the run output must never carry the value');
+});
+
+// --- 7. THE COMPOSITION, which is now load-bearing -----------------------
+//
+// Declining to replace a mixed-evidence value is only safe if something else
+// catches a real card that arrives that way. That something is the gate, and
+// this asserts it directly rather than reasoning about it. `findLeaksInHar`
+// groups on (kind, fingerprint) and promotes the whole group when ANY site is
+// not an identifier field, so the order the sites appear in must not matter --
+// both orders are checked, because a grouping bug would show in exactly one.
+check('7.a the gate BLOCKS a mixed-evidence value the scrub left in place', () => {
+    for (const order of [['media_id', 'ledger_ref'], ['ledger_ref', 'media_id']]) {
+        const value = cardShaped(rng(51));
+        const har = harWith(value, order.map(name => ({ where: 'field', name })));
+        const before = siteCount(har, value);
+        pii.scrubPii(har, POLICY);
+        assert.strictEqual(siteCount(har, value), before,
+            'order ' + order.join(',') + ': the scrub must fail toward a miss here');
+        assert.strictEqual(gateBlocks(har, 'credit-card'), true,
+            'order ' + order.join(',') + ': the gate must fail the run on a value the '
+            + 'scrub declined on mixed evidence -- without this the scrub is simply '
+            + 'not removing a card');
+    }
+});
+
+check('7.b the gate PASSES a value declined on unmixed identifier evidence', () => {
+    const value = cardShaped(rng(52));
+    const har = harWith(value, [
+        { where: 'field', name: 'media_id' },
+        { where: 'array', name: 'trip_uuids' },
+    ]);
+    pii.scrubPii(har, POLICY);
+    assert.strictEqual(gateBlocks(har, 'credit-card'), false,
+        'every site is a declared id field, so the gate has already agreed to allow it; '
+        + 'blocking here would make the two engines disagree in the other direction');
+    const still = harShapes.findLeaksInHar(har, POLICY).filter(l => l.kind === 'credit-card');
+    assert.strictEqual(still.length, 1,
+        'passing is not the same as vanishing -- the finding is still reported, marked');
+    assert.strictEqual(still[0].identifierField, true);
+});
+
+check('7.c a plain-field value is replaced, and the gate then finds nothing', () => {
+    const value = cardShaped(rng(53));
+    const har = harWith(value, [{ where: 'field', name: 'ledger_ref' }]);
+    pii.scrubPii(har, POLICY);
+    assert.strictEqual(siteCount(har, value), 0, 'no id declaration, so it is replaced');
+    assert.strictEqual(gateBlocks(har, 'credit-card'), false,
+        'the replacement is the scrubber own fake, which the gate ignores');
 });
 
 check('6.b the gate exports the identifier predicate the scrub consumes', () => {
