@@ -373,6 +373,12 @@ function isMultipartBody(text, mimeType) {
 // a body of `"REDACTED"` is one line that parses. Composites rather than any
 // JSON value, because a stream of bare scalars is not a document either.
 //
+// `.every` IS LOAD-BEARING, and is not to be confused with the inert line
+// count documented below. Weakened to `.some`, a single valid JSON line would
+// vouch for every other line beside it, so a placeholder line sitting next to
+// a real JSON line would clear -- a plausible hand edit, and exactly what this
+// gate exists to catch. It is pinned by fixtures.
+//
 // HONEST NOTE ON THE LINE COUNT: mutation testing showed `>= 2` cannot change
 // any verdict, because the text is trimmed before it gets here, so a body with
 // one non-empty line IS that line and the composite-JSON rule ahead of this one
@@ -414,10 +420,12 @@ function isNdjsonBody(text) {
 //
 // KNOWN LIMITS, both accepted and both pinned in the suite.
 //
-// FALSE POSITIVE: a document whose root is self-closing (`<a/>`), or which
-// carries a comment or processing instruction after the root, is not
-// recognised. Rare as a REQUEST body, and the cost is a report an operator
-// dismisses in a glance.
+// FALSE POSITIVE: a document whose root is self-closing (`<a/>`), which
+// carries a comment or processing instruction after the root, or which opens
+// with a DOCTYPE rather than an XML declaration, is not recognised -- only
+// `<?xml ... ?>` is skipped before the root is looked for. All are rare as a
+// REQUEST body, and the cost is a report an operator dismisses in a glance.
+// Each is pinned as a fixture asserting current behaviour.
 //
 // FALSE NEGATIVE, and this is the one that costs something: a placeholder
 // written AS a well-formed element -- `<REDACTED>body was removed</REDACTED>`
