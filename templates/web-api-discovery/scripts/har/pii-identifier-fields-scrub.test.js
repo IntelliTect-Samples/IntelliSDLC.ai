@@ -140,7 +140,7 @@ const PLACEMENTS = ['field', 'array', 'header', 'query', 'cookie', 'url'];
  * `x-echo-0` instead would have made the scope cases unfalsifiable -- an
  * ablation that reads the header name would still have passed them.
  */
-function harWith(value, sites) {
+function harWith(value, sites, opts) {
     const body = {};
     const headers = [];
     const query = [];
@@ -154,6 +154,12 @@ function harWith(value, sites) {
         else if (site.where === 'cookie') cookies.push({ name: site.name, value });
         else if (site.where === 'url') url = 'https://example.invalid/api/' + value;
     });
+    // A TOP-LEVEL ARRAY OF OBJECTS is what a list endpoint returns, and it is
+    // the shape #374 found a generator could not express -- the body's keys sit
+    // under `response.content.text[0]`, so a resolver that treats a subscript
+    // as a wall names nothing there. The oracle is unchanged: the captured key
+    // is the same bare name either way.
+    const bodyNode = (opts && opts.topLevelArray) ? [body] : body;
     return {
         log: {
             version: '1.2', creator: { name: 'test', version: '1' },
@@ -165,7 +171,7 @@ function harWith(value, sites) {
                 },
                 response: {
                     status: 200, statusText: 'OK', httpVersion: 'HTTP/1.1', headers: [], cookies: [],
-                    content: { size: 0, mimeType: 'application/json', text: JSON.stringify(body) },
+                    content: { size: 0, mimeType: 'application/json', text: JSON.stringify(bodyNode) },
                     redirectURL: '', headersSize: -1, bodySize: 0,
                 },
                 cache: {}, timings: { send: 0, wait: 1, receive: 0 },
@@ -211,7 +217,7 @@ function generateCase(r) {
     for (let i = 0; i < n; i++) {
         sites.push({ where: pick(r, PLACEMENTS), name: fieldName(r) });
     }
-    return { value: cardShaped(r), sites };
+    return { value: cardShaped(r), sites, opts: { topLevelArray: r() < 0.35 } };
 }
 
 // --- 1. THE PROPERTY ----------------------------------------------------
@@ -221,15 +227,16 @@ check('1.a survival matches the identifier-field oracle over generated documents
     let mixed = 0;
     let mixedSurvivors = 0;
     for (let i = 0; i < 400; i++) {
-        const { value, sites } = generateCase(r);
-        const har = harWith(value, sites);
+        const { value, sites, opts } = generateCase(r);
+        const har = harWith(value, sites, opts);
         const before = siteCount(har, value);
         if (before === 0) continue;
         const expected = shouldSurvive(sites);
         if (expected) identifierOnly++; else mixed++;
         const result = pii.scrubPii(har, POLICY);
         const after = siteCount(har, value);
-        const shape = sites.map(s => s.where + ':' + s.name).join('+');
+        const shape = sites.map(s => s.where + ':' + s.name).join('+')
+            + (opts.topLevelArray ? ' @top-level-array' : '');
         assert.strictEqual(after > 0, expected,
             'case ' + i + ' (' + shape + '): expected the card-shaped identity value to '
             + (expected ? 'SURVIVE' : 'be REPLACED') + '; ' + after + '/' + before
@@ -270,9 +277,12 @@ check('1.b the generator actually produces every adjacent shape', () => {
     let staggered = 0;
     let subscripted = 0;
     let idNamedPathless = 0;
+    let topLevelArrayIds = 0;
     for (let i = 0; i < 400; i++) {
-        const { value, sites } = generateCase(r);
+        const { value, sites, opts } = generateCase(r);
         for (const s of sites) seen.add(s.where);
+        if (opts.topLevelArray && sites.some(s => (s.where === 'field' || s.where === 'array')
+            && harPolicy.isIdentifierField(POLICY, s.name))) topLevelArrayIds++;
         const ids = sites.filter(s => (s.where === 'field' || s.where === 'array')
             && harPolicy.isIdentifierField(POLICY, s.name));
         if (ids.length && ids.length < sites.length) staggered++;
@@ -289,7 +299,7 @@ check('1.b the generator actually produces every adjacent shape', () => {
         // no document ever carried it. That is the shape of the boundary guard
         // whose function never executed, and mutating `harWith` is what caught
         // it.
-        const req = harWith(value, sites).log.entries[0].request;
+        const req = harWith(value, sites, opts).log.entries[0].request;
         const pathless = [...req.headers, ...req.queryString, ...req.cookies];
         if (pathless.some(x => x.value === value
             && harPolicy.isIdentifierField(POLICY, x.name))) idNamedPathless++;
@@ -303,6 +313,9 @@ check('1.b the generator actually produces every adjacent shape', () => {
         'the generator never put an identifier field around an ARRAY: ' + subscripted);
     assert.ok(idNamedPathless >= 10,
         'the generator never gave a pathless site an identifier-field NAME: ' + idNamedPathless);
+    assert.ok(topLevelArrayIds >= 10,
+        'the generator never put an identifier field inside a TOP-LEVEL ARRAY OF '
+        + 'OBJECTS, which is what a list endpoint returns: ' + topLevelArrayIds);
 });
 
 // --- 2. MIXED EVIDENCE -------------------------------------------------
@@ -581,12 +594,90 @@ check('6.b the gate exports the identifier predicate the scrub consumes', () => 
         'har-shapes.js must own and export the identifier decision');
     // ...and it decides the way the scrub needs it to. A signature test proves
     // nothing on its own, which is why every other case here drives the scrub.
+    //
+    // Parameter 2 is a CAPTURED FIELD NAME -- the bare key the captured
+    // document carried -- not a key path (#374). It used to strip subscripts
+    // itself; `capturedFieldName` owns that now, and the walk resolves the name
+    // before the predicate sees it. `pii.js` already passes the bare JSON key
+    // `walkJsonForDetect` holds, so this is what it has always handed over.
     assert.strictEqual(
-        harShapes.isIdentifierShaped({ class: 'identity' }, 'media_ids[4]', POLICY), true,
-        'an identifier field holding an array must still be one');
+        harShapes.isIdentifierShaped({ class: 'identity' }, 'media_ids', POLICY), true,
+        'a declared identifier field must be recognised from its bare name');
     assert.strictEqual(
         harShapes.isIdentifierShaped({ class: 'secret' }, 'media_id', POLICY), false,
         'a secret-class finding must never be downgraded by a field name');
+});
+
+// The name this predicate is given is resolved by `capturedFieldName` (#369 /
+// #374), and that resolution is what keeps a HAR envelope property out of it.
+// Pinned from the SCRUB's side because this PR is what makes the gate
+// load-bearing: if an envelope node could yield a field name, a project
+// declaring `*value` would silence every header, cookie and query finding, and
+// the scrub's decision to leave a mixed-evidence value in place would have no
+// backstop.
+check('6.d an envelope node names no captured field; a body key does', () => {
+    const cfn = harShapes.capturedFieldName;
+    // A header value IS its own envelope node -- the walk passes the same
+    // string as path and base -- so there is no captured key below it.
+    assert.strictEqual(cfn('request.headers[3].value', 'request.headers[3].value'), null,
+        'a HAR envelope property was mined for a field name');
+    assert.strictEqual(cfn('request.url', 'request.url'), null);
+    // A key inside a parsed body is a name the captured document chose.
+    assert.strictEqual(cfn('response.content.text.media_id', 'response.content.text'),
+        'media_id');
+    // ...including under a top-level array of objects, which is what a list
+    // endpoint returns and the shape #374 found missing.
+    assert.strictEqual(cfn('response.content.text[0].media_id', 'response.content.text'),
+        'media_id');
+    // An array element has no key of its own wherever the array sits.
+    assert.strictEqual(cfn('response.content.text[0]', 'response.content.text'), null);
+    // The counterfactual, so the nulls above are refused for their SHAPE and
+    // not because `value` is simply an undeclared name: a policy declaring
+    // `*value` matches the bare name and still gets nothing from the envelope.
+    const valuePolicy = Object.assign({}, POLICY,
+        { identifierFields: [...POLICY.identifierFields, '*value'] });
+    assert.strictEqual(
+        harShapes.isIdentifierShaped({ class: 'identity' }, 'value', valuePolicy), true,
+        'the policy under test must actually declare a bare `value` field');
+    assert.strictEqual(
+        harShapes.isIdentifierShaped({ class: 'identity' },
+            cfn('request.headers[3].value', 'request.headers[3].value'), valuePolicy),
+        false,
+        'a project declaring `*value` silenced a header finding');
+});
+
+// --- 8. THE CASE THAT MADE #369 BLOCKING --------------------------------
+//
+// A body key at a declared identifier field, the same value echoed in a HEADER,
+// and a project policy declaring `*value`. Before #374 the gate derived `value`
+// from `request.headers[N].value`, so `*value` marked the header finding as an
+// identifier field too; with every site in the group marked, the gate passed
+// the value clean. Combined with this PR's decision to leave it in place, that
+// shipped it unblocked -- the scrub declining and the gate not catching is the
+// one combination the composition must never produce.
+//
+// This is the reason the composition is asserted rather than argued: the
+// backstop changed underneath this PR, and a backstop nobody re-measures is an
+// assumption.
+check('8.a a header echo under a `*value` policy is declined AND blocked', () => {
+    const valuePolicy = Object.assign({}, POLICY,
+        { identifierFields: [...POLICY.identifierFields, '*value'] });
+    const value = cardShaped(rng(61));
+    const har = harWith(value, [
+        { where: 'field', name: 'media_id' },
+        { where: 'header', name: 'x-trace' },
+    ]);
+    const before = siteCount(har, value);
+    assert.strictEqual(before, 2, 'the fixture must place the value in the body AND a header');
+    const result = pii.scrubPii(har, valuePolicy);
+    assert.strictEqual(siteCount(har, value), before,
+        'the scrub must fail toward a miss: the body site is a declared id field');
+    const row = result.retained.find(x => x.kind === 'credit-card');
+    assert.strictEqual(row.mixedEvidence, true,
+        'a header carries no captured key, so the evidence is mixed and must say so');
+    assert.strictEqual(gateBlocks(har, 'credit-card'), true,
+        'the value the scrub left in place shipped UNBLOCKED -- the header must not '
+        + 'be readable as a declared identifier field');
 });
 
 if (failures) {
