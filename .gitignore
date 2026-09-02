@@ -21,6 +21,13 @@ Thumbs.db
 # is no option that moves them, so the directory rule below is the real guard
 # rather than a hope about how the tool is invoked.
 #
+# Since #377 the store holds the SCRUBBED artifacts too -- scrubbed.har,
+# digest.json, catalogue.json and the findings report all default into the
+# run's own stamped session directory. That is why the directory rule matters
+# more than the by-name ones: it is now the single rule that keeps a whole
+# capture, raw and processed, out of `git status`. The recorder refuses to
+# record when git does not report the store as ignored.
+#
 # The by-name rules remain anyway, as defence in depth for a capture copied out
 # of the tree by hand. `raw.har` is listed literally as well as by suffix: the
 # recorder names the file exactly `raw.har`, which `*.raw.har` does NOT match

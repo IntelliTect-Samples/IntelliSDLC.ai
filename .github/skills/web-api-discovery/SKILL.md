@@ -117,11 +117,34 @@ Invoke-HarCapture https://example.com -Describe 'browse the catalogue' |
     Where-Object Status -eq Observed
 ```
 
-**Two directories, and the difference is the safety story.** The raw capture
-carries live session cookies and is confined to `.har-captures/` **by
-construction** -- no option redirects it. `-OutputPath` (default: the current
-directory) receives only artifacts that have already been scrubbed and
-verified.
+**One stamped directory by default, and the difference from what came before
+is the safety story.** The raw capture carries live session cookies and is
+confined to `.har-captures/` **by construction** -- no option redirects it.
+`-OutputPath` receives only artifacts that have already been scrubbed and
+verified, and it **defaults to the run's own session directory**, beside the
+raw.
+
+That default is the fix for three defects at once: the session directory is
+gitignored, so nothing appears untracked in a work tree; it carries the run's
+stamp, so a second capture against the same host cannot overwrite the first's
+`scrubbed.har`; and the scrubbed artifact sits beside the raw it came from,
+which is the structural link a committed reference needs back to its source.
+
+`-OutputPath` used to default to the current directory, and then to the
+repository root. Both were wrong the same way -- the root of whichever work
+tree the operator happened to be standing in is not a place scrubbed artifacts
+belong -- and a run from a checkout root dropped an untracked `<host>/`
+directory there. Passing `-OutputPath` still writes `<path>/<host>/`; when that
+destination is inside a work tree and not gitignored the recorder **warns,
+names the path, and proceeds**, because refusing a destination the operator
+deliberately named would be user-hostile now that the default is safe.
+
+**The capture store must be gitignored before anything records.** If
+`.har-captures/` is not ignored, an interactive run prompts once to append the
+rule (naming the resolved absolute path, and saying it is in the *main*
+checkout); a non-interactive run **hard-fails**. An unscrubbed,
+credential-bearing capture one `git add -A` from a commit is the case worth
+stopping for, and an agent or CI run has nowhere to prompt.
 
 **WHICH `.har-captures/`, though, is a separate question, and it is the one
 that cost a capture.** The name is fixed; the *anchor* used to be the working
@@ -155,20 +178,37 @@ not of the name: a directory is only ignored where a `.gitignore` says so. The
 scrub therefore **verifies** it rather than assuming it -- see the substitution
 tables below.
 
-**Both are keyed on the captured site's host**, so two captures never
-overwrite each other -- `scrubbed.har`, `digest.json` and `catalogue.json` are
-fixed filenames, and before this the second capture silently replaced the
-first:
+**The store is keyed on the captured site's host and then on the run's stamp**,
+so no two captures collide -- `scrubbed.har`, `digest.json` and `catalogue.json`
+are fixed filenames, and the stamp is what keeps a second capture against the
+same host from replacing the first:
 
 ```
-.har-captures/app.example.com/2026-08-27-141500/raw.har   <- gitignored
-./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+.har-captures/app.example.com/2026-08-27-141500/    <- gitignored, and the default output path
+├── raw.har
+├── raw.ndjson
+├── scrubbed.har
+├── scrub-findings.json
+├── digest.json
+└── catalogue.json
 ```
 
 The **host alone** names the folder, never the full URL: a magic-link,
-password-reset or signed start URL carries its token in the path or the query,
-and the second directory is the committable one. A port joins with `_`
-(`localhost_5001`) because a dash is legal inside a hostname.
+password-reset or signed start URL carries its token in the path or the query.
+A port joins with `_` (`localhost_5001`) because a dash is legal inside a
+hostname.
+
+**Nothing under `.har-captures/` is ever discarded**, `raw.ndjson` included:
+the record log is the only witness to what the recorder saw before assembly, so
+it is the recovery path if a `raw.har` is ever found malformed.
+
+**The run ends by printing the catalogue itself**, not merely its path --
+Status / Action / Methods / Entries / Endpoints, the same five columns
+`Invoke-HarCapture` renders -- and says so when the catalogue is still an
+untouched scaffold. It prints **no captured value**: path templates, methods
+and counts only. The recorder prints it, on the same reasoning that puts the
+closing notice there; the PowerShell front door defers rather than printing a
+second copy, and returns the rows as typed objects for the pipeline.
 
 The mechanical phases -- scrub via `sanitize-har.js`, gate via
 `verify-scrub.js`, then a session digest -- run inside the recording process on
@@ -302,7 +342,7 @@ holds live sessions this must not disturb -- and records every request. Pass
 | Parameter | Notes |
 |---|---|
 | `-Uri` | positional, mandatory |
-| `-OutputPath` | default: the current directory. The host-named folder is always appended, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`. Receives the **scrubbed** artifacts and the catalogue |
+| `-OutputPath` | default: **this run's own session directory** under `.har-captures/` -- gitignored and stamped. Passing a path appends the host folder, so `-OutputPath D:\refs` writes `D:\refs\app.example.com`; a destination inside a work tree that is not gitignored is warned about, not refused. Receives the **scrubbed** artifacts and the catalogue |
 | `-Describe` | **required.** What the recording is for, in your own words. Omitting it terminates the run -- it never prompts, so the front door and the recorder refuse identically whether a person or an agent invoked them. It helps the AI segment, but that is the smaller half: the store is shared and append-only, its directory names are capture START times, and several sessions record into it at once -- so the description is the only reliable way to tell one capture from another, and the only part that cannot be reconstructed afterwards. Never the source of action names |
 | `-Profile`, `-Isolated` | which signed-in identity to record as |
 | `-Port` | default 9333; a busy port falls forward to the next free one |
@@ -810,26 +850,61 @@ is only possible because the capture was kept.
 #### 1. A per-provider directory of committed, scrubbed references
 
 ```
-<host>/                        <- e.g. app.example.com, the capture output path
-├── scrubbed.har               <- the whole session, scrubbed
-├── digest.json                <- what an AI segments from
-├── catalogue.json             <- the rows, STRUCTURED and committed (see 3)
-├── README.md                  <- the table, GENERATED from catalogue.json (see 3)
+.har-captures/<host>/<stamp>/   <- gitignored; the capture's own directory
+├── raw.har                     <- never committed
+├── scrubbed.har                <- the whole session, scrubbed
+├── digest.json                 <- what an AI segments from
+└── catalogue.json              <- THIS RUN's rows, scaffolded from digest.json
+
+docs/har-reference/<host>/      <- tracked; only trimmed extracts live here
+├── catalogue.json              <- the HOST's committed rows, STRUCTURED (see 3)
+├── README.md                   <- the table, GENERATED from catalogue.json (see 3)
 ├── <provider-a>/
-│   ├── README.md              <- provider scrub policy + re-capture recipe
-│   ├── api.json               <- GENERATED description of the server (see 4b)
+│   ├── README.md               <- provider scrub policy + re-capture recipe
+│   ├── api.json                <- GENERATED description of the server (see 4b)
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
 
-`catalogue.json` is the **source of truth** and `README.md` is a rendering of
-it. Only the region between the generated markers is written; everything else
-in that README is hand-written and survives regeneration untouched. See 3.
+**Two different files are called `catalogue.json` and they are not the same
+artifact.** The one in `.har-captures/<host>/<stamp>/` belongs to a single run:
+it is gitignored, scaffolded from that run's `digest.json`, and describes what
+that one capture saw. The one in `docs/har-reference/<host>/` is committed, is
+the source of truth for the host's whole reference set, and accumulates rows
+across runs. A run's catalogue is the *proposal*; the committed catalogue is the
+*record*. Promotion is what carries a row from the first to the second, and the
+run does not perform it (below).
 
-The provider directories sit beside the session artifacts, inside the
-host-named output folder. A provider is not always the host -- one site's
-traffic routinely spans several third-party APIs -- which is why both levels
-exist.
+`docs/har-reference/<host>/catalogue.json` is the **source of truth** and
+`README.md` is a rendering of it. Only the region between the generated markers
+is written; everything else in that README is hand-written and survives
+regeneration untouched. See 3.
+
+The two sides are deliberately different in kind. Everything under
+`.har-captures/` is the run's own record and is never committed; everything
+under `docs/har-reference/` is a **trimmed extract** of the entries that
+mattered. Measured in a consuming project, committed references run 3 KB - 60 KB
+against captures of 277 MB - 1.6 GB, so copying `scrubbed.har` into the
+reference directory is not a smaller version of promotion -- it is the wrong
+artifact. **`scrubbed.har` is never committed**; it stays in the gitignored
+session directory beside the raw it came from.
+
+A provider is not always the host -- one site's traffic routinely spans several
+third-party APIs -- which is why both levels exist under the host directory, and
+why the provider appears in the extract's filename as well as in the directory
+it sits under.
+
+**Promotion is a deliberate step and the run does not perform it.**
+`extract-har-reference.js` refuses to run without `--match`, and that refusal is
+correct: choosing which entries matter is the judgement a reference exists to
+record, and a selector guessed from a digest that "looks right" is plausible,
+unverifiable, and wrong in a way nobody notices until somebody relies on it. So
+the run ends by printing the ready-to-paste command with the provider, the
+action slug (derived from `-Describe`) and the destination
+`docs/har-reference/<host>/<provider>/` already filled in, and records that
+reference's `<provider>/<filename>` path in the run catalogue's `HarFile` field
+-- the link that lets a committed reference be paired back to the capture it
+came from.
 
 **Raw captures are never committed.** They run to hundreds of MB and carry
 live credentials. Only trimmed, scrubbed extracts go in-tree.

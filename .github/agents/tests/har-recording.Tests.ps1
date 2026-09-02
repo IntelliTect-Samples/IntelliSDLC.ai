@@ -353,7 +353,10 @@ Describe 'capture-har.js' {
             --validate-only
         $r.ExitCode | Should -Be 0
         $session = $r.StdOut | ConvertFrom-Json
-        $session.outputPath | Should -BeLike '*app.example.com'
+        # The output path is the run's own stamped session directory now (#377),
+        # so the host is a SEGMENT of it rather than its last element.
+        $session.outputPath | Should -BeLike '*app.example.com*'
+        $session.outputPath | Should -Be $session.sessionDir
         $session.outputPath | Should -Not -Match 'PATHTOK|QUERYTOK'
         $session.harPath | Should -Not -Match 'PATHTOK|QUERYTOK'
     }
@@ -361,7 +364,7 @@ Describe 'capture-har.js' {
     It 'renders a port with an underscore, since a dash is legal in a hostname' {
         $r = Invoke-CaptureHar start --uri 'https://localhost:5001/' --describe 'pester fixture' --validate-only
         $r.ExitCode | Should -Be 0
-        ($r.StdOut | ConvertFrom-Json).outputPath | Should -BeLike '*localhost_5001'
+        ($r.StdOut | ConvertFrom-Json).outputPath | Should -BeLike '*localhost_5001*'
     }
 
     It 'falls forward to a free port instead of failing on a busy one' {

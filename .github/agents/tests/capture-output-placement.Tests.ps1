@@ -444,17 +444,24 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
         $r.NodeRan | Should -BeTrue
     }
 
-    It 'reads the catalogue from the repo root by default, not the cwd (#300)' {
-        # The front door computes the catalogue path itself rather than shelling
-        # out to node for it, so anchoring has to be applied in both places or
-        # the script looks for a catalogue where the recorder did not write one.
+    It 'takes the catalogue from the recorder rather than an anchoring rule (#377)' {
+        # It USED TO rebuild the path by applying the same anchoring rule as the
+        # recorder -- the repo root plus the host folder. #377 moved the default
+        # output into the run's own STAMPED session directory, which this script
+        # cannot compute, and globbing .har-captures/ for the newest session is
+        # what this file's own comment refuses: a concurrent capture against
+        # another site finishing first would hand this run somebody else's
+        # catalogue.
+        #
+        # So the recorder reports its own paths on stdout. The stub recorder
+        # here reports nothing, and the observable proof that the anchoring rule
+        # is gone is that the front door names no invented path at all.
         $work = New-Checkout -Name 'fd-anchor' -TrackedHooks -HooksPath '.githooks'
         $deep = Join-Path $work 'docs'
         New-Item -ItemType Directory -Path $deep -Force | Out-Null
         $r = Invoke-FrontDoorIn -Cwd $deep -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
-        # No catalogue exists, so the front door reports where it looked --
-        # which is the observable proof of which root it anchored to.
-        $r.Warning | Should -Match ([regex]::Escape((Join-Path $work 'app.example.com')))
+        $r.Warning | Should -Match 'reported no catalogue'
+        $r.Warning | Should -Not -Match ([regex]::Escape((Join-Path $work 'app.example.com')))
     }
 }
 

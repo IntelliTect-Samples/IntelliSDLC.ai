@@ -51,39 +51,61 @@
                        regenerated. Outside a repository it is relative to the
                        current directory, as before. The recorder prints the
                        resolved path as it starts.
-      -OutputPath      scrubbed, verified artifacts only: the per-action
-                       reference HARs, the session digest, and the catalogue.
+      -OutputPath      scrubbed, verified artifacts only: the session digest,
+                       the catalogue and the scrubbed capture. It DEFAULTS to
+                       this run's own session directory, beside the raw.
 
-    Both are keyed on the captured site's HOST, so captures against different
-    sites never overwrite each other:
+    So by default there is one directory, stamped with the run, and everything
+    lands in it:
 
-      .har-captures/app.example.com/<timestamp>/raw.har
-      ./app.example.com/{scrubbed.har,digest.json,catalogue.json}
+      .har-captures/app.example.com/<timestamp>/{raw.har,scrubbed.har,digest.json,catalogue.json}
+
+    That is the fix for three defects at once (#377): nothing untracked appears
+    in a work tree, a second capture against the same host no longer overwrites
+    the first's scrubbed artifact, and the scrubbed capture sits beside the raw
+    it came from. Passing -OutputPath still writes <path>/<host>/ instead, and
+    the recorder WARNS -- it does not refuse -- when that destination is inside
+    a work tree and not gitignored.
 
     The host alone, never the full URL: a magic-link or password-reset URL
-    carries its token in the path or the query, and the second of these
-    directories is the committable one.
+    carries its token in the path or the query, and a host directory sits next
+    to committable artifacts.
+
+    PROMOTING A REFERENCE is a separate, deliberate step, and this command does
+    not perform it. A committed reference is a TRIMMED extract of the entries
+    that matter (kilobytes), not a whole scrubbed capture (hundreds of
+    megabytes), and choosing those entries is a judgement. The run ends by
+    printing the ready-to-paste har/extract-har-reference.js command, with the
+    provider, the action and the destination filled in.
 
 .PARAMETER Uri
     The site to open. Positional, so the parameter name is optional.
 
 .PARAMETER OutputPath
-    The parent of the host-named folder the scrubbed artifacts and the
-    catalogue are written to. Passing -OutputPath D:\refs writes
-    D:\refs\app.example.com\ instead -- the host folder is always appended, and
-    a relative path resolves against the current directory. The raw capture
-    never goes here.
+    Where the scrubbed capture, the digest and the catalogue are written.
 
-    THE DEFAULT is the repository root when the working directory is inside a
-    repository, and the current directory when it is not. It used to be the
-    current directory unconditionally, which was right outside a repo and wrong
-    inside one: run from a checkout's subdirectory, artifacts appeared wherever
-    the operator happened to be standing.
+    THE DEFAULT is this run's own session directory under .har-captures/ --
+    the same stamped directory the raw capture is in (#377). It is gitignored,
+    so nothing appears untracked in a work tree, and it is stamped, so a second
+    capture against the same host cannot overwrite the first's scrubbed.har.
 
-    Anchoring alone does not make the placement CORRECT -- a worktree has its
-    own root -- only predictable. Recording from the primary checkout on the
-    protected branch additionally warns before anything is recorded; see
-    ../lib/RepoWorkflowGuard.ps1.
+    It used to be the current directory, and then the repository root. Both
+    were wrong the same way: the root of whichever work tree the operator
+    happened to be standing in is not a place scrubbed artifacts belong, and a
+    run from a checkout root dropped an untracked <host>/ directory there.
+    Anchoring made the placement predictable, not correct.
+
+    Passing -OutputPath D:\refs writes D:\refs\app.example.com\ instead: the
+    host folder is always appended, and a relative path resolves against the
+    current directory, because a path you typed has to mean what you typed.
+    When that destination is inside a git work tree and is NOT gitignored the
+    recorder warns, names the resolved path, says the artifacts will show as
+    untracked, and proceeds -- refusing a destination you deliberately named
+    would be user-hostile, and the session directory keeps its own copy either
+    way. The raw capture never goes here under any value.
+
+    Recording from the primary checkout on the protected branch additionally
+    warns before anything is recorded; see ../lib/RepoWorkflowGuard.ps1.
 
 .PARAMETER Describe
     REQUIRED. What this recording is for, in your own words. Omitting it is a
@@ -364,8 +386,19 @@ if ($VerbosePreference -ne 'SilentlyContinue') { $captureArgs += @('--log-level'
 Write-Verbose "capture-har.js $($captureArgs -join ' ')"
 Write-Information 'Recording. Browse, then press ENTER in the recorder terminal -- that writes the most complete HAR.'
 
+# STDOUT IS CAPTURED, stderr is not (#377).
+#
+# The recorder writes one line of JSON to stdout when a run completes, naming
+# the session directory and the catalogue it wrote. That handoff exists because
+# the default output path now carries the run's STAMP, so this script can no
+# longer rebuild it from an anchoring rule -- and the alternative, globbing
+# .har-captures/ for the newest session, is what the comment below refuses.
+#
+# Every human-facing line the recorder emits -- the banner, the ENTER prompt,
+# the Ctrl+C question, the warnings, the catalogue table -- goes to stderr, so
+# capturing stdout leaves the interactive experience untouched.
 try {
-    & node $captureJs @captureArgs
+    $recorderStdout = & node $captureJs @captureArgs
     $exit = $LASTEXITCODE
 }
 finally {
@@ -417,26 +450,31 @@ switch ($exit) {
     }
 }
 
-# The catalogue is read from THIS invocation's output path, which we already
-# know -- never by globbing .har-captures/ for the newest session directory.
+# The catalogue is read from THIS invocation's own report, and never by
+# globbing .har-captures/ for the newest session directory.
 #
-# That glob looks equivalent and is not: captures now coexist happily on
-# different ports, so a second capture started in another terminal and finished
-# first would be the lexicographically-last directory, and this run would emit
-# a different site's catalogue as though it were its own. The recorder's
-# current.json pointer is no help either -- it is deleted when recording ends,
-# before node returns here.
-# The URI-named subfolder comes from the recorder itself (see $uriFolder above),
-# so this path and the one the recorder wrote to cannot drift apart.
+# That glob looks equivalent and is not: captures coexist happily on different
+# ports, so a second capture started in another terminal and finished first
+# would be the lexicographically-last directory, and this run would emit a
+# different site's catalogue as though it were its own.
 #
-# The DEFAULT root is anchored the same way the recorder anchors it (#300):
-# the repository root inside a repo, the working directory outside one. Both
-# sides have to apply it or this script looks for a catalogue in a directory
-# the recorder never wrote to. An explicit -OutputPath is left alone, resolved
-# against the working directory, because a relative path the operator typed has
-# to mean what they typed.
-$outputRoot = if ($OutputPath) { $OutputPath } else { Get-DefaultOutputRoot -Path '.' }
-$cataloguePath = Join-Path (Join-Path $outputRoot $uriFolder) 'catalogue.json'
+# So the recorder says which one is its own. The default output path is now the
+# run's stamped session directory (#377), which this script cannot compute, and
+# the -OutputPath fallback below is only for a run that ended before the
+# recorder could report -- a cancel, or a recording nothing was written for.
+$cataloguePath = $null
+foreach ($line in @($recorderStdout)) {
+    if ($line -isnot [string] -or -not $line.TrimStart().StartsWith('{')) { continue }
+    try { $report = $line | ConvertFrom-Json } catch { continue }
+    if ($report.cataloguePath) { $cataloguePath = $report.cataloguePath }
+}
+if (-not $cataloguePath -and $OutputPath) {
+    $cataloguePath = Join-Path (Join-Path $OutputPath $uriFolder) 'catalogue.json'
+}
+if (-not $cataloguePath) {
+    Write-Warning 'the recorder reported no catalogue for this run.'
+    return
+}
 Write-Verbose "catalogue: $cataloguePath"
 
 # NO closing notice here, deliberately (#300). The recorder emits it, because
@@ -453,20 +491,17 @@ if (-not (Test-Path -LiteralPath $cataloguePath)) {
 
 $rows = @(& (Join-Path $PSScriptRoot 'ConvertFrom-HarCatalogue.ps1') -Path $cataloguePath)
 
-# Say so when the catalogue is still a scaffold. The Status column already
-# distinguishes the two, but an operator who does not read it would otherwise
-# take a list of provisional rows for a finished catalogue. Derived from the
-# rows themselves rather than from session state, so it survives the catalogue
-# being filled in by any of the three runners.
+# NO SECOND RENDERING OF THE CATALOGUE HERE (#377), deliberately, and for the
+# reason this script already gives about the closing notice: the recorder is the
+# process that wrote the files, it prints the table in-process, and a table
+# printed only from here would depend on this process surviving long enough to
+# reach its own epilogue.
 #
-# Keyed on Description, not Status: a real AI pass may legitimately conclude
-# that every group was observed and none exercised, and telling that operator
-# their catalogue never ran would be wrong. Describing a row is the one thing
-# the AI does that the scaffold never can.
-if ($rows.Count -and -not ($rows | Where-Object { $_.Description })) {
-    Write-Information (
-        'Every row is still Observed -- the catalogue needs its AI pass. See ' +
-        (Join-Path $PSScriptRoot 'catalogue-prompt.md'))
-}
+# So the recorder owns the human-readable table AND the "still a scaffold"
+# notice, and this script adds neither. What it still owes its callers is the
+# DATA: $rows below is the documented output of this command
+# (`Invoke-HarCapture ... | Where-Object Status -eq Observed`), typed objects on
+# the success stream rather than a second copy of the text the operator has
+# already read.
 
 $rows

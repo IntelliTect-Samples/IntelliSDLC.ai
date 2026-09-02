@@ -248,10 +248,17 @@ test('D2: the capture root resolves under the MAIN working tree, not the worktre
     assert.ok(!isInside(harPath, wt),
         'the raw must not be inside the linked worktree -- that is the disposable directory');
 
-    // The scrubbed output is a DIFFERENT question and deliberately unchanged:
-    // it is committable, so it belongs on the branch being worked on.
-    assert.ok(isInside(resolved.session.outputPath, wt),
-        'the scrubbed output path still follows the worktree, where it can be committed');
+    // The scrubbed output used to follow the WORKTREE, on the reasoning that it
+    // is committable and so belongs on the branch being worked on. #377 reversed
+    // that: the root of whichever work tree the operator is standing in is not a
+    // place artifacts belong, and a run from a checkout root dropped an
+    // untracked host directory there. The default is the run's own session
+    // directory now -- gitignored, stamped, and beside the raw. Promotion into a
+    // committable directory is a separate, deliberate step.
+    assert.strictEqual(resolved.session.outputPath, path.dirname(harPath),
+        'the scrubbed artifacts belong beside the raw, in the run own session directory');
+    assert.ok(!isInside(resolved.session.outputPath, wt),
+        'and never inside the disposable worktree');
 });
 
 test('D3: the resolved capture root is announced while the run starts', () => {
