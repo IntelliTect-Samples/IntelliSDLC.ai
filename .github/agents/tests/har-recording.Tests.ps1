@@ -519,17 +519,23 @@ Describe 'capture-har.js assembling a lost recording' {
         $script:R.Output | Should -Match 'no longer running'
     }
 
-    It 'abandons a current-session pointer whose recorder crashed, for the newer capture' {
-        # The hard case: a driver killed before its own cleanup leaves the
-        # pointer behind AND never writes endedUtc, so "has it ended?" cannot
-        # distinguish it from a live recording -- only "is its driver alive?"
-        # can.
+    It 'ignores a leftover current.json entirely -- the pointer is gone (#377)' {
+        # These two tests used to assert POINTER semantics: that a stale
+        # `current.json` was abandoned, and that a live one was followed. The
+        # pointer is gone -- it was shared mutable state at the root of a store
+        # several agent sessions record into at once, and `resolveSession`
+        # already fell back to scanning whenever it went stale.
         #
-        # TWO sessions, deliberately: with only one on disk, the pointer branch
-        # and the newest-on-disk fallback resolve the same directory, and the
-        # test would pass even if the pointer logic were deleted outright.
+        # Left as they were, both would still have passed, for reasons that have
+        # nothing to do with what they named: one because the newest-on-disk
+        # answer happened to match, the other because of the live/dead filter.
+        # That is a test wearing a green tick, so the assertion is rewritten to
+        # the fact that is actually true now -- a pointer file, however
+        # tempting, decides nothing.
         $crashed = New-LostSession -Root $script:Tmp -Crashed -Stamp '2020-01-01-120000'
         $newer = New-LostSession -Root $script:Tmp -Stamp '2030-01-01-120000'
+        # The pointer names the OLD, crashed session. If anything still read it,
+        # this is the answer we would get.
         @{ sessionDir = $crashed } | ConvertTo-Json |
             Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
 
@@ -537,19 +543,22 @@ Describe 'capture-har.js assembling a lost recording' {
         $r.ExitCode | Should -Be 0
         $status = $r.StdOut | ConvertFrom-Json
         $status.sessionDir | Should -Be $newer `
-            -Because 'a dead pointer must not hide the capture the operator actually wants'
+            -Because 'the stamp is the identity; a file at the store root is not consulted'
         $status.recording | Should -BeFalse `
             -Because 'a crashed recorder must never be reported as still recording'
     }
 
-    It 'follows the pointer to a live recording even when a newer capture exists' {
-        # The mirror: liveness is judged by the driver pid, so a live session
-        # must still win over a newer-but-finished one. Without this, "ignore
-        # stale pointers" could regress into "ignore all pointers" and every
-        # stop would target the wrong capture.
+    It 'a LIVE capture wins over a newer finished one, with no pointer to help' {
+        # The mirror, and the property that actually has to hold once the
+        # pointer is gone: liveness is judged by the driver pid, so the
+        # recording the operator is sitting in front of is the one `stop`
+        # reaches even when a newer session has already ended.
+        #
+        # The pointer here names the NEWER, finished session -- the wrong
+        # answer -- so this fails if anything starts reading it again.
         $live = New-LostSession -Root $script:Tmp -Crashed -Stamp '2020-01-01-120000' -OwnerPid $PID
-        New-LostSession -Root $script:Tmp -Stamp '2030-01-01-120000' | Out-Null
-        @{ sessionDir = $live } | ConvertTo-Json |
+        $finished = New-LostSession -Root $script:Tmp -Stamp '2030-01-01-120000'
+        @{ sessionDir = $finished } | ConvertTo-Json |
             Set-Content -LiteralPath (Join-Path $script:Tmp 'current.json') -Encoding utf8
 
         $status = (Invoke-CaptureHar status --dir $script:Tmp).StdOut | ConvertFrom-Json
