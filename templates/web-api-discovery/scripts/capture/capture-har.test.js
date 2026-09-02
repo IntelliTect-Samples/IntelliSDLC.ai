@@ -676,6 +676,35 @@ test('the scaffold templates endpoints with the shared function, not a private c
         ['api.example.com/v1/posts/{id}']);
 });
 
+test('the digest and the guard name the same endpoints for the same traffic', () => {
+    // THE CRIES-WOLF FAILURE THIS PREVENTS. buildCatalogueScaffold writes a
+    // row's `Endpoints` from the digest; verify-har-catalogue.js recomputes
+    // them from the reference and fails the row on any disagreement. If the two
+    // derived an endpoint by even slightly different rules, correct output
+    // would fail its own check -- and the repair everyone reaches for is to
+    // weaken the gate, not to fix the derivation.
+    //
+    // Sharing `pathTemplate` is necessary but not sufficient: the host half is
+    // composed separately on each side. This asserts the composed result.
+    const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
+    const entries = [
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/posts/1234567890' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'POST', url: 'https://api.example.com:8443/v1/posts' }, response: { status: 201, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:02Z', time: 5, request: { method: 'GET', url: 'https://cdn.example.com/a/550e8400-e29b-41d4-a716-446655440000' }, response: { status: 200, content: {} } },
+    ];
+
+    const fromDigest = capture.buildDigest(har(entries)).groups
+        .map((g) => `${g.host}${g.pathTemplate}`);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-parity-'));
+    const file = path.join(dir, 'ref.har');
+    fs.writeFileSync(file, JSON.stringify(har(entries)));
+    const fromGuard = harCatalogue.measureReference(file).Endpoints;
+
+    assert.deepStrictEqual([...new Set(fromDigest)].sort(), fromGuard,
+        'the digest and the guard disagree about what endpoint this traffic hit');
+});
+
 test('the catalogue is dated to the recording, not to the processing run', () => {
     // Defaulting capturedUtc to "now" dates every row to the scrub instead of
     // the capture, which answers "how old is this evidence of their API" with

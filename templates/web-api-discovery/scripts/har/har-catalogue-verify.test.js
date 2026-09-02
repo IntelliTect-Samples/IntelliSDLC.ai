@@ -99,11 +99,15 @@ function makeProject(name, mutate) {
         },
         extraRows: [],
         extraFiles: {},
+        extraEntries: [],
     };
     if (mutate) mutate(state);
 
     fs.writeFileSync(path.join(dir, REF), JSON.stringify({
-        log: { version: '1.2', creator: { name: 'test', version: '1' }, entries: [entryFor(state.body)] },
+        log: {
+            version: '1.2', creator: { name: 'test', version: '1' },
+            entries: [...state.extraEntries, entryFor(state.body)],
+        },
     }, null, 2));
     for (const [rel, content] of Object.entries(state.extraFiles)) {
         fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -146,6 +150,44 @@ test('a row declaring POST on a reference with no request body FAILS', () => {
     const r = runVerify(dir);
     assert.notStrictEqual(r.code, 0, 'a hollow reference passed the guard');
     assert.match(r.stderr, /request body/i);
+    assert.match(r.stderr, /POST/);
+});
+
+test('a body on a GET does not let a hollow POST reference through', () => {
+    // The hole an independent review found in the first cut of this guard.
+    // The falsifier read the FILE-WIDE `RequestBodies` count, so one unrelated
+    // GET carrying a body vouched for every bodyless POST beside it -- and a
+    // row reading "published five posts, each with a payload" over this file
+    // passed untouched, which is the whole defect class restated.
+    const dir = makeProject('get-covers-post', (s) => {
+        s.extraEntries = [{
+            startedDateTime: '2026-08-26T00:00:00.000Z', time: 1,
+            request: {
+                method: 'GET', url: 'https://api.example.invalid/v1/probe',
+                httpVersion: 'HTTP/1.1', headers: [], queryString: [], cookies: [],
+                headersSize: -1, bodySize: -1,
+                postData: { mimeType: 'application/json', text: '{"probe":true}' },
+            },
+            response: {
+                status: 200, statusText: 'OK', httpVersion: 'HTTP/1.1', headers: [], cookies: [],
+                redirectURL: '', headersSize: -1, bodySize: -1,
+                content: { size: 2, mimeType: 'application/json', text: '{}' },
+            },
+            cache: {}, timings: { send: 0, wait: 1, receive: 0 },
+        }];
+        s.body = HOLLOW_BODY;
+        // The row is honest about every file-wide fact: one body really is in
+        // there, on the GET.
+        s.row.Methods = ['GET', 'POST'];
+        s.row.Endpoints = ['api.example.invalid/v1/posts', 'api.example.invalid/v1/probe'];
+        s.row.EntryCount = 2;
+        s.row.RequestBodies = 1;
+        s.row.RequestBytes = Buffer.byteLength('{"probe":true}');
+        s.row.ResponseBytes = 4;
+    });
+
+    const r = runVerify(dir);
+    assert.notStrictEqual(r.code, 0, 'a GET body vouched for the bodyless POSTs');
     assert.match(r.stderr, /POST/);
 });
 
