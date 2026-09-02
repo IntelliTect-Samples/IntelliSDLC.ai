@@ -1591,12 +1591,15 @@ function describeReference(session, state, cwd) {
     // extracts and its generated `api.json` (#382). A host routinely spans
     // several third-party APIs, so the provider level is what keeps one
     // provider's references, policy and API document together.
-    const dir = path.join(root, REFERENCE_DIR, host, providerSlug(host));
+    // Derived FROM relativePath rather than recomputing the provider, so the
+    // path the run prints and the value it records in `HarFile` cannot drift
+    // apart. They are the same fact stated twice; only one of them computes it.
+    const dir = path.join(root, REFERENCE_DIR, host, path.dirname(relativePath));
     return {
         fileName,
         relativePath,
         dir,
-        path: path.join(dir, fileName),
+        path: path.join(root, REFERENCE_DIR, host, ...relativePath.split('/')),
         source: state.scrubbed.path,
         extractor: path.join(__dirname, '..', 'har', 'extract-har-reference.js')
     };
