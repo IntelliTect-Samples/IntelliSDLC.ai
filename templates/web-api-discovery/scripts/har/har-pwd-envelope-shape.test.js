@@ -215,6 +215,12 @@ function assertReportIsQuiet(label, report, ...values) {
         // Two numeric fields and a base64 tail, but no self-labelling prefix:
         // that is the whole evidence, and without it this is just punctuation.
         'PWD_BROWSER:5:1767225600:U3ludGhldGljVmFsdWVOb3RBbkVudmVsb3Bl',
+        // Lowercase. Every other pattern in the table is case-sensitive, and a
+        // case-insensitive marker would double the spelling space of the one
+        // token the precision argument rests on, to catch a spelling no capture
+        // has produced. If a provider ever emits one, this line is the place
+        // the decision gets revisited -- with a specimen behind it.
+        '#pwd_browser:5:1767225600:U3ludGhldGljTG93ZXJjYXNlTm90T2JzZXJ2ZWQ',
     ];
     for (const value of NOT_ENVELOPES) {
         const hits = shapes.findLeaks(`{"note":${JSON.stringify(value)}}`)
@@ -290,6 +296,52 @@ function assertReportIsQuiet(label, report, ...values) {
     const v = runNode(verify, ['--in', harOut]);
     assert.strictEqual(v.code, 0,
         `7.d: verify-scrub flagged its own redaction of the envelope: ${v.stderr || v.stdout}`);
+}
+
+// --- 8. WHAT THIS CHANGE DOES NOT DO, pinned so nobody discovers it live. --
+// This issue moved the GATE. It did not move the SCRUBBER, and the two are not
+// symmetric for this kind: `sanitize-har.js` carries its own `PATTERNS` table
+// that redacts `jwt`, `hex64`, `hex32` and `upload-handle` by SHAPE, with no
+// field name involved, so for those kinds an unnamed field is redacted
+// automatically and the gate then passes with no operator action at all.
+//
+// `pwd-envelope` has no such entry, so an envelope under a name the policy
+// does not know now BLOCKS with no automatic remedy: the operator has to name
+// the field in `secretFields`, which is #378's control -- and the scenarios
+// this rule exists for are precisely the ones where the name is unknown.
+//
+// That is a real gap and it belongs to the scrubber, not to this file. It is
+// asserted here rather than left implicit because an undocumented asymmetry is
+// how the next reader concludes the scrub is covering them. When a scrub rule
+// IS added, this section fails -- which is the correct moment to revisit
+// `isFake` in `har-shapes.js`, and the comment there says so.
+{
+    const kinds = fs.readFileSync(path.join(__dirname, 'sanitize-har.js'), 'utf8');
+    assert.ok(!/kind:\s*'pwd-envelope'/.test(kinds),
+        '8.a: sanitize-har.js now has a pwd-envelope shape rule. That is the right ' +
+        'direction -- but `isFake` in har-shapes.js still returns false, so a ' +
+        'format-preserving fake would be re-reported by the gate forever. Fix that, ' +
+        'then update this section to assert the scrub instead of its absence');
+
+    const harIn = writeHar('benign-named-unscrubbed', makeHar(
+        `${BENIGN_FIELD}=${encodeURIComponent(ENVELOPE)}&doc_id=1234567890`));
+    const harOut = path.join(tmp, 'benign-named-unscrubbed.scrubbed.har');
+    const s = runNode(sanitize, ['--in', harIn, '--out', harOut,
+        '--subs', path.join(tmp, 'benign.subs.json'), '--profile', writeProfile(),
+        '--fixed-time', '2026-01-01T00:00:00.000Z']);
+    assert.strictEqual(s.code, 0, `8.b: sanitize-har failed: ${s.stderr || s.stdout}`);
+
+    assert.ok(fs.readFileSync(harOut, 'utf8').includes(encodeURIComponent(ENVELOPE)),
+        '8.c: the scrubber removed a benign-named envelope, so the gap this section ' +
+        'documents is closed -- rewrite the section to assert the new behaviour rather ' +
+        'than deleting it');
+
+    const v = runNode(verify, ['--in', harOut]);
+    assert.notStrictEqual(v.code, 0,
+        '8.d: the gate passed the SCRUBBED output of a capture that still carries the ' +
+        'envelope. Whatever else is true, a file the scrub left the credential in must ' +
+        'never be labelled clean -- that is the whole of #378');
+    assertReportIsQuiet('8.e', `${v.stdout}${v.stderr}`, ENVELOPE);
 }
 
 console.log('All har-pwd-envelope-shape tests passed');
