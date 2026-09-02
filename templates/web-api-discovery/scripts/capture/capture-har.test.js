@@ -638,6 +638,44 @@ test('the catalogue scaffold has one Observed row per group', () => {
     }
 });
 
+test('the scaffold leaves the reference facts NULL, never zero', () => {
+    // A scaffold row describes a digest GROUP: no reference has been extracted
+    // yet, so there is nothing to have measured. Writing `0` would state a fact
+    // nobody checked, in the exact shape of the defect the structured catalogue
+    // exists to prevent -- a row asserting something about a file that does not
+    // support it (issue #379). verify-har-catalogue.js recomputes these once the
+    // row names a reference, so a null that was never filled in is reported
+    // rather than mistaken for a measurement.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'POST', url: 'https://api.example.com/b' }, response: { status: 201, content: {} } }
+    ]));
+    const row = capture.buildCatalogueScaffold(digest)[0];
+
+    for (const field of ['RequestBodies', 'RequestBytes', 'ResponseBytes']) {
+        assert.ok(Object.prototype.hasOwnProperty.call(row, field),
+            `${field} must be present so the cataloguer knows to fill it in`);
+        assert.strictEqual(row[field], null, `${field} must not claim a measurement`);
+    }
+    assert.deepStrictEqual(row.Related, []);
+    assert.strictEqual(row.Provider, null);
+});
+
+test('the scaffold templates endpoints with the shared function, not a private copy', () => {
+    // buildCatalogueScaffold writes `Endpoints` from the digest; the guard
+    // recomputes them from the reference. Two implementations that agree today
+    // would drift, and the drift surfaces as every scaffolded row failing the
+    // guard the moment it is committed -- which looks like a broken gate, so
+    // the fix people reach for is to weaken the gate.
+    const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
+    assert.strictEqual(capture.pathTemplate, harCatalogue.pathTemplate);
+
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/posts/1234567890' }, response: { status: 200, content: {} } }
+    ]));
+    assert.deepStrictEqual(capture.buildCatalogueScaffold(digest)[0].Endpoints,
+        ['api.example.com/v1/posts/{id}']);
+});
+
 test('the catalogue is dated to the recording, not to the processing run', () => {
     // Defaulting capturedUtc to "now" dates every row to the scrub instead of
     // the capture, which answers "how old is this evidence of their API" with

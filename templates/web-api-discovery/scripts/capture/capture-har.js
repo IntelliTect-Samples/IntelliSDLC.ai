@@ -158,6 +158,7 @@ const readline = require('readline');
 const { spawnSync } = require('child_process');
 
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
+const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
 
 const DEFAULT_PORT = 9333;
@@ -912,18 +913,19 @@ function assembleFromLog(logPath, outPath) {
  * endpoints and the digest degenerates into a list of every request -- which
  * is the thing the digest exists to avoid.
  */
-function pathTemplate(pathname) {
-    return pathname.split('/').map((segment) => {
-        if (!segment) return segment;
-        if (/^\d+$/.test(segment)) return '{id}';
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return '{uuid}';
-        if (/^[0-9a-f]{16,}$/i.test(segment)) return '{hash}';
-        // Mixed alphanumeric with enough digits to be an id rather than a word.
-        if (segment.length >= 8 && /\d/.test(segment) && /^[A-Za-z0-9_-]+$/.test(segment)
-            && (segment.replace(/\D/g, '').length / segment.length) > 0.3) return '{id}';
-        return segment;
-    }).join('/');
-}
+// Collapse identifier-shaped path segments to a template.
+//
+// The implementation lives in har-catalogue.js and is imported rather than
+// kept here, because verify-har-catalogue.js recomputes a committed row's
+// `Endpoints` from the reference while `buildCatalogueScaffold` below writes
+// them from this digest. Two implementations that agree today would drift, and
+// the drift would surface as every scaffolded row failing the guard the moment
+// it was committed -- a failure that looks like the gate is broken, so the fix
+// people reach for is to weaken the gate.
+//
+// Re-exported below, so a caller that reasonably expects the digest's own
+// templating to come from the digest's own module still gets it.
+const pathTemplate = harCatalogue.pathTemplate;
 
 /**
  * Top-level key names of a JSON payload -- the SHAPE, never the values.
@@ -1037,11 +1039,25 @@ function buildCatalogueScaffold(digest, meta = {}) {
     return digest.groups.map((group) => ({
         Action: `${group.method.toLowerCase()}-${group.pathTemplate.split('/').filter(Boolean).join('-') || 'root'}`,
         Description: null,
+        Provider: null,
         Methods: [group.method],
         Endpoints: [`${group.host}${group.pathTemplate}`],
         EntryCount: group.count,
         Status: 'Observed',
         HarFile: null,
+        // NULL, NOT ZERO. These are facts about a reference file, and a scaffold
+        // row describes a digest GROUP -- no reference has been extracted yet,
+        // so there is nothing to have measured. Writing `0` would state a fact
+        // nobody checked, in the exact shape of the defect the structured
+        // catalogue exists to prevent: a row asserting something about a file
+        // that does not support it. verify-har-catalogue.js recomputes these
+        // once the row names a reference, so a null that was never filled in is
+        // reported rather than mistaken for a measurement.
+        RequestBodies: null,
+        RequestBytes: null,
+        ResponseBytes: null,
+        RequestBodiesAbsent: null,
+        Related: [],
         CapturedUtc: meta.capturedUtc || digest.capturedUtc
     }));
 }

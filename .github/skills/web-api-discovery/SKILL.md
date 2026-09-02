@@ -813,14 +813,18 @@ is only possible because the capture was kept.
 <host>/                        <- e.g. app.example.com, the capture output path
 ├── scrubbed.har               <- the whole session, scrubbed
 ├── digest.json                <- what an AI segments from
-├── catalogue.json             <- the rows (see 3)
-├── README.md                  <- the catalogue (see 3)
+├── catalogue.json             <- the rows, STRUCTURED and committed (see 3)
+├── README.md                  <- the table, GENERATED from catalogue.json (see 3)
 ├── <provider-a>/
 │   ├── README.md              <- provider scrub policy + re-capture recipe
 │   ├── api.json               <- GENERATED description of the server (see 4b)
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
+
+`catalogue.json` is the **source of truth** and `README.md` is a rendering of
+it. Only the region between the generated markers is written; everything else
+in that README is hand-written and survives regeneration untouched. See 3.
 
 The provider directories sit beside the session artifacts, inside the
 host-named output folder. A provider is not always the host -- one site's
@@ -860,15 +864,62 @@ say:
 Those are exactly what someone opening the file is looking for, and they
 otherwise survive only in whichever issue thread happened to mention them.
 
-The `README.md` in the host-named output folder carries:
+#### 3b. The catalogue is STRUCTURED, and the table is generated from it
 
-- a table per provider: **file | actions the user performed | entry count |
-  capture date**;
-- a per-file detail section: the entry-by-entry sequence, what the capture
-  *proves*, and the failure modes it caught;
-- the excerpt fragments (partial captures that are not full HAR documents)
-  mapped the same way;
-- a pointer to the scrub policy and the verification command.
+**A prose row makes a claim nothing can check.** That is not a hypothetical
+tidiness argument -- it let a whole class of defect through a dedicated guard,
+an independent review and a merge.
+
+A consuming project's guard asserted *"every reference has a catalogue row"*
+and *"no request body is truncated"*. **Four hollow entries across three
+reference files passed both.** Each carried a 29-character
+`REDACTED_FORM_URLENCODED_BODY` where the request payload belonged, while the
+row described request-side behaviour the file contains none of:
+
+| The row claimed | The file actually held |
+|---|---|
+| "one Only-Me post with **two people tagged**" | no request body |
+| "email + password, then a **two-factor code**" | no request body |
+| "**Backdated** one existing post" | no request body |
+
+A downstream design document then cited one of those references as the evidence
+for four specific request-side facts. The claims may well be true; the cited
+reference is not the evidence.
+
+The old guard could not have done better. **The row was checkable in principle
+and unverifiable in practice**, because "published a post with two people
+tagged" is a sentence, not a field. A guard can confirm a row *exists*. It
+cannot confirm a row is *true*.
+
+So `catalogue.json` is committed beside the references and carries both halves:
+
+| Half | Fields | Who fills it |
+|---|---|---|
+| Human | `Action`, `Description`, `Status`, `Provider`, `Related`, `HarFile` | the cataloguing AI |
+| Measured | `Methods`, `Endpoints`, `EntryCount`, `RequestBodies`, `RequestBytes`, `ResponseBytes` | recomputed from the `.har`, and **compared** |
+| Escape | `RequestBodiesAbsent` | a human, in prose, when there is genuinely no body |
+
+The measured half is what a guard can check the row against, rather than
+checking the row against its own existence.
+
+`README.md` carries the human-facing table **generated** from that file,
+between two markers:
+
+```markdown
+<!-- BEGIN GENERATED CATALOGUE -- edit catalogue.json, not this table -->
+<!-- END GENERATED CATALOGUE -->
+```
+
+Everything outside the markers is hand-written and is never touched: the
+naming convention, the provenance notes ("The 2026-08-26 captures ..."), the
+re-capture recipe, the per-file detail sections describing the entry-by-entry
+sequence and the failure modes a capture caught. Those are the part of the file
+nobody can regenerate. A README with **no** markers is an error, not an
+invitation to guess where the table goes.
+
+The "Observed, not exercised" rows are generated too, from the same file. A
+half-generated section is the drift this closes: the generated half stays
+current while the hand-written half quietly describes a previous capture.
 
 > **The rule that makes it stick:** adding a capture has a final step --
 > *add the catalogue row, naming what you did*. The endpoint is recoverable
@@ -992,6 +1043,50 @@ and in CI. It fails on:
   it must be checked at least as hard as the intermediate it came from.
 
 Both ship with tests, each pinned to a failure that actually shipped.
+
+#### 4a. Tooling: render the catalogue, then check it against the files
+
+Two more scripts, for the same reason: the manual version of the catalogue
+shipped four rows describing request-side behaviour their references cannot
+support (see 3b).
+
+**`render-har-catalogue.js --dir <reference directory>`** writes the
+human-facing table into the marker-delimited region of `README.md`. It only
+writes. Prose outside the markers survives verbatim, and a README carrying no
+markers **fails** rather than being rewritten -- guessing where the table goes
+is how a generator eats the paragraph a person wrote. Rendering is
+deterministic (sorted by provider, action, capture date), so regenerating an
+unchanged catalogue is byte-identical.
+
+**`verify-har-catalogue.js --dir <reference directory>`** is the gate, and it
+**never writes** -- a gate that repaired what it found would report success on
+a tree it had just changed. It fails on:
+
+- a declared `Methods`, `Endpoints`, `EntryCount`, `RequestBodies`,
+  `RequestBytes` or `ResponseBytes` that **disagrees with the reference the row
+  names**. This is the assertion a prose table could never make;
+- **a row whose methods include `POST`, `PUT` or `PATCH` on a reference with
+  zero request bodies.** This is the falsifier, and it is what catches all four
+  hollow entries. The methods are recomputed from the file, so a row cannot
+  dodge it by understating what it covers. A body is recognised by the same
+  wire-grammar predicate as `verify-har-reference.js` gate 7 -- imported, not
+  reimplemented, so the two cannot drift into disagreeing about what a body is;
+- a reference on disk that no entry names, an entry naming a reference that
+  does not exist, and two entries naming one reference;
+- an `Exercised` row that names no reference at all;
+- a `README.md` that does not match what the committed `catalogue.json` renders
+  to, so a re-scrubbed reference cannot leave a generated table describing the
+  previous one.
+
+The falsifier's escape hatch is `RequestBodiesAbsent`, and it is **prose, not a
+boolean**. A bodyless `POST` is legal traffic -- `POST /logout` is the everyday
+case -- and a gate that fires on real captures gets disabled, costing every
+other check it carries. Silencing this one costs a sentence, written into the
+file, visible in the diff, under review.
+
+Wire **both** commands into CI. `verify-har-reference.js` gates the artifact's
+safety; `verify-har-catalogue.js` gates whether the catalogue tells the truth
+about it. Neither substitutes for the other.
 
 #### 4b. `api.json` -- the generated description of the SERVER
 

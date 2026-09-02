@@ -68,14 +68,33 @@ foreach ($entry in @($entries)) {
         PSTypeName  = 'IntelliSDLC.HarCapture.CatalogueEntry'
         Action      = $entry.Action
         Description = $entry.Description
+        Provider    = $entry.Provider
         # @() around each so a single-element array survives ConvertFrom-Json's
         # unwrapping -- a caller doing .Methods.Count on a scalar gets a
         # character count instead of 1, which is a silent wrong answer.
         Methods     = @($entry.Methods)
         Endpoints   = @($entry.Endpoints)
         EntryCount  = $entry.EntryCount
+        # The measured half: facts about the reference file, which
+        # verify-har-catalogue.js recomputes from the .har and compares. They
+        # exist so a row's claims can be checked against the artifact rather
+        # than against the row's own existence.
+        #
+        # NULL, not 0, when nothing has been measured yet -- a scaffold row
+        # describes a digest group, and no reference has been extracted for it.
+        # Coercing to 0 here would manufacture a measurement in the pipeline
+        # that PowerShell callers read, which is the defect in miniature.
+        RequestBodies = $entry.RequestBodies
+        RequestBytes  = $entry.RequestBytes
+        ResponseBytes = $entry.ResponseBytes
+        # The written reason a body-bearing reference legitimately carries no
+        # request body (`POST /logout`). Prose on purpose: it is the one thing
+        # that silences the request-side gate, so it belongs in the file and in
+        # the diff rather than being a boolean somebody flips.
+        RequestBodiesAbsent = $entry.RequestBodiesAbsent
         Status      = $entry.Status
         HarFile     = $entry.HarFile
+        Related     = @($entry.Related)
         CapturedUtc = $entry.CapturedUtc
     }
 }

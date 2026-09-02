@@ -37,6 +37,19 @@
             <Alignment>Right</Alignment>
             <Width>7</Width>
           </TableColumnHeader>
+          <!--
+              Request bodies sits beside the entry count on purpose. It is the
+              column that makes a hollow reference visible at a glance: a row
+              describing what a client SENT, against a file whose entries carry
+              no request body, reads as `1  0` instead of looking like every
+              other row. Four such references shipped because nothing put that
+              number in front of a human (issue #379).
+          -->
+          <TableColumnHeader>
+            <Label>ReqBodies</Label>
+            <Alignment>Right</Alignment>
+            <Width>9</Width>
+          </TableColumnHeader>
           <TableColumnHeader>
             <Label>Endpoints</Label>
           </TableColumnHeader>
@@ -55,6 +68,16 @@
               </TableColumnItem>
               <TableColumnItem>
                 <PropertyName>EntryCount</PropertyName>
+              </TableColumnItem>
+              <!--
+                  A dash for null, never 0. A scaffold row has measured nothing
+                  yet, and rendering that as `0` would say "this reference has
+                  no request bodies" about a reference that does not exist.
+                  (A literal double hyphen cannot appear in an XML comment, so
+                  the placeholder is described rather than written here.)
+              -->
+              <TableColumnItem>
+                <ScriptBlock>if ($null -eq $_.RequestBodies) { '--' } else { $_.RequestBodies }</ScriptBlock>
               </TableColumnItem>
               <TableColumnItem>
                 <ScriptBlock>$_.Endpoints -join ', '</ScriptBlock>
@@ -92,7 +115,25 @@
                 <PropertyName>EntryCount</PropertyName>
               </ListItem>
               <ListItem>
+                <PropertyName>RequestBodies</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RequestBytes</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>ResponseBytes</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>RequestBodiesAbsent</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Provider</PropertyName>
+              </ListItem>
+              <ListItem>
                 <PropertyName>HarFile</PropertyName>
+              </ListItem>
+              <ListItem>
+                <PropertyName>Related</PropertyName>
               </ListItem>
               <ListItem>
                 <PropertyName>CapturedUtc</PropertyName>

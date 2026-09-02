@@ -57,8 +57,37 @@ Promote the rows the action covers from `Observed` to `Exercised`, and fill in:
   byte-identical retry; that the capture holds two upload cycles and five
   transcode polls; that two trailing entries are a *failed* edit that
   established a platform limitation.
-- `HarFile` -- the reference written in step 2.
-- `Methods`, `Endpoints`, `EntryCount` -- corrected against what you extracted.
+- `HarFile` -- the reference written in step 2, as a path **relative to
+  `catalogue.json`**.
+- `Provider` -- the provider from step 2.
+- `Related` -- the issue numbers this reference answers, as an array.
+- `Methods`, `Endpoints`, `EntryCount`, `RequestBodies`, `RequestBytes`,
+  `ResponseBytes` -- **measured against the reference you just wrote**, not
+  estimated and not copied from the scaffold. The scaffold leaves them `null`
+  because it describes a digest group, not a file.
+
+**These are checked.** `verify-har-catalogue.js` recomputes every one of them
+from the `.har` and fails on any disagreement. That is deliberate: it is the
+difference between a row a guard can confirm *exists* and a row a guard can
+confirm is *true*.
+
+**Do not describe request-side behaviour on a reference with no request body.**
+Four references once shipped carrying a 29-character placeholder where the
+payload belonged, under rows reading "one Only-Me post with two people tagged"
+and "email + password, then a two-factor code". They passed the guard of the
+day, an independent review and a merge, and a design document then cited one of
+them as evidence for facts it cannot provide. If `RequestBodies` is `0` on a
+`POST`/`PUT`/`PATCH` reference, you have two honest options:
+
+- re-extract the entries from the preserved raw capture so the bodies are
+  really there; or
+- correct the `Description` to what the file actually documents ("response
+  shape only; request body not preserved").
+
+A third option exists and is **not** a way to make the gate quiet: set
+`RequestBodiesAbsent` to a written sentence explaining why the traffic
+genuinely carries no body (`POST /logout` does not). It is prose, in the file,
+in the diff, and a reviewer will read it.
 
 ### 4. Record what was observed but not exercised
 
@@ -69,21 +98,44 @@ what would exercise them. Do not delete them, and do not promote them to
 `Exercised` -- a row claiming a worked example that does not exist is worse
 than no row.
 
-Mirror them into the provider's `README.md` under a separate
-**"Observed, not exercised"** heading, so a reader can tell the two apart
-without opening the JSON.
+Do **not** hand-write them into `README.md`. They are generated from the same
+`catalogue.json` in step 5, under an "Observed, not exercised" heading, so a
+reader can tell the two apart without opening the JSON. A hand-written half
+beside a generated half is how a README ends up describing a previous capture.
 
-### 5. Gate the result
+### 5. Render the table
+
+```
+node ../har/render-har-catalogue.js --dir <OutputPath>
+```
+
+`catalogue.json` is the source of truth; the table in `README.md` is generated
+from it, between the `BEGIN GENERATED CATALOGUE` markers. Prose outside those
+markers is hand-written and is never touched -- the provenance notes, the
+naming convention and the re-capture recipe live there.
+
+### 6. Gate the result -- BOTH gates
 
 ```
 node ../har/verify-har-reference.js --dir <OutputPath>
+node ../har/verify-har-catalogue.js --dir <OutputPath>
 ```
 
-This is the gate, not a formality. It fails on a truncated request body, an
-unredacted credential, a secret nested in a JSON-valued parameter, a forbidden
-operator literal, or a shape-detected token. **A non-zero exit means the
-catalogue is not done.** Fix the reference and re-run; never hand back a
-catalogue whose gate did not pass.
+Neither substitutes for the other. `verify-har-reference.js` is about the
+artifact's **safety**. `verify-har-catalogue.js` is about whether the catalogue
+tells the **truth** about that artifact: every measured field recomputed from
+the file, every reference accounted for in both directions, no row describing
+request-side behaviour on a reference with no request body, and a `README.md`
+that matches what `catalogue.json` renders to.
+
+The safety gate fails on a truncated request body, an unredacted credential, a
+secret nested in a JSON-valued parameter, a forbidden operator literal, a
+shape-detected token, or a request body that is present but belongs to no wire
+grammar.
+
+**A non-zero exit from either gate means the catalogue is not done.** Fix the
+reference or the row and re-run; never hand back a catalogue whose gates did
+not pass.
 
 ## Rules
 
