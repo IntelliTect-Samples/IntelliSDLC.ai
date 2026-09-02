@@ -200,6 +200,12 @@ section('3', () => {
         '3.f: beacons are not reported as their own category:\n' + r.stdout);
     assert.ok(/kept\s+\d+\s+documents/.test(r.stdout),
         '3.g: documents are not reported as their own kept category:\n' + r.stdout);
+
+    // WHICH SIGNAL decided. Without it an operator cannot tell a capture that
+    // was classified by the recorder's own labels from one that fell through
+    // to the weaker content-type path.
+    assert.ok(/^ {2}basis .*resourceType 12/m.test(r.stdout),
+        '3.h: the report does not say every entry was classified by _resourceType:\n' + r.stdout);
 });
 
 // --- 4. The report never echoes a captured value. --------------------------
@@ -251,6 +257,15 @@ section('5', () => {
         '5.c: the WRONG KIND survived the content-type fallback. Got: ' + mimesIn(written).join(', '));
     assert.ok(!urlsIn(written).some((u) => /\.(jpg|woff2|css|js|mp4)$/.test(u)),
         '5.d: a static asset survived the content-type fallback: ' + urlsIn(written).join(', '));
+
+    // And the report SAYS the fallback ran. A mitmproxy capture classified
+    // silently would look identical to a Playwright one in the log.
+    const basis = /^ {2}basis {5}(.*)$/m.exec(r.stdout);
+    assert.ok(basis, '5.e: the report does not name which signal classified the capture:\n' + r.stdout);
+    assert.ok(!/resourceType/.test(basis[1]),
+        '5.f: the report claims _resourceType classified a capture that carries none: ' + basis[1]);
+    assert.ok(/contentType/.test(basis[1]) && /requestBody/.test(basis[1]),
+        '5.g: the report does not name the content-type and request-body fallbacks: ' + basis[1]);
 });
 
 // --- 6. A request body outranks the response content type. ----------------
