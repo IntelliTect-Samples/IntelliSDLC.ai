@@ -817,7 +817,7 @@ is only possible because the capture was kept.
 ├── README.md                  <- the catalogue (see 3)
 ├── <provider-a>/
 │   ├── README.md              <- provider scrub policy + re-capture recipe
-│   ├── api.json               <- GENERATED description of the server (see 4a)
+│   ├── api.json               <- GENERATED description of the server (see 4b)
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
@@ -993,7 +993,7 @@ and in CI. It fails on:
 
 Both ship with tests, each pinned to a failure that actually shipped.
 
-#### 4a. `api.json` -- the generated description of the SERVER
+#### 4b. `api.json` -- the generated description of the SERVER
 
 A reference is a record of one session. It is not a specification. It carries
 one account's data, one set of feature flags, one incidental ordering, one
