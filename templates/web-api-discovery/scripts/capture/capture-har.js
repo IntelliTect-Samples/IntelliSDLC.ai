@@ -2485,6 +2485,7 @@ module.exports = {
     findProfileConflict,
     findFreePort,
     discoverStorageState,
+    pathTemplate,
     buildDigest,
     buildCatalogueScaffold,
     decideCatalogueRunner,
