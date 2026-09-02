@@ -1011,10 +1011,12 @@ node generate-api-document.js --dir <provider-dir> --check    # gate it
 ```
 
 It describes the **server**, not a client design: endpoints (host, method, path
-template), observed statuses, request and response field names, persisted
-operation ids, and the credentials a request must carry -- named from the same
-list `verify-har-reference.js` uses, so the document and the leak gate cannot
-disagree about what a credential is. **No credential value is ever read.**
+template), observed statuses, request and response field names with how often
+each was seen, persisted operation ids, and the credentials a request must
+carry -- named from the same list `verify-har-reference.js` uses, so the
+document and the leak gate cannot disagree about what a credential is. **No
+credential value is ever read.** Alongside those, it records what the captures
+did **not** establish; see *Nothing more, and nothing less* below.
 
 **Generated, never hand-authored**, for the reason settled for the catalogue: a
 hand-maintained specification is a further artifact free to drift, and it will
@@ -1032,17 +1034,60 @@ enforceable, and `--check` enforces both.
   the assertion a prose catalogue cannot make, and the reason four hollow
   references once survived a dedicated guard.
 
-Three questions the design had to answer, and the reason for each answer:
+#### Nothing more, and nothing less
 
-- A field observed in one capture and absent in another is recorded with the
-  witnesses it **has**, and labelled neither *optional* nor *provider-changed*.
-  Two captures are not a sample.
-- Unexercised error shapes are **absent**, not `"unknown"`. `statuses` lists
-  what was observed; describing a response nobody provoked is a claim with no
-  witness by construction.
+The document is authoritative about **what the captures proved**. That is two
+obligations, not one, and only the first is obvious.
+
+**Nothing more.** No endpoint, status or field is described that no entry
+carried. Every positive claim names the entry that witnesses it.
+
+**Nothing less.** Where the captures leave a question open, the document
+**says so** rather than staying silent -- because silence reads as
+completeness, and an untested corner mistaken for a settled one is the same
+defect as an unsupported claim wearing the opposite face. Each endpoint carries
+an `unproven` list, and each hole names the capture that would close it:
+
+| Hole | What it means | Closed by |
+|---|---|---|
+| `no-success-observed` | every observed status was an error | a successful call |
+| `no-request-body-observed` | a POST/PUT/PATCH where no call carried a body -- the endpoint is known to exist and **nothing** is known about what a caller must send | a capture with the request body preserved |
+| `no-response-body-observed` | no call retained a response body | a capture that keeps the body |
+| `response-truncated` | a response was capped, so the field list is a **prefix** of the real shape | re-capture without a response cap |
+| `operation-name-unknown` | a persisted id was seen with no accompanying operation name, so what it *does* is unknown | a call carrying the name alongside the id |
+| `request-field-presence-varies` | a field appears in some observed calls and not others | capture the operation again and compare |
+
+`capturesNeeded` at the top of the document rolls these up into a **work
+list**: what to go and record, and which endpoints each recording would settle.
+A reader asking "what capture is missing" should not have to walk every
+endpoint to assemble the answer.
+
+**A hole is a claim too.** `--check` re-derives every one of them from the
+references and rejects a hole the captures contradict, exactly as it rejects an
+invented endpoint. A hand-written "we never proved this" cannot survive either.
+
+Counts sit beside the claims for the same reason: `observedIn` of
+`observedEntries` is the difference between "this field was seen" and "this
+field was seen in one of eleven calls", and only the second says whether the
+captures settled anything.
+
+Three further answers the design had to give:
+
+- A field seen in some calls and not others is reported as **varying** and
+  labelled neither *optional* nor *provider-changed*. One corpus cannot tell
+  those apart, and picking one would be the guesswork this replaces.
+- An error shape nobody provoked is **not invented** -- but the fact that
+  nobody provoked one is recorded. The gap is the finding.
 - Fields are named at the **top level** only -- form parameters, query
   parameters, and the top-level keys of a JSON body. The same depth as
   `digest.json`, and the depth at which every claim stays cheap to re-check.
+
+> **Incomplete is an acceptable state; pretending otherwise is not.** A
+> provider whose document is half holes is a provider whose captures are half
+> done, and saying that plainly is what turns a document into a plan for the
+> next recording session. Live testing counts, provided it produces a capture
+> that can be committed -- the point is not the ceremony, it is that a claim
+> has an artifact behind it.
 
 > **The staleness gate, and why idempotence is half of it.** Re-scrubbing a
 > reference under a changed policy is the *expected* response to a policy
