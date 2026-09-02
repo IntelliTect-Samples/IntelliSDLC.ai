@@ -37,14 +37,40 @@ Name each action for **the operation a human performed**, not for the endpoint.
 For each action you identified, derive a selector and run:
 
 ```
-node ../har/extract-har-reference.js --in <raw.har> --match <pattern> \
+node ../har/extract-har-reference.js --in <raw.har> \
     --provider <provider> --action <action>
 ```
 
-`--match` is a case-insensitive regular expression tested against the request
-URL and the request/response bodies. It is required and there is no
-"extract everything" default: supplying the judgement is the whole point of
-this phase. The output lands at
+**No selector is needed.** The extractor keeps the API calls and drops the
+static assets by itself, from `_resourceType` where the recorder wrote one and
+from the request body and response content type where it did not. It is
+deliberately conservative about what it drops: documents, redirects and
+anything it cannot positively identify as an asset or a beacon are kept.
+
+Every run prints what it did, by category, and kept + dropped always equals the
+number of entries scanned:
+
+```
+extract-har-reference: wrote example/example-create-post-2026-09-02.har (24 of 412 entries)
+  kept     21   API calls (xhr 14, fetch 7)
+  kept     3    documents -- HTML, redirects and auth callbacks, kept because they carry tokens (html 3)
+  dropped  371  static assets (scripts 155, images 193, fonts 14, css 9)
+  dropped  17   telemetry / beacon (beacons 17)
+  total    412  entries scanned = 24 kept + 388 dropped
+```
+
+**Read that report.** It is how a wrong drop becomes visible now rather than
+months from now, when someone is relying on the reference. If a count looks
+wrong, `scrubbed.har` is still in the session directory -- re-extract, nothing
+is lost.
+
+`--match <pattern>` is available as **optional further narrowing** when an
+API-heavy capture still yields too much. It is a case-insensitive regular
+expression tested against the request URL and the request/response bodies, and
+it narrows *within* the API set -- it can never re-admit an entry the
+classification dropped.
+
+The output lands at
 `<OutputPath>/<provider>/<provider>-<action>-<yyyy-MM-dd>.har`.
 
 ### 3. Update the catalogue row

@@ -1562,13 +1562,15 @@ function catalogueScrubbed(session, state) {
  *    convention, the no-truncation rule for request bodies, and the decoded
  *    `postData.params[]`. Re-implementing any of that here would be a second
  *    engine.
- *  - That tool REFUSES to run without `--match`, and the refusal is correct: it
- *    is what stops an empty or accidental reference being committed. Choosing
- *    which entries matter is the judgement a reference exists to record, and a
- *    selector guessed from a digest that "looks right" is plausible,
- *    unverifiable, and wrong in a way nobody notices until somebody relies on
- *    it. So the run ends by telling the operator exactly what to type, with the
- *    provider, the action and the destination already filled in.
+ *  - That tool selects the API traffic BY DEFAULT (#410) and reports what it
+ *    dropped, by category. It used to refuse to run without `--match`, on the
+ *    reasoning that choosing which entries matter is a judgement a tool cannot
+ *    make -- until the operator, asked for a regex, could not supply one and
+ *    named the mechanical distinction instead ("the API calls, not the fonts,
+ *    images"). So the run ends by telling the operator exactly what to type,
+ *    with the provider, the action and the destination already filled in, and
+ *    nothing left to invent. `--match` is still available to narrow within the
+ *    API set when a capture is API-heavy.
  *
  * Returns null when there is nothing to suggest -- no host to derive a provider
  * from, or no verified artifact to extract from.
@@ -2102,11 +2104,10 @@ function referenceNoticeLines(reference, pp, describe) {
         ['info', '             that matter, not the whole scrubbed capture. To write it:'],
         ['info', `               node ${reference.extractor} \\`],
         ['info', `                 --in ${reference.source} \\`],
-        ['info', "                 --match '<regex over the request URL or body>' \\"],
         ['info', `                 --out ${reference.path}`],
-        ['info', '             --match is required and has no default: which entries matter is the'],
-        ['info', '             judgement the reference exists to record. The path templates in'],
-        ['info', '             digest.json are where to look for one.']
+        ['info', '             That command is complete as written: the extractor keeps the API'],
+        ['info', '             calls by default and reports, by category, what it dropped. Add'],
+        ['info', "             --match to narrow WITHIN that set."]
     ];
     if (described) {
         lines.push(['info', '             Suggested catalogue row (printed only -- see #379):']);

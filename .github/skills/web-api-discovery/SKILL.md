@@ -894,17 +894,50 @@ third-party APIs -- which is why both levels exist under the host directory, and
 why the provider appears in the extract's filename as well as in the directory
 it sits under.
 
-**Promotion is a deliberate step and the run does not perform it.**
-`extract-har-reference.js` refuses to run without `--match`, and that refusal is
-correct: choosing which entries matter is the judgement a reference exists to
-record, and a selector guessed from a digest that "looks right" is plausible,
-unverifiable, and wrong in a way nobody notices until somebody relies on it. So
-the run ends by printing the ready-to-paste command with the provider, the
-action slug (derived from `-Describe`) and the destination
+**Promotion is a deliberate step and the run does not perform it.** The run ends
+by printing the ready-to-paste command with the provider, the action slug
+(derived from `-Describe`) and the destination
 `docs/har-reference/<host>/<provider>/` already filled in, and records that
 reference's `<provider>/<filename>` path in the run catalogue's `HarFile` field
 -- the link that lets a committed reference be paired back to the capture it
 came from.
+
+**That command is complete as printed: `--match` is optional.**
+`extract-har-reference.js` used to *refuse* to run without it, on the reasoning
+that choosing which entries matter is a judgement a tool cannot make. Put to
+the operator directly, the answer was: *"I couldn't provide a regex. All I know
+is that the focus should be on the API calls, not the fonts, images, etc."*
+That retires the premise. "API call, not static asset" is a **mechanical
+classification**, and the data to make it is already in every entry, so it is
+now the **default selection**:
+
+- A Playwright capture records `_resourceType` on every entry (`xhr`, `fetch`,
+  `document`, `image`, `font`, `stylesheet`, `script`, `media`, `ping`).
+  Where present, it decides.
+- A capture from another recorder -- mitmproxy writes no Playwright extension
+  fields at all -- is classified by the request's own body and the response
+  content type: keep `application/json`, form-encoded, GraphQL, protobuf and
+  XML; drop `image/*`, `font/*`, `text/css`, `video/*`, `audio/*` and
+  standalone script bodies.
+
+The classifier is **conservative about what it DROPS, not clever about what it
+keeps**, because a wrongly dropped entry is invisible and a wrongly kept one is
+merely noise. Only a positive identification as a static asset or a beacon
+drops an entry; everything else is kept, including `document` entries (an HTML
+response can carry a token, and a redirect chain or an OAuth callback lands
+there) and any resource type or content type the classifier does not model.
+
+**Every run prints the per-category counts, and kept + dropped always equals the
+number of entries scanned** -- asserted at runtime, not assumed. That report is
+load-bearing rather than decorative: it is how a wrong drop becomes noticeable
+at extraction time instead of months later, and `scrubbed.har` staying in the
+gitignored session directory is what makes re-extracting with other criteria
+always possible.
+
+`--match` remains available as **optional further narrowing** for an API-heavy
+capture that still yields too much. It narrows *within* the API set; it never
+re-admits a dropped asset, so `--match upload` cannot drag an image back in
+because its URL happens to contain the word.
 
 **Raw captures are never committed.** They run to hundreds of MB and carry
 live credentials. Only trimmed, scrubbed extracts go in-tree.
