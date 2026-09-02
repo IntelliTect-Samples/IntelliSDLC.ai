@@ -605,6 +605,184 @@ test('--check rejects a hole the captures do not support', () => {
         'the message names the hole the captures contradict');
 });
 
+test('a freshly generated document passes its own check, even when a name lives in two places', () => {
+    // C1, found by independent review. The fold decides a field varies per
+    // (WHERE IT LIVES, name); the re-derivation counted by name alone. A name
+    // in the query string on one call and in the body on every call made the
+    // re-derivation disagree with the fold -- so an honest, unedited document
+    // failed its own check. That is the "gate cries wolf" failure the staleness
+    // requirement exists to avoid, and a gate that fires on correct output gets
+    // disabled, taking every other check it carries with it.
+    const dir = path.join(tmp, 'same-name-two-places');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'twoplaces.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/items?id=7',
+            queryString: [{ name: 'id', value: '7' }],
+            postData: { mimeType: 'application/json', text: '{"id":"7","note":"a"}' },
+            responseText: '{"ok":true}',
+        }),
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/items',
+            postData: { mimeType: 'application/json', text: '{"id":"8","note":"b"}' },
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+
+    assert.strictEqual(runNode(['--dir', dir]).code, 0);
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 0,
+        `a document nobody edited must pass its own check, got exit ${run.code}: ${run.stderr}`);
+});
+
+test('a field repeated within one call counts as ONE observation of it', () => {
+    // I1, found by independent review. `?ids=1&ids=2&ids=3` is one call, not
+    // three. Counting per occurrence produced observedIn > observedEntries --
+    // a count that contradicts the thing counts exist to show.
+    const dir = path.join(tmp, 'repeated-param');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'repeated.har'), JSON.stringify(har([
+        entry({
+            method: 'GET',
+            url: 'https://www.example.invalid/api/items?ids=1&ids=2&ids=3',
+            queryString: [
+                { name: 'ids', value: '1' }, { name: 'ids', value: '2' }, { name: 'ids', value: '3' },
+            ],
+            responseText: '{"items":[]}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const items = endpointOf(readDoc(dir), 'GET', '/api/items');
+
+    assert.strictEqual(items.observedEntries, 1);
+    const ids = items.requestFields.find((f) => f.name === 'ids');
+    assert.strictEqual(ids.observedIn, 1,
+        'observedIn counts CALLS that carried the field, never occurrences within one');
+});
+
+test('a repeated parameter does not hide a field whose presence varies', () => {
+    // The same miscount suppressed a real hole: entry 0 sending `ids` twice
+    // made observedIn equal observedEntries, so a field present in one call of
+    // two looked present in all of them.
+    const dir = path.join(tmp, 'repeated-hides-gap');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'repeated.har'), JSON.stringify(har([
+        entry({
+            method: 'GET',
+            url: 'https://www.example.invalid/api/items?ids=1&ids=2',
+            queryString: [{ name: 'ids', value: '1' }, { name: 'ids', value: '2' }],
+            responseText: '{"items":[]}',
+        }),
+        entry({
+            method: 'GET',
+            url: 'https://www.example.invalid/api/items',
+            responseText: '{"items":[]}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const items = endpointOf(readDoc(dir), 'GET', '/api/items');
+
+    const gap = items.unproven.find((u) => u.kind === 'request-field-presence-varies');
+    assert.ok(gap, `expected the varying field to be reported, got ${JSON.stringify(items.unproven)}`);
+    assert.ok(gap.detail.includes('ids'));
+});
+
+test('an endpoint repeatedly captured without a body is not accused of a missing one', () => {
+    // I2, found by independent review. A bodyless POST captured twice is
+    // evidence that it TAKES no body, and telling a reader to "capture it with
+    // the request body preserved" is advice that can never be satisfied. A hole
+    // nobody can close is noise, and noise is how a gate gets ignored.
+    const dir = path.join(tmp, 'legitimately-bodyless');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of ['logout-a.har', 'logout-b.har']) {
+        fs.writeFileSync(path.join(dir, name), JSON.stringify(har([
+            entry({
+                method: 'POST',
+                url: 'https://www.example.invalid/api/logout',
+                responseText: '{"ok":true}',
+            }),
+        ]), null, 2) + '\n', 'utf8');
+    }
+    runNode(['--dir', dir]);
+    const logout = endpointOf(readDoc(dir), 'POST', '/api/logout');
+
+    assert.ok(!logout.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        `two references agreeing is evidence, not a hole: ${JSON.stringify(logout.unproven)}`);
+});
+
+test('a single bodyless capture IS a hole, because one call cannot tell the two apart', () => {
+    const dir = path.join(tmp, 'bodyless-once');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'once.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/logout',
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const logout = endpointOf(readDoc(dir), 'POST', '/api/logout');
+
+    const gap = logout.unproven.find((u) => u.kind === 'no-request-body-observed');
+    assert.ok(gap, 'one reference cannot distinguish "takes no body" from "body not captured"');
+    assert.match(gap.closedBy, /again/i, 'and the way to close it is another capture');
+});
+
+test('--check rejects a body hole on an endpoint two references witness', () => {
+    // The re-derivation must apply the same rule the fold applies, not just a
+    // weaker version of it. Without this, a hand-written "we never saw a
+    // request body" survived on an endpoint that two references had already
+    // settled -- and only the byte comparison would have noticed.
+    const dir = path.join(tmp, 'planted-body-hole');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of ['a.har', 'b.har']) {
+        fs.writeFileSync(path.join(dir, name), JSON.stringify(har([
+            entry({
+                method: 'POST',
+                url: 'https://www.example.invalid/api/logout',
+                responseText: '{"ok":true}',
+            }),
+        ]), null, 2) + '\n', 'utf8');
+    }
+    runNode(['--dir', dir]);
+
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    doc.endpoints[0].unproven.push({
+        kind: 'no-request-body-observed',
+        subjects: [],
+        detail: 'invented: nothing is known about what a caller must send',
+        closedBy: 'capture this operation again',
+        witnesses: doc.endpoints[0].witnesses.slice(),
+    });
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /no-request-body-observed.*contradicted/,
+        'two references having settled it is exactly what contradicts the hole');
+});
+
+test('--check validates a hole\'s witnesses, not only the hole itself', () => {
+    // I3, found by independent review. Gaps recorded witnesses that nothing
+    // checked, so a hole citing a reference that does not exist was left to the
+    // byte comparison -- which says the file differs, never which claim is bad.
+    const dir = makeProvider('gap-ghost-witness');
+    runNode(['--dir', dir]);
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const graphql = doc.endpoints.find((e) => e.pathTemplate === '/api/graphql/');
+    graphql.unproven[0].witnesses = [{ harFile: 'never-captured.har', entry: 0 }];
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /never-captured\.har/,
+        'the traceability pass names the bad witness rather than leaving it to the byte comparison');
+});
+
 // --- the check ------------------------------------------------------------
 
 console.log('generate-api-document --check');
