@@ -314,7 +314,7 @@ function audit(root, ...refs) {
 }
 
 // ===========================================================================
-// Case 7 (FALSIFIER, not GUARD -- mislabelled): the same mixed shape, but the
+// Case 7 (FALSIFIER): the same mixed shape, but the
 // body field is NOT identifier-named. The header must still contribute
 // nothing, so the verdict falls to the shape test alone -- CLEAN, since the
 // raw is a real card. Unlike case 6, this one DOES discriminate pre-fix from
@@ -499,6 +499,14 @@ function audit(root, ...refs) {
         + a.ref.outcome + ' (' + JSON.stringify(a.ref.findings) + ')');
     assert.strictEqual(a.ref.findings[0].reason, 'identifier-field-rewritten',
         'unexpected reason ' + a.ref.findings[0].reason);
+    // The outcome alone does not PROVE the field name was resolved as "text" --
+    // pin the actual finding location too, so this case is satisfied only by
+    // what its comment claims, not by some other path that happens to also
+    // read as an identifier field. Contrast with case 10, whose location is
+    // the body's own node (`response.content`), never `response.content.text`.
+    assert.strictEqual(a.ref.findings[0].locations[0].keyPath, 'response.content.text',
+        'the finding must sit at the genuine JSON field, not the body node, got '
+        + JSON.stringify(a.ref.findings[0].locations));
     passed++;
 }
 
