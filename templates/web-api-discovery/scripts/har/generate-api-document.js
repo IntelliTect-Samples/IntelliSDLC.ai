@@ -92,8 +92,10 @@ const SCHEMA_VERSION = 1;
  *
  * A persisted query is sent as an id rather than as its text, so the id is the
  * only name the operation has on the wire -- and it is the value providers
- * rotate. `HttpFacebookPublisher.DefaultComposerDocId` drifting away from live
- * traffic is the case this document exists to turn into a diff.
+ * rotate. A client's hard-coded default drifting away from the id live traffic
+ * carries is the case this document exists to turn into a diff: the client
+ * keeps sending an id the server retired, and nothing reports it until a
+ * publish fails.
  *
  * An observed set, not an exhaustive one. A provider spelling it differently
  * is a missing operation, not a wrong one -- the document under-claims rather
@@ -286,6 +288,72 @@ function claimIn(map, key, make) {
     return claim;
 }
 
+/** A fresh endpoint, with one accumulator per kind of claim it can carry. */
+function newEndpoint(key) {
+    return Object.assign({}, key, {
+        statuses: new Set(),
+        requestContentTypes: new Set(),
+        responseContentTypes: new Set(),
+        credentialFields: new Map(),
+        operations: new Map(),
+        requestFields: new Map(),
+        responseFields: new Map(),
+    });
+}
+
+/**
+ * The request side: every named thing the request carries, split into the
+ * credentials it must present and the ordinary fields it sends.
+ *
+ * A credential is NOT also an ordinary request field. Listing one twice would
+ * read as two facts about the endpoint when it is one, and the second listing
+ * would say nothing the first does not.
+ */
+function absorbRequestNames(endpoint, entry, harFile, index) {
+    const credentials = credentialNamesOf(entry);
+    for (const c of credentials) {
+        addWitness(claimIn(endpoint.credentialFields, `${c.in}|${c.name}`,
+            () => ({ name: c.name, in: c.in })), harFile, index);
+    }
+
+    const isCredential = new Set(credentials.map((c) => `${c.in}|${c.name}`));
+    for (const f of requestNamesOf(entry)) {
+        if (isCredential.has(`${f.in}|${f.name}`)) continue;
+        addWitness(claimIn(endpoint.requestFields, `${f.in}|${f.name}`,
+            () => ({ name: f.name, in: f.in })), harFile, index);
+    }
+}
+
+/** Fold everything one entry says about its endpoint into the accumulators. */
+function absorbEntry(endpoint, entry, harFile, index) {
+    addWitness(endpoint, harFile, index);
+
+    const status = (entry.response && entry.response.status) || 0;
+    if (status) endpoint.statuses.add(status);
+
+    const requestMime = entry.request.postData && entry.request.postData.mimeType;
+    if (requestMime) endpoint.requestContentTypes.add(requestMime);
+    const responseMime = entry.response && entry.response.content && entry.response.content.mimeType;
+    if (responseMime) endpoint.responseContentTypes.add(responseMime);
+
+    absorbRequestNames(endpoint, entry, harFile, index);
+
+    for (const k of topLevelKeys(entry.response && entry.response.content
+        && entry.response.content.text)) {
+        addWitness(claimIn(endpoint.responseFields, k, () => ({ name: k })), harFile, index);
+    }
+
+    for (const op of operationsOf(entry)) {
+        const claim = claimIn(endpoint.operations, op.persistedId,
+            () => ({ persistedId: op.persistedId, name: op.name }));
+        // The first reference to name the operation names it. A later capture
+        // of the same persisted id that omits the friendly name must not erase
+        // a name an earlier one witnessed.
+        if (!claim.name && op.name) claim.name = op.name;
+        addWitness(claim, harFile, index);
+    }
+}
+
 function buildDocument(provider, references) {
     const endpoints = new Map();
 
@@ -294,54 +362,7 @@ function buildDocument(provider, references) {
             const key = endpointKeyOf(entry);
             if (!key) return;
             const id = `${key.host}|${key.method}|${key.pathTemplate}`;
-
-            const endpoint = claimIn(endpoints, id, () => Object.assign({}, key, {
-                statuses: new Set(),
-                requestContentTypes: new Set(),
-                responseContentTypes: new Set(),
-                credentialFields: new Map(),
-                operations: new Map(),
-                requestFields: new Map(),
-                responseFields: new Map(),
-            }));
-            addWitness(endpoint, harFile, index);
-
-            const status = (entry.response && entry.response.status) || 0;
-            if (status) endpoint.statuses.add(status);
-
-            const requestMime = entry.request.postData && entry.request.postData.mimeType;
-            if (requestMime) endpoint.requestContentTypes.add(requestMime);
-            const responseMime = entry.response && entry.response.content && entry.response.content.mimeType;
-            if (responseMime) endpoint.responseContentTypes.add(responseMime);
-
-            const credentials = credentialNamesOf(entry);
-            for (const c of credentials) {
-                addWitness(claimIn(endpoint.credentialFields, `${c.in}|${c.name}`,
-                    () => ({ name: c.name, in: c.in })), harFile, index);
-            }
-
-            // A credential is not ALSO an ordinary request field. Listing
-            // `fb_dtsg` twice would read as two facts about the endpoint when
-            // it is one, and the second listing would say nothing the first
-            // does not.
-            const isCredential = new Set(credentials.map((c) => `${c.in}|${c.name}`));
-            for (const f of requestNamesOf(entry)) {
-                if (isCredential.has(`${f.in}|${f.name}`)) continue;
-                addWitness(claimIn(endpoint.requestFields, `${f.in}|${f.name}`,
-                    () => ({ name: f.name, in: f.in })), harFile, index);
-            }
-
-            for (const k of topLevelKeys(entry.response && entry.response.content
-                && entry.response.content.text)) {
-                addWitness(claimIn(endpoint.responseFields, k, () => ({ name: k })), harFile, index);
-            }
-
-            for (const op of operationsOf(entry)) {
-                const claim = claimIn(endpoint.operations, op.persistedId,
-                    () => ({ persistedId: op.persistedId, name: op.name }));
-                if (!claim.name && op.name) claim.name = op.name;
-                addWitness(claim, harFile, index);
-            }
+            absorbEntry(claimIn(endpoints, id, () => newEndpoint(key)), entry, harFile, index);
         });
     }
 
@@ -446,43 +467,43 @@ function describeClaim(endpoint, claim, kind) {
  * describing request-side behaviour the files have none of. A reference with
  * no representation is the opposite failure: ground truth nobody described.
  */
-function verifyTraceability(dir, committed, references) {
-    const violations = [];
-    const byFile = new Map(references.map((r) => [r.harFile, r.entries]));
+/** Every claim an endpoint carries, paired with the kind that says how to check it. */
+function claimsOf(endpoint) {
+    const claims = [[endpoint, 'endpoint']];
+    for (const c of endpoint.requestFields || []) claims.push([c, 'requestField']);
+    for (const c of endpoint.responseFields || []) claims.push([c, 'responseField']);
+    for (const c of endpoint.credentialFields || []) claims.push([c, 'credentialField']);
+    for (const c of endpoint.operations || []) claims.push([c, 'operation']);
+    return claims;
+}
 
-    for (const endpoint of committed.endpoints || []) {
-        const claims = [[endpoint, 'endpoint']];
-        for (const c of endpoint.requestFields || []) claims.push([c, 'requestField']);
-        for (const c of endpoint.responseFields || []) claims.push([c, 'responseField']);
-        for (const c of endpoint.credentialFields || []) claims.push([c, 'credentialField']);
-        for (const c of endpoint.operations || []) claims.push([c, 'operation']);
-
-        for (const [claim, kind] of claims) {
-            const what = describeClaim(endpoint, claim, kind);
-            const witnesses = Array.isArray(claim.witnesses) ? claim.witnesses : [];
-            if (witnesses.length === 0) {
-                violations.push(`${what} names no witness; every claim must name a reference and entry`);
-                continue;
-            }
-            for (const w of witnesses) {
-                const entries = byFile.get(w && w.harFile);
-                if (!entries) {
-                    violations.push(`${what} is witnessed by '${w && w.harFile}', which is not a reference in this directory`);
-                    continue;
-                }
-                if (!Number.isInteger(w.entry) || w.entry < 0 || w.entry >= entries.length) {
-                    violations.push(`${what} names entry ${w.entry} of '${w.harFile}', which has ${entries.length} entries`);
-                    continue;
-                }
-                if (!entrySupports(entries[w.entry], endpoint, claim, kind)) {
-                    violations.push(`${what} is not supported by entry ${w.entry} of '${w.harFile}'`);
-                }
-            }
-        }
+/** One claim, checked against every entry it names. */
+function verifyClaim(byFile, endpoint, claim, kind) {
+    const what = describeClaim(endpoint, claim, kind);
+    const witnesses = Array.isArray(claim.witnesses) ? claim.witnesses : [];
+    if (witnesses.length === 0) {
+        return [`${what} names no witness; every claim must name a reference and entry`];
     }
 
+    const violations = [];
+    for (const w of witnesses) {
+        const entries = byFile.get(w && w.harFile);
+        if (!entries) {
+            violations.push(`${what} is witnessed by '${w && w.harFile}', which is not a reference in this directory`);
+        } else if (!Number.isInteger(w.entry) || w.entry < 0 || w.entry >= entries.length) {
+            violations.push(`${what} names entry ${w.entry} of '${w.harFile}', which has ${entries.length} entries`);
+        } else if (!entrySupports(entries[w.entry], endpoint, claim, kind)) {
+            violations.push(`${what} is not supported by entry ${w.entry} of '${w.harFile}'`);
+        }
+    }
+    return violations;
+}
+
+/** The reference direction: what is on disk and what the document says is. */
+function verifyRepresentation(committed, byFile) {
+    const violations = [];
     const described = new Set((committed.references || []).map((r) => r && r.harFile));
-    for (const { harFile } of references) {
+    for (const harFile of byFile.keys()) {
         if (!described.has(harFile)) {
             violations.push(`reference '${harFile}' is present in the directory but has no representation in ${DOCUMENT_FILE}`);
         }
@@ -492,6 +513,28 @@ function verifyTraceability(dir, committed, references) {
             violations.push(`${DOCUMENT_FILE} names reference '${r && r.harFile}', which does not exist`);
         }
     }
+    return violations;
+}
+
+/**
+ * Every claim in the committed document, checked against the references on
+ * disk; every reference on disk, checked for representation in the document.
+ *
+ * Both directions matter and neither implies the other. A claim with no
+ * witness is a specification asserting something the artifacts do not contain
+ * -- the defect class that let four hollow references carry catalogue rows
+ * describing request-side behaviour the files have none of. A reference with
+ * no representation is the opposite failure: ground truth nobody described.
+ */
+function verifyTraceability(committed, references) {
+    const byFile = new Map(references.map((r) => [r.harFile, r.entries]));
+    const violations = [];
+    for (const endpoint of committed.endpoints || []) {
+        for (const [claim, kind] of claimsOf(endpoint)) {
+            violations.push(...verifyClaim(byFile, endpoint, claim, kind));
+        }
+    }
+    violations.push(...verifyRepresentation(committed, byFile));
     return violations;
 }
 
@@ -513,7 +556,7 @@ function check(dir, references, regenerated) {
     // planted claim also makes the regeneration differ, and a check that
     // short-circuited on the byte comparison would tell a reader only to run
     // the generator -- never which claim had no support.
-    const violations = verifyTraceability(dir, committed, references);
+    const violations = verifyTraceability(committed, references);
     if (text !== regenerated) {
         violations.push(`${DOCUMENT_FILE} is stale: regenerating from the references in this directory produces a different document`);
     }
