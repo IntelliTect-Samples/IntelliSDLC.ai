@@ -202,10 +202,17 @@ function isKnownSecretHeader(name, policy) {
  * the wire under a name the walk can see -- and a `; `-separated string is a
  * Cookie header, which has its own pairs in the HAR.
  *
- * The scrubber applies the same test before its own decode pass. The two
- * copies must agree: the gate reporting less than the scrubber redacts is
- * survivable noise-free drift, but the gate reporting less than the scrubber
- * MISSES is how a file gets labelled `(verified)` while carrying a credential.
+ * The scrubber applies the same test before its own decode pass, and the two
+ * MUST agree: the gate reporting less than the scrubber reaches is exactly how
+ * a file gets labelled `(verified)` while carrying a credential -- the defect
+ * this module's #378 change exists to close.
+ *
+ * So it is EXPORTED, and this is the canonical copy. `sanitize-har.js` still
+ * carries a private one; that file already requires this module for
+ * `isKnownSecretField`, so retiring its copy in favour of this export is a
+ * one-line change whenever that file is next touched. Until then, a change to
+ * either regex must be made to both -- nothing can detect the drift, because
+ * neither copy imports the other.
  */
 function looksFormEncoded(text) {
     return typeof text === 'string'
@@ -293,6 +300,13 @@ function walkForUnredactedSecrets(root, report, options) {
             //
             // `transformEncodedParams` is reused as a VISITOR: the callback
             // returns its input unchanged, so nothing is rewritten.
+            //
+            // No depth cap, unlike the scrubber's MAX_DECODE_DEPTH, and that
+            // is safe rather than an oversight: percent-decoding never grows
+            // a string, so a decode chain is strictly shortening and ends on
+            // its own, and `visited` still guards object cycles. The scrubber
+            // caps because it REWRITES at each level; a read-only walk has
+            // nothing to unwind.
             if (looksFormEncoded(value)) {
                 transformEncodedParams(value, (paramName, decoded) => {
                     if (isUnredactedSecret(paramName, decoded, policy)) {
@@ -320,6 +334,7 @@ module.exports = {
     isKnownSecretHeader,
     isRedacted,
     isUnredactedSecret,
+    looksFormEncoded,
     walkForUnredactedSecrets,
     replaceMultipartSecretFields,
 };
