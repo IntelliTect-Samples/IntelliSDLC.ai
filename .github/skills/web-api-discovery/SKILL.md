@@ -1069,9 +1069,11 @@ that an identical retry after a `400` succeeded.
 
 Two scripts, because the manual version of each shipped a defect (see 5).
 
-**`extract-har-reference.js`** selects entries from a raw capture by URL
-and/or body pattern, scrubs them, and writes the reference. Non-negotiable
-behaviours:
+**`extract-har-reference.js`** selects the API traffic out of a raw capture,
+scrubs it, and writes the reference. Selection is a CLASSIFICATION, not a
+pattern: `_resourceType` where the recorder wrote one, the request body and
+response content type where it did not. `--match` is optional narrowing within
+that set (#410). Non-negotiable behaviours:
 
 - **Request bodies are NEVER truncated**, with or without a flag.
 - **Response bodies are not truncated either, unless you ask.**

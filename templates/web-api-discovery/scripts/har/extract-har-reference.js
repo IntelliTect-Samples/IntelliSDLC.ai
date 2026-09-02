@@ -322,6 +322,15 @@ function reportLines(report, total) {
     }
     lines.push(`  total    ${String(total).padEnd(5)}` +
         `entries scanned = ${report.kept} kept + ${report.dropped} dropped`);
+    // WHICH SIGNAL decided. A capture classified entirely by content type is a
+    // recorder that wrote no `_resourceType` -- mitmproxy, say -- and that is
+    // worth knowing when a drop count looks wrong, because the fallback is the
+    // weaker of the two paths and the operator cannot otherwise tell which ran.
+    const basisOrder = ['resourceType', 'requestBody', 'contentType'];
+    const basisParts = basisOrder
+        .filter((b) => report.bases[b])
+        .map((b) => `${b} ${report.bases[b]}`);
+    if (basisParts.length > 0) lines.push(`  basis    ${''.padEnd(5)}${basisParts.join(', ')}`);
     return lines;
 }
 
