@@ -45,9 +45,13 @@ Describe 'the scrub-drift audit reports three outcomes and never repairs (issue 
     #
     # This mutator list is DUPLICATED VERBATIM in
     # HarAuditEnvelopeFieldNames.Tests.ps1's 'still has no repair path' block
-    # (both assert against this same file, from two issues -- #335 and #375 --
-    # landing concurrently). The two lists MUST stay identical: if you add or
-    # remove a mutator name here, make the same edit there, and vice versa.
+    # (both assert against this same file, audit-scrub-drift.js, from two
+    # issues -- #335 and #375 -- that landed concurrently). The two lists MUST
+    # stay identical: if you add or remove a mutator name here, make the same
+    # edit there, and vice versa. Left as two copies with this note (rather
+    # than a shared helper) because there is no established pattern in
+    # .github/agents/tests for sharing a check body between two otherwise
+    # independent Pester files.
     It 'ships no repair path -- it cannot write, delete or rename anything' {
         $source = Get-Content -LiteralPath $script:AuditJs -Raw
         foreach ($mutator in 'writeFileSync', 'appendFileSync', 'unlinkSync', 'rmSync',

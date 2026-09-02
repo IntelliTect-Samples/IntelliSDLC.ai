@@ -54,14 +54,14 @@ Describe 'the scrub-drift audit does not treat an envelope property name as a ca
         ($out -join "`n") | Should -Match $Expect
     }
 
-    # This mutator list is DUPLICATED VERBATIM from
+    # This mutator list is DUPLICATED VERBATIM in
     # audit-scrub-drift.Tests.ps1's 'ships no repair path' block (both assert
     # against the same file, audit-scrub-drift.js, from two issues -- #335 and
-    # #375 -- landing concurrently). The two lists MUST stay identical: if you
-    # add or remove a mutator name here, make the same edit there, and vice
+    # #375 -- that landed concurrently). The two lists MUST stay identical: if
+    # you add or remove a mutator name here, make the same edit there, and vice
     # versa. Left as two copies with this note (rather than a shared helper)
-    # because each wrapper is independently a self-contained delegation to one
-    # node test file, per this project's Pester-wrapper convention.
+    # because there is no established pattern in .github/agents/tests for
+    # sharing a check body between two otherwise independent Pester files.
     It 'audit-scrub-drift.js still has no repair path after this change' {
         $auditJs = Join-Path $script:ScriptsDir 'har/audit-scrub-drift.js'
         $source = Get-Content -LiteralPath $auditJs -Raw
