@@ -479,14 +479,20 @@ test('an endpoint whose request side was never captured says so', () => {
         entry({
             method: 'POST',
             url: 'https://www.example.invalid/api/uploads',
+            // A failing POST with no body: TWO holes at once, and the order
+            // they are DERIVED in is the reverse of the order they are
+            // reported in. Without an endpoint like this, the hole ordering
+            // could not be falsified by any ablation.
+            status: 500,
             responseText: '{"id":"u1"}',
         }),
     ]), null, 2) + '\n', 'utf8');
     runNode(['--dir', dir]);
     const post = endpointOf(readDoc(dir), 'POST', '/api/uploads');
 
-    assert.ok(post.unproven.some((u) => u.kind === 'no-request-body-observed'),
-        `expected a request-side hole, got ${JSON.stringify(post.unproven)}`);
+    assert.deepStrictEqual(post.unproven.map((u) => u.kind),
+        ['no-request-body-observed', 'no-success-observed'],
+        'both holes, in a declared order rather than the order they were derived');
 });
 
 test('a GET is not accused of a missing request body', () => {
