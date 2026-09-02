@@ -331,37 +331,33 @@ test('both roots are keyed on the captured host', () => {
         path.join(tmpRoot, 'out', 'app.example.com'));
 });
 
-test('outside a repo the output path defaults to the current directory', () => {
-    // The cwd default is CORRECT here and must stay byte-for-byte unchanged --
-    // tmpRoot is not a repository, so there is no root to anchor to.
+test("the default output path is the run's own session directory (#377)", () => {
+    // #300 anchored the default to the repo root and its own comment conceded
+    // the gap: a worktree has its own root, so output still landed wherever the
+    // operator was standing -- which in the reported incident was a checkout
+    // root, where it appeared as an untracked host directory. The session
+    // directory is gitignored AND stamped, so neither defect survives.
     const resolved = capture.resolveSessionPaths({
         uri: 'https://app.example.com/',
         cwd: tmpRoot,
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
-    assert.strictEqual(resolved.outputPath,
-        path.join(path.resolve(tmpRoot), 'app.example.com'));
+    assert.strictEqual(resolved.outputPath, resolved.sessionDir);
+    assert.strictEqual(resolved.outputExplicit, false);
 });
 
-test('inside a repo the output path defaults to the repo root, not the cwd (#300)', () => {
-    // The defect: run from a subdirectory of a checkout, output was created
-    // relative to wherever the operator happened to be standing. This test file
-    // lives inside a real repository, so __dirname is a genuine "deep in a
-    // checkout" cwd -- no fixture required to prove the anchoring.
-    const toplevel = require('child_process')
-        .execFileSync('git', ['rev-parse', '--show-toplevel'],
-            { cwd: __dirname, encoding: 'utf8' }).trim();
+test('the default output path is the session directory inside a repo too (#377)', () => {
+    // Same answer wherever the recorder is run from: this test file lives deep
+    // inside a real repository, which is the "run from a checkout" cwd that
+    // used to decide where output went.
     const resolved = capture.resolveSessionPaths({
         uri: 'https://app.example.com/',
         cwd: __dirname,
         capturesRoot: path.join(tmpRoot, '.har-captures'),
         stamp: '2026-01-01-120000'
     });
-    // realpath the existing parent, not the not-yet-created host folder.
-    assert.strictEqual(fs.realpathSync(path.dirname(resolved.outputPath)),
-        fs.realpathSync(toplevel));
-    assert.strictEqual(path.basename(resolved.outputPath), 'app.example.com');
+    assert.strictEqual(resolved.outputPath, resolved.sessionDir);
 });
 
 test('an explicit relative output path still resolves against the cwd (#300)', () => {
