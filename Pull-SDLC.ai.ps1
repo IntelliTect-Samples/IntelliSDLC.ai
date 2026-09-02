@@ -220,6 +220,10 @@ $script:UpstreamManagedPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
+    # Added to the upstream root without a managed-path entry, which is the
+    # exact gap the "#263 root-level script" test guards against: unlisted,
+    # Get-UpstreamOps never emits an op for it and it reaches no consumer.
+    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1',
     # Retired filename (renamed to Consolidate-Specs.ps1 in issue #184). Kept on
@@ -937,10 +941,18 @@ function Invoke-MainTreeCleanup {
         after a successful auto-worktree sync. For every manifest path that
         the user dropped into the parent tree to bootstrap the script
         (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, etc.), if the local copy is
-        byte-identical to upstream the script either deletes it (untracked
-        case -- PR merge will restore as tracked) or `git checkout`s it
-        (tracked-but-modified case). When local content differs from
-        upstream, the file is left in place and a warning is printed.
+        upstream-sourced -- byte-identical to the upstream tip, or to any
+        version of that path in the upstream ref's history -- the script
+        either deletes it (untracked case -- PR merge will restore as
+        tracked) or `git checkout`s it (tracked-but-modified case). Only
+        consumer-authored content is left in place, with a warning.
+    .NOTES
+        "Upstream-sourced" is the test, not "matches the tip", because the
+        dirt this cleans up is typically one upstream revision stale -- the
+        residue of a self-refresh that ran against an earlier upstream
+        commit. Reverting it loses nothing (the bytes are upstream's and the
+        sync commit already carries the update), while leaving it pins the
+        protected branch permanently dirty (issue #135).
     .OUTPUTS
         Array of strings describing each action taken (for caller logging /
         test inspection). Empty when nothing needed cleanup.
@@ -989,38 +1001,62 @@ function Invoke-MainTreeCleanup {
             # "differs from upstream" warning even when bytes are identical.
             $localSha = (& git hash-object --no-filters -- $abs 2>$null)
             if (-not $localSha) { continue }
+            $localSha = $localSha.Trim()
 
-            if ($localSha.Trim() -eq $upstreamSha.Trim()) {
+            # Is this content the consumer's own work, or did it come from
+            # upstream? That -- not "does it equal the tip" -- is the question
+            # that decides whether reverting can lose anything.
+            $isUpstreamSourced = ($localSha -eq $upstreamSha.Trim())
+            if (-not $isUpstreamSourced) {
+                # Not the tip, but it may be an OLDER upstream version: a
+                # self-refresh that ran against an intermediate upstream commit
+                # leaves exactly that. Probe the upstream ref's history.
+                # Test-PathContentInUpstreamHistory diffs git objects, so the
+                # working-tree bytes have to exist as a blob first; `-w` writes
+                # to the object store only and never touches the working tree
+                # (loose objects are unreferenced and get collected).
+                $writtenSha = (& git hash-object -w --no-filters -- $abs 2>$null)
+                if ($writtenSha) {
+                    $isUpstreamSourced = Test-PathContentInUpstreamHistory -Path $path `
+                        -Blob $writtenSha.Trim() -UpstreamRef $UpstreamRef -RepoRoot $RepoRoot
+                }
+            }
+
+            if ($isUpstreamSourced) {
                 if ($isUntracked) {
-                    if ($PSCmdlet.ShouldProcess($path, 'Remove untracked-and-identical file')) {
+                    if ($PSCmdlet.ShouldProcess($path, 'Remove untracked upstream-sourced file')) {
                         Remove-Item -LiteralPath $abs -Force
-                        $msg = "Cleanup: removed untracked '$path' (byte-identical to upstream; PR merge will restore tracked)."
+                        $msg = "Cleanup: removed untracked '$path' (content came from upstream; PR merge will restore tracked)."
                         Write-Information $msg
                         $actions.Add($msg) | Out-Null
                     }
                 }
-                else {
-                    # Only revert when HEAD also matches upstream -- i.e. the
-                    # working-tree edits are truly redundant. If HEAD differs
-                    # from upstream, the working tree may legitimately hold a
-                    # newer version (e.g. a self-refresh just rewrote
-                    # Pull-SDLC.ai.ps1 to upstream's newer bytes but the new
-                    # version has not yet been committed). Reverting in that
-                    # case would silently downgrade the file back to HEAD's
-                    # older content.
-                    $headSha = (& git rev-parse "HEAD:${path}" 2>$null)
-                    if ($headSha -and $LASTEXITCODE -eq 0 -and $headSha.Trim() -eq $upstreamSha.Trim()) {
-                        if ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified-to-identical file')) {
-                            & git checkout -- $path 2>$null | Out-Null
-                            $msg = "Cleanup: reverted '$path' to HEAD (working tree was modified but identical to upstream)."
-                            Write-Information $msg
-                            $actions.Add($msg) | Out-Null
-                        }
+                elseif ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified upstream-sourced file')) {
+                    # Reverting cannot lose work: these bytes are upstream's,
+                    # still reachable in this repo's object store, and -- when
+                    # HEAD is behind -- already carried by the sync commit the
+                    # run just made on the sync branch.
+                    #
+                    # PR #134 restricted this to HEAD == upstream, on the theory
+                    # that a newer self-refreshed version might be sitting in the
+                    # working tree awaiting commit. Issue #247 removed that
+                    # premise from this function's only call site: on the
+                    # auto-worktree path self-refresh now RESTORES the original
+                    # rather than persisting it. What is left when HEAD is behind
+                    # is redundant dirt that pins the protected branch dirty --
+                    # blocking a fast-forward pull and, via
+                    # Test-ScriptHasUncommittedEdits, disabling self-update for
+                    # good (issue #135).
+                    & git checkout -- $path 2>$null | Out-Null
+                    if ($LASTEXITCODE -eq 0) {
+                        $msg = "Cleanup: reverted '$path' to HEAD (working-tree content came from upstream; nothing local to keep)."
+                        Write-Information $msg
                     }
-                    # else: HEAD differs from upstream; the working tree may
-                    # legitimately contain a newer self-refreshed version.
-                    # Leave it alone (no warning -- this is a normal pending
-                    # update awaiting commit).
+                    else {
+                        $msg = "Cleanup: could not revert '$path' to HEAD; left in place."
+                        Write-Warning $msg
+                    }
+                    $actions.Add($msg) | Out-Null
                 }
             }
             else {

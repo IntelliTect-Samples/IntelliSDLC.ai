@@ -2594,6 +2594,48 @@ Describe 'Self-refresh leaves the protected branch clean (issue #247 end-to-end)
     }
 }
 
+Describe '-WhatIf never writes to an already-dirty bootstrap script (issue #135)' {
+    # Issue #135 carries a second-hand report that the permanent
+    # `modified: Pull-SDLC.ai.ps1` "even happens during -WhatIf". A dry run that
+    # writes to the working tree would break the same side-effect-free promise
+    # issues #200 and #108 established, so pin it: with the on-disk script
+    # already carrying uncommitted content, a -WhatIf run must leave those bytes
+    # exactly as found and add no further modification.
+    It 'leaves the on-disk bytes byte-identical when the script is already modified' {
+        $repoDir = Join-Path $TestDrive ("whatif-dirty-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $repoDir -Force | Out-Null
+        $scriptPath = Join-Path $repoDir 'Pull-SDLC.ai.ps1'
+        Push-Location $repoDir
+        try {
+            git init -q -b main
+            git config user.email c@c.c; git config user.name c
+            '# COMMITTED-CONTENT' | Out-File -Encoding utf8 -LiteralPath $scriptPath -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'chore: sync IntelliSDLC.ai @ deadbeef'
+            # The consumer's wedged starting state: tracked, and modified.
+            '# ALREADY-DIRTY-CONTENT' | Out-File -Encoding utf8 -LiteralPath $scriptPath -NoNewline
+        } finally { Pop-Location }
+        $before = [System.IO.File]::ReadAllBytes($scriptPath)
+
+        # Real Test-SelfRefreshRequired: it must refuse (issue #202 guard), so
+        # nothing is fetched and nothing is written. Fail loudly if the refresh
+        # or the re-exec is reached anyway.
+        Mock -CommandName Invoke-SelfRefresh -MockWith { throw 'Invoke-SelfRefresh must not run for a dirty script' }
+        Mock -CommandName Invoke-SelfReExec -MockWith { throw 'Invoke-SelfReExec must not run for a dirty script' }
+
+        $reExeced = Invoke-SelfRefreshGate -ScriptPath $scriptPath `
+            -BoundParameters @{ Branch = 'main'; WhatIf = $true } -WarningAction SilentlyContinue
+        $reExeced | Should -BeFalse
+
+        [System.IO.File]::ReadAllBytes($scriptPath) | Should -Be $before
+        Push-Location $repoDir
+        try { $status = @(git status --porcelain) } finally { Pop-Location }
+        # Exactly the one modification the test set up -- no new dirt.
+        $status.Count | Should -Be 1
+        $status[0] | Should -Match 'Pull-SDLC\.ai\.ps1'
+    }
+}
+
 Describe 'Script top-level self-refresh (issue #110 end-to-end)' {
     It 'exposes RemoteUrl as a script param (org-portability) and excludes function-only params' {
         # Issue #110 originally asserted RemoteUrl was NOT a script param so
@@ -2992,13 +3034,23 @@ Describe 'Invoke-MainTreeCleanup' {
         Test-Path -LiteralPath $target | Should -BeTrue
     }
 
-    It 'does NOT revert tracked-modified file when HEAD differs from upstream (avoids silent self-refresh downgrade)' {
-        # Scenario: a prior self-refresh wrote the newer upstream version into
-        # the working tree, but the consumer has not yet committed it. HEAD
-        # still has the older content; upstream has the newer content; working
-        # tree matches upstream. The old revert path would silently downgrade
-        # the working tree back to HEAD's older content. The tightened path
-        # must leave the working tree alone whenever HEAD != upstream.
+    It 'reverts a tracked-modified file holding upstream tip content even when HEAD is behind (issue #135)' {
+        # Scenario: the parent tree carries a redundant `modified:
+        # Pull-SDLC.ai.ps1` -- its bytes ARE upstream's, HEAD is still behind.
+        #
+        # PR #134 made this case a silent no-op, on the theory that the working
+        # tree might hold a newer self-refreshed version awaiting commit and
+        # reverting would downgrade it. That premise no longer holds at this
+        # function's only call site: issue #247 made self-refresh RESTORE the
+        # original on the auto-worktree path rather than persist it, and the
+        # sync run that just finished committed these exact bytes onto
+        # chore/sdlc-sync. Nothing can be lost -- the content is byte-identical
+        # to a blob already reachable at <UpstreamRef>:<path>.
+        #
+        # Leaving it is what costs: `main` stays dirty indefinitely, `git pull`
+        # can refuse to fast-forward over it, and
+        # Test-ScriptHasUncommittedEdits reads the dirt as local edits and
+        # disables self-update permanently (issue #135).
         $fx = New-CleanupFixture -Root $script:cleanupRoot
         Push-Location $fx.Consumer
         try {
@@ -3007,13 +3059,108 @@ Describe 'Invoke-MainTreeCleanup' {
             git commit -q -m "track stale script"
             Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
         } finally { Pop-Location }
-        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
-        $after = Get-Content -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1') -Raw
-        # Working tree preserved (matches upstream content), NOT reverted to old HEAD.
-        $after | Should -Not -Match 'old tracked content'
-        $after.TrimEnd("`r","`n") | Should -Be $fx.UpstreamScript.TrimEnd("`r","`n")
-        # And no false "differs" warning either (working tree byte-matches upstream).
+        $actions = @(Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue)
+
+        # The observable outcome a consumer checks: `git status` is clean.
+        Push-Location $fx.Consumer
+        try { $status = @(git status --porcelain) } finally { Pop-Location }
+        $status | Should -BeNullOrEmpty
+        # No false "differs" warning (working tree byte-matches upstream).
         ($warns | Out-String) | Should -Not -Match 'differ'
+        # The run reports what it did rather than healing silently.
+        ($actions -join "`n") | Should -Match 'Pull-SDLC\.ai\.ps1'
+    }
+
+    It 'reverts a tracked-modified file holding an OLDER upstream version (issue #135)' {
+        # The consumer's dirt came from a self-refresh against an INTERMEDIATE
+        # upstream commit, so it matches neither HEAD nor the upstream tip.
+        # It is still provably upstream-sourced -- the content exists in the
+        # upstream ref's history -- so it is not consumer-authored work and
+        # reverting loses nothing. Without this, a consumer whose dirt is one
+        # upstream revision stale stays wedged with a permanent
+        # "differs from upstream" warning.
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        $intermediate = "# intermediate upstream content`n"
+        Push-Location $fx.Upstream
+        try {
+            # Rewrite upstream history so $intermediate is an older version of
+            # the path and $fx.UpstreamScript remains the tip.
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $intermediate -NoNewline
+            git add -A | Out-Null
+            git commit -q -m "upstream intermediate"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
+            git add -A | Out-Null
+            git commit -q -m "upstream tip"
+        } finally { Pop-Location }
+        Push-Location $fx.Consumer
+        try {
+            git fetch sdlc.ai --quiet 2>$null | Out-Null
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# old tracked content`n" -NoNewline
+            git add Pull-SDLC.ai.ps1 | Out-Null
+            git commit -q -m "track stale script"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $intermediate -NoNewline
+        } finally { Pop-Location }
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+
+        Push-Location $fx.Consumer
+        try { $status = @(git status --porcelain) } finally { Pop-Location }
+        $status | Should -BeNullOrEmpty
+        ($warns | Out-String) | Should -Not -Match 'differ'
+    }
+
+    It 'leaves a tracked-modified file alone when its content is consumer-authored' {
+        # The counterpart guard: content that is NOT upstream-sourced is real
+        # work. It must survive cleanup and be reported.
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        Push-Location $fx.Consumer
+        try {
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# old tracked content`n" -NoNewline
+            git add Pull-SDLC.ai.ps1 | Out-Null
+            git commit -q -m "track stale script"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# my hand-written edit`n" -NoNewline
+        } finally { Pop-Location }
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+        (Get-Content -Raw -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1')) | Should -Match 'my hand-written edit'
+        ($warns | Out-String) | Should -Match 'differ'
+    }
+
+    It 'does not revert a tracked-modified file when -WhatIf is set' {
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        Push-Location $fx.Consumer
+        try {
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value "# old tracked content`n" -NoNewline
+            git add Pull-SDLC.ai.ps1 | Out-Null
+            git commit -q -m "track stale script"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
+        } finally { Pop-Location }
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WhatIf | Out-Null
+        (Get-Content -Raw -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1')) | Should -Not -Match 'old tracked content'
+    }
+
+    It 'removes an untracked file holding an OLDER upstream version (issue #135)' {
+        # Symmetric to the tracked case: an untracked bootstrap copy that is one
+        # upstream revision stale would otherwise be left in place, and the sync
+        # PR's merge then refuses to check the path out ("untracked working tree
+        # file would be overwritten"). It is upstream-sourced, so remove it --
+        # the merge restores it tracked.
+        $fx = New-CleanupFixture -Root $script:cleanupRoot
+        $intermediate = "# intermediate upstream content`n"
+        Push-Location $fx.Upstream
+        try {
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $intermediate -NoNewline
+            git add -A | Out-Null
+            git commit -q -m "upstream intermediate"
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $fx.UpstreamScript -NoNewline
+            git add -A | Out-Null
+            git commit -q -m "upstream tip"
+        } finally { Pop-Location }
+        Push-Location $fx.Consumer
+        try {
+            git fetch sdlc.ai --quiet 2>$null | Out-Null
+            Set-Content -LiteralPath 'Pull-SDLC.ai.ps1' -Value $intermediate -NoNewline
+        } finally { Pop-Location }
+        Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
+        Test-Path -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1') | Should -BeFalse
     }
 
     It 'does not warn "differs from upstream" when working file is byte-identical to a CRLF-stored upstream blob under autocrlf=true' {
