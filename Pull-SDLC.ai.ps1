@@ -220,6 +220,11 @@ $script:UpstreamManagedPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
+    # Added to the upstream root by commit 1620912 without a managed-path entry,
+    # which is the exact gap the "#263 root-level script" test guards against:
+    # unlisted, Get-UpstreamOps emits no op for it and it reaches no consumer, so
+    # consumers get Cleanup-Worktree.ps1 without its suite (issue #399).
+    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1',
     # Retired filename (renamed to Consolidate-Specs.ps1 in issue #184). Kept on
@@ -267,6 +272,7 @@ $script:MetaScriptPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
+    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1'
 )
