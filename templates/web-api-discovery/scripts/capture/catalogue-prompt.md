@@ -71,6 +71,18 @@ from the `.har` and fails on any disagreement. That is deliberate: it is the
 difference between a row a guard can confirm *exists* and a row a guard can
 confirm is *true*.
 
+**Promotion is atomic.** Flip `Status` to `Exercised` and correct the measured
+fields **in the same edit**. A scaffold row's `EntryCount` and `Endpoints`
+describe a digest *group*, not the reference you extracted, so a row promoted
+without correcting them fails the guard until you do.
+
+That failure is correct, and the annoyance is the point. The property that
+makes it safe is that it is **loud and specific**, not that it is rare: a guard
+that failed a half-promoted row is a nuisance, while a guard that passed one
+would let a row's claims outlive their evidence silently -- which is the defect
+this whole convention exists to remove. If the interruption bothers you, make
+the promotion atomic. Do not soften the guard.
+
 **Do not describe request-side behaviour on a reference with no request body.**
 Four references once shipped carrying a 29-character placeholder where the
 payload belonged, under rows reading "one Only-Me post with two people tagged"
