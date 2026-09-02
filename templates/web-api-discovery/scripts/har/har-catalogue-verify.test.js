@@ -269,6 +269,32 @@ test('an entry naming a reference that does not exist FAILS', () => {
     assert.match(r.stderr, /example-was-deleted-2026-08-26\.har/);
 });
 
+test('a HarFile differing only in casing is reported AS a casing problem', () => {
+    // On Windows the file opens regardless of case, so `Example/foo.har` looks
+    // fine locally and does not exist at all on the Linux runner. Two bad
+    // outcomes to avoid, and the fix is neither of them:
+    //
+    //   * accepting it, which builds a passes-here / fails-in-CI trap;
+    //   * reporting it as two unrelated findings -- "names a file not in this
+    //     directory" AND "a file nobody names" -- which sends the reader
+    //     hunting for a missing reference that is sitting right there.
+    //
+    // It fails, once, saying what is actually wrong.
+    const dir = makeProject('casing', (s) => {
+        s.row.HarFile = 'Example/Example-Create-Post-2026-08-26.har';
+    });
+
+    const r = runVerify(dir);
+    assert.notStrictEqual(r.code, 0, 'a mis-cased HarFile passed');
+    assert.match(r.stderr, /case/i);
+    // Named together, so the repair is a copy-paste rather than a hunt.
+    assert.match(r.stderr, /Example\/Example-Create-Post-2026-08-26\.har/);
+    assert.match(r.stderr, new RegExp(REF.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    // And NOT also reported as an uncatalogued file: the row does name it.
+    assert.ok(!/no catalogue entry names it/.test(r.stderr),
+        `the same file was reported as uncatalogued too:\n${r.stderr}`);
+});
+
 test('two entries naming the same reference FAIL', () => {
     // Two rows over one file means at least one of them describes traffic the
     // file does not hold, and the reader has no way to tell which.

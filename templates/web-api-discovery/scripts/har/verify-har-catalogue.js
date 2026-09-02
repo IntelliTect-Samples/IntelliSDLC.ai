@@ -153,6 +153,21 @@ function verifyDirectory(dir) {
     const onDisk = new Set(cat.listReferences(dir));
     const claimedBy = new Map();
 
+    // Lower-cased index, used ONLY to recognise a case-only mismatch and say so.
+    //
+    // It deliberately does not make such a row pass. Windows opens the file
+    // whatever its case, so `Example/foo.har` reads fine here and does not
+    // exist at all on a Linux runner -- accepting it would build a
+    // passes-locally / fails-in-CI trap, which is a worse failure than the one
+    // it replaces because it appears only after review.
+    //
+    // Without this the same mistake surfaced as two findings that contradict
+    // each other: "names a file not in this directory" beside "a file no row
+    // names", sending the reader hunting for a missing reference that is
+    // sitting right there under a different capitalisation.
+    const onDiskByLower = new Map();
+    for (const file of onDisk) onDiskByLower.set(file.toLowerCase(), file);
+
     entries.forEach((row, index) => {
         const label = rowLabel(row, index);
         const report = (message) => violations.push(`${label}: ${message}`);
@@ -179,7 +194,20 @@ function verifyDirectory(dir) {
         claimedBy.set(harFile, label);
 
         if (!onDisk.has(harFile)) {
-            report(`names ${harFile}, which is not in this directory`);
+            const actual = onDiskByLower.get(harFile.toLowerCase());
+            if (actual) {
+                // Claim the file anyway, so it is not ALSO reported as one no
+                // row names. There is exactly one mistake here and the operator
+                // should be told it once.
+                claimedBy.set(actual, label);
+                report(`names ${harFile}, but the file on disk is ${actual} -- `
+                    + 'the paths differ only in case. This opens fine on a '
+                    + 'case-insensitive filesystem and does not exist at all on a '
+                    + 'case-sensitive one, so it passes here and fails in CI. '
+                    + 'Correct HarFile to match the file exactly');
+            } else {
+                report(`names ${harFile}, which is not in this directory`);
+            }
             return;
         }
 

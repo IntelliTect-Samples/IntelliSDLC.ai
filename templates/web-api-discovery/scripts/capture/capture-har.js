@@ -968,13 +968,27 @@ function buildDigest(har, meta = {}) {
         try { url = new URL(entry.request.url); } catch (e) { return; }
         const template = pathTemplate(url.pathname);
         const status = (entry.response && entry.response.status) || 0;
-        const key = `${url.host}|${entry.request.method}|${template}|${status}`;
+        // UPPERCASED, and it matters twice.
+        //
+        // RFC 9110 defines the methods in uppercase and makes them
+        // case-sensitive, so `get` and `GET` are one endpoint in every practical
+        // sense -- keying on the raw verb split them into two groups and
+        // double-counted the endpoint.
+        //
+        // It also has to agree with har-catalogue.js's `measureReference`, which
+        // uppercases: the scaffold writes a row's `Methods` from here, and the
+        // guard recomputes them from the reference. A scaffold reading ["get"]
+        // against a recomputed ["GET"] fails the row on casing alone -- correct
+        // data reported as wrong, and the repair everyone reaches for is to
+        // weaken the comparison rather than fix the derivation.
+        const method = String(entry.request.method || '').toUpperCase();
+        const key = `${url.host}|${method}|${template}|${status}`;
 
         let group = groups.get(key);
         if (!group) {
             group = {
                 host: url.host,
-                method: entry.request.method,
+                method,
                 pathTemplate: template,
                 status,
                 count: 0,

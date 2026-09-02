@@ -696,6 +696,20 @@ test('the digest and the guard name the same endpoints for the same traffic', ()
     const fromDigest = capture.buildDigest(har(entries)).groups
         .map((g) => `${g.host}${g.pathTemplate}`);
 
+    // Methods travel the same two paths and must normalise the same way. The
+    // digest used to store the verb exactly as the capture recorded it while
+    // the guard uppercased, so a scaffold row reading ["get"] failed the guard
+    // on casing alone -- correct data reported as wrong, which is the cries-wolf
+    // failure the endpoint parity above exists to prevent, one field over.
+    const lower = [
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'get', url: 'https://api.example.com/v1/a' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/v1/a' }, response: { status: 200, content: {} } },
+    ];
+    const lowerDigest = capture.buildDigest(har(lower));
+    assert.deepStrictEqual(lowerDigest.groups.map((g) => g.method), ['GET'],
+        'a lowercase verb must normalise, and must not split one endpoint into two groups');
+    assert.deepStrictEqual(capture.buildCatalogueScaffold(lowerDigest)[0].Methods, ['GET']);
+
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'endpoint-parity-'));
     const file = path.join(dir, 'ref.har');
     fs.writeFileSync(file, JSON.stringify(har(entries)));
