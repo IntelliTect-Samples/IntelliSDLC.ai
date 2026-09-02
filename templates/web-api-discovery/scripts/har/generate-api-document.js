@@ -218,11 +218,30 @@ const pairs = (list) => (Array.isArray(list) ? list.filter((p) => p && typeof p.
  *
  * Returning null rather than guessing keeps a malformed URL out of the
  * document instead of inventing a host for it.
+ *
+ * THE VERB IS UPPERCASED HERE, and here only. An endpoint identity must not
+ * depend on the casing a capture tool happened to emit: `post` and `POST`
+ * are the same operation, and keying on the raw verb described one operation
+ * called twice as two endpoints witnessed once each. The quiet half was worse
+ * -- `BODY_BEARING_METHODS` is matched against this method, so a lowercase
+ * verb silently skipped the request-side hole, and a gap that fails to fire is
+ * worse than one that fires wrongly because nothing reports it.
+ *
+ * This is the ONE place api.json composes an endpoint identity: the fold, the
+ * traceability check and the hole re-derivation all reach it through here, so
+ * they cannot normalize differently from each other. Two paths that must agree
+ * are not made to agree by sharing a primitive -- they are made to agree by
+ * composing the identity in one place.
  */
 function endpointKeyOf(entry) {
     let url;
     try { url = new URL(entry.request.url); } catch (e) { return null; }
-    return { host: url.host, method: entry.request.method, pathTemplate: pathTemplate(url.pathname) };
+    const method = entry.request.method;
+    return {
+        host: url.host,
+        method: typeof method === 'string' ? method.toUpperCase() : method,
+        pathTemplate: pathTemplate(url.pathname),
+    };
 }
 
 /**
