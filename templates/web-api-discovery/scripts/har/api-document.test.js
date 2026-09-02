@@ -398,7 +398,14 @@ test('a lowercase body-bearing verb still raises the request-side hole', () => {
         `the hole must fire whatever case the capture recorded: ${JSON.stringify(hollow.unproven)}`);
 });
 
-test('a document generated from mixed-case verbs passes its own check', () => {
+test('mixed-case verbs merge, and the document still passes its own check', () => {
+    // Two jobs, and it is worth being explicit that the SECOND one could not
+    // fail for this defect: before the fix both the fold and the check read the
+    // raw verb, so they agreed with each other while both being wrong, and
+    // exit 0 said nothing. Independent review caught that the name promised
+    // more than the assertions delivered. It now asserts the merge as well, so
+    // it discriminates -- and it keeps the --check call, which is what fails if
+    // someone later normalizes the fold and forgets the re-derivation.
     const dir = path.join(tmp, 'verb-case-check');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'verbs.har'), JSON.stringify(har([
@@ -414,6 +421,11 @@ test('a document generated from mixed-case verbs passes its own check', () => {
         }),
     ]), null, 2) + '\n', 'utf8');
     assert.strictEqual(runNode(['--dir', dir]).code, 0);
+
+    const doc = readDoc(dir);
+    assert.strictEqual(doc.endpoints.length, 1, 'the two calls are one endpoint');
+    assert.strictEqual(doc.endpoints[0].method, 'GET');
+    assert.strictEqual(doc.endpoints[0].observedEntries, 2);
 
     const run = runNode(['--dir', dir, '--check']);
     assert.strictEqual(run.code, 0,
