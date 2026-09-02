@@ -58,6 +58,49 @@ const LEAK_PATTERNS = [
         isFake: (m) => /^Bearer [0-9a-f]{40}$/.test(m)
     },
     {
+        // A client-side password envelope: `#PWD_<LABEL>:<v>:<unix>:<base64>`
+        // (issue #395). Unlike every other pattern here, this one is not
+        // detected by entropy or length -- it is SELF-IDENTIFYING. It announces
+        // the credential format in its own first token, which is stronger
+        // evidence than any amount of base64 and is why a ~120-character value
+        // that is not JWT-shaped, not long hex and not bearer-shaped still
+        // belongs in this table.
+        //
+        // Why it is here at all when `secretFields` already names
+        // `enc_password` and `sensitive_string_value` (issue #378): the two
+        // controls fail differently. The name control loses the value the
+        // moment a provider renames the field, the envelope travels as a bare
+        // form parameter, or another product adopts the format under a name
+        // nobody listed. The value is still unmistakably a password envelope in
+        // all three, and this is the control that does not care what it is
+        // called.
+        //
+        // The LABEL is the product, not the format: Facebook web sends
+        // `#PWD_BROWSER`, Instagram `#PWD_INSTAGRAM_BROWSER`, Messenger
+        // `#PWD_MSGR`. Pinning one spelling would miss its sibling on the next
+        // capture, so the label is matched as a token and the STRUCTURE behind
+        // it -- version, timestamp, ciphertext -- is what carries the
+        // precision. A bare `#PWD_BROWSER` in prose, a `#pwd-reset` anchor and
+        // a `#ff8800` colour all fail it.
+        //
+        // The ciphertext bound is deliberately low. #378 measured surviving
+        // envelopes at 120, 39 and ELEVEN characters, so a rule demanding a
+        // long tail misses two of the three it was written for; the prefix is
+        // doing the work, not the length.
+        name: 'pwd-envelope',
+        class: 'secret',
+        re: /#PWD_[A-Z0-9_]{1,40}:\d{1,4}:\d{1,14}:[A-Za-z0-9+/_=-]{4,}/gi,
+        // There is no fake spelling of this shape to exempt. The scrubber
+        // replaces a redacted value ENTIRELY, with `redacted-<hex>`, which
+        // carries no `#PWD_` prefix and so cannot match -- unlike `jwt` or
+        // `hex64`, whose fakes are generated to keep the original shape and
+        // would otherwise be re-reported forever. Inventing a sentinel here
+        // would add an exemption nothing produces, and an exemption no test can
+        // reach is a hole waiting for someone to widen it. Case 7.c pins the
+        // claim instead of asserting it in prose.
+        isFake: () => false
+    },
+    {
         name: 'email',
         class: 'identity',
         // Bounded to stay linear over long non-matching runs (see pii.js).

@@ -71,6 +71,7 @@
     "secret": {
       "named-credential": "gate",
       "jwt": "gate",
+      "pwd-envelope": "gate",
       "bearer": "gate",
       "hex64": "gate",
       "hex32": "gate"
