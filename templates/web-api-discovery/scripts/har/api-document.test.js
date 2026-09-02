@@ -111,13 +111,19 @@ function formPost(params) {
 }
 
 const GRAPHQL_ENTRY = () => entry({
-    url: 'https://www.example.invalid/api/graphql/',
+    url: 'https://www.example.invalid/api/graphql/?_callFlowletID=0',
+    // A query parameter on the SAME endpoint that carries form parameters.
+    // Sorted by name alone, `_callFlowletID` leads; sorted by (where it lives,
+    // name) it trails the form parameters. Without both on one endpoint the
+    // `in` half of the order could not fail.
+    queryString: [{ name: '_callFlowletID', value: '0' }],
     headers: [{ name: 'cookie', value: 'c_user=<Redacted>' }],
     cookies: [{ name: 'c_user', value: '<Redacted>' }],
+    // Deliberately NOT alphabetical, and not the order the document emits.
     postData: formPost([
+        { name: 'variables', value: '{}' },
         { name: 'doc_id', value: '9876543210' },
         { name: 'fb_api_req_friendly_name', value: 'ComposerCreate' },
-        { name: 'variables', value: '{}' },
         { name: 'fb_dtsg', value: '<Redacted>' },
     ]),
     responseText: '{"data":{"story":{"id":"1"}},"extensions":{}}',
@@ -137,7 +143,8 @@ function makeProvider(name) {
         Object.assign(GRAPHQL_ENTRY(), { response: Object.assign(GRAPHQL_ENTRY().response, { status: 500 }) }),
         entry({
             method: 'GET',
-            url: 'https://www.example.invalid/api/posts/1234',
+            url: 'https://www.example.invalid/api/posts/1234?fields=body&depth=1',
+            queryString: [{ name: 'fields', value: 'body' }, { name: 'depth', value: '1' }],
             responseText: '{"id":"1234","body":"hi"}',
         }),
     ]), null, 2) + '\n', 'utf8');
@@ -215,11 +222,28 @@ test('one endpoint aggregates the statuses and fields of BOTH references', () =>
     assert.deepStrictEqual(graphql.statuses, [200, 400, 500],
         'a status observed in any reference is described, in a declared order rather '
         + 'than the order the traffic happened to arrive in');
-    assert.deepStrictEqual(names(graphql.requestFields),
-        ['doc_id', 'fb_api_req_friendly_name', 'variables'],
-        'form parameter names from both references, minus the credential');
+    assert.deepStrictEqual(graphql.requestFields.map((f) => `${f.in}:${f.name}`),
+        ['param:doc_id', 'param:fb_api_req_friendly_name', 'param:variables',
+            'query:_callFlowletID'],
+        'names from both references, minus the credential, ordered by where they '
+        + 'live and then by name -- the fixture sends `variables` first and puts '
+        + 'the query parameter where a name-only sort would lead with it');
     assert.deepStrictEqual(names(graphql.responseFields), ['data', 'errors', 'extensions'],
         'top-level response keys from both references');
+});
+
+test('a query parameter is a request field, tagged with where it lives', () => {
+    // `in` is half the claim: the same name in a query string and in a form
+    // body are different facts about the endpoint, and --check has to know
+    // which one to look for. Ordering is by (in, name), so `query` fields sort
+    // after `param` fields and neither inherits the order they arrived in.
+    const dir = makeProvider('query-fields');
+    runNode(['--dir', dir]);
+    const get = endpointOf(readDoc(dir), 'GET', '/api/posts/{id}');
+
+    assert.deepStrictEqual(get.requestFields.map((f) => `${f.in}:${f.name}`),
+        ['query:depth', 'query:fields'],
+        'declared order, not the order the request happened to list them');
 });
 
 test('a path with an id collapses to the same template as its sibling', () => {
@@ -375,10 +399,14 @@ test('--check fails and names api.json stale when a reference changed', () => {
     edited.log.entries[0].request.postData.params.push({ name: 'newly_added_field', value: '1' });
     fs.writeFileSync(file, JSON.stringify(edited, null, 2) + '\n', 'utf8');
 
+    const stale = fs.readFileSync(path.join(dir, 'api.json'));
     const run = runNode(['--dir', dir, '--check']);
     assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
     assert.match(run.stderr, /api\.json/, 'the message names the stale artifact');
     assert.match(run.stderr, /stale|regenerat/i);
+    assert.ok(stale.equals(fs.readFileSync(path.join(dir, 'api.json'))),
+        'a check REPORTS; it must not silently repair what it reports, or the '
+        + 'next run would pass and the staleness would never reach review');
 });
 
 test('--check fails when api.json has never been generated', () => {

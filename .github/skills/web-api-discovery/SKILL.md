@@ -817,6 +817,7 @@ is only possible because the capture was kept.
 ├── README.md                  <- the catalogue (see 3)
 ├── <provider-a>/
 │   ├── README.md              <- provider scrub policy + re-capture recipe
+│   ├── api.json               <- GENERATED description of the server (see 4a)
 │   └── <provider-a>-<action>-<yyyy-MM-dd>.har
 └── <provider-b>/
 ```
@@ -991,6 +992,73 @@ and in CI. It fails on:
   it must be checked at least as hard as the intermediate it came from.
 
 Both ship with tests, each pinned to a failure that actually shipped.
+
+#### 4a. `api.json` -- the generated description of the SERVER
+
+A reference is a record of one session. It is not a specification. It carries
+one account's data, one set of feature flags, one incidental ordering, one
+moment's persisted-query id -- and two captures of the same flow should produce
+the **same** description of the API. Until something computes that description,
+nothing can tell **"the provider changed"** from **"this capture differs"**,
+and every conformance question is answered by a human reading a capture.
+
+**`generate-api-document.js`** aggregates a provider's references into one
+`api.json` beside them:
+
+```powershell
+node generate-api-document.js --dir <provider-dir>            # write it
+node generate-api-document.js --dir <provider-dir> --check    # gate it
+```
+
+It describes the **server**, not a client design: endpoints (host, method, path
+template), observed statuses, request and response field names, persisted
+operation ids, and the credentials a request must carry -- named from the same
+list `verify-har-reference.js` uses, so the document and the leak gate cannot
+disagree about what a credential is. **No credential value is ever read.**
+
+**Generated, never hand-authored**, for the reason settled for the catalogue: a
+hand-maintained specification is a further artifact free to drift, and it will
+assert things the references do not contain. Two properties make that rule
+enforceable, and `--check` enforces both.
+
+- **Idempotence.** Regenerating from unchanged references is byte-identical, so
+  a diff always means something changed. Every collection in the document has a
+  declared total order; none inherits the filesystem's.
+- **Traceability.** Every endpoint, field, credential and persisted id names the
+  reference and the entry index that witnesses it, and `--check` **re-opens that
+  entry** to confirm the claim is there. That verification is a separate code
+  path from the aggregation, so it is not the generator marking its own
+  homework -- and a claim somebody typed in by hand cannot survive it. This is
+  the assertion a prose catalogue cannot make, and the reason four hollow
+  references once survived a dedicated guard.
+
+Three questions the design had to answer, and the reason for each answer:
+
+- A field observed in one capture and absent in another is recorded with the
+  witnesses it **has**, and labelled neither *optional* nor *provider-changed*.
+  Two captures are not a sample.
+- Unexercised error shapes are **absent**, not `"unknown"`. `statuses` lists
+  what was observed; describing a response nobody provoked is a claim with no
+  witness by construction.
+- Fields are named at the **top level** only -- form parameters, query
+  parameters, and the top-level keys of a JSON body. The same depth as
+  `digest.json`, and the depth at which every claim stays cheap to re-check.
+
+> **The staleness gate, and why idempotence is half of it.** Re-scrubbing a
+> reference under a changed policy is the *expected* response to a policy
+> change, not an exotic path. Stage 5 overwrites the reference, the diff is
+> visible in review -- and nobody regenerates the derived artifacts, which now
+> describe the previous reference while nothing reports it. `--check` is the
+> gate that closes it: **regenerate, compare, fail on any difference.**
+> Idempotence is what makes that possible; without it the check would fail on
+> every run for reasons unrelated to staleness, and a gate that cries wolf gets
+> disabled.
+>
+> Aggregation makes the blast radius wider than it looks. `api.json` covers ALL
+> of a provider's references, so re-scrubbing **one** invalidates the whole
+> provider's document. Regeneration is therefore **whole-provider**, and the
+> check regenerates everything rather than only what appears to have changed --
+> "appears to have changed" being another proxy for the thing being measured.
 
 #### 5. The two defects that motivated the tooling
 
@@ -1325,6 +1393,18 @@ Require every capture-derived probe to:
   > inside a JSON-valued parameter.
   The literal check reports as skipped there (the profile is gitignored and
   absent in CI); the truncation, credential and nested-secret gates all run.
+- A committed `api.json` **must** be gated in CI by
+  `generate-api-document.js --check --dir <provider-dir>`, once per provider
+  directory, so a derived artifact cannot go on describing a reference that has
+  since been re-scrubbed. The check needs no profile and no secret, so unlike
+  the literal gate above it runs at full strength in CI.
+
+  > **Not wired yet -- same gap as #283.** No workflow in this repo, and none
+  > this skill emits, invokes it. This repository holds no committed reference
+  > of its own, so the mechanism and its falsifiers ship here and the wiring is
+  > the consuming project's: add one step per provider directory, and treat a
+  > non-zero exit as "a generated artifact is stale or unsupported", not as a
+  > flaky check to retry.
 - `sanitize-har.js` (Phase 3) must treat at least the following as
   secrets, in addition to its pattern-based JWT/hex/UUID/email scrubbing --
   all of these have been observed in plaintext in real captures and are
