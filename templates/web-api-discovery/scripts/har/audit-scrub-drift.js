@@ -314,30 +314,44 @@ function claimingCaptures(referencePath, captures) {
 
 /**
  * Feed every place a scrubbed value can sit in a HAR entry to `emit(keyPath,
- * text)`.
+ * text, field)`.
+ *
+ * `field` is the CAPTURED-DOCUMENT field name that value sits under, or
+ * `null` when there is none -- computed HERE, once, rather than guessed back
+ * out of `keyPath` by a later reader. A header, cookie, query-parameter or the
+ * URL is a HAR envelope property: its name is real captured data, but it is
+ * not a field the document itself chose, so it is `null` unconditionally
+ * (#375 -- a header genuinely named `X-Media-Id` is exactly where a
+ * provider's object id travels, and the identifier-field policy is written
+ * about field names, not envelope property names).
  *
  * Bodies go through `har-shapes.walkJsonBody` so a finding carries a real JSON
- * key path -- which is both what makes a finding actionable and what lets the
- * merged policy see the field NAME. A body that is not JSON still gets emitted
- * whole, because a non-JSON body is still a place a fake can be; it simply
- * carries no field name, and the adjudication says so rather than inventing one.
+ * key path, and `field` is resolved with `har-shapes.capturedFieldName` --
+ * the same function `har-shapes.js` uses for the identical question on the
+ * GATE side (#369/#374) -- rather than a second, drifting copy of that logic.
+ * That single function also covers what a naive "does the path look like a
+ * body path" check would miss: a top-level array of scalars has no key of
+ * its own (`response.content[3]` names nothing), and the non-JSON fallback
+ * below reports the BASE ITSELF as the location precisely so
+ * `capturedFieldName(base, base)` resolves to `null` rather than colliding
+ * with a genuine JSON field that happened to be named `text`.
  */
 function emitEntryStrings(entry, emit) {
     for (const ctx of ['request', 'response']) {
         const side = entry && entry[ctx];
         if (!side) continue;
         for (const h of (Array.isArray(side.headers) ? side.headers : [])) {
-            if (h && typeof h.value === 'string') emit(`${ctx}.headers.${h.name}`, h.value);
+            if (h && typeof h.value === 'string') emit(`${ctx}.headers.${h.name}`, h.value, null);
         }
         for (const c of (Array.isArray(side.cookies) ? side.cookies : [])) {
-            if (c && typeof c.value === 'string') emit(`${ctx}.cookies.${c.name}`, c.value);
+            if (c && typeof c.value === 'string') emit(`${ctx}.cookies.${c.name}`, c.value, null);
         }
     }
     const req = entry && entry.request;
     if (req) {
-        if (typeof req.url === 'string') emit('request.url', req.url);
+        if (typeof req.url === 'string') emit('request.url', req.url, null);
         for (const q of (Array.isArray(req.queryString) ? req.queryString : [])) {
-            if (q && typeof q.value === 'string') emit(`request.queryString.${q.name}`, q.value);
+            if (q && typeof q.value === 'string') emit(`request.queryString.${q.name}`, q.value, null);
         }
         const text = req.postData && req.postData.text;
         if (typeof text === 'string') emitBody(text, 'request.postData', emit);
@@ -353,16 +367,19 @@ function emitBody(text, base, emit) {
         buffered.push([keyPath, scalar]);
     });
     if (walked && buffered.length) {
-        for (const [k, v] of buffered) emit(k, v);
+        for (const [k, v] of buffered) emit(k, v, harShapes.capturedFieldName(k, base));
         return;
     }
-    emit(`${base}.text`, text);
+    // Reported AT the body's own node -- not `${base}.text` -- so this can
+    // never be mistaken for a genuine JSON field literally named `text`; see
+    // the doc comment above.
+    emit(base, text, null);
 }
 
 function forEachHarString(har, emit) {
     const entries = (har && har.log && har.log.entries) || [];
     entries.forEach((entry, entryIndex) => {
-        emitEntryStrings(entry, (keyPath, text) => emit(entryIndex, keyPath, text));
+        emitEntryStrings(entry, (keyPath, text, field) => emit(entryIndex, keyPath, text, field));
     });
 }
 
@@ -444,37 +461,6 @@ function locateReplacements(referenceHar, replacements) {
 // ---------------------------------------------------------------------------
 
 /**
- * Is `keyPath` a HAR envelope property -- a header, a cookie, a query-string
- * parameter, or the URL -- rather than a field the captured document itself
- * named?
- *
- * `emitEntryStrings` spells these paths as `${ctx}.headers.${h.name}`,
- * `${ctx}.cookies.${c.name}` and `request.queryString.${q.name}`, so the
- * path's LAST SEGMENT is that header, cookie or query-parameter's OWN NAME --
- * real captured data, but not a JSON field name. Handing it to
- * `harPolicy.isIdentifierField` is a category error: a header genuinely named
- * `X-Media-Id` is exactly where a provider's object id travels, and the
- * identifier-field policy is written about field names, not envelope property
- * names (#375). `request.url` is the same category error with no name segment
- * at all -- `enclosingFieldName('request.url')` would otherwise report `url`
- * as though some captured document had a field called that.
- *
- * A BODY key path (`request.postData....`, `response.content....`) is left
- * alone here -- the enclosing field name there is real evidence the captured
- * document actually carried and must keep working exactly as it does today.
- * This is the audit's analogue of `har-shapes.capturedFieldName` (#369/#374),
- * reimplemented against this file's own string key paths rather than the
- * gate's, because the two walks build key paths differently and a shared
- * `base` is not available here.
- */
-function isEnvelopeKeyPath(keyPath) {
-    return /^(?:request|response)\.headers\./.test(keyPath)
-        || /^(?:request|response)\.cookies\./.test(keyPath)
-        || /^request\.queryString\./.test(keyPath)
-        || keyPath === 'request.url';
-}
-
-/**
  * For each wanted `originalHash`, what the linked raw holds under it: the value
  * and the field names that held it.
  *
@@ -490,7 +476,7 @@ function isEnvelopeKeyPath(keyPath) {
 function recoverFromRaw(rawHar, wantedHashes) {
     const found = new Map();
     if (wantedHashes.size === 0) return found;
-    forEachHarString(rawHar, (entryIndex, keyPath, text) => {
+    forEachHarString(rawHar, (entryIndex, keyPath, text, field) => {
         const runs = text.match(/\d+/g);
         if (!runs) return;
         for (const run of runs) {
@@ -498,11 +484,7 @@ function recoverFromRaw(rawHar, wantedHashes) {
             const h = pii.hashPrefix(run);
             if (!wantedHashes.has(h)) continue;
             if (!found.has(h)) found.set(h, { value: run, sites: [] });
-            found.get(h).sites.push({
-                entryIndex,
-                keyPath,
-                field: isEnvelopeKeyPath(keyPath) ? null : harShapes.enclosingFieldName(keyPath)
-            });
+            found.get(h).sites.push({ entryIndex, keyPath, field });
         }
     });
     return found;
@@ -856,7 +838,6 @@ module.exports = {
     discoverCaptures,
     claimingCaptures,
     countWholeRuns,
-    isEnvelopeKeyPath,
     recoverFromRaw,
     verdictFor,
     runAudit,
