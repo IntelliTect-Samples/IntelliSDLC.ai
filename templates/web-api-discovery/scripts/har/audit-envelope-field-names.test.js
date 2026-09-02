@@ -104,7 +104,10 @@ function harEntry(opts) {
                     cookies: o.responseCookies || [],
                     content: {
                         mimeType: 'application/json',
-                        text: JSON.stringify(o.body !== undefined ? o.body : {})
+                        // `bodyText`, when given, is used VERBATIM -- for a body that is
+                        // deliberately not valid JSON, which `JSON.stringify` can never
+                        // produce.
+                        text: o.bodyText !== undefined ? o.bodyText : JSON.stringify(o.body !== undefined ? o.body : {})
                     }
                 }
             }]
@@ -369,6 +372,68 @@ function audit(root, ...refs) {
     assert.strictEqual(a.ref.outcome, 'CLEAN',
         'a card-shaped value seen only in the URL must be CLEAN even when a project policy '
         + 'declares *url as an identifier pattern, got ' + a.ref.outcome
+        + ' (' + JSON.stringify(a.ref.findings) + ')');
+    passed++;
+}
+
+// ===========================================================================
+// Case 9 (FALSIFIER): a TOP-LEVEL ARRAY OF SCALARS in the body has no key of
+// its own -- `response.content[0]` names nothing, the same as an array
+// element anywhere else in a body (`har-shapes.capturedFieldName`'s own
+// documented rule). A naive "strip the base prefix and take the last dotted
+// segment" reading instead resolves this to `content` -- the HAR envelope's
+// OWN property name for where a response body sits, not a captured field --
+// and a project policy is free to declare an identifier pattern that matches
+// it. This must not happen even then.
+// ===========================================================================
+{
+    const root = tmpRoot('array-of-scalars');
+    fs.writeFileSync(path.join(root, '.har-policy.project.json'),
+        JSON.stringify({ identifierFields: ['*content'] }, null, 2));
+
+    const raw = harEntry({ body: [REAL_CARD] });
+    const reference = harEntry({ body: [fakeOf(REAL_CARD)] });
+    const { referencePath } = writeSession(root, {
+        stamp: '2026-01-01-000001', rawHar: raw, referenceHar: reference,
+        substitutions: [subFor(REAL_CARD)]
+    });
+    const a = audit(root, referencePath);
+    assert.strictEqual(a.report.policy.projectPolicyFound, true,
+        'precondition: the live project policy must actually be discovered, got '
+        + JSON.stringify(a.report.policy));
+    assert.strictEqual(a.ref.outcome, 'CLEAN',
+        'a card-shaped value as a top-level array element must be CLEAN even when a project '
+        + 'policy declares *content as an identifier pattern, got ' + a.ref.outcome
+        + ' (' + JSON.stringify(a.ref.findings) + ')');
+    passed++;
+}
+
+// ===========================================================================
+// Case 10 (FALSIFIER): a NON-JSON body. `emitBody`'s fallback reports the
+// location at the body's OWN node (`response.content`), never inventing a
+// `.text` suffix that could collide with a genuine JSON field of that name --
+// so it must carry no field name even when a project policy declares an
+// identifier pattern that would otherwise have matched a naively-invented
+// suffix.
+// ===========================================================================
+{
+    const root = tmpRoot('non-json-body');
+    fs.writeFileSync(path.join(root, '.har-policy.project.json'),
+        JSON.stringify({ identifierFields: ['*text'] }, null, 2));
+
+    const raw = harEntry({ bodyText: 'plain text report ' + REAL_CARD });
+    const reference = harEntry({ bodyText: 'plain text report ' + fakeOf(REAL_CARD) });
+    const { referencePath } = writeSession(root, {
+        stamp: '2026-01-01-000001', rawHar: raw, referenceHar: reference,
+        substitutions: [subFor(REAL_CARD)]
+    });
+    const a = audit(root, referencePath);
+    assert.strictEqual(a.report.policy.projectPolicyFound, true,
+        'precondition: the live project policy must actually be discovered, got '
+        + JSON.stringify(a.report.policy));
+    assert.strictEqual(a.ref.outcome, 'CLEAN',
+        'a card-shaped value in a non-JSON body must be CLEAN even when a project policy '
+        + 'declares *text as an identifier pattern, got ' + a.ref.outcome
         + ' (' + JSON.stringify(a.ref.findings) + ')');
     passed++;
 }
