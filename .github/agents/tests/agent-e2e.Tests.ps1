@@ -253,9 +253,11 @@ Describe 'Agent E2E -- GraphQL pipeline parity' {
 
 Describe 'Agent E2E -- secret gate self-check on emitted project (optional)' {
     It 'gitleaks finds 0 leaks on a freshly-emitted project' {
+        # Throws instead of skipping when CI is set (issue #312).
+        . (Join-Path $PSScriptRoot 'GitleaksGuard.ps1')
         $gitleaks = Get-Command gitleaks -ErrorAction SilentlyContinue
-        if (-not $gitleaks) {
-            Set-ItResult -Skipped -Because "gitleaks not on PATH"
+        if (-not (Assert-GitleaksAvailable -Gitleaks $gitleaks -CiValue $env:CI)) {
+            Set-ItResult -Skipped -Because "gitleaks not on PATH (local run)"
             return
         }
         $out = New-OutDir
