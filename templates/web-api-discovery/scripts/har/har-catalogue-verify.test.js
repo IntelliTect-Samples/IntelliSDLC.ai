@@ -471,12 +471,20 @@ test('a row promoted from a mixed-case scaffold passes its own guard', () => {
     const dir = path.join(tmp, 'scaffold-promote');
     fs.mkdirSync(path.join(dir, 'example'), { recursive: true });
 
-    // Mixed case, and the same operation spelled both ways -- one endpoint.
+    // Mixed case, the same operation spelled both ways -- one endpoint.
+    //
+    // THE LOWERCASE ENTRY MUST COME FIRST, and this is not arbitrary. The group
+    // is created by whichever entry arrives first and keeps that entry's verb,
+    // so with `POST` leading, the group stores `POST` whatever the code does
+    // with the lowercase one and the mismatch never arises. Written that way
+    // round, this test passed under the very ablation it is named for -- it
+    // asserted more than it checked, which is the failure it exists to prevent
+    // one level up. Verified by ablating the stored verb and watching it fail.
     const entries = [
+        JSON.parse(JSON.stringify(entryFor(FORM_BODY))),
         entryFor(FORM_BODY),
-        Object.assign(JSON.parse(JSON.stringify(entryFor(FORM_BODY))), {}),
     ];
-    entries[1].request.method = 'post';
+    entries[0].request.method = 'post';
 
     const doc = { log: { version: '1.2', creator: { name: 'test', version: '1' }, entries } };
     fs.writeFileSync(path.join(dir, REF), JSON.stringify(doc, null, 2));
@@ -484,6 +492,11 @@ test('a row promoted from a mixed-case scaffold passes its own guard', () => {
     const scaffold = capture.buildCatalogueScaffold(capture.buildDigest(doc));
     assert.strictEqual(scaffold.length, 1,
         'one operation spelled two ways must not scaffold as two rows');
+    // Asserted on the composed RESULT, not merely on the guard's exit code: a
+    // grouping fix alone would satisfy the line above while leaving the stored
+    // verb un-normalised, and the two are independently breakable.
+    assert.deepStrictEqual(scaffold[0].Methods, ['POST'],
+        'the scaffold stored the verb as captured rather than normalised');
 
     // Promote exactly as catalogue-prompt.md instructs -- and deliberately keep
     // the scaffold's Methods/Endpoints, which is the tempting shortcut the
