@@ -88,6 +88,23 @@ const LIVE = 'AbCdEfGhIjKl012345';
         'c_user', 'xs', 'datr', 'fr', 'sb', 'mid', 'ig_did', 'ds_user_id',
         'sessionid', 'csrftoken',
     ];
+    // ADDED with the auth-flow stage (issue #378). Until then every capture
+    // the pipeline had seen was of an already-authenticated session, so the
+    // list named only post-login state and a capture of a LOGIN sailed through
+    // the gate with its password envelope intact, labelled `(verified)`.
+    // Enumerated here, longhand, for the same reason as the names above: this
+    // count is the tripwire that makes any change to the list deliberate and
+    // visible in a diff.
+    const AUTH_FLOW_FIELDS = [
+        'password', 'passwd', 'enc_password', 'encpass',
+        'old_password', 'new_password', 'current_password', 'confirm_password',
+        'sensitive_string_value',
+        'verificationCode', 'approvals_code', 'two_factor_identifier',
+        'encryptedContext', 'remember_token',
+        'otp', 'otp_code', 'totp', 'mfa_code', 'one_time_code', 'security_code',
+        'client_secret', 'refresh_token', 'access_token', 'id_token',
+        'auth_token', 'api_key', 'apikey',
+    ];
     const HISTORICAL_HEADERS = [
         'x-fb-lsd', 'x-asbd-id', 'x-ig-app-id', 'x-instagram-rupload-params',
         // ADDED with the scrubber's structural-node stage (issue #297). The
@@ -97,7 +114,7 @@ const LIVE = 'AbCdEfGhIjKl012345';
         // nothing and redacted by nothing.
         'x-csrftoken',
     ];
-    for (const name of HISTORICAL_FIELDS) {
+    for (const name of [...HISTORICAL_FIELDS, ...AUTH_FLOW_FIELDS]) {
         assert.strictEqual(secrets.isKnownSecretField(name), true,
             `4.a: secret field '${name}' stopped being recognised after the lift`);
     }
@@ -105,7 +122,8 @@ const LIVE = 'AbCdEfGhIjKl012345';
         assert.strictEqual(secrets.isKnownSecretHeader(name), true,
             `4.b: secret header '${name}' stopped being recognised after the lift`);
     }
-    assert.strictEqual(secrets.KNOWN_SECRET_FIELD_NAMES.size, HISTORICAL_FIELDS.length,
+    assert.strictEqual(secrets.KNOWN_SECRET_FIELD_NAMES.size,
+        HISTORICAL_FIELDS.length + AUTH_FLOW_FIELDS.length,
         '4.c: the default secret-field list changed size; if that is intended, update this test');
     assert.strictEqual(secrets.KNOWN_SECRET_HEADER_NAMES.size, HISTORICAL_HEADERS.length,
         '4.d: the default secret-header list changed size; if that is intended, update this test');
