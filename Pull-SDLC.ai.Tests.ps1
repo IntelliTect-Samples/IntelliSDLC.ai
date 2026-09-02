@@ -4471,6 +4471,23 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
         $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.Tests.ps1'
     }
 
+    It 'keeps every bootstrap meta-script paired with its own test file (issue #399)' {
+        # README documents the bootstrap meta-scripts as Pull-SDLC.ai.ps1,
+        # Cleanup-Worktree.ps1, Consolidate-Specs.ps1 "and their *.Tests.ps1".
+        # A meta-script whose test file is missing from $script:MetaScriptPaths
+        # makes that test file read as "consumer already has managed content" on
+        # a from-zero bootstrap, which is the protective-overwrite prompt issue
+        # #152 exists to avoid. Cleanup-Worktree.Tests.ps1 was the odd one out.
+        #
+        # Derived from the list rather than naming a file, so the next
+        # meta-script added without its suite fails here too.
+        foreach ($meta in @($script:MetaScriptPaths | Where-Object { $_ -like '*.ps1' -and $_ -notlike '*.Tests.ps1' })) {
+            $testSibling = $meta -replace '\.ps1$', '.Tests.ps1'
+            $script:MetaScriptPaths |
+                Should -Contain $testSibling -Because "$meta is a bootstrap meta-script, so $testSibling ships with it"
+        }
+    }
+
     It 'leaves every root-level script either upstream-managed or explicitly consumer-owned' {
         # The generic regression net: any *.ps1 / *.sh added to the upstream
         # repo root must be a deliberate choice on one list or the other.
