@@ -282,6 +282,71 @@ test('credentials are described by NAME, and their values never appear', () => {
         'no credential VALUE reaches the document, redacted or otherwise');
 });
 
+test('a credential sent as a JSON body key is a credential, not an ordinary field', () => {
+    // Found by independent review. Classification needs the NAME only, and the
+    // name is already known for a top-level JSON key -- so excluding bodies
+    // described a provider's CSRF token as ordinary API surface. GraphQL APIs
+    // that post JSON rather than form-encoding are exactly where this lands.
+    const dir = makeProvider('json-body-credential');
+    fs.writeFileSync(path.join(dir, 'example-jsonpost-2026-03-03.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/jsonpost',
+            postData: { mimeType: 'application/json', text: '{"fb_dtsg":"REDACTED_TOKEN","message":"hi"}' },
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const post = endpointOf(readDoc(dir), 'POST', '/api/jsonpost');
+
+    assert.deepStrictEqual(post.credentialFields.map((c) => `${c.in}:${c.name}`), ['body:fb_dtsg'],
+        'a known credential name is a credential wherever the request carries it');
+    assert.deepStrictEqual(names(post.requestFields), ['message'],
+        'and it is not ALSO listed as an ordinary request field');
+});
+
+test('--check rejects a credential re-listed as an ordinary request field', () => {
+    // The traceability pass must catch this on its own. Independent review
+    // showed the byte comparison caught it while `entrySupports` did not, which
+    // makes the traceability message -- the one that names the offending claim
+    // -- silent on a real defect.
+    const dir = makeProvider('credential-relisted');
+    runNode(['--dir', dir]);
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const graphql = doc.endpoints.find((e) => e.pathTemplate === '/api/graphql/');
+    graphql.requestFields.push({
+        name: 'fb_dtsg',
+        in: 'param',
+        observedIn: 1,
+        // Cite the reference that DOES send it. Citing one that does not would
+        // be caught by the ordinary missing-witness rule and would prove
+        // nothing about whether a credential can masquerade as a plain field.
+        witnesses: [{ harFile: 'example-composer-2026-01-01.har', entry: 0 }],
+    });
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /requestField 'fb_dtsg'/,
+        'traceability names it, rather than leaving the byte comparison to say only "it differs"');
+});
+
+test('a reference whose log.entries is not an array fails with our own message', () => {
+    // Found by independent review: it parsed as JSON, so the parse guard let it
+    // through, and the fold then threw a raw Node stack trace. The exit code
+    // was right and the message was somebody else's.
+    const dir = makeProvider('entries-not-an-array');
+    fs.writeFileSync(path.join(dir, 'malformed.har'),
+        JSON.stringify({ log: { version: '1.2', entries: 'not an array' } }, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir]);
+    assert.strictEqual(run.code, 1, `expected an I/O error, got ${run.code}`);
+    assert.match(run.stderr, /malformed\.har/, 'the message names the file');
+    assert.ok(!/at Object\.|TypeError/.test(run.stderr),
+        'and it is our error, not a raw stack trace');
+});
+
 // --- determinism ----------------------------------------------------------
 
 console.log('generate-api-document -- idempotence');
@@ -370,6 +435,168 @@ test('the graphql endpoint is witnessed by BOTH references', () => {
     assert.deepStrictEqual(graphql.witnesses.map((w) => w.harFile),
         ['example-composer-2026-01-01.har', 'example-delete-2026-02-02.har']);
     assert.deepStrictEqual(graphql.witnesses.map((w) => w.entry), [0, 0]);
+});
+
+// --- holes -------------------------------------------------------------
+//
+// The document is authoritative about what the captures PROVED -- nothing more
+// and nothing less. "Nothing more" is the easy half: do not describe what was
+// not observed. "Nothing less" is this half: where the references do not
+// establish something, the document must SAY SO, so the hole is a work item
+// rather than a silence a reader mistakes for completeness.
+//
+// Every hole is derived from the captures, never guessed, and each names the
+// capture that would close it.
+
+console.log('generate-api-document -- holes the captures leave');
+
+test('an endpoint with no successful response says so, and says what would close it', () => {
+    const dir = makeProvider('gap-no-success');
+    fs.writeFileSync(path.join(dir, 'example-errors-2026-03-03.har'), JSON.stringify(har([
+        entry({
+            method: 'PUT',
+            url: 'https://www.example.invalid/api/posts/4242',
+            postData: formPost([{ name: 'message', value: 'edited' }]),
+            status: 403,
+            responseText: '{"error":"forbidden"}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const put = endpointOf(readDoc(dir), 'PUT', '/api/posts/{id}');
+
+    const gap = put.unproven.find((u) => u.kind === 'no-success-observed');
+    assert.ok(gap, `expected a no-success hole, got ${JSON.stringify(put.unproven)}`);
+    assert.match(gap.closedBy, /captur/i, 'a hole names the capture that would close it');
+    assert.ok(gap.witnesses.length > 0, 'and cites the entries it examined to conclude it');
+});
+
+test('an endpoint whose request side was never captured says so', () => {
+    // The hollow-reference class: the endpoint is known to exist, and NOTHING
+    // is known about what a caller must send. Silence here is what let rows
+    // describing request-side behaviour survive against files that had none.
+    const dir = makeProvider('gap-no-request-body');
+    fs.writeFileSync(path.join(dir, 'example-hollow-2026-03-03.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/uploads',
+            responseText: '{"id":"u1"}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const post = endpointOf(readDoc(dir), 'POST', '/api/uploads');
+
+    assert.ok(post.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        `expected a request-side hole, got ${JSON.stringify(post.unproven)}`);
+});
+
+test('a GET is not accused of a missing request body', () => {
+    // A hole must be a real hole. A gate that fires on traffic behaving normally
+    // trains its readers to ignore it.
+    const dir = makeProvider('gap-get-is-fine');
+    runNode(['--dir', dir]);
+    const get = endpointOf(readDoc(dir), 'GET', '/api/posts/{id}');
+    assert.ok(!get.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        'a GET carrying no body is not a gap; it is a GET');
+});
+
+test('a truncated response is recorded as a partial description, not a complete one', () => {
+    const dir = makeProvider('gap-truncated');
+    fs.writeFileSync(path.join(dir, 'example-capped-2026-03-03.har'), JSON.stringify(har([
+        (() => {
+            const e = entry({
+                method: 'GET',
+                url: 'https://www.example.invalid/api/feed',
+                responseText: '{"items":[',
+            });
+            e.response.content.truncated = { originalBytes: 900000, keptBytes: 10 };
+            return e;
+        })(),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const feed = endpointOf(readDoc(dir), 'GET', '/api/feed');
+
+    assert.ok(feed.unproven.some((u) => u.kind === 'response-truncated'),
+        'the response field list is partial BY CONSTRUCTION and must say so');
+});
+
+test('a persisted id nobody named is a hole, not a nameless fact', () => {
+    const dir = makeProvider('gap-unnamed-operation');
+    runNode(['--dir', dir]);
+    const graphql = endpointOf(readDoc(dir), 'POST', '/api/graphql/');
+    const unnamed = graphql.operations.find((o) => o.persistedId === '1111111111');
+
+    assert.strictEqual(unnamed.name, null);
+    assert.ok(graphql.unproven.some((u) => u.kind === 'operation-name-unknown'
+        && u.detail.includes('1111111111')),
+        `expected the unnamed id listed as a hole, got ${JSON.stringify(graphql.unproven)}`);
+});
+
+test('a field seen in some calls and not others is a hole, not an inference', () => {
+    // The document must NOT say "optional". One capture cannot tell an optional
+    // field from a provider change, and saying which would be the guesswork this
+    // artifact exists to replace. It says the presence VARIES, and what would
+    // settle it.
+    const dir = makeProvider('gap-varying-field');
+    runNode(['--dir', dir]);
+    const graphql = endpointOf(readDoc(dir), 'POST', '/api/graphql/');
+
+    const gap = graphql.unproven.find((u) => u.kind === 'request-field-presence-varies');
+    assert.ok(gap, `expected a varying-presence hole, got ${JSON.stringify(graphql.unproven)}`);
+    assert.ok(gap.detail.includes('fb_api_req_friendly_name'),
+        'the fixture sends it in one reference and not the other');
+    assert.ok(!/optional/i.test(JSON.stringify(graphql.unproven)),
+        'the document never labels a field optional; that is an inference, not an observation');
+});
+
+test('counts are recorded so a reader can see how thin the evidence is', () => {
+    const dir = makeProvider('gap-counts');
+    runNode(['--dir', dir]);
+    const graphql = endpointOf(readDoc(dir), 'POST', '/api/graphql/');
+
+    assert.strictEqual(graphql.observedEntries, 3, 'two calls in one reference, one in the other');
+    const friendly = graphql.requestFields.find((f) => f.name === 'fb_api_req_friendly_name');
+    assert.strictEqual(friendly.observedIn, 2, 'seen in 2 of the 3 observed calls');
+});
+
+test('an endpoint the captures fully establish carries no holes', () => {
+    // Holes must be absent when there are none, or the field becomes noise and
+    // a reader stops reading it.
+    const dir = makeProvider('gap-none');
+    runNode(['--dir', dir]);
+    const del = endpointOf(readDoc(dir), 'DELETE', '/api/posts/{id}');
+    assert.deepStrictEqual(del.unproven, [],
+        'a DELETE with a 200 and a response body leaves nothing unproven at this depth');
+});
+
+test('regenerating with holes present is still byte-identical', () => {
+    const dir = makeProvider('gap-order');
+    runNode(['--dir', dir]);
+    const first = fs.readFileSync(path.join(dir, 'api.json'));
+    runNode(['--dir', dir]);
+    assert.ok(first.equals(fs.readFileSync(path.join(dir, 'api.json'))));
+});
+
+test('--check rejects a hole the captures do not support', () => {
+    // A hole is a claim too -- "this was not proven" is an assertion ABOUT the
+    // references, and a hand-written one must fail exactly as a hand-written
+    // endpoint does.
+    const dir = makeProvider('gap-planted');
+    runNode(['--dir', dir]);
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const del = doc.endpoints.find((e) => e.method === 'DELETE');
+    del.unproven.push({
+        kind: 'no-success-observed',
+        detail: 'invented: this endpoint never succeeded',
+        closedBy: 'capture a successful call',
+        witnesses: del.witnesses.slice(),
+    });
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /no-success-observed/,
+        'the message names the hole the captures contradict');
 });
 
 // --- the check ------------------------------------------------------------

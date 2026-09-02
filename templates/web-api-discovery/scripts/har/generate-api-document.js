@@ -32,15 +32,26 @@
  *   path from the aggregation, so it is not the generator marking its own
  *   homework, and a claim somebody typed in by hand cannot survive it.
  *
- * Three decisions the design left open, and the reason for each:
+ * NOTHING MORE AND NOTHING LESS. The document says what the captures PROVED.
+ *
+ *   - "Nothing more" -- no shape, status or field is described that no entry
+ *     carried. Every positive claim names an entry that witnesses it.
+ *   - "Nothing less" -- where the captures leave a question OPEN, the document
+ *     says so in `unproven` and names the capture that would close it, and
+ *     `capturesNeeded` rolls those up into a work list. Silence would let a
+ *     reader mistake an untested corner for a settled one, which is the same
+ *     defect as an unsupported claim wearing the opposite face.
+ *
+ * Three decisions that follow, and the reason for each:
  *
  *   - A field observed in one capture and absent in another is recorded with
- *     the witnesses it actually has, and is labelled NEITHER "optional" NOR
- *     "provider-changed". Two captures are not a sample; inferring a modality
- *     from them would put back exactly the guesswork this document replaces.
- *   - Unexercised error shapes are ABSENT, not "unknown". `statuses` lists
- *     what was observed. Describing a response nobody provoked is a claim with
- *     no witness by construction.
+ *     the witnesses it actually has, counted (`observedIn` of
+ *     `observedEntries`), and reported as VARYING. It is labelled NEITHER
+ *     "optional" NOR "provider-changed": one corpus cannot tell those apart,
+ *     and picking one would put back exactly the guesswork this replaces.
+ *   - An error shape nobody provoked is not invented -- but the fact that
+ *     nobody provoked one IS recorded, as `no-success-observed` or
+ *     `no-response-body-observed`. The gap is the finding.
  *   - Fields are named at the TOP LEVEL only -- form parameters, query
  *     parameters, and the top-level keys of a JSON body. Same depth as
  *     `digest.json`'s payload shape, and the depth at which every claim stays
@@ -178,7 +189,11 @@ function readReferences(dir) {
         } catch (e) {
             fail(`cannot parse '${harFile}': ${e.message}`);
         }
+        // Parsing is not enough: a file can be valid JSON and still not be a
+        // HAR. Left to the fold, a non-array `entries` threw a raw stack trace
+        // -- the right exit code wearing somebody else's error message.
         const entries = (har && har.log && har.log.entries) || [];
+        if (!Array.isArray(entries)) fail(`'${harFile}' has a log.entries that is not a list`);
         return { harFile, entries };
     });
 }
@@ -247,8 +262,13 @@ function credentialNamesOf(entry) {
     for (const c of pairs(req.cookies)) {
         if (harSecrets.isKnownSecretField(c.name)) out.push({ name: c.name, in: 'cookie' });
     }
+    // Every place a request can name a field, body included. Classification
+    // needs the NAME, which a top-level JSON key already gives -- excluding
+    // bodies described a provider's CSRF token as ordinary API surface, and a
+    // GraphQL API that posts JSON rather than form-encoding is exactly where
+    // that lands (found by independent review).
     for (const f of requestNamesOf(entry)) {
-        if (f.in !== 'body' && harSecrets.isKnownSecretField(f.name)) out.push({ name: f.name, in: f.in });
+        if (harSecrets.isKnownSecretField(f.name)) out.push({ name: f.name, in: f.in });
     }
     return out;
 }
@@ -267,6 +287,39 @@ function operationsOf(entry) {
 // ---------------------------------------------------------------------------
 // Aggregation
 // ---------------------------------------------------------------------------
+
+/**
+ * Does this entry carry a request body at all?
+ *
+ * `{}` and `[]` are legal minimal bodies, so emptiness is measured on the
+ * absence of postData rather than on the length of its text.
+ */
+function hasRequestBody(entry) {
+    const post = entry.request && entry.request.postData;
+    if (!post) return false;
+    return (Array.isArray(post.params) && post.params.length > 0)
+        || (typeof post.text === 'string' && post.text.length > 0);
+}
+
+function responseText(entry) {
+    const content = entry.response && entry.response.content;
+    return (content && typeof content.text === 'string' && content.text.length > 0)
+        ? content.text : '';
+}
+
+/**
+ * A capped response, in the STRUCTURAL spelling the reference contract
+ * requires. A field list derived from a capped body is partial by
+ * construction, and a document that did not say so would present a prefix as
+ * the whole shape.
+ */
+function isTruncated(entry) {
+    const content = entry.response && entry.response.content;
+    return !!(content && content.truncated);
+}
+
+/** Methods for which a missing request body is a HOLE rather than normal. */
+const BODY_BEARING_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 /**
  * At most ONE witness per reference per claim: the first entry in that file
@@ -291,6 +344,14 @@ function claimIn(map, key, make) {
 /** A fresh endpoint, with one accumulator per kind of claim it can carry. */
 function newEndpoint(key) {
     return Object.assign({}, key, {
+        // Counters, because a reader needs to know how THIN the evidence is.
+        // "This field was seen" and "this field was seen in one of eleven
+        // calls" are different facts, and only the second says whether the
+        // captures settled anything.
+        observedEntries: 0,
+        requestBodyEntries: 0,
+        responseBodyEntries: 0,
+        truncatedResponses: 0,
         statuses: new Set(),
         requestContentTypes: new Set(),
         responseContentTypes: new Set(),
@@ -319,14 +380,20 @@ function absorbRequestNames(endpoint, entry, harFile, index) {
     const isCredential = new Set(credentials.map((c) => `${c.in}|${c.name}`));
     for (const f of requestNamesOf(entry)) {
         if (isCredential.has(`${f.in}|${f.name}`)) continue;
-        addWitness(claimIn(endpoint.requestFields, `${f.in}|${f.name}`,
-            () => ({ name: f.name, in: f.in })), harFile, index);
+        const claim = claimIn(endpoint.requestFields, `${f.in}|${f.name}`,
+            () => ({ name: f.name, in: f.in, observedIn: 0 }));
+        claim.observedIn++;
+        addWitness(claim, harFile, index);
     }
 }
 
 /** Fold everything one entry says about its endpoint into the accumulators. */
 function absorbEntry(endpoint, entry, harFile, index) {
     addWitness(endpoint, harFile, index);
+    endpoint.observedEntries++;
+    if (hasRequestBody(entry)) endpoint.requestBodyEntries++;
+    if (responseText(entry)) endpoint.responseBodyEntries++;
+    if (isTruncated(entry)) endpoint.truncatedResponses++;
 
     const status = (entry.response && entry.response.status) || 0;
     if (status) endpoint.statuses.add(status);
@@ -366,12 +433,37 @@ function buildDocument(provider, references) {
         });
     }
 
+    const emitted = [...endpoints.values()].sort(byEndpoint).map(emitEndpoint);
     return {
         schemaVersion: SCHEMA_VERSION,
         provider,
         references: references.map((r) => ({ harFile: r.harFile, entryCount: r.entries.length })),
-        endpoints: [...endpoints.values()].sort(byEndpoint).map(emitEndpoint),
+        capturesNeeded: capturesNeeded(emitted),
+        endpoints: emitted,
     };
+}
+
+/**
+ * The holes, rolled up into a work list.
+ *
+ * Per-endpoint holes say what is unknown; this says what to go and RECORD. A
+ * reader asking "what capture is missing" should not have to walk every
+ * endpoint to assemble the answer, and a list nobody can act on is a list
+ * nobody reads.
+ */
+function capturesNeeded(endpoints) {
+    const byAction = new Map();
+    for (const endpoint of endpoints) {
+        for (const gap of endpoint.unproven) {
+            const at = `${endpoint.method} ${endpoint.host}${endpoint.pathTemplate}`;
+            let row = byAction.get(gap.closedBy);
+            if (!row) { row = { capture: gap.closedBy, endpoints: [] }; byAction.set(gap.closedBy, row); }
+            if (!row.endpoints.includes(at)) row.endpoints.push(at);
+        }
+    }
+    return [...byAction.values()]
+        .map((r) => ({ capture: r.capture, endpoints: r.endpoints.slice().sort() }))
+        .sort((a, b) => compare(a.capture, b.capture));
 }
 
 // Declared total orders. Every one of these is load-bearing: the map iteration
@@ -393,11 +485,91 @@ function emitWitnesses(claim) {
     return claim.witnesses.slice();
 }
 
+/**
+ * What the captures did NOT establish about this endpoint.
+ *
+ * The document is authoritative about what the references PROVED -- nothing
+ * more and nothing less. "Nothing more" is satisfied by describing only what
+ * was observed. "Nothing less" is this: where the captures leave a question
+ * open, the document SAYS SO and names the capture that would close it, so the
+ * hole is a work item rather than a silence a reader mistakes for
+ * completeness.
+ *
+ * Every hole here is DERIVED from the entries, never guessed, and each is
+ * re-checkable against them -- `--check` rejects a hole the captures
+ * contradict exactly as it rejects an invented endpoint. A hole is a claim
+ * about the references too.
+ *
+ * What is deliberately NOT here: any word that resolves a question the
+ * captures left open. A field present in some calls and absent in others is
+ * reported as VARYING, never as "optional" -- one corpus cannot tell an
+ * optional field from a provider that changed, and picking one would be the
+ * guesswork this artifact exists to replace.
+ */
+function gapsFor(endpoint) {
+    const gaps = [];
+    const add = (kind, subjects, detail, closedBy) => gaps.push({
+        kind, subjects: subjects.slice().sort(), detail, closedBy,
+        witnesses: emitWitnesses(endpoint),
+    });
+
+    if (![...endpoint.statuses].some((s) => s >= 200 && s < 300)) {
+        add('no-success-observed', [],
+            `every observed status is ${[...endpoint.statuses].sort((a, b) => a - b).join(', ') || 'absent'}; `
+            + 'no successful response has been captured, so the success shape is unknown',
+            'capture a successful call to this endpoint');
+    }
+
+    if (BODY_BEARING_METHODS.has(endpoint.method) && endpoint.requestBodyEntries === 0) {
+        add('no-request-body-observed', [],
+            `none of the ${endpoint.observedEntries} observed call(s) carried a request body, `
+            + 'so nothing is known about what a caller must send',
+            'capture this operation with the request body preserved -- a reference whose '
+            + 'request side is empty cannot be replayed or diffed');
+    }
+
+    if (endpoint.responseBodyEntries === 0) {
+        add('no-response-body-observed', [],
+            `none of the ${endpoint.observedEntries} observed call(s) retained a response body`,
+            'capture a call whose response body is kept');
+    }
+
+    if (endpoint.truncatedResponses > 0) {
+        add('response-truncated', [],
+            `${endpoint.truncatedResponses} observed response(s) were capped, so the response `
+            + 'field list is a prefix of the real shape, not the whole of it',
+            're-capture without a response cap');
+    }
+
+    const unnamed = [...endpoint.operations.values()]
+        .filter((o) => !o.name).map((o) => o.persistedId);
+    if (unnamed.length > 0) {
+        add('operation-name-unknown', unnamed,
+            `persisted id(s) ${unnamed.slice().sort().join(', ')} were observed with no `
+            + 'accompanying operation name, so what they DO is unknown',
+            'capture a call that carries the operation name alongside the persisted id');
+    }
+
+    const varying = [...endpoint.requestFields.values()]
+        .filter((f) => f.observedIn > 0 && f.observedIn < endpoint.observedEntries)
+        .map((f) => f.name);
+    if (varying.length > 0) {
+        add('request-field-presence-varies', varying,
+            `${varying.slice().sort().join(', ')} appear in some observed calls and not others `
+            + `(of ${endpoint.observedEntries} observed); whether that is a per-call difference `
+            + 'or a change on the provider side is not established by these captures',
+            'capture the same operation again and compare -- one corpus cannot tell the two apart');
+    }
+
+    return gaps.sort((a, b) => compare(a.kind, b.kind));
+}
+
 function emitEndpoint(endpoint) {
     return {
         host: endpoint.host,
         method: endpoint.method,
         pathTemplate: endpoint.pathTemplate,
+        observedEntries: endpoint.observedEntries,
         statuses: [...endpoint.statuses].sort((a, b) => a - b),
         requestContentTypes: [...endpoint.requestContentTypes].sort(),
         responseContentTypes: [...endpoint.responseContentTypes].sort(),
@@ -407,9 +579,12 @@ function emitEndpoint(endpoint) {
             .sort((a, b) => compare(a.persistedId, b.persistedId))
             .map((o) => ({ persistedId: o.persistedId, name: o.name || null, witnesses: emitWitnesses(o) })),
         requestFields: [...endpoint.requestFields.values()].sort(byPlacedName)
-            .map((f) => ({ name: f.name, in: f.in, witnesses: emitWitnesses(f) })),
+            .map((f) => ({
+                name: f.name, in: f.in, observedIn: f.observedIn, witnesses: emitWitnesses(f),
+            })),
         responseFields: [...endpoint.responseFields.values()].sort(byName)
             .map((f) => ({ name: f.name, witnesses: emitWitnesses(f) })),
+        unproven: gapsFor(endpoint),
         witnesses: emitWitnesses(endpoint),
     };
 }
@@ -429,6 +604,14 @@ function serialize(doc) {
  * that re-ran the generator could only ever say "the file differs"; re-opening
  * the named entry and looking for the claim is what makes a hand-planted claim
  * fail and what lets the failure name WHICH claim has no support.
+ *
+ * BE PRECISE ABOUT WHAT THAT BUYS. This is independent of the FOLD -- the
+ * accumulation, the witness bookkeeping, the ordering -- but it shares the
+ * extraction primitives (`endpointKeyOf`, `requestNamesOf`, `credentialNamesOf`,
+ * `topLevelKeys`) with it. A mistake INSIDE one of those would be made
+ * identically on both sides and would not be caught here. The byte comparison
+ * against a fresh regeneration is the backstop for that class, which is why
+ * `--check` runs both and reports both rather than short-circuiting on either.
  */
 function entrySupports(entry, endpoint, claim, kind) {
     const key = endpointKeyOf(entry);
@@ -447,12 +630,18 @@ function entrySupports(entry, endpoint, claim, kind) {
     if (kind === 'credentialField') {
         return credentialNamesOf(entry).some((c) => c.name === claim.name && c.in === claim.in);
     }
+    // An ordinary request field is one the entry carries AND that is not a
+    // credential. Without the second half a credential re-listed as a plain
+    // field was supported here and left to the byte comparison to notice --
+    // which reports that the file differs, never which claim is wrong.
+    if (credentialNamesOf(entry).some((c) => c.name === claim.name && c.in === claim.in)) return false;
     return requestNamesOf(entry).some((f) => f.name === claim.name && f.in === claim.in);
 }
 
 function describeClaim(endpoint, claim, kind) {
     const at = `${endpoint.method} ${endpoint.host}${endpoint.pathTemplate}`;
     if (kind === 'endpoint') return `endpoint ${at}`;
+    if (kind === 'gap') return `unproven '${claim.kind}' on ${at}`;
     if (kind === 'operation') return `persisted id '${claim.persistedId}' on ${at}`;
     return `${kind} '${claim.name}' on ${at}`;
 }
@@ -467,6 +656,55 @@ function describeClaim(endpoint, claim, kind) {
  * describing request-side behaviour the files have none of. A reference with
  * no representation is the opposite failure: ground truth nobody described.
  */
+/**
+ * Re-derive a hole from the references, independently of the fold that emitted
+ * it.
+ *
+ * A hole asserts something about the WHOLE endpoint ("no call succeeded"), not
+ * about one entry, so it is checked by re-walking every entry that belongs to
+ * the endpoint rather than by opening the entries it cites. An unrecognised
+ * kind is a violation: a hand-written hole spelled in a vocabulary the
+ * generator does not produce is exactly the invented claim this rejects.
+ */
+function gapHolds(references, endpoint, gap) {
+    const entries = [];
+    for (const { entries: list } of references) {
+        for (const entry of list) {
+            const key = endpointKeyOf(entry);
+            if (key && key.host === endpoint.host && key.method === endpoint.method
+                && key.pathTemplate === endpoint.pathTemplate) entries.push(entry);
+        }
+    }
+    const subjects = Array.isArray(gap.subjects) ? gap.subjects : [];
+    const carriesName = (entry) => requestNamesOf(entry).some(
+        (f) => OPERATION_NAME_FIELDS.has(f.name.toLowerCase()) && f.value);
+
+    switch (gap.kind) {
+    case 'no-success-observed':
+        return !entries.some((e) => {
+            const s = (e.response && e.response.status) || 0;
+            return s >= 200 && s < 300;
+        });
+    case 'no-request-body-observed':
+        return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(hasRequestBody);
+    case 'no-response-body-observed':
+        return !entries.some(responseText);
+    case 'response-truncated':
+        return entries.some(isTruncated);
+    case 'operation-name-unknown':
+        return subjects.length > 0 && subjects.every((id) => !entries.some(
+            (e) => carriesName(e) && requestNamesOf(e).some(
+                (f) => PERSISTED_ID_FIELDS.has(f.name.toLowerCase()) && f.value === id)));
+    case 'request-field-presence-varies':
+        return subjects.length > 0 && subjects.every((name) => {
+            const seen = entries.filter((e) => requestNamesOf(e).some((f) => f.name === name)).length;
+            return seen > 0 && seen < entries.length;
+        });
+    default:
+        return false;
+    }
+}
+
 /** Every claim an endpoint carries, paired with the kind that says how to check it. */
 function claimsOf(endpoint) {
     const claims = [[endpoint, 'endpoint']];
@@ -532,6 +770,11 @@ function verifyTraceability(committed, references) {
     for (const endpoint of committed.endpoints || []) {
         for (const [claim, kind] of claimsOf(endpoint)) {
             violations.push(...verifyClaim(byFile, endpoint, claim, kind));
+        }
+        for (const gap of endpoint.unproven || []) {
+            if (!gapHolds(references, endpoint, gap)) {
+                violations.push(`${describeClaim(endpoint, gap, 'gap')} is contradicted by the references`);
+            }
         }
     }
     violations.push(...verifyRepresentation(committed, byFile));

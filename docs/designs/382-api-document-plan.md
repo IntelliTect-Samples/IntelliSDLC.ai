@@ -84,8 +84,14 @@ reference is exactly that.
   nor "provider-changed".** It is recorded with the witnesses it actually has,
   and nothing else. Two captures are not a sample; labelling from them is the
   inference this document exists to replace.
-- **Unexercised error shapes are absent, not "unknown".** `statuses` lists
-  what was observed. An entry the references do not contain is not described.
+- **Unexercised error shapes are not invented -- but their absence is
+  RECORDED.** Superseded during implementation, on the operator's instruction:
+  the document must be authoritative for what the HAR proved, "nothing more and
+  nothing less", and silence about an untested corner reads as completeness. So
+  each endpoint carries an `unproven` list naming what the captures left open
+  and the capture that would close it, and `capturesNeeded` rolls those into a
+  work list. A hole is itself a claim about the references, and `--check`
+  rejects one the captures contradict.
 - **Fields are named at the top level only** — form-parameter names, plus
   top-level JSON keys of request and response bodies. Same depth as
   `digest.json`'s `payloadShape`, and the depth at which every claim stays
