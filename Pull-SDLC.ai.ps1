@@ -224,6 +224,12 @@ $script:UpstreamManagedPaths = @(
     # which is the exact gap the "#263 root-level script" test guards against:
     # unlisted, Get-UpstreamOps emits no op for it and it reaches no consumer, so
     # consumers get Cleanup-Worktree.ps1 without its suite (issue #399).
+    # NOTE for issue #309: that issue reconsiders whether root-level *.Tests.ps1
+    # should ship to consumers at all. This entry adds one more instance of the
+    # pattern #309 is about to weigh -- deliberately, because README already
+    # commits to shipping the meta-scripts "and their *.Tests.ps1" and leaving
+    # this one unlisted only makes the set inconsistent. If #309 carves them out,
+    # all four root suites move together and this entry goes with them.
     'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1',
