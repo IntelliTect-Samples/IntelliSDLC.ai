@@ -269,6 +269,22 @@ jobs:
       # resolves to nothing. Every Pester 5.x and 6.x release behaves this way,
       # so pinning a version does not help. Invoke-PesterSuite.ps1 resolves the
       # test files itself and passes those instead.
+      # Without gitleaks on PATH the three secret-detection tests in
+      # secret-gate.Tests.ps1 and agent-e2e.Tests.ps1 skip themselves and the
+      # suite still reports green -- the assertions that the gate catches a
+      # planted secret, and that it does NOT flag PR #47's deterministic fake
+      # markers, had therefore never once executed (issue #312). The guard in
+      # .github/agents/tests/GitleaksGuard.ps1 now turns a missing binary into a
+      # failure whenever CI is set, so this step is what keeps that job green.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
       - name: Run Pester suite
         shell: pwsh
         run: |
