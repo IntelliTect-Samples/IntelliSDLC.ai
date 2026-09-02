@@ -347,6 +347,79 @@ test('a reference whose log.entries is not an array fails with our own message',
         'and it is our error, not a raw stack trace');
 });
 
+test('verb case does not split one endpoint into two', () => {
+    // Found by the #379 session hitting the same defect in buildDigest. An
+    // endpoint identity must not depend on the casing a capture tool happened
+    // to emit: `post` and `POST` are the same operation, and describing them
+    // as two endpoints each witnessed once is a false statement about the API.
+    const dir = path.join(tmp, 'verb-case');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'verbs.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/thing',
+            postData: formPost([{ name: 'a', value: '1' }]),
+            responseText: '{"ok":true}',
+        }),
+        entry({
+            method: 'post',
+            url: 'https://www.example.invalid/api/thing',
+            postData: formPost([{ name: 'a', value: '2' }]),
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const doc = readDoc(dir);
+
+    assert.strictEqual(doc.endpoints.length, 1,
+        `one operation, one endpoint: ${JSON.stringify(doc.endpoints.map((e) => e.method))}`);
+    assert.strictEqual(doc.endpoints[0].method, 'POST', 'described in the registered spelling');
+    assert.strictEqual(doc.endpoints[0].observedEntries, 2, 'and witnessed by both calls');
+});
+
+test('a lowercase body-bearing verb still raises the request-side hole', () => {
+    // The quiet half of the defect. BODY_BEARING_METHODS is matched against
+    // the endpoint's method, so a lowercase verb silently skipped the hole --
+    // a gap that fails to fire is worse than one that fires wrongly, because
+    // nothing reports it.
+    const dir = path.join(tmp, 'verb-case-hole');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'lower.har'), JSON.stringify(har([
+        entry({
+            method: 'post',
+            url: 'https://www.example.invalid/api/hollow',
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const hollow = endpointOf(readDoc(dir), 'POST', '/api/hollow');
+
+    assert.ok(hollow.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        `the hole must fire whatever case the capture recorded: ${JSON.stringify(hollow.unproven)}`);
+});
+
+test('a document generated from mixed-case verbs passes its own check', () => {
+    const dir = path.join(tmp, 'verb-case-check');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'verbs.har'), JSON.stringify(har([
+        entry({
+            method: 'get',
+            url: 'https://www.example.invalid/api/thing',
+            responseText: '{"ok":true}',
+        }),
+        entry({
+            method: 'GET',
+            url: 'https://www.example.invalid/api/thing',
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    assert.strictEqual(runNode(['--dir', dir]).code, 0);
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 0,
+        `the check normalizes the same way the fold does, got ${run.code}: ${run.stderr}`);
+});
+
 // --- determinism ----------------------------------------------------------
 
 console.log('generate-api-document -- idempotence');
