@@ -14,7 +14,11 @@
 
 'use strict';
 
-const { isPlausibleSecretValue, decodeNestedJson } = require('./har-literals.js');
+const {
+    isPlausibleSecretValue,
+    decodeNestedJson,
+    transformEncodedParams,
+} = require('./har-literals.js');
 const harPolicy = require('./har-policy.js');
 
 // Request-signing / CSRF-adjacent body & query parameters, session cookies
@@ -192,6 +196,25 @@ function isKnownSecretHeader(name, policy) {
 }
 
 /**
+ * True for a string worth splitting into percent-encoded `k=v` parameters.
+ *
+ * Without a percent escape there is nothing hidden -- the value is already on
+ * the wire under a name the walk can see -- and a `; `-separated string is a
+ * Cookie header, which has its own pairs in the HAR.
+ *
+ * The scrubber applies the same test before its own decode pass. The two
+ * copies must agree: the gate reporting less than the scrubber redacts is
+ * survivable noise-free drift, but the gate reporting less than the scrubber
+ * MISSES is how a file gets labelled `(verified)` while carrying a credential.
+ */
+function looksFormEncoded(text) {
+    return typeof text === 'string'
+        && /%[0-9A-Fa-f]{2}/.test(text)
+        && !/;\s/.test(text)
+        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(text);
+}
+
+/**
  * True when `value` under `name` is a credential still readable in the clear.
  *
  * Deliberately exempts values below the plausible-secret length: a verifier
@@ -257,6 +280,31 @@ function walkForUnredactedSecrets(root, report, options) {
                 report(name, `${location} (multipart field)`);
                 return null;
             }, policy);
+            // A form BODY is one string of `k=v&k=v`, so the parameter names
+            // are not object keys and `decodeNestedJson` sees no JSON
+            // document at all -- it is handed `variables={...}` with the
+            // `variables=` still attached. The walk therefore stopped at the
+            // wire spelling while the scrubber, which does run this decode,
+            // reached in and redacted. Gate reporting LESS than the scrubber
+            // redacts is exactly the drift that lets a file be labelled
+            // `(verified)` over a credential (issue #378): the two controls
+            // must share one definition of "readable credential", at every
+            // depth the scrubber can reach.
+            //
+            // `transformEncodedParams` is reused as a VISITOR: the callback
+            // returns its input unchanged, so nothing is rewritten.
+            if (looksFormEncoded(value)) {
+                transformEncodedParams(value, (paramName, decoded) => {
+                    if (isUnredactedSecret(paramName, decoded, policy)) {
+                        report(paramName, `${location} (encoded parameter)`);
+                    }
+                    const innerJson = decodeNestedJson(decoded);
+                    if (innerJson) {
+                        walk(innerJson, `${location} (inside encoded '${paramName}')`);
+                    }
+                    return decoded;
+                });
+            }
             const nested = decodeNestedJson(value);
             if (nested) walk(nested, `${location} (inside encoded '${key}')`);
         }
