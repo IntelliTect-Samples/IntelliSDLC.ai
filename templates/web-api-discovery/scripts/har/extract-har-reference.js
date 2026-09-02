@@ -22,15 +22,54 @@
  *  - Decoded postData.params[] are emitted alongside the scrubbed wire text.
  *    A percent-encoded form body is not greppable; the decoded copy is what
  *    makes the reference searchable for a field name.
- *  - It refuses to run without a selector, and fails loudly when nothing
- *    matches rather than writing an empty reference.
+ *  - It fails loudly when the selection is empty rather than writing an empty
+ *    reference.
+ *  - API calls are the DEFAULT selection, and the run reports what it dropped,
+ *    by category. See "Which entries are kept" below.
+ *
+ * Which entries are kept (#410)
+ * -----------------------------
+ * `--match` used to be REQUIRED, on the reasoning that which entries matter is
+ * a judgement a tool cannot make. Asked directly for one, the operator said:
+ * "I couldn't provide a regex. All I know is that the focus should be on the
+ * API calls, not the fonts, images, etc." That retires the premise -- "API
+ * call, not static asset" is a mechanical classification, and the data to make
+ * it is already in every entry.
+ *
+ * So the default selection is the API traffic:
+ *
+ *  - A Playwright capture records `_resourceType` on every entry (`xhr`,
+ *    `fetch`, `document`, `image`, `font`, `stylesheet`, `script`, `media`,
+ *    `ping`, ...). Where it is present it DECIDES.
+ *  - A mitmproxy capture has no `_resourceType` at all. There, the request's
+ *    own body and the response content-type answer the same question.
+ *
+ * The classifier is deliberately conservative about what it DROPS rather than
+ * clever about what it keeps, because a wrongly dropped entry is invisible and
+ * a wrongly kept one is merely noise:
+ *
+ *  - Only a POSITIVE identification as a static asset or as a beacon drops an
+ *    entry. Everything else -- including a resource type this script has never
+ *    heard of -- is kept as `unclassified`.
+ *  - `document` entries are KEPT. An HTML document response can carry a token,
+ *    and a redirect chain or an OAuth callback lands here. Dropping those
+ *    would silently destroy the very thing a reference is for.
+ *  - kept + dropped MUST equal the number of entries scanned. That is asserted
+ *    at runtime, not assumed: a filter that silently loses entries is worse
+ *    than one that keeps too many.
+ *  - The per-category counts are PRINTED, so a wrong drop is noticeable at
+ *    extraction time rather than months later. `scrubbed.har` also stays in
+ *    the session directory, so re-extracting with other criteria is always
+ *    possible and nothing is lost.
  *
  * Usage:
- *   node extract-har-reference.js --in <raw.har> --match <pattern> [...]
+ *   node extract-har-reference.js --in <raw.har> [--match <pattern> ...]
  *
- *   --match               REQUIRED, repeatable. Case-insensitive regular
+ *   --match               OPTIONAL, repeatable. Case-insensitive regular
  *                         expression tested against the request URL and the
- *                         request/response bodies.
+ *                         request/response bodies. It narrows WITHIN the API
+ *                         set; it does not replace the classification, so
+ *                         supplying one can never drag a font back in.
  *   --out                 default: <provider>/ in the current directory
  *                                  <provider>-<action>-<yyyy-MM-dd>.har
  *   --provider --action   name the output; --action names what a HUMAN did
@@ -42,8 +81,8 @@
  * Exit codes:
  *   0 -- reference written
  *   1 -- I/O, parse, scrub, or profile error
- *   2 -- usage error (no selector, or no way to name the output)
- *   3 -- the selector matched nothing; no reference was written
+ *   2 -- usage error (no way to name the output, or a bad argument)
+ *   3 -- the selection was empty; no reference was written
  */
 
 'use strict';
@@ -79,8 +118,11 @@ function parseArgs(argv) {
 function usage(msg) {
     if (msg) console.error(`extract-har-reference: ${msg}`);
     console.error([
-        'usage: node extract-har-reference.js --in <raw.har> --match <pattern> [--match <pattern> ...]',
-        '  --match               REQUIRED, repeatable; case-insensitive regex over URL and bodies',
+        'usage: node extract-har-reference.js --in <raw.har> [--match <pattern> ...]',
+        '  (default)             API calls only -- xhr/fetch/websocket, documents and anything',
+        '                        not provably a static asset or a beacon. No selector needed.',
+        '  --match               OPTIONAL, repeatable; case-insensitive regex over URL and bodies.',
+        '                        Narrows WITHIN the API set; it never re-admits a dropped asset',
         `  --out                 default: ${REFERENCE_ROOT}/<provider>/<provider>-<action>-<yyyy-MM-dd>.har`,
         '  --provider --action   name the output; --action names what you DID to record it',
         `  --max-response-bytes  optional; absent, nothing is truncated. Requests are never capped`,
@@ -109,6 +151,178 @@ function entryText(entry) {
     if (entry.request && entry.request.postData) parts.push(entry.request.postData.text);
     if (entry.response && entry.response.content) parts.push(entry.response.content.text);
     return parts.filter((p) => typeof p === 'string').join('\n');
+}
+
+// --- API-vs-asset classification (#410) -------------------------------------
+//
+// Categories. The first three are KEPT, the last two are DROPPED. Every entry
+// lands in exactly one, and `classifyEntries` asserts that.
+const KEPT_CATEGORIES = ['api', 'document', 'unclassified'];
+const DROPPED_CATEGORIES = ['asset', 'telemetry'];
+
+const CATEGORY_LABEL = {
+    api: 'API calls',
+    document: 'documents -- HTML, redirects and auth callbacks, kept because they carry tokens',
+    unclassified: 'unclassified -- kept, because nothing PROVED these were assets',
+    asset: 'static assets',
+    telemetry: 'telemetry / beacon',
+};
+
+// Playwright's own answer to the question, where it recorded one. Anything NOT
+// in this table -- `other`, `manifest`, or a resource type a future Playwright
+// invents -- falls through to `unclassified` and is KEPT. That default is the
+// whole safety property: a new resource type cannot silently start being
+// dropped.
+const RESOURCE_TYPE_CATEGORY = {
+    xhr: ['api', 'xhr'],
+    fetch: ['api', 'fetch'],
+    websocket: ['api', 'websockets'],
+    document: ['document', 'html'],
+    image: ['asset', 'images'],
+    font: ['asset', 'fonts'],
+    stylesheet: ['asset', 'css'],
+    script: ['asset', 'scripts'],
+    media: ['asset', 'media'],
+    // Playwright's `ping` is `navigator.sendBeacon` and `<a ping>`: telemetry
+    // by construction, not by URL guesswork. Analytics endpoints served over
+    // `xhr` are NOT detected here -- tuning that is a follow-up, and guessing
+    // at it from a URL is exactly the judgement this change removed.
+    ping: ['telemetry', 'beacons'],
+};
+
+function normalizeMimeType(value) {
+    if (typeof value !== 'string') return '';
+    return value.split(';')[0].trim().toLowerCase();
+}
+
+// Content types that are an API payload by grammar, not by guess.
+function isApiMimeType(mime) {
+    return /^application\/(json|graphql|x-www-form-urlencoded|x-ndjson|x-protobuf|protobuf|grpc|xml|.*\+json|.*\+xml)/.test(mime)
+        || mime === 'text/xml'
+        || mime === 'multipart/form-data';
+}
+
+function isDocumentMimeType(mime) {
+    return mime === 'text/html' || mime === 'application/xhtml+xml';
+}
+
+// The DROP list, and it is the only thing that drops an entry on the fallback
+// path. Written as an explicit enumeration rather than "everything that is not
+// an API type" so that adding a content type cannot accidentally widen it.
+const ASSET_MIME_KIND = [
+    [/^image\//, 'images'],
+    [/^font\//, 'fonts'],
+    [/^application\/(font-|x-font-|vnd\.ms-fontobject)/, 'fonts'],
+    [/^video\//, 'media'],
+    [/^audio\//, 'media'],
+    [/^text\/css$/, 'css'],
+    [/^(application\/(x-)?(java|ecma)script|text\/(java|ecma)script)$/, 'scripts'],
+    [/^application\/wasm$/, 'scripts'],
+];
+
+/**
+ * Classify one HAR entry as API traffic or as something a reference does not
+ * need. Returns `{ category, kind, basis }` -- `basis` records WHICH signal
+ * decided, so the report can say whether a capture was classified by resource
+ * type or by content type.
+ */
+function classifyEntry(entry) {
+    const resourceType = entry && typeof entry._resourceType === 'string'
+        ? entry._resourceType.toLowerCase() : null;
+    if (resourceType) {
+        const known = RESOURCE_TYPE_CATEGORY[resourceType];
+        if (known) return { category: known[0], kind: known[1], basis: 'resourceType' };
+        // A resource type we do not model. Keep it.
+        return { category: 'unclassified', kind: 'unmodelled resource type', basis: 'resourceType' };
+    }
+
+    // No `_resourceType`: a mitmproxy capture, or any exporter that does not
+    // write Playwright's extension fields.
+    const request = (entry && entry.request) || {};
+    const postData = request.postData;
+    if (postData && (typeof postData.text === 'string' && postData.text.length > 0
+        || Array.isArray(postData.params) && postData.params.length > 0)) {
+        // A request that CARRIES A BODY is an API call whatever it responds
+        // with. This is checked before the response type on purpose: a
+        // multipart upload answering `image/jpeg` is the single most
+        // interesting entry in a capture, and response-type-first would drop it.
+        return { category: 'api', kind: 'request bodies', basis: 'requestBody' };
+    }
+
+    const mime = normalizeMimeType(entry && entry.response && entry.response.content
+        && entry.response.content.mimeType);
+    if (isApiMimeType(mime)) return { category: 'api', kind: 'API content types', basis: 'contentType' };
+    if (isDocumentMimeType(mime)) return { category: 'document', kind: 'html', basis: 'contentType' };
+    for (const [pattern, kind] of ASSET_MIME_KIND) {
+        if (pattern.test(mime)) return { category: 'asset', kind, basis: 'contentType' };
+    }
+    // Empty, `x-unknown`, `application/octet-stream`, `text/plain`, a 204 or a
+    // 302 with no body at all. None of those PROVE an asset, and a bodiless
+    // 302 is exactly the redirect hop an auth flow turns on. Kept.
+    return { category: 'unclassified', kind: 'unknown content type', basis: 'contentType' };
+}
+
+/**
+ * Classify every entry and return `{ classified, counts, kinds, bases }`.
+ * Throws if the categories do not partition the input -- the "kept + dropped
+ * equals total" invariant, checked rather than assumed.
+ */
+function classifyEntries(entries) {
+    const counts = {};
+    const kinds = {};
+    const bases = {};
+    for (const c of KEPT_CATEGORIES.concat(DROPPED_CATEGORIES)) { counts[c] = 0; kinds[c] = {}; }
+
+    const classified = entries.map((entry) => {
+        const c = classifyEntry(entry);
+        if (counts[c.category] === undefined) {
+            throw new Error(`classifier produced an unknown category '${c.category}'`);
+        }
+        counts[c.category] += 1;
+        kinds[c.category][c.kind] = (kinds[c.category][c.kind] || 0) + 1;
+        bases[c.basis] = (bases[c.basis] || 0) + 1;
+        return Object.assign({ entry }, c);
+    });
+
+    const kept = KEPT_CATEGORIES.reduce((n, c) => n + counts[c], 0);
+    const dropped = DROPPED_CATEGORIES.reduce((n, c) => n + counts[c], 0);
+    if (kept + dropped !== entries.length) {
+        // Not reachable through the classifier above -- which is the point.
+        // If it ever becomes reachable, the run must stop, not quietly write a
+        // reference that lost entries nobody counted.
+        throw new Error(
+            `classification lost entries: kept ${kept} + dropped ${dropped} != ${entries.length} scanned`);
+    }
+    return { classified, counts, kinds, bases, kept, dropped };
+}
+
+function renderKinds(kindCounts) {
+    const parts = Object.entries(kindCounts)
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([kind, n]) => `${kind} ${n}`);
+    return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+/**
+ * The per-category report. It is load-bearing, not decoration: it is how a
+ * wrong drop becomes visible at extraction time. Counts, category names and
+ * content-type CATEGORIES only -- never a captured value.
+ */
+function reportLines(report, total) {
+    const lines = [];
+    for (const category of KEPT_CATEGORIES) {
+        if (report.counts[category] === 0) continue;
+        lines.push(`  kept     ${String(report.counts[category]).padEnd(5)}${CATEGORY_LABEL[category]}` +
+            renderKinds(report.kinds[category]));
+    }
+    for (const category of DROPPED_CATEGORIES) {
+        if (report.counts[category] === 0) continue;
+        lines.push(`  dropped  ${String(report.counts[category]).padEnd(5)}${CATEGORY_LABEL[category]}` +
+            renderKinds(report.kinds[category]));
+    }
+    lines.push(`  total    ${String(total).padEnd(5)}` +
+        `entries scanned = ${report.kept} kept + ${report.dropped} dropped`);
+    return lines;
 }
 
 function capResponses(entries, maxBytes) {
@@ -154,9 +368,6 @@ function addDecodedParams(entries) {
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) usage('--in is required');
-    if (args.match.length === 0) {
-        usage('at least one --match selector is required -- there is no "extract everything" default');
-    }
 
     let profile;
     try {
@@ -194,17 +405,55 @@ function main() {
     }
 
     const all = (har.log && har.log.entries) || [];
-    const selected = all.filter((entry) => {
+
+    // The classification runs FIRST and always. `--match` then narrows within
+    // what it kept -- it does not replace it.
+    //
+    // Why narrowing and not replacing: the two answer different questions.
+    // The classification answers "is this an API call?", mechanically, from
+    // data already in the entry. `--match` answers "which of those API calls
+    // am I documenting?", which is the operator's judgement. If a selector
+    // REPLACED the classification, then `--match upload` would re-admit every
+    // image whose URL happens to contain "upload" -- reinstating exactly the
+    // failure this default exists to remove, and doing it only for operators
+    // who took the trouble to narrow. Composition also keeps the report
+    // honest: the drop counts describe the same classification whether or not
+    // a selector was supplied.
+    let report;
+    try {
+        report = classifyEntries(all);
+    } catch (e) {
+        fail(e.message);
+    }
+    const apiEntries = report.classified
+        .filter((c) => KEPT_CATEGORIES.includes(c.category))
+        .map((c) => c.entry);
+
+    const selected = selectors.length === 0 ? apiEntries : apiEntries.filter((entry) => {
         const text = entryText(entry);
         return selectors.some((re) => re.test(text));
     });
 
-    if (selected.length === 0) {
+    // The report is printed BEFORE any failure exit as well as before the
+    // write, because the counts are most valuable precisely when the run did
+    // not produce what the operator expected.
+    for (const line of reportLines(report, all.length)) console.log(line);
+
+    if (apiEntries.length === 0) {
         // Never write an empty reference. One that exists and proves nothing
         // is worse than none at all: the next reader trusts it.
         fail(
-            `no entry in ${args.in} matched ${args.match.map((m) => JSON.stringify(m)).join(', ')} ` +
-            `(${all.length} entries scanned). No reference written.`, 3);
+            `no entry in ${args.in} was classified as an API call (${all.length} entries scanned; ` +
+            `all of them static assets or beacons). No reference written.`, 3);
+    }
+    if (selected.length === 0) {
+        // Distinguished from the case above on purpose: "there were no API
+        // calls" and "your selector excluded all of them" call for different
+        // next actions.
+        fail(
+            `no API entry in ${args.in} matched ${args.match.map((m) => JSON.stringify(m)).join(', ')} ` +
+            `(${apiEntries.length} API entries of ${all.length} scanned). ` +
+            'No reference written. --match narrows within the API set; it cannot re-admit a dropped asset.', 3);
     }
 
     // No cap unless one is ASKED FOR. Requirement 7 of #297: scrub by
@@ -318,8 +567,11 @@ function main() {
     fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
     fs.writeFileSync(outPath, serialized, 'utf8');
 
+    const narrowing = selectors.length === 0
+        ? ''
+        : `, narrowed from ${apiEntries.length} kept by --match`;
     console.log(
-        `extract-har-reference: wrote ${outPath} (${selected.length} of ${all.length} entries)`);
+        `extract-har-reference: wrote ${outPath} (${selected.length} of ${all.length} entries${narrowing})`);
     // The endpoint is recoverable from the file. What you did to provoke it is
     // not -- and that is the half a reader is actually looking for.
     console.log(

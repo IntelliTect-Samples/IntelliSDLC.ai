@@ -84,13 +84,19 @@ const LONG_BODY = 'doc_id=9&variables=' + encodeURIComponent(JSON.stringify({
 }));
 const LONG_RESPONSE = JSON.stringify({ blob: 'y'.repeat(200000) });
 
-// --- 1. A selector is mandatory; there is no "extract everything" default. ---
+// --- 1. No selector is needed: API calls are the default (#410). ---
+// This used to assert the opposite -- that a missing `--match` was a usage
+// error -- on the reasoning that only a human can say which entries matter.
+// Asked for a regex, the operator could not supply one and named the
+// distinction instead ("the API calls, not the fonts, images"), which is
+// mechanical. So a run with no selector must SUCCEED.
 {
     const dir = makeProject('no-selector');
     const raw = writeRaw(dir, [entry({})]);
     const r = runNode(extract, ['--in', raw, '--provider', 'acme', '--action', 'ping'], dir);
-    assert.strictEqual(r.code, 2, '1.a: extracting without a selector should be a usage error');
-    assert.ok(/--match/.test(r.stderr), '1.b: the failure does not name the missing selector');
+    assert.strictEqual(r.code, 0, '1.a: extracting without a selector must succeed now: ' + r.stderr);
+    const files = fs.readdirSync(path.join(dir, 'acme')).filter((f) => f.endsWith('.har'));
+    assert.strictEqual(files.length, 1, '1.b: no reference was written without a selector');
 }
 
 // --- 2. Zero matches fails loudly instead of writing an empty reference. ---

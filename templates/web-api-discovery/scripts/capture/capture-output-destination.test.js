@@ -269,8 +269,16 @@ test('F3: the run names docs/har-reference/<host>/<provider>/<provider>-<action>
     assert.ok(printed.includes(reference.path), 'the reference path must be printed');
     assert.ok(printed.includes('extract-har-reference.js'),
         'the run must name the tool that already implements this convention');
-    assert.ok(printed.includes('--match'),
-        'and the selector the extractor requires, since a machine cannot choose it');
+    // And the command is COMPLETE as printed (#410). It used to end with a
+    // `--match '<regex over the request URL or body>'` placeholder the
+    // operator had to fill in, and no operator could: asked for one, the
+    // answer was "the API calls, not the fonts, images" -- which the extractor
+    // now does by default. A placeholder left in the printed command would
+    // reinstate exactly the input this change removed.
+    assert.ok(!/--match\s+'<[^']*>'/.test(printed),
+        'the printed command still carries a --match placeholder for the operator to invent');
+    assert.ok(/--match/.test(printed) && /narrow/i.test(printed),
+        'the printed command must still mention --match as OPTIONAL narrowing, not as required input');
 });
 
 test('F3b: nothing is written into the reference directory by the run itself', () => {
