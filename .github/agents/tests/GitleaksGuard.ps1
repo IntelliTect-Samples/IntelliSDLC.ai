@@ -35,6 +35,10 @@ function Test-GitleaksRequired {
     if ([string]::IsNullOrWhiteSpace($CiValue)) { return $false }
     # GitHub Actions sets CI=true. Treat an explicit 'false' as not-CI so a
     # developer can opt out locally without unsetting a variable other tools read.
+    #
+    # Only the literal 'false' opts out -- CI=0 still counts as CI. The asymmetry
+    # is deliberate: an unrecognised value should fail closed (require gitleaks)
+    # rather than silently restore the skip this guard exists to remove.
     return $CiValue -ne 'false'
 }
 

@@ -323,12 +323,23 @@ Describe "This repo's own CI installs gitleaks (issue #312)" {
         $script:CiYml | Should -Match 'GITLEAKS_VERSION:\s*"\d+\.\d+\.\d+"'
     }
 
-    It "installs gitleaks in the same job that runs Pester" {
-        # A gitleaks install in the wrong job leaves the suite skipping exactly as
-        # before, and the suite would still be green -- so assert co-location.
-        $pesterJob = ($script:CiYml -split '(?m)^  \w[\w-]*:\s*$' | Where-Object { $_ -match 'Invoke-PesterSuite\.ps1' })
-        $pesterJob | Should -Not -BeNullOrEmpty -Because "the Pester job must be findable"
-        ($pesterJob -join "`n") | Should -Match 'Install gitleaks'
+    It "installs gitleaks in the job that runs Pester, before the suite runs" {
+        # Co-location alone is not enough. An install step sitting AFTER the
+        # Pester step is still in the right job, and still leaves gitleaks off
+        # PATH for the run that matters -- the guard would then fail every CI
+        # run instead of the suite quietly skipping, which is louder but still
+        # broken. Assert the order, not just the presence.
+        $pesterJob = @($script:CiYml -split '(?m)^  \w[\w-]*:\s*$' |
+            Where-Object { $_ -match 'Invoke-PesterSuite\.ps1' })
+        $pesterJob.Count | Should -Be 1 -Because "exactly one job runs the Pester suite"
+
+        $jobText   = $pesterJob[0]
+        $installAt = $jobText.IndexOf('- name: Install gitleaks')
+        $runAt     = $jobText.IndexOf('- name: Run Pester suite')
+
+        $installAt | Should -BeGreaterThan -1 -Because "the Pester job must install gitleaks"
+        $runAt     | Should -BeGreaterThan -1 -Because "the Pester job must run the suite"
+        $installAt | Should -BeLessThan $runAt -Because "gitleaks must be on PATH before the suite runs"
     }
 
     It "verifies the installed binary runs" {
