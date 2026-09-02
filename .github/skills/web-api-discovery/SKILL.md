@@ -1051,8 +1051,8 @@ an `unproven` list, and each hole names the capture that would close it:
 | Hole | What it means | Closed by |
 |---|---|---|
 | `no-success-observed` | every observed status was an error | a successful call |
-| `no-request-body-observed` | a POST/PUT/PATCH where no call carried a body -- the endpoint is known to exist and **nothing** is known about what a caller must send | a capture with the request body preserved |
-| `no-response-body-observed` | no call retained a response body | a capture that keeps the body |
+| `no-request-body-observed` | a POST/PUT/PATCH witnessed by **one** reference that carried no request body -- "takes no body" and "the body was not captured" are not yet distinguishable | capturing it again |
+| `no-response-body-observed` | same, for a response body | capturing it again |
 | `response-truncated` | a response was capped, so the field list is a **prefix** of the real shape | re-capture without a response cap |
 | `operation-name-unknown` | a persisted id was seen with no accompanying operation name, so what it *does* is unknown | a call carrying the name alongside the id |
 | `request-field-presence-varies` | a field appears in some observed calls and not others | capture the operation again and compare |
@@ -1062,9 +1062,28 @@ list**: what to go and record, and which endpoints each recording would settle.
 A reader asking "what capture is missing" should not have to walk every
 endpoint to assemble the answer.
 
+> **A hole nobody can close is noise.** The two body holes are raised only
+> while a single reference witnesses the endpoint. A bodyless `POST` captured
+> twice, in two sessions, is evidence that the endpoint *takes* no body --
+> telling a reader to "capture it with the body preserved" would be advice that
+> can never be satisfied, and a gate that fires on traffic behaving normally
+> trains its readers to ignore it. One capture cannot tell "takes no body" from
+> "the body was not captured"; a second one can, which is why capturing again
+> is what closes it.
+>
+> `DELETE` is deliberately outside the body-bearing set: the overwhelming
+> majority carry none, so raising a hole on every one would be the same noise.
+> The cost is that a `DELETE` that *does* take a body has its missing request
+> side unreported. That is a stated limit, not an inference about any
+> particular endpoint.
+
 **A hole is a claim too.** `--check` re-derives every one of them from the
-references and rejects a hole the captures contradict, exactly as it rejects an
-invented endpoint. A hand-written "we never proved this" cannot survive either.
+references *and* validates the entries it cites, exactly as it does for a
+positive claim -- so a hand-written "we never proved this" fails, and so does
+one citing a reference that does not exist. The re-derivation applies the same
+rule the generator applied, at the same granularity: a check that measured
+something subtly different would fail on the generator's own correct output,
+which is how a gate ends up disabled.
 
 Counts sit beside the claims for the same reason: `observedIn` of
 `observedEntries` is the difference between "this field was seen" and "this

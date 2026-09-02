@@ -318,7 +318,16 @@ function isTruncated(entry) {
     return !!(content && content.truncated);
 }
 
-/** Methods for which a missing request body is a HOLE rather than normal. */
+/**
+ * Methods for which a missing request body is a HOLE rather than normal.
+ *
+ * An observed set, like `PERSISTED_ID_FIELDS`, not a statement about HTTP.
+ * DELETE is absent because the overwhelming majority carry no body, and a hole
+ * raised on every DELETE would be noise -- at the cost that a DELETE that DOES
+ * take a body has its missing request side unreported. Add it here if a corpus
+ * shows otherwise; do not infer it per-endpoint, which would be the guesswork
+ * this document replaces.
+ */
 const BODY_BEARING_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 
 /**
@@ -377,10 +386,21 @@ function absorbRequestNames(endpoint, entry, harFile, index) {
             () => ({ name: c.name, in: c.in })), harFile, index);
     }
 
+    // Distinct placements within THIS entry. `?ids=1&ids=2&ids=3` is one call
+    // that carried `ids`, not three observations of it -- counting occurrences
+    // produced an observedIn larger than the number of calls it came from, and
+    // a count that exceeds its own denominator says nothing about how thin the
+    // evidence is, which is the only reason the count exists. Worse, it hid a
+    // real hole: a field sent twice in one call of two looked present in both.
     const isCredential = new Set(credentials.map((c) => `${c.in}|${c.name}`));
+    const placements = new Map();
     for (const f of requestNamesOf(entry)) {
-        if (isCredential.has(`${f.in}|${f.name}`)) continue;
-        const claim = claimIn(endpoint.requestFields, `${f.in}|${f.name}`,
+        const key = `${f.in}|${f.name}`;
+        if (isCredential.has(key)) continue;
+        placements.set(key, f);
+    }
+    for (const [key, f] of placements) {
+        const claim = claimIn(endpoint.requestFields, key,
             () => ({ name: f.name, in: f.in, observedIn: 0 }));
         claim.observedIn++;
         addWitness(claim, harFile, index);
@@ -520,18 +540,31 @@ function gapsFor(endpoint) {
             'capture a successful call to this endpoint');
     }
 
-    if (BODY_BEARING_METHODS.has(endpoint.method) && endpoint.requestBodyEntries === 0) {
+    // Both body holes are reported only while ONE reference witnesses the
+    // endpoint. A bodyless POST captured twice, in two sessions, is evidence
+    // that the endpoint TAKES no body -- and telling a reader to "capture it
+    // with the body preserved" is advice that can never be satisfied, because
+    // there is nothing to preserve. A hole nobody can close is noise, and noise
+    // is how a gate comes to be ignored. One capture cannot tell "takes no
+    // body" from "the body was not captured"; a second one can.
+    const singleReference = endpoint.witnesses.length < 2;
+
+    if (BODY_BEARING_METHODS.has(endpoint.method) && endpoint.requestBodyEntries === 0
+        && singleReference) {
         add('no-request-body-observed', [],
-            `none of the ${endpoint.observedEntries} observed call(s) carried a request body, `
-            + 'so nothing is known about what a caller must send',
-            'capture this operation with the request body preserved -- a reference whose '
-            + 'request side is empty cannot be replayed or diffed');
+            `the only reference witnessing this endpoint carried no request body in any of its `
+            + `${endpoint.observedEntries} call(s), so "takes no body" and "the body was not `
+            + 'captured" are not yet distinguishable',
+            'capture this operation again -- a second bodyless reference establishes that it '
+            + 'takes none, and a body appearing establishes what a caller must send');
     }
 
-    if (endpoint.responseBodyEntries === 0) {
+    if (endpoint.responseBodyEntries === 0 && singleReference) {
         add('no-response-body-observed', [],
-            `none of the ${endpoint.observedEntries} observed call(s) retained a response body`,
-            'capture a call whose response body is kept');
+            `the only reference witnessing this endpoint retained no response body in any of its `
+            + `${endpoint.observedEntries} call(s)`,
+            'capture this operation again -- a second empty-bodied reference establishes that '
+            + 'the response genuinely has none');
     }
 
     if (endpoint.truncatedResponses > 0) {
@@ -550,12 +583,18 @@ function gapsFor(endpoint) {
             'capture a call that carries the operation name alongside the persisted id');
     }
 
+    // Subjects carry the PLACEMENT, not just the name. The fold decides a
+    // field varies per (where it lives, name); a re-derivation that matched on
+    // the name alone counted a different field that happened to share one --
+    // and an honest, unedited document then failed its own check. A gate that
+    // fires on correct output gets disabled, taking every other check with it.
     const varying = [...endpoint.requestFields.values()]
         .filter((f) => f.observedIn > 0 && f.observedIn < endpoint.observedEntries)
-        .map((f) => f.name);
+        .map((f) => `${f.in}:${f.name}`);
     if (varying.length > 0) {
+        const shown = varying.slice().sort().join(', ');
         add('request-field-presence-varies', varying,
-            `${varying.slice().sort().join(', ')} appear in some observed calls and not others `
+            `${shown} appear in some observed calls and not others `
             + `(of ${endpoint.observedEntries} observed); whether that is a per-call difference `
             + 'or a change on the provider side is not established by these captures',
             'capture the same operation again and compare -- one corpus cannot tell the two apart');
@@ -676,6 +715,7 @@ function gapHolds(references, endpoint, gap) {
         }
     }
     const subjects = Array.isArray(gap.subjects) ? gap.subjects : [];
+    const witnessFiles = (e) => new Set((e.witnesses || []).map((w) => w && w.harFile));
     const carriesName = (entry) => requestNamesOf(entry).some(
         (f) => OPERATION_NAME_FIELDS.has(f.name.toLowerCase()) && f.value);
 
@@ -686,9 +726,10 @@ function gapHolds(references, endpoint, gap) {
             return s >= 200 && s < 300;
         });
     case 'no-request-body-observed':
-        return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(hasRequestBody);
+        return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(hasRequestBody)
+            && witnessFiles(endpoint).size < 2;
     case 'no-response-body-observed':
-        return !entries.some(responseText);
+        return !entries.some(responseText) && witnessFiles(endpoint).size < 2;
     case 'response-truncated':
         return entries.some(isTruncated);
     case 'operation-name-unknown':
@@ -696,8 +737,11 @@ function gapHolds(references, endpoint, gap) {
             (e) => carriesName(e) && requestNamesOf(e).some(
                 (f) => PERSISTED_ID_FIELDS.has(f.name.toLowerCase()) && f.value === id)));
     case 'request-field-presence-varies':
-        return subjects.length > 0 && subjects.every((name) => {
-            const seen = entries.filter((e) => requestNamesOf(e).some((f) => f.name === name)).length;
+        // Same granularity as the fold: (where it lives, name), and one call
+        // counts once however many times it repeats the parameter.
+        return subjects.length > 0 && subjects.every((subject) => {
+            const seen = entries.filter((e) => requestNamesOf(e)
+                .some((f) => `${f.in}:${f.name}` === subject)).length;
             return seen > 0 && seen < entries.length;
         });
     default:
@@ -715,22 +759,39 @@ function claimsOf(endpoint) {
     return claims;
 }
 
-/** One claim, checked against every entry it names. */
-function verifyClaim(byFile, endpoint, claim, kind) {
-    const what = describeClaim(endpoint, claim, kind);
-    const witnesses = Array.isArray(claim.witnesses) ? claim.witnesses : [];
-    if (witnesses.length === 0) {
+/**
+ * Do a claim's citations point at entries that exist?
+ *
+ * Shared by positive claims and by holes: both cite entries, and a citation
+ * nobody checks is how an unsupported statement reaches the byte comparison
+ * and gets reported as "the file differs" instead of by name.
+ */
+function verifyWitnesses(byFile, endpoint, what, witnesses) {
+    const cited = Array.isArray(witnesses) ? witnesses : [];
+    if (cited.length === 0) {
         return [`${what} names no witness; every claim must name a reference and entry`];
     }
-
     const violations = [];
-    for (const w of witnesses) {
+    for (const w of cited) {
         const entries = byFile.get(w && w.harFile);
         if (!entries) {
             violations.push(`${what} is witnessed by '${w && w.harFile}', which is not a reference in this directory`);
         } else if (!Number.isInteger(w.entry) || w.entry < 0 || w.entry >= entries.length) {
             violations.push(`${what} names entry ${w.entry} of '${w.harFile}', which has ${entries.length} entries`);
-        } else if (!entrySupports(entries[w.entry], endpoint, claim, kind)) {
+        }
+    }
+    return violations;
+}
+
+/** One claim, checked against every entry it names. */
+function verifyClaim(byFile, endpoint, claim, kind) {
+    const what = describeClaim(endpoint, claim, kind);
+    const violations = verifyWitnesses(byFile, endpoint, what, claim.witnesses);
+    if (violations.length > 0) return violations;
+
+    for (const w of claim.witnesses) {
+        const entries = byFile.get(w.harFile);
+        if (!entrySupports(entries[w.entry], endpoint, claim, kind)) {
             violations.push(`${what} is not supported by entry ${w.entry} of '${w.harFile}'`);
         }
     }
@@ -772,6 +833,13 @@ function verifyTraceability(committed, references) {
             violations.push(...verifyClaim(byFile, endpoint, claim, kind));
         }
         for (const gap of endpoint.unproven || []) {
+            // A hole cites the entries it was concluded from, and those
+            // citations are checked exactly as a positive claim's are. Left
+            // unchecked, a hole naming a reference that does not exist reached
+            // only the byte comparison -- which reports that the file differs
+            // and never which claim is bad.
+            violations.push(...verifyWitnesses(byFile, endpoint,
+                describeClaim(endpoint, gap, 'gap'), gap.witnesses));
             if (!gapHolds(references, endpoint, gap)) {
                 violations.push(`${describeClaim(endpoint, gap, 'gap')} is contradicted by the references`);
             }
