@@ -220,10 +220,6 @@ $script:UpstreamManagedPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
-    # Added to the upstream root without a managed-path entry, which is the
-    # exact gap the "#263 root-level script" test guards against: unlisted,
-    # Get-UpstreamOps never emits an op for it and it reaches no consumer.
-    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1',
     # Retired filename (renamed to Consolidate-Specs.ps1 in issue #184). Kept on
@@ -271,7 +267,6 @@ $script:MetaScriptPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
-    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1'
 )
@@ -1068,11 +1063,15 @@ function Invoke-MainTreeCleanup {
             # #200 / #108 protect: it writes one unreferenced loose object and
             # touches no working-tree file, index entry, or ref, so no command's
             # output changes and `git gc` collects it.
-            $isUpstreamSourced = $false
-            $writtenSha = (& git hash-object -w --no-filters -- $abs 2>$null)
-            if ($writtenSha) {
-                $isUpstreamSourced = Test-PathContentInUpstreamHistory -Path $path `
-                    -Blob $writtenSha.Trim() -UpstreamRef $UpstreamRef -RepoRoot $RepoRoot
+            # The tip is trivially part of $UpstreamRef's history, so an
+            # untracked copy that already matches it needs no walk at all.
+            $isUpstreamSourced = $matchesTip
+            if (-not $isUpstreamSourced) {
+                $writtenSha = (& git hash-object -w --no-filters -- $abs 2>$null)
+                if ($writtenSha) {
+                    $isUpstreamSourced = Test-PathContentInUpstreamHistory -Path $path `
+                        -Blob $writtenSha.Trim() -UpstreamRef $UpstreamRef -RepoRoot $RepoRoot
+                }
             }
 
             if (-not $isUpstreamSourced) {
