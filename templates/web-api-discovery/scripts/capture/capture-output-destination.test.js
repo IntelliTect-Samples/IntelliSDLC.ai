@@ -654,6 +654,62 @@ test('F6c: git declining to answer is refused, and said so in its own words', as
         `the refusal must name the real reason: ${result.message}`);
 });
 
+test('S2: the record log is kept, not deleted when recordHar wins', () => {
+    // Structural, for the same reason F8 is: the deletion lived in `start`,
+    // which needs a browser this environment does not have.
+    //
+    // The log is the only witness to what the recorder SAW before assembly, so
+    // it is the recovery path if a raw.har is ever found malformed -- and a raw
+    // is the one artifact that cannot be re-made. Nothing under .har-captures/
+    // is discarded.
+    const source = fs.readFileSync(CAPTURE_JS, 'utf8');
+    const deletions = source.split('\n').filter((line) =>
+        /unlinkSync\(\s*(paths|session)\.recordLog/.test(line));
+    assert.deepStrictEqual(deletions, [],
+        `the record log must survive the run: ${deletions.join(' | ')}`);
+});
+
+test('F5b: git declining to answer about an explicit --output-path still warns', () => {
+    // IGNORED and OUTSIDE_WORK_TREE are the only two answers that mean "nothing
+    // to say". Treating UNVERIFIABLE as one of them would make the warning
+    // disappear in exactly the case where nobody can tell whether it was needed.
+    const dir = repo('f5b-unverifiable');
+    const s = session(dir, { outputPath: path.join(dir, 'docs', 'har-reference') });
+    const saved = [process.env.PATH, process.env.Path];
+    process.env.PATH = dir;
+    process.env.Path = dir;
+    let warning;
+    try { warning = capture.outputDestinationWarning(s); }
+    finally { process.env.PATH = saved[0]; process.env.Path = saved[1]; }
+    assert.ok(warning, 'an unverifiable destination must not pass silently');
+    assert.ok(/did not answer/i.test(warning),
+        `and must say which of the two it is: ${warning}`);
+});
+
+test('F6d: the appended gitignore block names only what it writes', async () => {
+    // The scaffolder's own header talks about HAR-Original/ and
+    // MobileApp-Binaries/. Appended above a block containing neither, it is a
+    // provenance note about files that are not there -- which sends the next
+    // reader hunting for a rule nobody added.
+    const dir = unprotectedRepo('f6d-header');
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+    const placement = inDir(dir, () => capture.resolveSessionPaths({
+        uri: 'https://app.example.com/', cwd: dir, stamp: '2026-01-01-120000'
+    })).capturePlacement;
+
+    const result = await capture.ensureCapturesRootIgnored(placement, {
+        isTty: true, ask: () => Promise.resolve('y')
+    });
+    assert.strictEqual(result.ok, true, 'precondition');
+
+    const text = fs.readFileSync(path.join(dir, '.gitignore'), 'utf8');
+    assert.ok(!/HAR-Original|MobileApp-Binaries/.test(text),
+        `the block must not describe entries it did not write:\n${text}`);
+    assert.ok(/live session cookies/i.test(text),
+        'and it must say what these rules are for');
+    assert.ok(text.startsWith('node_modules/'), 'the existing rules are untouched');
+});
+
 // ===========================================================================
 // GUARDS -- these pass on arrival. They are not evidence of a fix; they exist
 // so the fix above cannot quietly take them with it.

@@ -588,11 +588,21 @@ function outputDestinationWarning(paths) {
     // consumer's .gitignore covers these artifacts by name at any depth as well
     // as by directory, and asking about the directory would miss that.
     const status = subsDestination.classifyDestination(path.join(paths.outputPath, SCRUBBED_HAR));
-    if (status !== subsDestination.NOT_IGNORED) { return null; }
+    // IGNORED and OUTSIDE_WORK_TREE are the two answers that mean "nothing to
+    // say". Everything else is said, UNVERIFIABLE included: git declining to
+    // answer is not the same as answering no, and treating the two alike would
+    // make the warning disappear in exactly the case where nobody can tell
+    // whether it was needed.
+    if (status === subsDestination.IGNORED
+        || status === subsDestination.OUTSIDE_WORK_TREE) { return null; }
+    const why = status === subsDestination.NOT_IGNORED
+        ? '  It is inside a git work tree and is not gitignored -- the scrubbed capture, the\n' +
+          '  digest and the catalogue will show as untracked files there.'
+        : '  git did not answer whether it is gitignored, so nothing here can promise the\n' +
+          '  scrubbed capture, the digest and the catalogue will stay out of version control.';
     return [
         `--output-path resolved to ${paths.outputPath}`,
-        '  It is inside a git work tree and is not gitignored -- the scrubbed capture, the',
-        '  digest and the catalogue will show as untracked files there.',
+        why,
         '  Proceeding: this is a destination you named. The session directory keeps its own',
         '  copy of everything either way.'
     ].join('\n');
@@ -611,6 +621,16 @@ const CAPTURE_GITIGNORE_ENTRIES = [
     '.har-profile.json',
     '.har-substitutions.json',
     '.substitutions.json'
+];
+
+// The block says what it is FOR, and names only what it writes. The scaffolder's
+// own header talks about HAR-Original/ and MobileApp-Binaries/, which this block
+// does not contain -- a provenance note about files that are not there sends the
+// next reader hunting.
+const CAPTURE_GITIGNORE_HEADER = [
+    '# Added by the HAR recorder (see .github/skills/web-api-discovery/SKILL.md).',
+    '# A raw capture carries live session cookies and is never scrubbed; the',
+    '# substitution tables are keyed by the plaintext values the scrub replaced.'
 ];
 
 /**
@@ -700,7 +720,8 @@ async function ensureCapturesRootIgnored(placement, opts = {}) {
     if (!/^y/i.test((answer || '').trim())) {
         return { ok: false, status, message: 'capture-har: declined -- nothing was recorded.' };
     }
-    ensureRepoRootGitignoreHasScaffoldEntries(anchor || capturesRoot, CAPTURE_GITIGNORE_ENTRIES);
+    ensureRepoRootGitignoreHasScaffoldEntries(anchor || capturesRoot, CAPTURE_GITIGNORE_ENTRIES,
+        CAPTURE_GITIGNORE_HEADER);
     // Ask git again rather than assuming the append worked. A rule that does
     // not take effect -- a negation later in the file, a nested .gitignore --
     // must not be reported as protection.
@@ -2514,10 +2535,20 @@ async function start(args) {
     let assembled = null;
     if (!fs.existsSync(paths.harPath)) {
         assembled = assembleFromLog(paths.recordLog, paths.harPath);
-    } else {
-        // recordHar won; keeping both invites someone to analyze the other one.
-        try { fs.unlinkSync(paths.recordLog); } catch (e) { /* nothing to remove */ }
     }
+    // THE RECORD LOG IS KEPT EVEN WHEN recordHar WON (#377).
+    //
+    // It used to be deleted here, on the reasoning that keeping both invites
+    // somebody to analyze the wrong one. That reasoning is real but it is
+    // outweighed: the log is the only witness to what the recorder SAW before
+    // assembly, so it is the recovery path if a `raw.har` is ever found
+    // malformed -- and a raw is the one artifact that cannot be re-made.
+    //
+    // Nothing under `.har-captures/` is discarded. The confusion risk is
+    // answered by naming: `raw.har` is the capture, `raw.ndjson` is the log,
+    // and both sit in a directory nothing but this tool writes to. Store
+    // growth is real and is a separate concern deserving its own issue, not a
+    // side effect of a placement fix.
     const summary = summarize(paths.harPath);
 
     // endedUtc is written FIRST, preserving the stop contract, and

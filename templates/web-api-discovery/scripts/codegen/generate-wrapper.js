@@ -89,12 +89,24 @@ const SCAFFOLD_GITIGNORE_ENTRIES = [
     '.har-captures/',
 ];
 
-function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {
+// What the appended block SAYS about itself. Parameterised because the header
+// has to describe the entries actually being written: a caller appending only
+// the capture-store rules (capture-har.js does, #377) would otherwise plant a
+// comment about HAR-Original/ and MobileApp-Binaries/ in the operator's
+// .gitignore above a block containing neither. A wrong provenance note is worse
+// than none -- it sends the next reader looking for files that are not there.
+const SCAFFOLD_GITIGNORE_HEADER = [
+    '# Added by web-api-discovery (see .github/skills/web-api-discovery/SKILL.md).',
+    '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.',
+];
+
+function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries, header) {
     // Idempotent: appends only entries that are not already present (exact
     // line match, ignoring leading/trailing whitespace). Creates the file
     // when absent. Returns the array of entries actually added (empty when
     // already in sync).
     const list = entries || SCAFFOLD_GITIGNORE_ENTRIES;
+    const heading = header || SCAFFOLD_GITIGNORE_HEADER;
     const target = path.join(outDir, '.gitignore');
     let existing = '';
     let hadFile = false;
@@ -113,14 +125,8 @@ function ensureRepoRootGitignoreHasScaffoldEntries(outDir, entries) {
     if (hadFile && existing.length > 0 && !existing.endsWith('\n') && !existing.endsWith('\r')) {
         block += eol;
     }
-    if (hadFile && existing.length > 0) {
-        block += eol;
-        block += '# Added by web-api-discovery (see .github/skills/web-api-discovery/SKILL.md).' + eol;
-        block += '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.' + eol;
-    } else {
-        block += '# Added by web-api-discovery (see .github/skills/web-api-discovery/SKILL.md).' + eol;
-        block += '# HAR-Original/ contains real PII; MobileApp-Binaries/ contains downloaded apk/ipa.' + eol;
-    }
+    if (hadFile && existing.length > 0) { block += eol; }
+    for (const line of heading) { block += line + eol; }
     block += missing.join(eol) + eol;
     fs.writeFileSync(target, existing + block);
     return missing;
@@ -1277,4 +1283,5 @@ module.exports = {
     antiBotWarningSection,
     ensureRepoRootGitignoreHasScaffoldEntries,
     SCAFFOLD_GITIGNORE_ENTRIES,
+    SCAFFOLD_GITIGNORE_HEADER,
 };
