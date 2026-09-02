@@ -286,4 +286,25 @@ const ATTEMPT_STATE = 'QXR0ZW1wdFN0YXRlU3ludGhldGljRml4dHVyZVZhbHVlTm90UmVhbA';
         '7.c: an unrelated form field was destroyed by the redaction');
 }
 
+// --- 8. The gate/scrubber decode predicate is one exported definition. ----
+// The gate reaching less deeply than the scrubber is the `(verified)` bug
+// itself, so the test for "is this worth decoding" is exported rather than
+// kept private. `sanitize-har.js` still carries its own copy and already
+// requires this module, so this export is what it converges onto; nothing can
+// detect the drift while there are two private copies, which is why the
+// canonical one is named here.
+{
+    assert.strictEqual(typeof secrets.looksFormEncoded, 'function',
+        '8.a: looksFormEncoded is not exported, so the scrubber has nothing to ' +
+        'converge onto and the two copies can drift apart unobserved');
+    assert.strictEqual(secrets.looksFormEncoded('variables=%7B%22a%22%3A1%7D&doc_id=1'), true,
+        '8.b: a percent-encoded form body was not recognised as worth decoding');
+    assert.strictEqual(secrets.looksFormEncoded('a=1&b=2'), false,
+        '8.c: a body with no percent escape was decoded anyway -- nothing is ' +
+        'hidden there, and re-encoding rewrites the value for no gain');
+    assert.strictEqual(secrets.looksFormEncoded('c_user=42; xs=%41%42%43'), false,
+        '8.d: a Cookie header was treated as a form body -- it has its own ' +
+        'pairs in the HAR and its separators must survive');
+}
+
 console.log('All har-auth-secret-fields tests passed');
