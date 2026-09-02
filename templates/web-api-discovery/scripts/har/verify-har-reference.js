@@ -617,4 +617,17 @@ function main() {
     process.exit(3);
 }
 
-main();
+// Run as a CLI, but stay requirable as a module.
+//
+// `bodyCarriesPayloadStructure` is the project's ONE answer to "is this a
+// request body, or a placeholder standing in for one" -- recognised by wire
+// grammar rather than by a list of known sentinels, for the reasons documented
+// at length above gate 7. har-catalogue.js imports it so the committed
+// catalogue's `RequestBodies` count and this gate cannot drift apart into two
+// implementations that merely agree today.
+//
+// Without the guard, `require`ing this file would run the whole gate against
+// the requiring script's own directory and exit the process.
+if (require.main === module) main();
+
+module.exports = { bodyCarriesPayloadStructure };
