@@ -196,10 +196,18 @@ function verifyDirectory(dir) {
         if (!onDisk.has(harFile)) {
             const actual = onDiskByLower.get(harFile.toLowerCase());
             if (actual) {
-                // Claim the file anyway, so it is not ALSO reported as one no
-                // row names. There is exactly one mistake here and the operator
-                // should be told it once.
-                claimedBy.set(actual, label);
+                // Claim the file on the row's behalf, so it is not ALSO reported
+                // as one no row names -- but never OVERWRITE an existing claim.
+                // Overwriting let a second row silently take over the first's
+                // claim, so "two rows describe one file" went unsaid whenever
+                // the correctly cased row happened to come first. A guard's
+                // report must not depend on the order rows sit in the file.
+                if (claimedBy.has(actual)) {
+                    report(`names ${harFile}, which ${claimedBy.get(actual)} already claims `
+                        + '(the two paths differ only in case)');
+                } else {
+                    claimedBy.set(actual, label);
+                }
                 report(`names ${harFile}, but the file on disk is ${actual} -- `
                     + 'the paths differ only in case. This opens fine on a '
                     + 'case-insensitive filesystem and does not exist at all on a '

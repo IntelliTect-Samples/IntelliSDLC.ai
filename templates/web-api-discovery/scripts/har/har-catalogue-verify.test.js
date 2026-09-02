@@ -295,6 +295,35 @@ test('a HarFile differing only in casing is reported AS a casing problem', () =>
         `the same file was reported as uncatalogued too:\n${r.stderr}`);
 });
 
+test('a duplicate is reported whichever row is mis-cased, and whichever comes first', () => {
+    // A guard's REPORT must not depend on the order rows happen to sit in the
+    // file. The case-mismatch branch claims the real path on the row's behalf,
+    // and claiming it unconditionally let a second row's claim overwrite the
+    // first -- so "two rows describe one file" went unsaid when the correctly
+    // cased row happened to come first. Never a false pass, but it cost the
+    // operator a second CI cycle to see the whole picture, and which findings
+    // you get should not depend on arrangement.
+    const mis = 'Example/Example-Create-Post-2026-08-26.har';
+
+    for (const [name, rows] of [
+        ['exact-then-miscased', [REF, mis]],
+        ['miscased-then-exact', [mis, REF]],
+        ['both-miscased', [mis, mis.toUpperCase()]],
+    ]) {
+        const dir = makeProject(`dup-${name}`, (s) => {
+            s.row.HarFile = rows[0];
+            s.extraRows.push(Object.assign({}, s.row, {
+                Action: 'create-post-again', HarFile: rows[1],
+            }));
+        });
+
+        const r = runVerify(dir);
+        assert.notStrictEqual(r.code, 0, `${name}: passed`);
+        assert.match(r.stderr, /already claims/,
+            `${name}: two rows over one reference went unreported:\n${r.stderr}`);
+    }
+});
+
 test('two entries naming the same reference FAIL', () => {
     // Two rows over one file means at least one of them describes traffic the
     // file does not hold, and the reader has no way to tell which.
@@ -417,6 +446,65 @@ test('reports every violation in one run, not just the first', () => {
     assert.match(r.stderr, /EntryCount/);
     assert.match(r.stderr, /ResponseBytes/);
     assert.match(r.stderr, /example-orphan-2026-08-27\.har/);
+});
+
+// ---------------------------------------------------------------------------
+// Scaffold -> promote -> verify, across the module boundary
+// ---------------------------------------------------------------------------
+
+test('a row promoted from a mixed-case scaffold passes its own guard', () => {
+    // THIS ASSERTION EXISTS TO FAIL IF SOMEONE NORMALISES ONE SIDE ONLY.
+    //
+    // buildDigest writes a row's Methods; measureReference recomputes them. The
+    // digest once kept the verb exactly as captured while the guard uppercased,
+    // so a capture containing `post` produced a row reading ["post"] that failed
+    // the guard on casing alone -- correct data reported as wrong, and the
+    // repair people reach for is to weaken the comparison.
+    //
+    // The naive form of this test -- scaffold, then verify -- is WORTHLESS here
+    // and it is worth saying why: a scaffold row is `Observed` with no HarFile,
+    // so the guard skips fact comparison entirely and the test passes without
+    // ever engaging the thing it claims to check. It has to PROMOTE a row
+    // against a real reference first, which is the first point both paths run.
+    const capture = require(path.join(__dirname, '..', 'capture', 'capture-har.js'));
+
+    const dir = path.join(tmp, 'scaffold-promote');
+    fs.mkdirSync(path.join(dir, 'example'), { recursive: true });
+
+    // Mixed case, and the same operation spelled both ways -- one endpoint.
+    const entries = [
+        entryFor(FORM_BODY),
+        Object.assign(JSON.parse(JSON.stringify(entryFor(FORM_BODY))), {}),
+    ];
+    entries[1].request.method = 'post';
+
+    const doc = { log: { version: '1.2', creator: { name: 'test', version: '1' }, entries } };
+    fs.writeFileSync(path.join(dir, REF), JSON.stringify(doc, null, 2));
+
+    const scaffold = capture.buildCatalogueScaffold(capture.buildDigest(doc));
+    assert.strictEqual(scaffold.length, 1,
+        'one operation spelled two ways must not scaffold as two rows');
+
+    // Promote exactly as catalogue-prompt.md instructs -- and deliberately keep
+    // the scaffold's Methods/Endpoints, which is the tempting shortcut the
+    // normalisation mismatch used to punish.
+    const facts = cat.measureReference(path.join(dir, REF));
+    const row = Object.assign({}, scaffold[0], {
+        Status: 'Exercised',
+        HarFile: REF,
+        Provider: 'example',
+        Description: 'Published two posts',
+        EntryCount: facts.EntryCount,
+        RequestBodies: facts.RequestBodies,
+        RequestBytes: facts.RequestBytes,
+        ResponseBytes: facts.ResponseBytes,
+    });
+    fs.writeFileSync(path.join(dir, 'catalogue.json'), JSON.stringify([row], null, 2) + '\n');
+    spawnSync(process.execPath, [render, '--dir', dir], { encoding: 'utf8' });
+
+    const r = runVerify(dir);
+    assert.strictEqual(r.code, 0,
+        `a correctly promoted row failed its own guard:\n${r.stderr}`);
 });
 
 console.log(`All har-catalogue-verify tests passed (${passed} assertions)`);
