@@ -3071,14 +3071,17 @@ Describe 'Invoke-MainTreeCleanup' {
         ($actions -join "`n") | Should -Match 'Pull-SDLC\.ai\.ps1'
     }
 
-    It 'reverts a tracked-modified file holding an OLDER upstream version (issue #135)' {
-        # The consumer's dirt came from a self-refresh against an INTERMEDIATE
-        # upstream commit, so it matches neither HEAD nor the upstream tip.
-        # It is still provably upstream-sourced -- the content exists in the
-        # upstream ref's history -- so it is not consumer-authored work and
-        # reverting loses nothing. Without this, a consumer whose dirt is one
-        # upstream revision stale stays wedged with a permanent
-        # "differs from upstream" warning.
+    It 'leaves a tracked-modified file holding an OLDER upstream version in place, and says how to clear it (issue #135)' {
+        # A tracked file holding an older upstream version is indistinguishable
+        # from a deliberate pin -- a consumer who put a known-good older script
+        # there to dodge a regression. Nothing else in the tool would overwrite
+        # it (the diff-replay only runs against the scratch worktree, and the
+        # #202 guard stops self-refresh touching a file with uncommitted edits),
+        # so an automatic revert here would be the one thing that destroys it.
+        #
+        # But the old "differs from upstream" warning was wrong -- the content
+        # IS upstream's -- and left the consumer with no way out. Say which case
+        # it is and name the command that clears it.
         $fx = New-CleanupFixture -Root $script:cleanupRoot
         $intermediate = "# intermediate upstream content`n"
         Push-Location $fx.Upstream
@@ -3102,10 +3105,16 @@ Describe 'Invoke-MainTreeCleanup' {
         } finally { Pop-Location }
         Invoke-MainTreeCleanup -RepoRoot $fx.Consumer -UpstreamRef 'sdlc.ai/main' -WarningVariable warns -WarningAction SilentlyContinue | Out-Null
 
-        Push-Location $fx.Consumer
-        try { $status = @(git status --porcelain) } finally { Pop-Location }
-        $status | Should -BeNullOrEmpty
-        ($warns | Out-String) | Should -Not -Match 'differ'
+        # The pinned content survives -- it is NOT reverted to HEAD.
+        (Get-Content -Raw -LiteralPath (Join-Path $fx.Consumer 'Pull-SDLC.ai.ps1')) |
+            Should -Match 'intermediate upstream content'
+        $warnText = ($warns | Out-String)
+        # Not the misleading "differs from upstream" claim: the content IS
+        # upstream's, just not the tip.
+        $warnText | Should -Not -Match 'differ'
+        $warnText | Should -Match 'not the current tip'
+        # And it names the escape, so the consumer is not stranded.
+        $warnText | Should -Match 'git checkout -- Pull-SDLC\.ai\.ps1'
     }
 
     It 'leaves a tracked-modified file alone when its content is consumer-authored' {
