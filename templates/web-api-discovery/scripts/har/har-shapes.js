@@ -87,9 +87,16 @@ const LEAK_PATTERNS = [
         // envelopes at 120, 39 and ELEVEN characters, so a rule demanding a
         // long tail misses two of the three it was written for; the prefix is
         // doing the work, not the length.
+        // CASE-SENSITIVE, like every other pattern in this table. The `i` flag
+        // would apply to the literal `PWD_` token as well as the label and so
+        // would double the token's spelling space -- which weakens the one
+        // argument this rule rests on ("no benign value begins with that
+        // token") in exchange for catching a spelling no capture has ever
+        // shown. A lowercase specimen would be evidence; until one exists,
+        // matching one is speculation. Case 4 pins the refusal.
         name: 'pwd-envelope',
         class: 'secret',
-        re: /#PWD_[A-Z0-9_]{1,40}:\d{1,4}:\d{1,14}:[A-Za-z0-9+/_=-]{4,}/gi,
+        re: /#PWD_[A-Z0-9_]{1,40}:\d{1,4}:\d{1,14}:[A-Za-z0-9+/_=-]{4,}/g,
         // There is no fake spelling of this shape to exempt. The scrubber
         // replaces a redacted value ENTIRELY, with `redacted-<hex>`, which
         // carries no `#PWD_` prefix and so cannot match -- unlike `jwt` or
@@ -98,6 +105,14 @@ const LEAK_PATTERNS = [
         // would add an exemption nothing produces, and an exemption no test can
         // reach is a hole waiting for someone to widen it. Case 7.c pins the
         // claim instead of asserting it in prose.
+        //
+        // THIS IS TRUE ONLY WHILE THE SCRUBBER HAS NO SHAPE RULE FOR THIS KIND,
+        // and it does not: `sanitize-har.js`'s own `PATTERNS` table gates `jwt`,
+        // `hex64`, `hex32` and `upload-handle` by shape, and this kind is
+        // deliberately absent from it (see case 8). Whoever adds one MUST come
+        // back here: a format-preserving fake -- which is what `upload-handle`,
+        // the closest precedent, emits -- would match this pattern and the gate
+        // would re-report the scrubber's own redaction on every run, forever.
         isFake: () => false
     },
     {
