@@ -1087,8 +1087,12 @@ behaviours:
 - Emits **decoded** `postData.params[]` alongside the scrubbed wire `text`.
   A percent-encoded form body is not greppable; the decoded copy is what
   makes the reference searchable for a field name.
-- Refuses to run without a selector, and **fails loudly when nothing
-  matches** rather than writing an empty reference.
+- **Selects the API calls by default** and prints what it dropped, by category,
+  with kept + dropped always equal to the number of entries scanned. `--match`
+  is optional narrowing *within* that set (#410).
+- **Fails loudly when the selection is empty** rather than writing an empty
+  reference -- distinguishing "no entry was classified as an API call" from
+  "your selector matched none of the ones that were".
 - Re-checks its own output for forbidden literals **before writing**, and
   fails rather than writing. Its post-processing can reveal a literal the
   scrub never saw -- decoding a parameter to emit `params[]` peels a layer of
