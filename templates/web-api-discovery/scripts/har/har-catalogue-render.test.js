@@ -186,6 +186,53 @@ test('hand-written prose outside the markers survives regeneration verbatim', ()
     assert.ok(text.includes('example-create-post-2026-08-26.har'), 'the new table is absent');
 });
 
+test('a CRLF README stays CRLF, so the staleness gate cannot fail forever', () => {
+    // THE FAILURE THIS PREVENTS: a consuming project whose checkout produces
+    // CRLF (no `eol=lf` attribute, autocrlf on) renders a README whose prose is
+    // CRLF and whose generated region is LF. Re-rendering never reproduces the
+    // committed bytes, so verify-har-catalogue.js reports the table as stale on
+    // every run -- and the gate's own advice, "run render-har-catalogue.js and
+    // review the diff", does not fix it. A permanently red gate gets disabled.
+    //
+    // This repo's own .gitattributes forces LF and hides the bug here. The
+    // scripts ship as a TEMPLATE into repos that carry no such guarantee.
+    const preamble = '# Notes\r\n\r\nHand-written, with CRLF endings.\r\n\r\n';
+    const dir = makeProject('crlf', {
+        readme: `${preamble}${cat.BEGIN_MARKER}\r\nold\r\n${cat.END_MARKER}\r\n`,
+    });
+
+    assert.strictEqual(runRender(dir).code, 0);
+    const text = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
+    assert.ok(!/(?<!\r)\n/.test(text), `a lone LF was written into a CRLF file:\n${JSON.stringify(text)}`);
+
+    // And it is still idempotent in that shape -- which is the property the
+    // staleness gate actually rests on.
+    const first = fs.readFileSync(path.join(dir, 'README.md'));
+    runRender(dir);
+    assert.ok(first.equals(fs.readFileSync(path.join(dir, 'README.md'))));
+});
+
+test('an LF README stays LF', () => {
+    const dir = makeProject('lf', {
+        readme: `# Notes\n\nHand-written.\n\n${cat.BEGIN_MARKER}\nold\n${cat.END_MARKER}\n`,
+    });
+    runRender(dir);
+    assert.ok(!fs.readFileSync(path.join(dir, 'README.md'), 'utf8').includes('\r'));
+});
+
+test('a second, orphaned BEGIN marker FAILS rather than leaving garbage', () => {
+    // Only the first BEGIN/END pair is ever replaced. A stray second marker
+    // after a valid region is a broken file, and silently rendering around it
+    // leaves a reader with two tables and no way to know which is generated.
+    const dir = makeProject('orphan-marker', {
+        readme: `${cat.BEGIN_MARKER}\nold\n${cat.END_MARKER}\n\n${cat.BEGIN_MARKER}\nstray\n`,
+    });
+
+    const r = runRender(dir);
+    assert.notStrictEqual(r.code, 0, 'an orphaned second marker was accepted');
+    assert.match(r.stderr, /more than one|second/i);
+});
+
 test('a README with no markers FAILS rather than being rewritten', () => {
     // Guessing where the table goes is how a generator eats a paragraph. The
     // file is left exactly as it was and the operator is told what to paste.

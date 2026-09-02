@@ -73,9 +73,10 @@ function renderDirectory(dir) {
     const next = cat.renderReadme(existing, entries, path.basename(path.resolve(dir)));
     if (existing !== null && next === existing) return null;
 
-    // Newline-normalised on write. A generated artifact whose line endings
-    // follow whoever last ran it would fail the staleness gate on the other
-    // operating system, and the fix people reach for is to disable the gate.
+    // `renderReadme` has already matched the file's own line endings, so this
+    // writes the string as given. Do NOT add normalisation here: rewriting a
+    // consumer's CRLF README as LF would dirty their tree on the first run and
+    // make the staleness gate the thing that did it.
     fs.writeFileSync(readmePath, next, { encoding: 'utf8' });
     return next;
 }

@@ -74,7 +74,15 @@ const BODY_BEARING_METHODS = new Set(['POST', 'PUT', 'PATCH']);
 // Directories that are never part of a committed reference set. `.har-captures`
 // holds raw captures with live credentials and is gitignored; the other two are
 // never interesting and are expensive to walk.
+//
+// MATCHED CASE-INSENSITIVELY, exactly as verify-har-reference.js does, and for
+// its reason: this project's primary platform is case-preserving but
+// case-insensitive, so an exact-case test lets the walker descend into
+// `.Har-Captures` and hand back an unscrubbed raw as though it were a committed
+// reference. Two walkers over one tree must not disagree about which
+// directories exist.
 const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
+const isSkippedDir = (name) => SKIP_DIRS.has(name.toLowerCase());
 
 // ---------------------------------------------------------------------------
 // Endpoints
@@ -173,19 +181,37 @@ function measureReference(harPath) {
     let requestBodies = 0;
     let requestBytes = 0;
     let responseByteTotal = 0;
+    let bodyBearingEntries = 0;
+    let bodyBearingWithBody = 0;
 
     for (const entry of entries) {
         const request = entry.request || {};
-        if (request.method) methods.add(String(request.method).toUpperCase());
+        const method = request.method ? String(request.method).toUpperCase() : null;
+        if (method) methods.add(method);
         const endpoint = endpointOf(request);
         if (endpoint) endpoints.add(endpoint);
 
-        if (hasRequestBody(entry)) {
+        const carriesBody = hasRequestBody(entry);
+        if (carriesBody) {
             requestBodies++;
             // Only bodies that ARE bodies contribute, so `RequestBodies: 0,
             // RequestBytes: 0` cannot be misread as "a small payload".
             requestBytes += Buffer.byteLength(entry.request.postData.text);
         }
+
+        // Counted PER ENTRY, not folded into the file-wide totals above.
+        //
+        // The falsifier reads these two and nothing else. An earlier cut of it
+        // read `RequestBodies`, and an independent review found the hole: a
+        // reference holding one GET with a body and five bodyless POSTs scores
+        // `RequestBodies: 1`, so a check asking "is there a body anywhere in
+        // this file" went quiet while every POST in it carried no payload. One
+        // unrelated entry vouched for the traffic the row was actually about.
+        if (method && BODY_BEARING_METHODS.has(method)) {
+            bodyBearingEntries++;
+            if (carriesBody) bodyBearingWithBody++;
+        }
+
         responseByteTotal += responseBytes(entry);
     }
 
@@ -196,6 +222,12 @@ function measureReference(harPath) {
         RequestBodies: requestBodies,
         RequestBytes: requestBytes,
         ResponseBytes: responseByteTotal,
+        // Deliberately NOT in MEASURED_FIELDS: derived entirely from the file
+        // and consumed only by the falsifier, so declaring them in a row would
+        // add two more numbers a human must keep correct for no extra checking.
+        // Being recomputed on every run is what makes them unfakeable.
+        BodyBearingEntries: bodyBearingEntries,
+        BodyBearingWithBody: bodyBearingWithBody,
     };
 }
 
@@ -221,7 +253,7 @@ function listReferences(dir) {
     const walk = (current, prefix) => {
         for (const dirent of fs.readdirSync(current, { withFileTypes: true })) {
             if (dirent.isDirectory()) {
-                if (SKIP_DIRS.has(dirent.name)) continue;
+                if (isSkippedDir(dirent.name)) continue;
                 walk(path.join(current, dirent.name), `${prefix}${dirent.name}/`);
             } else if (dirent.name.toLowerCase().endsWith('.har')) {
                 found.push(`${prefix}${dirent.name}`);
@@ -375,7 +407,23 @@ class MissingMarkersError extends Error {}
  *     -- the part of the file a person cannot regenerate.
  */
 function renderReadme(existing, entries, dirLabel) {
-    const region = `${BEGIN_MARKER}\n\n${renderTable(entries)}\n\n${END_MARKER}`;
+    // MATCH THE FILE'S OWN LINE ENDINGS.
+    //
+    // The generated region is built with `\n`, and the hand-written prose is
+    // sliced out of `existing` verbatim. On a checkout that produces CRLF -- no
+    // `eol=lf` attribute, `core.autocrlf` on -- that mixes the two, and the
+    // re-render can never reproduce the committed bytes. verify-har-catalogue.js
+    // then reports the table as stale on EVERY run, and the gate's own advice
+    // ("run render-har-catalogue.js and review the diff") does not fix it. A
+    // permanently red gate gets disabled, which costs every check it carries.
+    //
+    // This repo's `.gitattributes` forces LF and would hide the fault entirely.
+    // These scripts ship as a TEMPLATE into repos that carry no such guarantee,
+    // so the renderer cannot assume the convention of the repo it was written in.
+    const eol = typeof existing === 'string' && /\r\n/.test(existing) ? '\r\n' : '\n';
+    const nl = (text) => (eol === '\n' ? text : text.replace(/\n/g, eol));
+
+    const region = nl(`${BEGIN_MARKER}\n\n${renderTable(entries)}\n\n${END_MARKER}`);
 
     if (existing === null || existing === undefined) {
         return [
@@ -403,6 +451,17 @@ function renderReadme(existing, entries, dirLabel) {
             'and no safe way to guess. Paste these two lines where the table belongs and ' +
             're-run:\n' +
             `  ${BEGIN_MARKER}\n  ${END_MARKER}`);
+    }
+
+    // Only the FIRST pair is ever replaced, so a second marker is a broken file
+    // rather than a second region. Rendering around it silently would leave a
+    // reader with two tables and no way to tell which one is generated -- and
+    // the stale one would look exactly as authoritative as the live one.
+    if (existing.indexOf(BEGIN_MARKER, begin + BEGIN_MARKER.length) >= 0) {
+        throw new MissingMarkersError(
+            'README.md carries more than one BEGIN marker. Only the first generated ' +
+            'region is replaced, so a second one would sit there stale and indistinguishable ' +
+            'from the live table. Delete the extra marker and re-run.');
     }
 
     return existing.slice(0, begin) + region + existing.slice(end + END_MARKER.length);

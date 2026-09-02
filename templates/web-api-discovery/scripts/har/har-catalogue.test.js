@@ -168,6 +168,47 @@ test('collapses ids in endpoints the same way the capture digest does', () => {
     assert.deepStrictEqual(facts.Endpoints, ['api.example.invalid/v1/posts/{id}']);
 });
 
+test('a body on a GET does not vouch for the POSTs beside it', () => {
+    // THE HOLE AN INDEPENDENT REVIEW FOUND, and the reason the falsifier reads
+    // a per-method measure rather than the file-wide count.
+    //
+    // `RequestBodies` counts every entry carrying a body, whatever its method.
+    // A reference holding one GET with a body and five bodyless POSTs scores
+    // `RequestBodies: 1`, and a falsifier keyed to "does this file contain a
+    // body anywhere" goes quiet -- while the file's actual POST traffic carries
+    // zero bytes of payload. That is exactly the class of defect this issue
+    // exists to catch, waved through by one unrelated entry.
+    const facts = cat.measureReference(writeHar('get-covers-post.har', [
+        entry({ request: { method: 'GET', url: 'https://api.example.invalid/v1/probe',
+            postData: { mimeType: 'application/json', text: '{"probe":true}' } } }),
+        postEntry(HOLLOW_BODY), postEntry(HOLLOW_BODY), postEntry(HOLLOW_BODY),
+    ]));
+
+    // The file-wide count is honest about what it counts.
+    assert.strictEqual(facts.RequestBodies, 1);
+
+    // The per-method measure is what the falsifier reads, and it is not fooled.
+    assert.strictEqual(facts.BodyBearingEntries, 3);
+    assert.strictEqual(facts.BodyBearingWithBody, 0);
+});
+
+test('counts only the body-bearing entries that really carry a body', () => {
+    const facts = cat.measureReference(writeHar('partial.har', [
+        postEntry(FORM_BODY),
+        postEntry(HOLLOW_BODY),
+        entry(),
+    ]));
+
+    assert.strictEqual(facts.BodyBearingEntries, 2);
+    assert.strictEqual(facts.BodyBearingWithBody, 1);
+});
+
+test('a reference with no body-bearing entries reports none', () => {
+    const facts = cat.measureReference(writeHar('gets-only.har', [entry(), entry()]));
+    assert.strictEqual(facts.BodyBearingEntries, 0);
+    assert.strictEqual(facts.BodyBearingWithBody, 0);
+});
+
 test('reports a reference it cannot read rather than measuring nothing', () => {
     // Returning zeroes for an unreadable file would let a deleted or corrupt
     // reference pass as "a reference with no entries".
@@ -190,6 +231,23 @@ test('a HAR with no entries measures as empty rather than throwing', () => {
 // ---------------------------------------------------------------------------
 // listReferences -- what the catalogue must account for
 // ---------------------------------------------------------------------------
+
+test('skips a raw-capture directory whatever its casing', () => {
+    // `.har-captures` holds the UNSCRUBBED raw with live credentials, and is
+    // gitignored. verify-har-reference.js lowercases before this check for a
+    // documented reason: Windows is case-preserving but case-insensitive, so an
+    // exact-case test lets the walker descend into `.Har-Captures` and treat a
+    // raw capture as a committed reference. Two walkers over one tree must not
+    // disagree about which directories exist.
+    const dir = path.join(tmp, 'casing');
+    fs.mkdirSync(path.join(dir, '.Har-Captures'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'NODE_MODULES'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.Har-Captures', 'raw-unscrubbed.har'), '{}');
+    fs.writeFileSync(path.join(dir, 'NODE_MODULES', 'vendored.har'), '{}');
+    fs.writeFileSync(path.join(dir, 'real-2026-08-26.har'), '{}');
+
+    assert.deepStrictEqual(cat.listReferences(dir), ['real-2026-08-26.har']);
+});
 
 test('finds references in provider subdirectories and beside the catalogue', () => {
     // Both layouts are live: provider subdirectories upstream today, flat

@@ -124,8 +124,14 @@ function showFact(value) {
  * prose puts the justification in the file, in the diff, under review.
  */
 function checkRequestSideClaim(row, facts, report) {
+    // PER-METHOD, never the file-wide `RequestBodies`. An earlier cut of this
+    // read the file-wide count, and an independent review found the hole: one
+    // GET carrying a body vouched for five bodyless POSTs beside it, so a row
+    // reading "published five posts, each with a payload" passed untouched.
+    // The question is whether the entries the row is ABOUT carry payloads, not
+    // whether the file contains a payload somewhere.
+    if (facts.BodyBearingEntries === 0 || facts.BodyBearingWithBody > 0) return;
     const bodyBearing = facts.Methods.filter((m) => cat.BODY_BEARING_METHODS.has(m));
-    if (bodyBearing.length === 0 || facts.RequestBodies > 0) return;
 
     const reason = row.RequestBodiesAbsent;
     if (typeof reason === 'string' && reason.trim() !== '') return;
