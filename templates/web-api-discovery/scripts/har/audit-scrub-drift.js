@@ -444,6 +444,37 @@ function locateReplacements(referenceHar, replacements) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Is `keyPath` a HAR envelope property -- a header, a cookie, a query-string
+ * parameter, or the URL -- rather than a field the captured document itself
+ * named?
+ *
+ * `emitEntryStrings` spells these paths as `${ctx}.headers.${h.name}`,
+ * `${ctx}.cookies.${c.name}` and `request.queryString.${q.name}`, so the
+ * path's LAST SEGMENT is that header, cookie or query-parameter's OWN NAME --
+ * real captured data, but not a JSON field name. Handing it to
+ * `harPolicy.isIdentifierField` is a category error: a header genuinely named
+ * `X-Media-Id` is exactly where a provider's object id travels, and the
+ * identifier-field policy is written about field names, not envelope property
+ * names (#375). `request.url` is the same category error with no name segment
+ * at all -- `enclosingFieldName('request.url')` would otherwise report `url`
+ * as though some captured document had a field called that.
+ *
+ * A BODY key path (`request.postData....`, `response.content....`) is left
+ * alone here -- the enclosing field name there is real evidence the captured
+ * document actually carried and must keep working exactly as it does today.
+ * This is the audit's analogue of `har-shapes.capturedFieldName` (#369/#374),
+ * reimplemented against this file's own string key paths rather than the
+ * gate's, because the two walks build key paths differently and a shared
+ * `base` is not available here.
+ */
+function isEnvelopeKeyPath(keyPath) {
+    return /^(?:request|response)\.headers\./.test(keyPath)
+        || /^(?:request|response)\.cookies\./.test(keyPath)
+        || /^request\.queryString\./.test(keyPath)
+        || keyPath === 'request.url';
+}
+
+/**
  * For each wanted `originalHash`, what the linked raw holds under it: the value
  * and the field names that held it.
  *
@@ -467,7 +498,11 @@ function recoverFromRaw(rawHar, wantedHashes) {
             const h = pii.hashPrefix(run);
             if (!wantedHashes.has(h)) continue;
             if (!found.has(h)) found.set(h, { value: run, sites: [] });
-            found.get(h).sites.push({ entryIndex, keyPath, field: harShapes.enclosingFieldName(keyPath) });
+            found.get(h).sites.push({
+                entryIndex,
+                keyPath,
+                field: isEnvelopeKeyPath(keyPath) ? null : harShapes.enclosingFieldName(keyPath)
+            });
         }
     });
     return found;
@@ -821,6 +856,7 @@ module.exports = {
     discoverCaptures,
     claimingCaptures,
     countWholeRuns,
+    isEnvelopeKeyPath,
     recoverFromRaw,
     verdictFor,
     runAudit,
