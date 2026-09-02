@@ -271,6 +271,7 @@ $script:MetaScriptPaths = @(
     'Pull-SDLC.ai.ps1',
     'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
+    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
     'Consolidate-Specs.Tests.ps1'
 )
@@ -950,9 +951,24 @@ function Invoke-MainTreeCleanup {
         "Upstream-sourced" is the test, not "matches the tip", because the
         dirt this cleans up is typically one upstream revision stale -- the
         residue of a self-refresh that ran against an earlier upstream
-        commit. Reverting it loses nothing (the bytes are upstream's and the
-        sync commit already carries the update), while leaving it pins the
-        protected branch permanently dirty (issue #135).
+        commit. Leaving that pins the protected branch permanently dirty
+        (issue #135); reverting it discards nothing consumer-authored,
+        because the bytes are reachable in this repo's object store at
+        <UpstreamRef>.
+
+        Read that literally: an uncommitted working-tree copy of an OLDER
+        upstream version is reclaimed too, deliberate or not. That is not a
+        supported way to pin an older script anyway -- these paths are on
+        $script:UpstreamManagedPaths, so the diff-replay rewrites them on
+        every sync, and Invoke-SelfRefresh overwrites Pull-SDLC.ai.ps1 on any
+        run that is not headed for the auto-worktree path. Pin with
+        -NoSelfUpdate and a commit, not with an uncommitted edit.
+
+        The "discards nothing" argument holds for the bootstrap scripts in
+        the -Candidates default, whose content is upstream's by definition.
+        Do not widen -Candidates to paths a consumer legitimately authors:
+        for a short or boilerplate file, "these bytes appear somewhere in
+        upstream's history for this path" is a much weaker signal.
     .OUTPUTS
         Array of strings describing each action taken (for caller logging /
         test inspection). Empty when nothing needed cleanup.
@@ -1012,9 +1028,13 @@ function Invoke-MainTreeCleanup {
                 # self-refresh that ran against an intermediate upstream commit
                 # leaves exactly that. Probe the upstream ref's history.
                 # Test-PathContentInUpstreamHistory diffs git objects, so the
-                # working-tree bytes have to exist as a blob first; `-w` writes
-                # to the object store only and never touches the working tree
-                # (loose objects are unreferenced and get collected).
+                # working-tree bytes have to exist as a blob first. `-w` runs
+                # before ShouldProcess and therefore also under -WhatIf; that is
+                # deliberate, so a dry run previews the same decision the real
+                # run would make. It is not a dry-run side effect in the sense
+                # issues #200 / #108 protect: it writes one unreferenced loose
+                # object and touches no working-tree file, index entry, or ref,
+                # so no command's output changes and `git gc` collects it.
                 $writtenSha = (& git hash-object -w --no-filters -- $abs 2>$null)
                 if ($writtenSha) {
                     $isUpstreamSourced = Test-PathContentInUpstreamHistory -Path $path `
@@ -1032,11 +1052,6 @@ function Invoke-MainTreeCleanup {
                     }
                 }
                 elseif ($PSCmdlet.ShouldProcess($path, 'Revert tracked-and-modified upstream-sourced file')) {
-                    # Reverting cannot lose work: these bytes are upstream's,
-                    # still reachable in this repo's object store, and -- when
-                    # HEAD is behind -- already carried by the sync commit the
-                    # run just made on the sync branch.
-                    #
                     # PR #134 restricted this to HEAD == upstream, on the theory
                     # that a newer self-refreshed version might be sitting in the
                     # working tree awaiting commit. Issue #247 removed that
@@ -1046,10 +1061,14 @@ function Invoke-MainTreeCleanup {
                     # is redundant dirt that pins the protected branch dirty --
                     # blocking a fast-forward pull and, via
                     # Test-ScriptHasUncommittedEdits, disabling self-update for
-                    # good (issue #135).
+                    # good (issue #135). See .NOTES for why reverting is safe;
+                    # note it rests on the bytes being reachable at $UpstreamRef,
+                    # which the fetch guarantees -- NOT on this run's sync commit
+                    # or PR, either of which Invoke-AutoWorktreeSync can skip
+                    # while still returning success.
                     & git checkout -- $path 2>$null | Out-Null
                     if ($LASTEXITCODE -eq 0) {
-                        $msg = "Cleanup: reverted '$path' to HEAD (working-tree content came from upstream; nothing local to keep)."
+                        $msg = "Cleanup: reverted '$path' to HEAD (content came from upstream, not from local authoring)."
                         Write-Information $msg
                     }
                     else {
