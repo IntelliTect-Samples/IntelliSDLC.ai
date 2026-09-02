@@ -730,6 +730,83 @@ test('a single bodyless capture IS a hole, because one call cannot tell the two 
     assert.match(gap.closedBy, /again/i, 'and the way to close it is another capture');
 });
 
+test('a hole cannot be revived by trimming the witnesses that disprove it', () => {
+    // M2, found by independent review. The single-reference precondition was
+    // read off the COMMITTED document rather than re-derived from the
+    // references, so trimming a witness could flip it. Every other part of the
+    // re-derivation walks the entries on disk; this one trusted the file it is
+    // supposed to be checking.
+    const dir = path.join(tmp, 'trimmed-witness');
+    fs.mkdirSync(dir, { recursive: true });
+    for (const name of ['a.har', 'b.har']) {
+        fs.writeFileSync(path.join(dir, name), JSON.stringify(har([
+            entry({
+                method: 'POST',
+                url: 'https://www.example.invalid/api/logout',
+                responseText: '{"ok":true}',
+            }),
+        ]), null, 2) + '\n', 'utf8');
+    }
+    runNode(['--dir', dir]);
+
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const logout = doc.endpoints[0];
+    logout.witnesses = [logout.witnesses[0]];
+    logout.unproven.push({
+        kind: 'no-request-body-observed',
+        subjects: [],
+        detail: 'invented, propped up by a trimmed witness list',
+        closedBy: 'capture this operation again',
+        witnesses: logout.witnesses.slice(),
+    });
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /no-request-body-observed.*contradicted/,
+        'the references still show two of them; what the document says about that is not evidence');
+});
+
+test('one bad witness does not hide another bad witness on the same claim', () => {
+    // M3, found by independent review -- a completeness regression I introduced
+    // when factoring witness validation out. Returning early on the first
+    // malformed citation meant a second, well-formed citation that does not
+    // support the claim went unreported. The gate still failed, but it named
+    // one defect out of two, and the point of naming claims is to name all of
+    // them.
+    const dir = path.join(tmp, 'two-bad-witnesses');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/items',
+            postData: formPost([{ name: 'present', value: '1' }]),
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+
+    const file = path.join(dir, 'api.json');
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+    doc.endpoints[0].requestFields.push({
+        name: 'absent_field',
+        in: 'param',
+        observedIn: 1,
+        witnesses: [
+            { harFile: 'ghost.har', entry: 0 },
+            { harFile: 'real.har', entry: 0 },
+        ],
+    });
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+
+    const run = runNode(['--dir', dir, '--check']);
+    assert.strictEqual(run.code, 3, `expected a check violation, got ${run.code}`);
+    assert.match(run.stderr, /ghost\.har/, 'the malformed citation is named');
+    assert.match(run.stderr, /not supported by entry 0 of 'real\.har'/,
+        'and so is the well-formed citation that does not support the claim');
+});
+
 test('--check rejects a body hole on an endpoint two references witness', () => {
     // The re-derivation must apply the same rule the fold applies, not just a
     // weaker version of it. Without this, a hand-written "we never saw a

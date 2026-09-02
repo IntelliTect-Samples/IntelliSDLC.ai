@@ -715,7 +715,16 @@ function gapHolds(references, endpoint, gap) {
         }
     }
     const subjects = Array.isArray(gap.subjects) ? gap.subjects : [];
-    const witnessFiles = (e) => new Set((e.witnesses || []).map((w) => w && w.harFile));
+    // How many references actually witness this endpoint -- RE-DERIVED, never
+    // read off the document. Trusting `endpoint.witnesses` here would let a
+    // trimmed witness list flip the precondition and revive a hole the
+    // captures disprove, in the one branch that was not walking the entries
+    // like every other.
+    const witnessingReferences = references.filter(({ entries: list }) => list.some((e) => {
+        const key = endpointKeyOf(e);
+        return key && key.host === endpoint.host && key.method === endpoint.method
+            && key.pathTemplate === endpoint.pathTemplate;
+    })).length;
     const carriesName = (entry) => requestNamesOf(entry).some(
         (f) => OPERATION_NAME_FIELDS.has(f.name.toLowerCase()) && f.value);
 
@@ -727,9 +736,9 @@ function gapHolds(references, endpoint, gap) {
         });
     case 'no-request-body-observed':
         return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(hasRequestBody)
-            && witnessFiles(endpoint).size < 2;
+            && witnessingReferences < 2;
     case 'no-response-body-observed':
-        return !entries.some(responseText) && witnessFiles(endpoint).size < 2;
+        return !entries.some(responseText) && witnessingReferences < 2;
     case 'response-truncated':
         return entries.some(isTruncated);
     case 'operation-name-unknown':
@@ -783,14 +792,23 @@ function verifyWitnesses(byFile, endpoint, what, witnesses) {
     return violations;
 }
 
-/** One claim, checked against every entry it names. */
+/**
+ * One claim, checked against every entry it names.
+ *
+ * Each witness is judged on its own: a malformed citation does not stop the
+ * others from being checked. Returning at the first problem named one defect
+ * out of two, and a check whose value is that it NAMES the bad claim should
+ * name all of them in one run.
+ */
 function verifyClaim(byFile, endpoint, claim, kind) {
     const what = describeClaim(endpoint, claim, kind);
     const violations = verifyWitnesses(byFile, endpoint, what, claim.witnesses);
-    if (violations.length > 0) return violations;
 
-    for (const w of claim.witnesses) {
-        const entries = byFile.get(w.harFile);
+    for (const w of Array.isArray(claim.witnesses) ? claim.witnesses : []) {
+        const entries = byFile.get(w && w.harFile);
+        // Skip only the witnesses verifyWitnesses itself rejected; indexing
+        // past the end of a reference is what it was checking for.
+        if (!entries || !Number.isInteger(w.entry) || w.entry < 0 || w.entry >= entries.length) continue;
         if (!entrySupports(entries[w.entry], endpoint, claim, kind)) {
             violations.push(`${what} is not supported by entry ${w.entry} of '${w.harFile}'`);
         }
