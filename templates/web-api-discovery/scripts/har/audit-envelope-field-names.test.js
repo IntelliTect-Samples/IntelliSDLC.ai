@@ -314,9 +314,18 @@ function audit(root, ...refs) {
 }
 
 // ===========================================================================
-// Case 7 (GUARD): the same mixed shape, but the body field is NOT identifier-
-// named. The header must still contribute nothing, so the verdict falls to
-// the shape test alone -- CLEAN, since the raw is a real card.
+// Case 7 (FALSIFIER, not GUARD -- mislabelled): the same mixed shape, but the
+// body field is NOT identifier-named. The header must still contribute
+// nothing, so the verdict falls to the shape test alone -- CLEAN, since the
+// raw is a real card. Unlike case 6, this one DOES discriminate pre-fix from
+// post-fix code: before #375's fix, the header's own name (`X-Media-Id`) was
+// run through `isIdentifierField` and matched, so the header counted as an
+// IDENTIFYING site while the body field counted as a NON-identifying one --
+// one field of two agreeing, which `verdictFor` calls UNADJUDICABLE /
+// conflicting-field-context, not CLEAN. This case fails against pre-fix code
+// (confirmed by ablation against the pre-#375 revision of
+// `audit-scrub-drift.js`) and so is a falsifier of the bug the fix addresses,
+// not a guard against an unrelated regression.
 // ===========================================================================
 {
     const root = tmpRoot('mixed-header-and-plain-body');
@@ -369,6 +378,13 @@ function audit(root, ...refs) {
     assert.strictEqual(a.report.policy.projectPolicyFound, true,
         'precondition: the live project policy must actually be discovered, got '
         + JSON.stringify(a.report.policy));
+    // `projectPolicyFound === true` alone does not prove THIS case's policy was
+    // the one resolved -- `findUpward` walking to the wrong candidate would
+    // still report `true`. Pin the actual resolved path so a wrong-directory
+    // regression cannot silently stop testing anything.
+    assert.strictEqual(a.report.policy.path, path.join(root, '.har-policy.project.json'),
+        'precondition: the resolved project policy is not the one this case wrote, got '
+        + JSON.stringify(a.report.policy));
     assert.strictEqual(a.ref.outcome, 'CLEAN',
         'a card-shaped value seen only in the URL must be CLEAN even when a project policy '
         + 'declares *url as an identifier pattern, got ' + a.ref.outcome
@@ -401,6 +417,11 @@ function audit(root, ...refs) {
     assert.strictEqual(a.report.policy.projectPolicyFound, true,
         'precondition: the live project policy must actually be discovered, got '
         + JSON.stringify(a.report.policy));
+    // See case 8: `projectPolicyFound === true` does not prove this case's own
+    // policy was the one resolved. Pin the path.
+    assert.strictEqual(a.report.policy.path, path.join(root, '.har-policy.project.json'),
+        'precondition: the resolved project policy is not the one this case wrote, got '
+        + JSON.stringify(a.report.policy));
     assert.strictEqual(a.ref.outcome, 'CLEAN',
         'a card-shaped value as a top-level array element must be CLEAN even when a project '
         + 'policy declares *content as an identifier pattern, got ' + a.ref.outcome
@@ -431,10 +452,53 @@ function audit(root, ...refs) {
     assert.strictEqual(a.report.policy.projectPolicyFound, true,
         'precondition: the live project policy must actually be discovered, got '
         + JSON.stringify(a.report.policy));
+    // See case 8: pin the resolved path, not just its presence.
+    assert.strictEqual(a.report.policy.path, path.join(root, '.har-policy.project.json'),
+        'precondition: the resolved project policy is not the one this case wrote, got '
+        + JSON.stringify(a.report.policy));
     assert.strictEqual(a.ref.outcome, 'CLEAN',
         'a card-shaped value in a non-JSON body must be CLEAN even when a project policy '
         + 'declares *text as an identifier pattern, got ' + a.ref.outcome
         + ' (' + JSON.stringify(a.ref.findings) + ')');
+    passed++;
+}
+
+// ===========================================================================
+// Case 11 (GUARD -- the untested half of the collision claim case 10 warns
+// about): a genuine JSON body field literally NAMED `text` must still resolve
+// to the captured field "text" and adjudicate normally. Case 10's non-JSON
+// fallback reports the location at the body's OWN node (`response.content`,
+// never `${base}.text`) precisely so it cannot be mistaken for a real JSON
+// field called `text` -- but nothing pinned the other half of that claim: that
+// a genuine `text` field is NOT collateral damage of the fix and still gets a
+// real field name. Without this case, a fix that blinded the audit to any
+// field literally named `text` (an over-correction) would make case 10 pass
+// for the wrong reason and leave this claim unverified.
+// ===========================================================================
+{
+    const root = tmpRoot('genuine-text-field');
+    fs.writeFileSync(path.join(root, '.har-policy.project.json'),
+        JSON.stringify({ identifierFields: ['*text'] }, null, 2));
+
+    const raw = harEntry({ body: { text: REAL_CARD } });
+    const reference = harEntry({ body: { text: fakeOf(REAL_CARD) } });
+    const { referencePath } = writeSession(root, {
+        stamp: '2026-01-01-000001', rawHar: raw, referenceHar: reference,
+        substitutions: [subFor(REAL_CARD)]
+    });
+    const a = audit(root, referencePath);
+    assert.strictEqual(a.report.policy.projectPolicyFound, true,
+        'precondition: the live project policy must actually be discovered, got '
+        + JSON.stringify(a.report.policy));
+    assert.strictEqual(a.report.policy.path, path.join(root, '.har-policy.project.json'),
+        'precondition: the resolved project policy is not the one this case wrote, got '
+        + JSON.stringify(a.report.policy));
+    assert.strictEqual(a.ref.outcome, 'CORRUPTED',
+        'a genuine JSON body field literally named "text" must still resolve as field "text" '
+        + 'and adjudicate CORRUPTED under a policy declaring *text as an identifier pattern, got '
+        + a.ref.outcome + ' (' + JSON.stringify(a.ref.findings) + ')');
+    assert.strictEqual(a.ref.findings[0].reason, 'identifier-field-rewritten',
+        'unexpected reason ' + a.ref.findings[0].reason);
     passed++;
 }
 

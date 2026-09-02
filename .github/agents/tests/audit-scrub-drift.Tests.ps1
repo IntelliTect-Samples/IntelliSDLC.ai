@@ -42,6 +42,12 @@ Describe 'the scrub-drift audit reports three outcomes and never repairs (issue 
     # step. A `--fix` arriving later would not be a feature, it would be the
     # thing the issue deliberately kept out -- so its absence is pinned here
     # rather than left to a reviewer to notice.
+    #
+    # This mutator list is DUPLICATED VERBATIM in
+    # HarAuditEnvelopeFieldNames.Tests.ps1's 'still has no repair path' block
+    # (both assert against this same file, from two issues -- #335 and #375 --
+    # landing concurrently). The two lists MUST stay identical: if you add or
+    # remove a mutator name here, make the same edit there, and vice versa.
     It 'ships no repair path -- it cannot write, delete or rename anything' {
         $source = Get-Content -LiteralPath $script:AuditJs -Raw
         foreach ($mutator in 'writeFileSync', 'appendFileSync', 'unlinkSync', 'rmSync',
