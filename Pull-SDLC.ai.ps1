@@ -2652,8 +2652,8 @@ function Invoke-PullSDLC {
         $refusal = New-Object System.Text.StringBuilder
         [void]$refusal.AppendLine('ABORT: this repository IS the sync source -- refusing to sync it from itself.')
         [void]$refusal.AppendLine("  repo root: $RepoRoot")
-        [void]$refusal.AppendLine("  origin:    $selfOriginUrl")
-        [void]$refusal.AppendLine("  $RemoteName" + ":      $selfUpstreamUrl")
+        [void]$refusal.AppendLine('  ' + 'origin:'.PadRight(12) + $selfOriginUrl)
+        [void]$refusal.AppendLine('  ' + "${RemoteName}:".PadRight(12) + $selfUpstreamUrl)
         [void]$refusal.AppendLine('Both name the same repository, so there is nothing to pull. Run')
         [void]$refusal.Append('Pull-SDLC.ai.ps1 from a consuming repository instead.')
         Write-Error $refusal.ToString() -ErrorAction Continue
