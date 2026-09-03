@@ -1380,7 +1380,21 @@ function buildCatalogueScaffold(digest, meta = {}) {
     return digest.groups.map((group) => ({
         Action: `${group.method.toLowerCase()}-${group.pathTemplate.split('/').filter(Boolean).join('-') || 'root'}`,
         Description: null,
-        Provider: null,
+        // From THIS ROW's own endpoint host -- `group.host`, the same source
+        // `Endpoints` below is built from -- never from the capture's start
+        // URI. One capture routinely spans several hosts (the site's own API,
+        // a CDN, a third party), so deriving every row from the start URI
+        // would stamp one provider onto rows that are not that provider: a
+        // row asserting something nobody checked, which is exactly the
+        // defect #379 exists to prevent. `providerSlug` returns null when the
+        // host yields no slug, and that null is left as-is -- it means "a
+        // human still has to say", and inventing a value to avoid it would be
+        // the same defect. This is also what keeps the value honest against
+        // the filesystem: `referenceRelativePath` nests the extracted
+        // reference under `<provider>/` using this same `providerSlug`, so a
+        // row's `Provider` and the directory its reference lands in are
+        // derived the same way and cannot disagree.
+        Provider: providerSlug(group.host),
         Methods: [group.method],
         Endpoints: [`${group.host}${group.pathTemplate}`],
         EntryCount: group.count,
