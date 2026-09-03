@@ -180,9 +180,47 @@ Describe 'Invoke-HarCatalogue.ps1' {
         $code | Should -Not -Match 'scrubbed\.rejected'
         $code | Should -Not -Match 'har-captures'
         $code | Should -Not -Match 'Rename-Item|Copy-Item|Move-Item|Remove-Item'
-        # No arm that reinterprets an exit code -- it is propagated whole.
-        $code | Should -Not -Match '(?m)^\s*switch\s*\('
         $code | Should -Match 'exit \$LASTEXITCODE'
+    }
+
+    # THE EXIT CODE, AND WHAT #386 CHANGED ABOUT IT.
+    #
+    # This used to be one assertion: no `switch` anywhere in the file, because
+    # an arm that reinterpreted an exit code would be a second copy of the
+    # recorder's meanings. Pointing the script at a FOLDER makes that too blunt
+    # in one direction and too weak in the other.
+    #
+    # Too blunt: a batch's single exit cannot carry 88 verdicts, so it MUST map
+    # each capture's code to an outcome. Too weak: a blanket ban says nothing
+    # about whether that mapping keeps the distinctions the codes exist to make.
+    #
+    # So the rule is split. The single-capture path still propagates whole -- the
+    # file's last statement is the untouched propagation, and nothing switches on
+    # $LASTEXITCODE. And the batch mapping is pinned on the two codes it would be
+    # easiest to flatten into "it failed": 7 (catalogue produced over an ADVISORY
+    # verdict) and 2 (the recorder's refusal to replace a catalogue carrying
+    # described work).
+    It 'propagates the recorder exit code whole on the single-capture path' {
+        $raw = Get-Content -LiteralPath $script:CataloguePs1 -Raw
+        $withoutBlocks = [regex]::Replace($raw, '(?s)<#.*?#>', ' ')
+        $code = ($withoutBlocks -split "`r?`n" | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n"
+
+        $lastStatement = @($code -split "`n" | Where-Object { $_.Trim() } )[-1].Trim()
+        $lastStatement | Should -Be 'exit $LASTEXITCODE'
+        $code | Should -Not -Match 'switch\s*\(\s*\$LASTEXITCODE'
+    }
+
+    It 'the batch mapping keeps what the recorder codes mean' {
+        $raw = Get-Content -LiteralPath $script:CataloguePs1 -Raw
+        $withoutBlocks = [regex]::Replace($raw, '(?s)<#.*?#>', ' ')
+        $code = ($withoutBlocks -split "`r?`n" | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n"
+
+        # Exit 7: the catalogue WAS produced. Non-zero so nothing reads it as
+        # clean, but not a failure.
+        $code | Should -Match "(?m)^\s*7\s*\{\s*return @\{ Outcome = 'processed'"
+        # Exit 2: the recorder declined to overwrite described work. That is a
+        # skip with a reason, never a failure and never something -Force undoes.
+        $code | Should -Match "(?m)^\s*2\s*\{\s*return @\{ Outcome = 'skipped'"
     }
 }
 
