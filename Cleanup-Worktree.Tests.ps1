@@ -373,3 +373,319 @@ Describe 'Test-WorktreeInSafeLocation' {
         }
     }
 }
+
+# --- Issue #392: uncommitted-work guard ------------------------------------
+
+Describe 'Get-WorktreeDirtyState' {
+
+    It 'reports a clean worktree as clean' {
+        $wt = New-TestWorktree
+        try {
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Tracked).Count | Should -Be 0
+            @($state.Untracked).Count | Should -Be 0
+            $state.Unknown | Should -BeFalse
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'classifies a MODIFIED tracked file as tracked work, not as untracked' {
+        # The whole point of the split: this is the case that is unrecoverable.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# edited')
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Tracked).Count | Should -Be 1
+            @($state.Tracked)[0] | Should -Match '\.gitignore'
+            @($state.Untracked).Count | Should -Be 0
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'classifies a STAGED addition as tracked work' {
+        # Staged-but-uncommitted survives in the object store, but the operator
+        # still loses the index state and the intent; it is not build output.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt 'new.txt') -Value 'x'
+            Push-Location $wt; & git add new.txt 2>$null; Pop-Location
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Tracked).Count | Should -Be 1
+            @($state.Untracked).Count | Should -Be 0
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'classifies an UNTRACKED file as untracked, so build output does not block cleanup' {
+        # The other half of the distinction. If this collapsed into Tracked,
+        # every worktree with a bin/ directory would demand consent and the
+        # gate would be trained away.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt 'scratch.txt') -Value 'x'
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Untracked).Count | Should -Be 1
+            @($state.Tracked).Count | Should -Be 0
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports nothing for a path that is not on disk' {
+        $state = Get-WorktreeDirtyState -WorktreePath (Join-Path ([System.IO.Path]::GetTempPath()) 'cwdirty-absent')
+        @($state.Tracked).Count | Should -Be 0
+        $state.Unknown | Should -BeFalse
+    }
+
+    It 'reports Unknown -- not clean -- when git cannot answer for an existing path' {
+        # "No output" is the failure mode this script's own banner is about.
+        # A directory git refuses to report on must not read as empty.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cwdirty-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        Set-Content -Path (Join-Path $dir 'work.txt') -Value 'unsaved'
+        try {
+            $state = Get-WorktreeDirtyState -WorktreePath $dir
+            $state.Unknown | Should -BeTrue -Because 'a non-repository directory is unknown, not clean'
+        }
+        finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Assert-WorktreeRemovalConsent' {
+
+    BeforeEach {
+        # Default posture for these cases: nobody is watching. Individual
+        # interactive cases override it.
+        Mock -CommandName Test-CleanupInteractive -MockWith { $false }
+    }
+
+    It 'does not block a clean worktree' {
+        $wt = New-TestWorktree
+        try { { Assert-WorktreeRemovalConsent -WorktreePath $wt } | Should -Not -Throw }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not block on UNTRACKED files alone, even non-interactively' {
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt 'obj-output.txt') -Value 'x'
+            { Assert-WorktreeRemovalConsent -WorktreePath $wt } |
+                Should -Not -Throw -Because 'build output is a nuisance, not work'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'FAILS non-interactively when tracked changes would be destroyed' {
+        # The 2026-09-02 loss, in a fixture: a merge-then-cleanup run with no
+        # human attached, over a worktree the authoring agent was still editing.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            $err = { Assert-WorktreeRemovalConsent -WorktreePath $wt -WarningAction SilentlyContinue } |
+                Should -Throw -PassThru
+            $err.Exception.Message | Should -Match 'Refusing to force-remove'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'names the dirty files and the flag that would authorise the loss' {
+        # A refusal the operator cannot act on is just an outage.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            $err = { Assert-WorktreeRemovalConsent -WorktreePath $wt -WarningAction SilentlyContinue } |
+                Should -Throw -PassThru
+            $err.Exception.Message | Should -Match '\.gitignore'
+            $err.Exception.Message | Should -Match '-Force'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports file NAMES and never file CONTENTS' {
+        # This text lands in terminals, transcripts and CI logs.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', 'SUPERSECRETPAYLOAD')
+            $err = { Assert-WorktreeRemovalConsent -WorktreePath $wt -WarningAction SilentlyContinue } |
+                Should -Throw -PassThru
+            $err.Exception.Message | Should -Not -Match 'SUPERSECRETPAYLOAD'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'treats an Unknown state as work at risk, not as consent to proceed' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cwdirty-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir | Out-Null
+        try {
+            { Assert-WorktreeRemovalConsent -WorktreePath $dir -WarningAction SilentlyContinue } | Should -Throw
+        }
+        finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'proceeds under -Force, because -Force is the authorisation' {
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            { Assert-WorktreeRemovalConsent -WorktreePath $wt -Force -WarningAction SilentlyContinue } |
+                Should -Not -Throw
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'still says what -Force is about to destroy' {
+        # Authorised is not the same as unreported: #392 is as much about the
+        # silence as about the escalation.
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            $warnings = @()
+            Assert-WorktreeRemovalConsent -WorktreePath $wt -Force -WarningVariable warnings -WarningAction SilentlyContinue
+            ($warnings -join ' ') | Should -Match '\.gitignore'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports instead of throwing under -DryRun, so an audit run can finish' {
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            { Assert-WorktreeRemovalConsent -WorktreePath $wt -DryRun -WarningAction SilentlyContinue } |
+                Should -Not -Throw
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'prompts, and proceeds, when a human is attached and says yes' {
+        $wt = New-TestWorktree
+        try {
+            Mock -CommandName Test-CleanupInteractive -MockWith { $true }
+            Mock -CommandName Confirm-WorktreeDirtyDiscard -MockWith { $true }
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            { Assert-WorktreeRemovalConsent -WorktreePath $wt -Cmdlet ([pscustomobject]@{}) -WarningAction SilentlyContinue } |
+                Should -Not -Throw
+            Should -Invoke -CommandName Confirm-WorktreeDirtyDiscard -Times 1 -Exactly
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'aborts when the human says no' {
+        $wt = New-TestWorktree
+        try {
+            Mock -CommandName Test-CleanupInteractive -MockWith { $true }
+            Mock -CommandName Confirm-WorktreeDirtyDiscard -MockWith { $false }
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            $err = { Assert-WorktreeRemovalConsent -WorktreePath $wt -Cmdlet ([pscustomobject]@{}) -WarningAction SilentlyContinue } |
+                Should -Throw -PassThru
+            $err.Exception.Message | Should -Match 'Aborted at operator request'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'shows the human the file list rather than asking blind' {
+        $wt = New-TestWorktree
+        try {
+            $script:PromptedReport = $null
+            Mock -CommandName Test-CleanupInteractive -MockWith { $true }
+            Mock -CommandName Confirm-WorktreeDirtyDiscard -MockWith { $script:PromptedReport = $Report; $true }
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            Assert-WorktreeRemovalConsent -WorktreePath $wt -Cmdlet ([pscustomobject]@{}) -WarningAction SilentlyContinue
+            $script:PromptedReport | Should -Match '\.gitignore'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'never prompts when nothing can answer, even if the console looks interactive' {
+        # -Cmdlet absent means there is no ShouldContinue to reach. Prompting
+        # anyway would hang an unattended run rather than failing it.
+        $wt = New-TestWorktree
+        try {
+            Mock -CommandName Test-CleanupInteractive -MockWith { $true }
+            Mock -CommandName Confirm-WorktreeDirtyDiscard -MockWith { $true }
+            Set-Content -Path (Join-Path $wt '.gitignore') -Value @('.har-captures/', '# mid-edit')
+            { Assert-WorktreeRemovalConsent -WorktreePath $wt -WarningAction SilentlyContinue } | Should -Throw
+            Should -Invoke -CommandName Confirm-WorktreeDirtyDiscard -Times 0 -Exactly
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Cleanup-Worktree.ps1 consent wiring' {
+
+    It 'gates every --force removal on consent, per site' {
+        # Same interleaving property as the capture guard, for the same reason:
+        # the sweep sites are the unattended ones, and a first-occurrence check
+        # would pass while both of them ran unguarded.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $consents = @([regex]::Matches($raw, 'Assert-WorktreeRemovalConsent -WorktreePath') |
+            ForEach-Object { $_.Index })
+        $forces = @([regex]::Matches($raw, "'worktree', 'remove', '--force'") |
+            ForEach-Object { $_.Index })
+
+        $consents.Count | Should -Be 3 -Because 'the targeted retry and both sweep removals each need consent'
+        $forces.Count | Should -Be 3
+
+        $previousForce = -1
+        foreach ($force in $forces) {
+            $own = @($consents | Where-Object { $_ -lt $force -and $_ -gt $previousForce })
+            $own.Count | Should -BeGreaterThan 0 -Because (
+                "the --force call at offset $force must be preceded by its OWN consent gate")
+            $previousForce = $force
+        }
+    }
+
+    It 'keeps the capture guard ahead of the consent gate at every site' {
+        # Ordering between the two guards is itself a property: "that worktree
+        # holds a capture that exists nowhere else" is a refusal no prompt
+        # should be able to override, so it must be reached first.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $guards = @([regex]::Matches($raw, 'Assert-WorktreeCaptureSafe -WorktreePath') | ForEach-Object { $_.Index })
+        $consents = @([regex]::Matches($raw, 'Assert-WorktreeRemovalConsent -WorktreePath') | ForEach-Object { $_.Index })
+        $guards.Count | Should -Be 3
+        $consents.Count | Should -Be 3
+        for ($i = 0; $i -lt 3; $i++) {
+            $guards[$i] | Should -BeLessThan $consents[$i]
+        }
+    }
+
+    It 'passes the operator -Force through to the consent gate at every site' {
+        # A gate that always saw $false would fail an authorised run; one that
+        # always saw $true would be no gate at all.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        ([regex]::Matches($raw, 'Assert-WorktreeRemovalConsent[^\r\n]*-Force:\$Force')).Count |
+            Should -Be 3
+    }
+
+    It 'documents that -Force now also authorises destroying uncommitted work' {
+        # The widening is only legitimate if the help says so.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $forceHelp = [regex]::Match($raw, '(?s)\.PARAMETER Force(.*?)\.PARAMETER KeepBranch').Groups[1].Value
+        $forceHelp | Should -Match 'uncommitted'
+        $forceHelp | Should -Match 'TRACKED'
+    }
+
+    It 'adds no new command-line option for either issue' {
+        # The parameter block is the API. Pinned by name, so a new switch
+        # cannot slip in under a name no negative match anticipated.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $block = [regex]::Match($raw, '(?s)\[CmdletBinding\(\)\]\s*param\((.*?)\r?\n\)').Groups[1].Value
+        $names = @([regex]::Matches($block, '\$(\w+)') | ForEach-Object { $_.Groups[1].Value })
+        ($names -join ',') | Should -Be 'Branch,WorktreePath,DefaultBranch,Force,KeepBranch,SkipPull,AllowOutsideWorktreesDir,Sweep,DryRun'
+    }
+}
+
+Describe 'Issue #390: case-sensitivity comes from the operator' {
+
+    It 'carries no inline (?i) flag anywhere in the script' {
+        # Redundant under -match/-notmatch, and a trap for the next edit: a
+        # reader switching to -cnotmatch for real case sensitivity would get
+        # none. NOTE for ablation: deleting the flag changes no behaviour, so
+        # a mutation test on the flag itself proves nothing -- the behavioural
+        # case is 'is case-insensitive on the copilot-worktrees segment'
+        # above, which only bites when the OPERATOR is changed to -cnotmatch.
+        # Comment lines are excluded on purpose: the comment left at the fix
+        # site NAMES the flag in order to warn the next reader off re-adding
+        # it, and a check that banned the word would ban its own explanation.
+        $code = @(Get-Content -LiteralPath $script:ScriptPath |
+            Where-Object { $_.TrimStart() -notlike '#*' })
+        ($code -join "`n") | Should -Not -Match '\(\?i\)'
+    }
+}
