@@ -275,7 +275,9 @@ function assertReportIsQuiet(label, report, ...values) {
 // --- 7. The scrubber's own output is not re-reported. ---------------------
 // A gate that fires on the redaction it just made is a gate that can never
 // report clean. The envelope under a KNOWN name is scrubbed by #378's control,
-// and what replaces it must not be envelope-shaped.
+// which replaces the whole value with `redacted-<hex>` -- nothing envelope-
+// shaped at all. (The SHAPE scrub added by #407 does emit an envelope-shaped
+// fake; that one is exempted by `isFake`, and section 8 covers it.)
 {
     const harIn = writeHar('known-named-envelope', makeHar(
         `enc_password=${encodeURIComponent(ENVELOPE)}&doc_id=1234567890`));
@@ -298,50 +300,60 @@ function assertReportIsQuiet(label, report, ...values) {
         `7.d: verify-scrub flagged its own redaction of the envelope: ${v.stderr || v.stdout}`);
 }
 
-// --- 8. WHAT THIS CHANGE DOES NOT DO, pinned so nobody discovers it live. --
-// This issue moved the GATE. It did not move the SCRUBBER, and the two are not
-// symmetric for this kind: `sanitize-har.js` carries its own `PATTERNS` table
-// that redacts `jwt`, `hex64`, `hex32` and `upload-handle` by SHAPE, with no
-// field name involved, so for those kinds an unnamed field is redacted
-// automatically and the gate then passes with no operator action at all.
+// --- 8. THE SCRUBBER NOW MATCHES THE GATE (issue #407). ------------------
+// THIS SECTION WAS INVERTED, ON PURPOSE. As written for #395 it pinned an
+// ASYMMETRY: the gate had moved and the scrubber had not, so an envelope under
+// a name the policy did not know BLOCKED with no automatic remedy -- the
+// operator's only route out was naming the field, which is #378's control and
+// is exactly what fails in the scenarios this rule exists for. The section said
+// in its own failure messages that adding a scrub rule would make it fail and
+// that the fix was to rewrite it, not delete it. #407 added the rule; this is
+// that rewrite, and it now pins the OPPOSITE contract.
 //
-// `pwd-envelope` has no such entry, so an envelope under a name the policy
-// does not know now BLOCKS with no automatic remedy: the operator has to name
-// the field in `secretFields`, which is #378's control -- and the scenarios
-// this rule exists for are precisely the ones where the name is unknown.
+// What did NOT change is 8.d. "A file the scrub left the credential in is never
+// labelled clean" is the whole of #378 and is true either way; here it is
+// asserted the only way it still can be -- against an UNSCRUBBED capture, since
+// the scrubbed one is now clean.
 //
-// That is a real gap and it belongs to the scrubber, not to this file. It is
-// asserted here rather than left implicit because an undocumented asymmetry is
-// how the next reader concludes the scrub is covering them. When a scrub rule
-// IS added, this section fails -- which is the correct moment to revisit
-// `isFake` in `har-shapes.js`, and the comment there says so.
+// The scrub's own behaviour is pinned in depth by `har-pwd-envelope-scrub.test.js`
+// (determinism, the fake's sentinel, over-reach). This section keeps the
+// end-to-end claim that the two halves agree, because the gate is what this
+// file is about and a gate that no scrub can satisfy is the failure mode.
 {
     const kinds = fs.readFileSync(path.join(__dirname, 'sanitize-har.js'), 'utf8');
-    assert.ok(!/kind:\s*'pwd-envelope'/.test(kinds),
-        '8.a: sanitize-har.js now has a pwd-envelope shape rule. That is the right ' +
-        'direction -- but `isFake` in har-shapes.js still returns false, so a ' +
-        'format-preserving fake would be re-reported by the gate forever. Fix that, ' +
-        'then update this section to assert the scrub instead of its absence');
+    assert.ok(/kind:\s*'pwd-envelope'/.test(kinds),
+        '8.a: sanitize-har.js no longer has a pwd-envelope shape rule. Without it the ' +
+        'gate blocks a benign-named envelope with no automatic remedy at all, which is ' +
+        'the gap #407 closed');
 
-    const harIn = writeHar('benign-named-unscrubbed', makeHar(
+    const harIn = writeHar('benign-named-scrubbed', makeHar(
         `${BENIGN_FIELD}=${encodeURIComponent(ENVELOPE)}&doc_id=1234567890`));
-    const harOut = path.join(tmp, 'benign-named-unscrubbed.scrubbed.har');
+    const harOut = path.join(tmp, 'benign-named-scrubbed.scrubbed.har');
     const s = runNode(sanitize, ['--in', harIn, '--out', harOut,
         '--subs', path.join(tmp, 'benign.subs.json'), '--profile', writeProfile(),
         '--fixed-time', '2026-01-01T00:00:00.000Z']);
     assert.strictEqual(s.code, 0, `8.b: sanitize-har failed: ${s.stderr || s.stdout}`);
 
-    assert.ok(fs.readFileSync(harOut, 'utf8').includes(encodeURIComponent(ENVELOPE)),
-        '8.c: the scrubber removed a benign-named envelope, so the gap this section ' +
-        'documents is closed -- rewrite the section to assert the new behaviour rather ' +
-        'than deleting it');
+    assert.ok(!fs.readFileSync(harOut, 'utf8').includes(encodeURIComponent(ENVELOPE)),
+        '8.c: the envelope survived the scrub under a benign field name, so the gate ' +
+        'still refuses this capture with no route to a committable file -- the asymmetry ' +
+        '#407 closed has reopened');
 
     const v = runNode(verify, ['--in', harOut]);
-    assert.notStrictEqual(v.code, 0,
-        '8.d: the gate passed the SCRUBBED output of a capture that still carries the ' +
-        'envelope. Whatever else is true, a file the scrub left the credential in must ' +
-        'never be labelled clean -- that is the whole of #378');
-    assertReportIsQuiet('8.e', `${v.stdout}${v.stderr}`, ENVELOPE);
+    assert.strictEqual(v.code, 0,
+        '8.d: the gate refused the SCRUBBER\'S OWN OUTPUT for a benign-named envelope. ' +
+        'Either the scrub left something behind or `isFake` no longer exempts the fake, ' +
+        `and a gate no scrub can satisfy can never report clean: ${v.stderr || v.stdout}`);
+
+    // Unchanged from #395 and true whatever else moves: a file the scrub left
+    // the credential in is never labelled clean. Asserted against the RAW
+    // capture, which is now the only file that still carries it.
+    const raw = runNode(verify, ['--in', harIn]);
+    assert.notStrictEqual(raw.code, 0,
+        '8.e: the gate passed a capture that still carries the envelope. Whatever else ' +
+        'is true, a file the scrub left the credential in must never be labelled clean ' +
+        '-- that is the whole of #378');
+    assertReportIsQuiet('8.f', `${raw.stdout}${raw.stderr}`, ENVELOPE);
 }
 
 console.log('All har-pwd-envelope-shape tests passed');
