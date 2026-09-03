@@ -2367,6 +2367,36 @@ Describe 'Invoke-SelfReExec restores the parent tree when the child aborts (issu
         (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
     }
 
+    It 'restores on an ordinary refusal too (rc=2 drift), not just the worktree aborts' {
+        # Deliberate, and the case that matters most rather than least: on rc=2
+        # the operator already has local edits to managed files and is being told
+        # to clean up and rerun. Leaving unowned dirt on top of theirs is exactly
+        # what tips them into the issue #202 wedge.
+        $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nexit 2`n"
+
+        $rc | Should -Be 2
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+    }
+
+    It 'restores an UNTRACKED bootstrap download, not just a tracked file' {
+        # The restore is a byte copy, deliberately git-agnostic: the fresh
+        # `curl`-and-run bootstrap case has no committed version to fall back on,
+        # so the backup is the only thing standing between an abort and a
+        # silently-replaced script.
+        Push-Location $script:abRoot
+        try { git rm -q --cached 'Pull-SDLC.ai.ps1' | Out-Null; git commit -q -m 'untrack' } finally { Pop-Location }
+
+        $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nexit 5`n"
+
+        $rc | Should -Be 5
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+        Push-Location $script:abRoot
+        try { $status = @(git status --porcelain -- 'Pull-SDLC.ai.ps1') } finally { Pop-Location }
+        # Still untracked -- the restore put the operator's bytes back without
+        # inventing any git state.
+        $status | Should -Match '^\?\?'
+    }
+
     It 'restores the pre-refresh bytes when the child throws instead of exiting' {
         $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nthrow 'boom'`n"
 
