@@ -198,10 +198,12 @@ function fakeFor(kind, original, salt) {
         // the four tokens it expects, so the scrubbed capture keeps the shape
         // of the original instead of turning into a bare marker.
         //
-        // The three literal tokens are the fake SENTINEL, and each is a value
-        // the real format cannot produce: the label `REDACTED` is not a
-        // product, version `0` is below the lowest ever observed, and epoch `0`
-        // is 1970. `isFake` in har-shapes.js keys on exactly this spelling --
+        // The three literal tokens are the fake SENTINEL, and the LABEL is what
+        // carries it: `REDACTED` is not a product, and the label is the product
+        // (`BROWSER`, `INSTAGRAM_BROWSER`, `MSGR`). Version `0` and epoch `0`
+        // are supporting, not load-bearing alone -- #378 measured a real
+        // envelope at version `0`, and the tests carry one.
+        // `isFake` in har-shapes.js keys on exactly this spelling --
         // without it the gate would re-report the scrubber's own redaction on
         // every run, forever, which is the failure the `hex64` / `hex32`
         // sentinels exist to prevent.
