@@ -1408,9 +1408,11 @@ function buildCatalogueScaffold(digest, meta = {}) {
         // defect #379 exists to prevent. `providerSlug` returns null when the
         // host yields no slug, and that null is left as-is -- it means "a
         // human still has to say", and inventing a value to avoid it would be
-        // the same defect. `stripPort` first, so this agrees with
-        // `referenceRelativePath` (which slugs `URL#hostname`, no port) for
-        // the `<provider>/` directory the reference lands in.
+        // the same defect. `stripPort` first, so that for a GIVEN host this
+        // agrees with `referenceRelativePath` (which slugs `URL#hostname`,
+        // no port) on the `<provider>/` directory that host's reference
+        // would land in -- differing when the row's host differs from the
+        // capture's start host is the point of deriving per row at all.
         Provider: providerSlug(stripPort(group.host)),
         Methods: [group.method],
         Endpoints: [`${group.host}${group.pathTemplate}`],
