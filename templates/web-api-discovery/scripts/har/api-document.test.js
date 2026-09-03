@@ -1001,6 +1001,41 @@ test('a placeholder standing in for a request body is not a request body', () =>
         `a sentinel is not a body, so the request side is unproven: ${JSON.stringify(upload.unproven)}`);
 });
 
+test('decoded params with no wire text still witness the request side', () => {
+    // Found by independent review, and named in #426's own verification
+    // checklist before being left untested -- the exact gap this project keeps
+    // finding.
+    //
+    // `har-catalogue.js` deliberately says structural `params[]` with no `text`
+    // is NOT a body, and for its question -- how many bytes of wire body did
+    // this reference carry -- that is right. api.json asks a different
+    // question: was what a caller must send ever WITNESSED. Decoded params
+    // answer that; `extract-har-reference.js` classifies such an entry as "a
+    // request that CARRIES A BODY", and gate 7 skips rather than rejects it, so
+    // the shape reaches a committed reference intact.
+    const dir = path.join(tmp, 'params-only-body');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'params-only.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/upload',
+            postData: {
+                mimeType: 'multipart/form-data',
+                params: [{ name: 'file', value: '<Redacted>' }, { name: 'caption', value: 'hi' }],
+            },
+            responseText: '{"id":"u1"}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const upload = endpointOf(readDoc(dir), 'POST', '/api/upload');
+
+    assert.ok(!upload.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        `the request side WAS witnessed: ${JSON.stringify(upload.unproven)}`);
+    assert.deepStrictEqual(upload.requestFields.map((f) => `${f.in}:${f.name}`),
+        ['param:caption', 'param:file'],
+        'and the decoded names are what it witnessed');
+});
+
 test('a real body in any recognised grammar still counts as a body', () => {
     // The strict definition must not fire on traffic behaving normally. A gate
     // that flags real bodies trains its readers to ignore it, which costs every
