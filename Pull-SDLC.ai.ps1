@@ -2213,15 +2213,18 @@ function Invoke-SelfRefresh {
 function Complete-SelfReExec {
     <#
     .SYNOPSIS
-        Finalizes a self-update re-exec: under a -WhatIf dry run, restores the
+        Finalizes a self-update re-exec: under -RestoreOriginal, restores the
         original on-disk script from $BackupPath so the run leaves no net change;
         always removes the backup file. Separated from Invoke-SelfReExec (which
         calls `exit`) so the restore/cleanup logic is unit-testable.
     .DESCRIPTION
-        A normal (non-dry-run) self-update keeps the new upstream content on disk
-        (the desired self-overwrite). A -WhatIf dry run restores the original so
-        the working tree is left exactly as found. The backup temp file is removed
-        in both cases. A no-op when no backup path is supplied.
+        Mechanism only -- it does not decide anything. Invoke-SelfReExec owns the
+        policy and passes the verdict in -RestoreOriginal: set for a -WhatIf dry
+        run, for the issue #247 protected-main auto-worktree path, and for any
+        aborted child (issue #118). A successful normal run leaves it unset and
+        the new upstream content stays on disk (the desired self-overwrite,
+        issue #200). The backup temp file is removed either way. A no-op when no
+        backup path is supplied.
     #>
     [CmdletBinding()]
     param(
@@ -2242,14 +2245,24 @@ function Invoke-SelfReExec {
     .SYNOPSIS
         Re-invokes the freshly self-updated on-disk Pull-SDLC.ai.ps1 with the
         caller's original bound parameters, force-adding -NoSelfUpdate to prevent
-        loops. Under a -WhatIf dry run (-RestoreOriginal), restores the original
-        on-disk content from -BackupPath after the child exits so the dry run is
-        side-effect-free. Exits the host process with the child's exit code.
+        loops, then exits the host process with the child's exit code.
+
+        Restores the original on-disk content from -BackupPath when the caller
+        asked for it up front (-RestoreOriginal: a -WhatIf dry run, or the
+        issue #247 protected-main auto-worktree path) OR when the child aborts
+        -- any non-zero exit code, or a terminating error (issue #118).
     .DESCRIPTION
         $ScriptPath is the on-disk script, already overwritten with the new
         upstream content by Invoke-SelfRefresh. $BackupPath holds the original
-        content; it is restored only when -RestoreOriginal is set and is always
-        removed afterward (see Complete-SelfReExec).
+        content and is always removed afterward (see Complete-SelfReExec).
+
+        The overwrite survives only a SUCCESSFUL child run, where it is either
+        wanted (a feature branch or -CommitOnMain -- issue #200) or already
+        handled by the child's own Invoke-MainTreeCleanup. On any abort the
+        parent working tree is put back exactly as it was found, so the run
+        leaves behind no `modified: Pull-SDLC.ai.ps1` the operator did not make
+        -- dirt that the issue #202 guard would otherwise read as a standing
+        reason to refuse all future self-updates.
     #>
     [CmdletBinding()]
     param(
@@ -2260,12 +2273,38 @@ function Invoke-SelfReExec {
     )
     $reArgs = @{} + $BoundParameters
     $reArgs['NoSelfUpdate'] = $true
+    # Issue #118. The self-refresh already overwrote $ScriptPath in the PARENT
+    # working tree, before this re-exec. Only a child that SUCCEEDS has earned
+    # the right to leave that overwrite standing: on success either the run
+    # wanted the newer script persisted (a feature branch, or -CommitOnMain --
+    # issue #200) or the child's own Invoke-MainTreeCleanup already tidied it.
+    #
+    # Every other outcome is an abort, and an abort must leave the tree exactly
+    # as it was found. Otherwise the operator is left holding a
+    # `modified: Pull-SDLC.ai.ps1` they never made -- which is not merely untidy:
+    # Test-SelfRefreshRequired's issue #202 guard reads uncommitted edits to the
+    # script as a reason to refuse EVERY future self-update, so the repo can no
+    # longer heal itself from the dirt this run created.
+    #
+    # $RestoreOriginal covers the cases known in advance (-WhatIf, and the
+    # issue #247 protected-main auto-worktree path). It cannot cover this one,
+    # because whether the child aborts is not knowable until it has run.
+    #
+    # Start from "restore" and let only success clear it, so a terminating error
+    # thrown out of the child -- which never reaches the assignment at all --
+    # restores as well.
+    $restoreOnAbort = $true
     try {
         & $ScriptPath @reArgs
         $childExit = $LASTEXITCODE
+        # A child that neither calls `exit` nor runs a native command leaves
+        # $LASTEXITCODE unset. Treat that as success, exactly as `exit $childExit`
+        # below already does.
+        if (-not $childExit) { $restoreOnAbort = $false }
     }
     finally {
-        Complete-SelfReExec -ScriptPath $ScriptPath -BackupPath $BackupPath -RestoreOriginal:$RestoreOriginal
+        Complete-SelfReExec -ScriptPath $ScriptPath -BackupPath $BackupPath `
+            -RestoreOriginal:($RestoreOriginal -or $restoreOnAbort)
     }
     exit $childExit
 }
@@ -2860,6 +2899,31 @@ function Invoke-PullSDLC {
                 # delete untracked-and-identical bootstrap files (PR merge will
                 # restore them tracked), revert tracked-modified-to-identical
                 # files, leave real local edits alone with a warning.
+                #
+                # Deliberately still gated on success. Issue #118 proposed making
+                # this unconditional so aborts were tidied too; that is the wrong
+                # tool for the job on two counts.
+                #
+                # First, it would not even reach the abort it was aimed at: the
+                # rc=3 NoAutoWorktree path returns above, before
+                # Invoke-AutoWorktreeSync is called, so no guard here can cover
+                # it.
+                #
+                # Second, and worse, Invoke-MainTreeCleanup's contract assumes
+                # this call site. It DELETES an untracked upstream-sourced file
+                # on the stated premise that "the PR merge will restore it
+                # tracked" -- true only after a sync that actually produced a PR.
+                # Run it after an abort and that premise is gone: on a
+                # not-yet-bootstrapped repo the untracked file is the operator's
+                # only copy of the very script they are running, and there is no
+                # PR coming to restore it. Nothing in the cleanup could tell the
+                # difference, because it was never written to face that case.
+                #
+                # The self-refresh dirt issue #118 actually reported is handled
+                # where it originates instead -- Invoke-SelfReExec restores the
+                # pre-refresh bytes on any aborted child -- which needs no git
+                # state, no upstream ref, and no PR, and so covers the abort
+                # paths this call site cannot.
                 $null = Invoke-MainTreeCleanup -RepoRoot $RepoRoot -UpstreamRef "$RemoteName/$Branch"
             }
             return $rc
