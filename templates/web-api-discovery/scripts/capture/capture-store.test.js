@@ -40,6 +40,8 @@ const store = require(path.join(__dirname, 'capture-store.js'));
 const captureHar = require(path.join(__dirname, 'capture-har.js'));
 
 const failures = [];
+// Promises an async assertion returns, awaited before the verdict is printed.
+const pending = [];
 function section(name, fn) {
     try { fn(); } catch (e) {
         failures.push(`[block ${name}] ` + (e && e.message ? e.message : String(e)));
@@ -64,6 +66,12 @@ function makeCapture(dir, opts = {}) {
             uri: 'https://www.example.test/secret-magic-link-token',
             describe: 'fixture',
             sessionDir: dir,
+            // A pid that is definitely alive, so `isDriverAlive` says yes. That
+            // is the whole point of the never-ended fixtures below: a PID this
+            // old is far likelier to have been REUSED than to still be the
+            // recorder, and this proves what happens when the check believes it.
+            pid: opts.pid,
+            profileDir: opts.profileDir,
             endedUtc: opts.ended === false ? undefined : '2026-01-01T00:01:00.000Z'
         }));
     }
@@ -205,6 +213,18 @@ section('4', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 4b -- a capture at the captures ROOT has no host to name
+// ---------------------------------------------------------------------------
+section('4b', () => {
+    const found = byDir(store.listCaptureDirs(root));
+    assert.strictEqual(found.get(legacy).host, null,
+        '4b.a: a capture directly under the captures root reported `.har-captures` as its ' +
+        'host, which would print in the summary as though it were a site');
+    assert.strictEqual(found.get(current).host, 'www.example.test',
+        '4b.b: a host-layout capture must still report its host');
+});
+
+// ---------------------------------------------------------------------------
 // 5 -- never a captured value
 // ---------------------------------------------------------------------------
 section('5', () => {
@@ -247,11 +267,63 @@ section('6', () => {
         '6.e: resolveSession no longer picks the newest recorder capture by stamp, got ' + resolved);
 });
 
-fs.rmSync(tmp, { recursive: true, force: true });
+// ---------------------------------------------------------------------------
+// 7 -- making legacy captures VISIBLE must not make them LIVE
+// ---------------------------------------------------------------------------
+//
+// Before this walk moved, a session directory at the captures root was
+// invisible to `resolveSession` and `findProfileConflict`. Making it visible is
+// the fix; making it a candidate for "a recorder is running right now" is a
+// side effect nobody asked for, and a dangerous one.
+//
+// `isDriverAlive` is a bare `process.kill(pid, 0)`. It cannot tell a running
+// recorder from an unrelated process that inherited the pid, and a legacy
+// capture is by definition old -- the host layer has existed for every capture
+// written since. So a years-old interrupted legacy session can claim to be live
+// on a reused pid, and would then shadow the recording the operator is actually
+// sitting in front of, or refuse a new capture as a profile conflict.
+//
+// The layout itself settles it: a LIVE recorder writes `<host>/<stamp>`. A
+// session at the root cannot be one.
+section('7', () => {
+    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-store-live-'));
+    try {
+        const liveRoot = path.join(live, '.har-captures');
+        const profile = path.join(live, 'profile');
+        // A legacy session that never ended, on a pid that is certainly alive.
+        const zombie = makeCapture(path.join(liveRoot, '2020-01-01-000001'),
+            { ended: false, pid: process.pid, profileDir: profile });
+        // And a newer, properly ended capture in the current layout.
+        const newer = makeCapture(path.join(liveRoot, 'www.example.test', '2026-01-02-000001'));
 
-if (failures.length > 0) {
-    for (const f of failures) console.error('FAILED ' + f);
-    console.error(`${failures.length} capture-store assertion(s) failed`);
-    process.exit(1);
-}
-console.log('All capture-store tests passed');
+        assert.strictEqual(captureHar.resolveSession({ dir: liveRoot }), newer,
+            '7.a: a legacy session claiming to be live shadowed the newest real capture -- ' +
+            'stop/status/catalogue would act on the wrong one');
+
+        pending.push(captureHar.findProfileConflict(profile, liveRoot).then((conflict) => {
+            assert.strictEqual(conflict, null,
+                '7.b: a legacy session on a reused pid was reported as a live profile conflict, ' +
+                'which refuses a new capture the operator is entitled to start');
+        }).catch((e) => {
+            failures.push('[block 7] ' + (e && e.message ? e.message : String(e)));
+        }).finally(() => {
+            fs.rmSync(live, { recursive: true, force: true });
+        }));
+    } catch (e) {
+        fs.rmSync(live, { recursive: true, force: true });
+        throw e;
+    }
+});
+
+// `findProfileConflict` is async, and a promise nobody waits on is an assertion
+// that cannot fail. Settled before the verdict is printed.
+Promise.all(pending).then(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+
+    if (failures.length > 0) {
+        for (const f of failures) console.error('FAILED ' + f);
+        console.error(`${failures.length} capture-store assertion(s) failed`);
+        process.exit(1);
+    }
+    console.log('All capture-store tests passed');
+});

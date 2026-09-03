@@ -2667,13 +2667,33 @@ function listSessionDirs(root) {
  * which "port 9333 is busy" never could -- that port may belong to anything.
  */
 async function findProfileConflict(profileDir, root) {
-    for (const { dir } of listSessionDirs(root)) {
+    for (const { dir, captureClass } of listSessionDirs(root)) {
+        if (!canBeLive(captureClass)) continue;
         const session = readJson(path.join(dir, SESSION_FILE));
         if (!session || session.endedUtc) continue;
         if (session.profileDir !== profileDir) continue;
         if (isDriverAlive(session)) return session;
     }
     return null;
+}
+
+/**
+ * May a capture of this class be a recording that is happening RIGHT NOW?
+ *
+ * Only the current layout. A LIVE recorder writes `<host>/<stamp>`, so a
+ * session directory at the captures root predates every capture this tool
+ * writes and cannot be one in flight.
+ *
+ * WHY THIS IS A GUARD AND NOT A DETAIL. `isDriverAlive` is a bare
+ * `process.kill(pid, 0)`: it cannot tell a running recorder from an unrelated
+ * process that inherited the pid. That was harmless while legacy directories
+ * were invisible here. Making them findable (#386) put old, never-closed
+ * sessions into the same pool, where a reused pid would let one shadow the
+ * recording the operator is sitting in front of, or refuse a new capture as a
+ * profile conflict. Findable was the fix; live was never part of it.
+ */
+function canBeLive(captureClass) {
+    return captureClass !== captureStore.CLASS_LEGACY;
 }
 
 // ---------------------------------------------------------------------------
@@ -2714,7 +2734,8 @@ function resolveSession(args) {
     // A LIVE capture outranks a newer dead one. Without this, a session that
     // ended seconds ago would shadow the recording the operator is actually
     // sitting in front of -- which is the one `stop` means.
-    const live = candidates.filter(({ dir }) => {
+    const live = candidates.filter(({ dir, captureClass }) => {
+        if (!canBeLive(captureClass)) return false;
         const session = readJson(path.join(dir, SESSION_FILE));
         return session && !session.endedUtc && isDriverAlive(session);
     });
