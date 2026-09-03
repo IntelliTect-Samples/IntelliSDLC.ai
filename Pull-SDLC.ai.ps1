@@ -1319,7 +1319,7 @@ function Confirm-SyncBootstrap {
     # The caller has already warned, in detail, what a bootstrap would do, so
     # keep the prompt itself short rather than repeating all of it.
     $query = 'Proceed with bootstrap?'
-    $caption = 'Full refresh from upstream HEAD -- overwrites the upstream-managed files listed above'
+    $caption = 'Full refresh from upstream HEAD -- overwrites the upstream-managed files detected above'
     return $Cmdlet.ShouldContinue($query, $caption)
 }
 
