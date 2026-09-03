@@ -187,6 +187,35 @@ function endpointOf(doc, method, template) {
 
 const names = (list) => list.map((x) => x.name);
 
+// --- the shared definition ------------------------------------------------
+
+console.log('generate-api-document -- one definition of "the same endpoint"');
+
+test('reaches the shared path templater without loading the recorder', () => {
+    // api.json, digest.json and the catalogue guard must agree about what one
+    // endpoint IS; a second notion would make the artifacts disagree about the
+    // API they all describe. The templater is owned by har-catalogue.js, so
+    // that is where this reads it from.
+    //
+    // Asserted as a property of the MODULE GRAPH rather than by reading the
+    // source: requiring the recorder to obtain a pure function pulls in `net`,
+    // `readline`, `child_process` and the incremental recorder, and that cost
+    // is the actual reason for importing directly. A test over the import
+    // statement would pin the wiring; this pins the consequence.
+    const probe = 'const p=require(process.argv[1]);'
+        + 'const loaded=Object.keys(require.cache).some((k)=>k.endsWith("capture-har.js"));'
+        + 'console.log(loaded?"RECORDER-LOADED":"clean");'
+        + 'console.log(typeof require(process.argv[2]).pathTemplate);';
+    const out = execFileSync(process.execPath, [
+        '-e', probe,
+        path.join(__dirname, 'generate-api-document.js'),
+        path.join(__dirname, 'har-catalogue.js'),
+    ], { encoding: 'utf8' });
+
+    assert.match(out, /^clean/, 'the recorder must not be loaded to get a path templater');
+    assert.match(out, /function/, 'and har-catalogue.js is where the templater lives');
+});
+
 // --- aggregation ----------------------------------------------------------
 
 console.log('generate-api-document -- aggregation');
