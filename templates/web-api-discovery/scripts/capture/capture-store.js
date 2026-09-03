@@ -188,13 +188,26 @@ function listCaptureDirs(root) {
     const seen = new Set();
     const found = [];
 
+    // Records what `dir` is, and answers ONE question for the caller: is this a
+    // leaf?
+    //
+    // A recorder session IS a leaf -- its own scrub output lives inside it, and
+    // a `<stamp>/` directory has no captures under it by construction. So the
+    // walk stops there and never calls `scrubbed.har`'s directory a capture.
+    //
+    // A DECLINED directory is NOT a leaf, and the difference is load-bearing. A
+    // stray `raw.har` at host level is enough to make that directory look like
+    // somebody else's capture; if declining also stopped the descent, one stray
+    // file would hide every capture under that host, silently -- the exact
+    // failure mode this classification exists to remove. Declining is a
+    // statement about the directory, never about the tree below it.
     const consider = (dir) => {
         if (seen.has(dir)) return false;
         const entry = describeCaptureDir(dir);
         if (!entry) return false;
         seen.add(dir);
         found.push(entry);
-        return true;
+        return entry.captureClass !== CLASS_FOREIGN;
     };
 
     for (const r of roots) {
