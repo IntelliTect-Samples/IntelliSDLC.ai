@@ -2286,6 +2286,20 @@ function Invoke-SelfReExec {
     # script as a reason to refuse EVERY future self-update, so the repo can no
     # longer heal itself from the dirt this run created.
     #
+    # "Every other outcome" is meant literally: EVERY non-zero rc, not just the
+    # worktree-shaped aborts (3, 5, 6) issue #118 was reported from. The routine
+    # refusals restore too -- rc=1 bootstrap declined, rc=2 drift detected
+    # without -Force, rc=4, rc=7 -- and rc=2 is the case that matters most, not
+    # least. There the operator ALREADY has local edits to managed files; adding
+    # unowned dirt on top is what tips them into the issue #202 wedge, right at
+    # the moment they are being told to go clean up and rerun.
+    #
+    # This does not weaken issue #200. That guarantee is about which code RUNS
+    # -- and the child did run the newest upstream version before refusing. Only
+    # the on-disk persistence of a run that accomplished nothing is undone, and
+    # the sole cost is one more fetch on the rerun the operator was just told to
+    # perform.
+    #
     # $RestoreOriginal covers the cases known in advance (-WhatIf, and the
     # issue #247 protected-main auto-worktree path). It cannot cover this one,
     # because whether the child aborts is not knowable until it has run.
@@ -3254,4 +3268,12 @@ if ($PSBoundParameters.ContainsKey('CommitOnMain')) {
 }
 $exitCode = Invoke-PullSDLC @invokeArgs
 
+# Keep this an EXPLICIT numeric exit, and keep every other top-level exit path
+# explicit too. When this script is the re-exec'd child of a self-refresh,
+# Invoke-SelfReExec reads $LASTEXITCODE straight after `& $ScriptPath` to decide
+# whether to put the parent working tree back (issue #118). PowerShell does not
+# reset $LASTEXITCODE before an `&` invocation, so a path that fell off the end
+# without exiting would leave it holding a stale value from whatever native
+# command ran earlier in the process -- and an abort would be silently misread
+# as success, or the reverse.
 exit $exitCode
