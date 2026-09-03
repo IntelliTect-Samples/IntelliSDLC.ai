@@ -117,6 +117,33 @@ const {
     BODY_BEARING_METHODS,
 } = require(path.join(__dirname, 'har-catalogue.js'));
 
+/**
+ * Was what a caller must send ever WITNESSED for this entry?
+ *
+ * A DIFFERENT QUESTION from the catalogue's `hasRequestBody`, and deliberately
+ * built from it rather than beside it.
+ *
+ * The catalogue asks how many bytes of wire body a reference carried, and for
+ * that question structural `params[]` with no `text` is correctly not a body --
+ * there is nothing to measure. This document asks whether the request side is
+ * documented, and decoded params answer that completely: they are the field
+ * names a caller must send. `extract-har-reference.js` classifies such an entry
+ * as "a request that CARRIES A BODY", and gate 7 SKIPS rather than rejects it,
+ * so the shape reaches a committed reference intact.
+ *
+ * Answering the catalogue's question here reported a witnessed multipart upload
+ * as having no request side, and sent an operator to re-capture something
+ * already fully recorded. Answering it with a private copy of the grammar check
+ * would put back the divergence #426 removed. Composing the two keeps ONE
+ * definition of "is a wire body" and states plainly where this document needs
+ * more than that.
+ */
+function requestSideWitnessed(entry) {
+    if (hasRequestBody(entry)) return true;
+    const params = entry.request && entry.request.postData && entry.request.postData.params;
+    return Array.isArray(params) && params.length > 0;
+}
+
 const DOCUMENT_FILE = 'api.json';
 const SCHEMA_VERSION = 1;
 
@@ -436,7 +463,7 @@ function absorbRequestNames(endpoint, entry, harFile, index) {
 function absorbEntry(endpoint, entry, harFile, index) {
     addWitness(endpoint, harFile, index);
     endpoint.observedEntries++;
-    if (hasRequestBody(entry)) endpoint.requestBodyEntries++;
+    if (requestSideWitnessed(entry)) endpoint.requestBodyEntries++;
     if (responseText(entry)) endpoint.responseBodyEntries++;
     if (isTruncated(entry)) endpoint.truncatedResponses++;
 
@@ -760,7 +787,7 @@ function gapHolds(references, endpoint, gap) {
             return s >= 200 && s < 300;
         });
     case 'no-request-body-observed':
-        return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(hasRequestBody)
+        return BODY_BEARING_METHODS.has(endpoint.method) && !entries.some(requestSideWitnessed)
             && witnessingReferences < 2;
     case 'no-response-body-observed':
         return !entries.some(responseText) && witnessingReferences < 2;
