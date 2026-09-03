@@ -98,7 +98,24 @@ const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 // `capture-har.js` when that was where it lived; since the implementation moved
 // here, going through the recorder would load `net`, `readline`,
 // `child_process` and the incremental recorder to obtain one pure function.
-const { pathTemplate } = require(path.join(__dirname, 'har-catalogue.js'));
+const {
+    pathTemplate,
+    // "Did this request carry a body?" and "which methods should carry one?"
+    // are the catalogue guard's questions too, and this document must answer
+    // them the same way. They were defined separately here and DISAGREED: the
+    // catalogue requires the body to belong to a recognised wire grammar, this
+    // accepted any non-empty text -- so a placeholder standing in for a body
+    // counted as a body, `no-request-body-observed` did not fire, and the
+    // document reported a request side that was a sentinel (#426).
+    //
+    // What made that safe was neither definition: it was
+    // verify-har-reference.js's hollow-body gate rejecting such a reference
+    // before it could be committed. Two paths that must agree were agreeing
+    // by way of a THIRD component, which is the shape both #396 and #397
+    // shipped a Critical for.
+    hasRequestBody,
+    BODY_BEARING_METHODS,
+} = require(path.join(__dirname, 'har-catalogue.js'));
 
 const DOCUMENT_FILE = 'api.json';
 const SCHEMA_VERSION = 1;
@@ -312,19 +329,6 @@ function operationsOf(entry) {
 // Aggregation
 // ---------------------------------------------------------------------------
 
-/**
- * Does this entry carry a request body at all?
- *
- * `{}` and `[]` are legal minimal bodies, so emptiness is measured on the
- * absence of postData rather than on the length of its text.
- */
-function hasRequestBody(entry) {
-    const post = entry.request && entry.request.postData;
-    if (!post) return false;
-    return (Array.isArray(post.params) && post.params.length > 0)
-        || (typeof post.text === 'string' && post.text.length > 0);
-}
-
 function responseText(entry) {
     const content = entry.response && entry.response.content;
     return (content && typeof content.text === 'string' && content.text.length > 0)
@@ -342,17 +346,14 @@ function isTruncated(entry) {
     return !!(content && content.truncated);
 }
 
-/**
- * Methods for which a missing request body is a HOLE rather than normal.
- *
- * An observed set, like `PERSISTED_ID_FIELDS`, not a statement about HTTP.
- * DELETE is absent because the overwhelming majority carry no body, and a hole
- * raised on every DELETE would be noise -- at the cost that a DELETE that DOES
- * take a body has its missing request side unreported. Add it here if a corpus
- * shows otherwise; do not infer it per-endpoint, which would be the guesswork
- * this document replaces.
- */
-const BODY_BEARING_METHODS = new Set(['POST', 'PUT', 'PATCH']);
+// `BODY_BEARING_METHODS` (imported above) is the set for which a missing
+// request body is a HOLE rather than normal. An observed set, like
+// `PERSISTED_ID_FIELDS`, not a statement about HTTP: DELETE is absent because
+// the overwhelming majority carry no body and a hole raised on every one would
+// be noise -- at the cost that a DELETE which DOES take a body has its missing
+// request side unreported. That is a stated limit, not an inference about any
+// endpoint. It now lives in har-catalogue.js, so changing it changes the
+// catalogue guard too, which is the point.
 
 /**
  * At most ONE witness per reference per claim: the first entry in that file
@@ -940,7 +941,19 @@ function main(argv) {
     console.log(`${path.join(dir, DOCUMENT_FILE)}: ${references.length} reference(s)`);
 }
 
-module.exports = { buildDocument, serialize, verifyTraceability, readReferences };
+// `hasRequestBody` and `BODY_BEARING_METHODS` are re-exported deliberately:
+// they are part of this module's contract WITH har-catalogue.js, and exporting
+// them lets the suite assert the two are the same objects rather than merely
+// behaving alike today. A behavioural test alone would still pass if someone
+// copied the strict logic back in, which is the divergence #426 removed.
+module.exports = {
+    buildDocument,
+    serialize,
+    verifyTraceability,
+    readReferences,
+    hasRequestBody,
+    BODY_BEARING_METHODS,
+};
 
 // Only run as a command when invoked as one: requiring this module from a test
 // must not write a document or print a usage error.
