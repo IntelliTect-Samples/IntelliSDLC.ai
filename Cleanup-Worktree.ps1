@@ -38,6 +38,18 @@
     the same way the capture guard does: an unattended run is exactly the
     case where continuing past a warning nobody read is the whole problem.
 
+    RESIDUAL RISK, recorded rather than fixed: "is a human attached?" is
+    answered by [Console]::IsInputRedirected, because the obvious probe
+    ([Environment]::UserInteractive) returns $true inside an agent session
+    and would defeat the gate entirely. A host that leaves stdin attached to
+    a live console while nobody is watching -- a Scheduled Task set to run
+    whether or not a user is logged on, an orchestrator that allocates a pty
+    -- therefore looks interactive, and the prompt BLOCKS instead of failing
+    fast. That is a hang, not a data loss, and it is the safe direction to be
+    wrong in; closing it properly would need a new switch, which requires
+    explicit human approval. If a run appears stuck here, pass -Force (having
+    decided the changes are expendable) or clean the worktree first.
+
     CAPTURE SAFETY (both modes, issue #371):
     Removing a worktree destroys its gitignored files outright -- no Recycle
     Bin, no undo -- and `git status` reports such a worktree CLEAN, because
@@ -436,6 +448,31 @@ function Assert-WorktreeCaptureSafe {
 .OUTPUTS
     [pscustomobject] with Tracked (string[]), Untracked (string[]), Unknown (bool).
 #>
+function Format-PorcelainPath {
+    <#
+    .SYNOPSIS
+        Unwraps the quotes `git status --porcelain` puts around an awkward path.
+    .DESCRIPTION
+        git quotes a path containing spaces or special characters. The quotes
+        are transport, not part of the name, and the sibling capture guard
+        already strips them (Get-WorktreeCaptureArtifact).
+
+        A rename arrives as `old -> new` and may carry quotes around EITHER
+        side, so a blind Trim('"') would eat one quote from each end of a
+        two-path line and leave the inner ones -- worse than doing nothing.
+        Rename lines are therefore returned untouched.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    if ($Path -like '* -> *') { return $Path }
+    if ($Path.Length -ge 2 -and $Path.StartsWith('"') -and $Path.EndsWith('"')) {
+        return $Path.Substring(1, $Path.Length - 2)
+    }
+    return $Path
+}
+
 function Get-WorktreeDirtyState {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$WorktreePath)
@@ -446,7 +483,10 @@ function Get-WorktreeDirtyState {
     # that is safe to read as "nothing to lose".
     if (-not (Test-Path -LiteralPath $WorktreePath)) { return $empty }
 
-    $status = & git -C $WorktreePath status --porcelain 2>$null
+    # core.quotepath=false so a non-ASCII filename arrives as itself rather than
+    # as octal escapes. The operator is being asked to authorise destroying
+    # these files; "caf\303\251.txt" is not a name anyone can recognise.
+    $status = & git -c core.quotepath=false -C $WorktreePath status --porcelain 2>$null
     if ($LASTEXITCODE -ne 0) {
         return [pscustomobject]@{ Tracked = @(); Untracked = @(); Unknown = $true }
     }
@@ -457,7 +497,7 @@ function Get-WorktreeDirtyState {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         if ($line.Length -le 3) { continue }
         $code = $line.Substring(0, 2)
-        $path = $line.Substring(3).Trim()
+        $path = Format-PorcelainPath -Path $line.Substring(3).Trim()
         if ($code -eq '??') { $untracked += $path }
         elseif ($code -eq '!!') { continue }
         else { $tracked += "$code $path" }
@@ -583,7 +623,10 @@ function Assert-WorktreeRemovalConsent {
         if ($untracked.Count -gt 0) {
             # Named, not silently forced -- the same shape as the .evidence/
             # pre-clean: say what is being discarded rather than force blindly.
-            Write-Host ("  Discarding $($untracked.Count) untracked file(s) in '$WorktreePath' (no tracked changes at risk).") -ForegroundColor DarkGray
+            # This branch sits ahead of the -DryRun check below, so it has to
+            # get the tense right itself: a dry run discards nothing.
+            $verb = if ($DryRun) { 'Would discard' } else { 'Discarding' }
+            Write-Host ("  $verb $($untracked.Count) untracked file(s) in '$WorktreePath' (no tracked changes at risk).") -ForegroundColor DarkGray
         }
         return
     }
@@ -737,7 +780,12 @@ if ($hasTarget -and $WorktreePath) {
         # obstacle (issue #392): say what is dirty, and get consent before
         # escalating past it.
         Write-Warning 'Worktree still present -- git refused to remove it.'
-        Assert-WorktreeRemovalConsent -WorktreePath $WorktreePath -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
+        # $absWorktree, not $WorktreePath: the script may have Set-Location'd to
+        # the main repo root above, so a relative -WorktreePath no longer means
+        # what the operator typed. The capture guard already resolves for the
+        # same reason -- a guard that inspects the wrong directory reports the
+        # wrong answer, and here the wrong answer is "nothing to lose".
+        Assert-WorktreeRemovalConsent -WorktreePath $absWorktree -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
         Invoke-Git -Arguments @('worktree', 'remove', '--force', $WorktreePath) -IgnoreFailure | Out-Null
     }
 }
