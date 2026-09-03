@@ -97,23 +97,24 @@ const LEAK_PATTERNS = [
         name: 'pwd-envelope',
         class: 'secret',
         re: /#PWD_[A-Z0-9_]{1,40}:\d{1,4}:\d{1,14}:[A-Za-z0-9+/_=-]{4,}/g,
-        // There is no fake spelling of this shape to exempt. The scrubber
-        // replaces a redacted value ENTIRELY, with `redacted-<hex>`, which
-        // carries no `#PWD_` prefix and so cannot match -- unlike `jwt` or
-        // `hex64`, whose fakes are generated to keep the original shape and
-        // would otherwise be re-reported forever. Inventing a sentinel here
-        // would add an exemption nothing produces, and an exemption no test can
-        // reach is a hole waiting for someone to widen it. Case 7.c pins the
-        // claim instead of asserting it in prose.
+        // The scrubber's own fake for this kind, exempted so the gate does not
+        // re-report the redaction it just made -- the failure the `jwt` and
+        // `hex64` sentinels exist to prevent. `sanitize-har.js` shape-scrubs
+        // this kind (issue #407) with a FORMAT-PRESERVING replacement, so the
+        // fake matches the pattern above and an exemption is mandatory.
         //
-        // THIS IS TRUE ONLY WHILE THE SCRUBBER HAS NO SHAPE RULE FOR THIS KIND,
-        // and it does not: `sanitize-har.js`'s own `PATTERNS` table gates `jwt`,
-        // `hex64`, `hex32` and `upload-handle` by shape, and this kind is
-        // deliberately absent from it (see case 8). Whoever adds one MUST come
-        // back here: a format-preserving fake -- which is what `upload-handle`,
-        // the closest precedent, emits -- would match this pattern and the gate
-        // would re-report the scrubber's own redaction on every run, forever.
-        isFake: () => false
+        // The sentinel is three tokens the real format cannot produce, not one:
+        // the label `REDACTED` is not a product, version `0` is below the
+        // lowest observed, and epoch `0` is 1970. Requiring all three plus an
+        // exact-length lowercase-hex tail, anchored, is what keeps this an
+        // exemption for OUR output rather than a hole a capture can walk
+        // through by naming itself conveniently.
+        //
+        // Kept character-identical to `PWD_ENVELOPE_FAKE_PREFIX` and the
+        // 24-char slice in sanitize-har.js's `fakeFor`. If the two ever
+        // disagree, the scrubber emits a value this gate reports forever, and
+        // no scrubbed capture carrying an envelope can ever pass.
+        isFake: (m) => /^#PWD_REDACTED:0:0:[0-9a-f]{24}$/.test(m)
     },
     {
         name: 'email',
