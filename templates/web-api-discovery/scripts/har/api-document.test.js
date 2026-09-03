@@ -974,6 +974,82 @@ test('--check validates a hole\'s witnesses, not only the hole itself', () => {
         'the traceability pass names the bad witness rather than leaving it to the byte comparison');
 });
 
+test('a placeholder standing in for a request body is not a request body', () => {
+    // #426. Two definitions of "carried a request body" disagreed: the
+    // catalogue's requires the body to belong to a recognised wire grammar,
+    // this one accepted any non-empty text. So a SENTINEL standing in for a
+    // body counted as a body, the hole did not fire, and the document reported
+    // the request side as observed when what was observed was a placeholder.
+    //
+    // That is the #358 hollow-reference defect reappearing one artifact later:
+    // a file catalogued as documenting request-side behaviour it contains none
+    // of. Both definitions now come from har-catalogue.js.
+    const dir = path.join(tmp, 'placeholder-body');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'placeholder.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/upload',
+            postData: { mimeType: 'application/x-www-form-urlencoded', text: '[body removed]' },
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const upload = endpointOf(readDoc(dir), 'POST', '/api/upload');
+
+    assert.ok(upload.unproven.some((u) => u.kind === 'no-request-body-observed'),
+        `a sentinel is not a body, so the request side is unproven: ${JSON.stringify(upload.unproven)}`);
+});
+
+test('a real body in any recognised grammar still counts as a body', () => {
+    // The strict definition must not fire on traffic behaving normally. A gate
+    // that flags real bodies trains its readers to ignore it, which costs every
+    // other hole the document carries.
+    const dir = path.join(tmp, 'real-bodies');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'real.har'), JSON.stringify(har([
+        entry({
+            method: 'POST',
+            url: 'https://www.example.invalid/api/json',
+            postData: { mimeType: 'application/json', text: '{"a":1}' },
+            responseText: '{"ok":true}',
+        }),
+        entry({
+            method: 'PUT',
+            url: 'https://www.example.invalid/api/form',
+            postData: formPost([{ name: 'a', value: '1' }]),
+            responseText: '{"ok":true}',
+        }),
+        entry({
+            method: 'PATCH',
+            url: 'https://www.example.invalid/api/empty-json',
+            // `{}` is a legal minimal body, not an absent one.
+            postData: { mimeType: 'application/json', text: '{}' },
+            responseText: '{"ok":true}',
+        }),
+    ]), null, 2) + '\n', 'utf8');
+    runNode(['--dir', dir]);
+    const doc = readDoc(dir);
+
+    for (const template of ['/api/json', '/api/form', '/api/empty-json']) {
+        const endpoint = doc.endpoints.find((e) => e.pathTemplate === template);
+        assert.ok(!endpoint.unproven.some((u) => u.kind === 'no-request-body-observed'),
+            `${template} carries a real body: ${JSON.stringify(endpoint.unproven)}`);
+    }
+});
+
+test('the body definition and the method set come from the catalogue, not a copy', () => {
+    // The reason #426 existed: two paths that must agree were agreeing by
+    // coincidence, and the coincidence was maintained by a THIRD component's
+    // gate rather than by either of them. Identity is what makes the agreement
+    // structural.
+    const generator = require(path.join(__dirname, 'generate-api-document.js'));
+    const catalogue = require(path.join(__dirname, 'har-catalogue.js'));
+
+    assert.strictEqual(generator.hasRequestBody, catalogue.hasRequestBody);
+    assert.strictEqual(generator.BODY_BEARING_METHODS, catalogue.BODY_BEARING_METHODS);
+});
+
 // --- the check ------------------------------------------------------------
 
 console.log('generate-api-document --check');
