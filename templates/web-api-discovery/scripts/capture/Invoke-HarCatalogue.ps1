@@ -184,7 +184,7 @@ if ($Path -and (Test-Path -LiteralPath $Path -PathType Container)) {
                     'no scrubbed.har -- an earlier scrub was REJECTED and quarantined; triage it and scrub again'
                 }
                 else {
-                    'no scrubbed.har -- scrub it first (Invoke-SanitizeHar.ps1)'
+                    'no scrubbed.har -- run the scrub stage over it first (Invoke-SanitizeHar)'
                 }
                 return @{ Outcome = 'skipped'; Reason = $why }
             }
