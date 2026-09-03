@@ -216,6 +216,15 @@ If the project maintains a living product specification (e.g., `product-spec.md`
     ./Cleanup-Worktree.ps1 -Sweep                        # Also prune stale refs
     ```
   - Manual fallback: unlock worktree, remove it, prune, checkout main, pull, delete branch.
+  - **Cleanup refuses on a dirty worktree, and that refusal is correct.**
+    `git worktree remove` declines when tracked files are modified or staged;
+    the script no longer forces past that silently (issue #392). It lists the
+    files, prompts when a human is attached, and **fails** when none is --
+    because the merge-then-cleanup sequence routinely catches an authoring
+    agent still finishing. If you see the refusal, commit or stash the work;
+    pass `-Force` only once you have decided those changes are expendable.
+    `-Force` authorises discarding both the uncommitted worktree changes and
+    an unmerged branch (`git branch -D`).
 
 ### The Rule Covers WRITES, Not Just Commits
 

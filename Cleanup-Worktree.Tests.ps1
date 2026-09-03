@@ -689,3 +689,97 @@ Describe 'Issue #390: case-sensitivity comes from the operator' {
         ($code -join "`n") | Should -Not -Match '\(\?i\)'
     }
 }
+
+# --- Independent-review findings (PR #433) --------------------------------
+
+Describe 'Format-PorcelainPath' {
+
+    It 'unwraps the quotes git puts around a path with spaces' {
+        Format-PorcelainPath -Path '"my file.txt"' | Should -Be 'my file.txt'
+    }
+
+    It 'leaves an ordinary path alone' {
+        Format-PorcelainPath -Path 'src/app.ps1' | Should -Be 'src/app.ps1'
+    }
+
+    It 'leaves a RENAME line intact rather than eating one quote from each end' {
+        # `old -> new` can be quoted on either side; a blind Trim would strip
+        # the outermost quote of each path and leave the inner ones, which is
+        # worse than doing nothing.
+        Format-PorcelainPath -Path '"old name.txt" -> "new name.txt"' |
+            Should -Be '"old name.txt" -> "new name.txt"'
+    }
+}
+
+Describe 'Dirty report legibility' {
+
+    It 'names a non-ASCII file as itself, not as octal escapes' {
+        # The operator is being asked to authorise destroying these files.
+        # "caf\303\251.txt" is not a name anyone can recognise, and git emits
+        # exactly that unless core.quotepath is turned off.
+        $wt = New-TestWorktree
+        try {
+            $name = [string]([char]0x63 + [char]0x61 + [char]0x66 + [char]0xE9) + '.txt'
+            $full = Join-Path $wt $name
+            [System.IO.File]::WriteAllText($full, 'v1', [System.Text.Encoding]::UTF8)
+            Push-Location $wt
+            & git add -A 2>$null
+            & git -c commit.gpgsign=false commit --quiet -m 'add' 2>$null
+            Pop-Location
+            [System.IO.File]::WriteAllText($full, 'v2', [System.Text.Encoding]::UTF8)
+
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Tracked).Count | Should -Be 1
+            @($state.Tracked)[0] | Should -Match ([regex]::Escape($name))
+            @($state.Tracked)[0] | Should -Not -Match '\\303'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'truncates a long list and says how many it withheld' {
+        # An unbounded list buries the decision it exists to inform.
+        $wt = New-TestWorktree
+        try {
+            1..25 | ForEach-Object { Set-Content -Path (Join-Path $wt "f$_.txt") -Value 'v1' }
+            Push-Location $wt
+            & git add -A 2>$null
+            & git -c commit.gpgsign=false commit --quiet -m 'add' 2>$null
+            Pop-Location
+            1..25 | ForEach-Object { Set-Content -Path (Join-Path $wt "f$_.txt") -Value 'v2' }
+
+            $state = Get-WorktreeDirtyState -WorktreePath $wt
+            @($state.Tracked).Count | Should -Be 25
+            $report = Format-WorktreeDirtyReport -WorktreePath $wt -DirtyState $state
+            $report | Should -Match '25 uncommitted change'
+            $report | Should -Match 'and 5 more'
+            # The count of listed entries must be the cap, not the total.
+            @($report -split "`r?`n" | Where-Object { $_ -match '^\s{4}\s*M\s' }).Count |
+                Should -Be 20
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'says "Would discard" under -DryRun, because a dry run discards nothing' {
+        $wt = New-TestWorktree
+        try {
+            Set-Content -Path (Join-Path $wt 'obj-output.txt') -Value 'x'
+            $out = Assert-WorktreeRemovalConsent -WorktreePath $wt -DryRun 6>&1 |
+                ForEach-Object { "$_" }
+            ($out -join ' ') | Should -Match 'Would discard'
+            ($out -join ' ') | Should -Not -Match 'Discarding'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Targeted-site path resolution' {
+
+    It 'hands the consent gate the RESOLVED worktree path, as the capture guard does' {
+        # The script may Set-Location to the main repo root before this point,
+        # so a relative -WorktreePath no longer means what the operator typed.
+        # A guard pointed at the wrong directory answers "nothing to lose".
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $raw | Should -Match 'Assert-WorktreeRemovalConsent -WorktreePath \$absWorktree'
+        $raw | Should -Not -Match 'Assert-WorktreeRemovalConsent -WorktreePath \$WorktreePath '
+    }
+}
