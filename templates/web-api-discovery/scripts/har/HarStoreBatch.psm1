@@ -196,15 +196,23 @@ function Invoke-HarCaptureBatch {
     token, which is exactly the class of value this pipeline exists to keep out
     of output.
 
-    A LEGACY capture has no host directory; its parent is the captures root
-    itself, so naming that parent would print `.har-captures` as though it were
-    a site.
+    A capture at the captures ROOT has no host directory, so there is nothing to
+    name it by but its stamp. THE TEST IS THE ABSENT HOST, NOT THE CLASS. Keying
+    on `legacy` covered the common case and missed its twin: a dump with no
+    `session.json` dropped straight under `.har-captures/` is DECLINED, not
+    legacy, and has no host layer either -- so it fell through to the host form
+    and printed as `/2020-01-01-mitmdump`, a leading slash and an empty host
+    segment, in the one output an operator reads to decide what to triage.
+
+    `capture-store.js` reports the host as null whenever the layout has none,
+    for every class. This asks that same question rather than re-deriving it
+    from something correlated with it.
 #>
 function Get-HarCaptureLabel {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$Capture)
 
-    if ($Capture.captureClass -eq 'legacy') { return $Capture.stamp }
+    if (-not $Capture.host) { return $Capture.stamp }
     return "$($Capture.host)/$($Capture.stamp)"
 }
 
