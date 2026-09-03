@@ -82,7 +82,16 @@ BeforeAll {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
             if ($opts.Mitm) { Set-Content -LiteralPath (Join-Path $dir 'raw.mitm') -Value 'not-a-har' -Encoding utf8 }
             if ($opts.Malformed) {
-                Set-Content -LiteralPath (Join-Path $dir 'raw.har') -Value '{ this is not json' -Encoding utf8
+                # Deliberately NOT '{ this is not json'. Node's JSON parser
+                # QUOTES THE FIRST TEN BYTES of an input it cannot start
+                # parsing -- "Unexpected token 'S', \"SENTINELBY\"... is not
+                # valid JSON". Those ten bytes are a captured value that the
+                # scrub's own failure message carries, and the assertion below
+                # matches exactly them: a sentinel longer than the quote would
+                # never appear in the output and the test would pass whether the
+                # leak existed or not.
+                Set-Content -LiteralPath (Join-Path $dir 'raw.har') `
+                    -Value 'SENTINELBYTES-NOT-A-HAR' -Encoding utf8
             }
             else { & $writeHar (Join-Path $dir 'raw.har') '{"ok":true}' }
             if (-not $opts.NoSession) {
@@ -255,6 +264,17 @@ Describe 'a folder means every capture under it' {
         # URI is not, and neither is the operator's describe.
         $out | Should -Not -Match 'FIXTURE-START-TOKEN'
         $out | Should -Not -Match 'api\.example\.test'
+
+        # AND NOT THE CAPTURE'S OWN BYTES, by way of the scrub's failure
+        # message. Node's JSON parser quotes the head of an input it cannot
+        # parse, so republishing the scrub's last output line verbatim puts the
+        # capture's first characters straight into the operator-facing summary.
+        # The malformed fixture carries a sentinel for exactly this.
+        $out | Should -Not -Match 'SENTINELBY' `
+            -Because 'a failing scrub''s own output can quote the capture it failed on'
+        # The failure is still REPORTED -- the capture is named and the exit
+        # code is given, or the assertion above would pass on silence.
+        $out | Should -Match 'www\.example\.test/2026-01-02-000003 -- sanitize-har\.js exit 1'
         # And the host/stamp that ARE permitted really are being printed, or
         # the assertion above would pass on an empty summary.
         $out | Should -Match 'www\.example\.test/2026-01-02-'
@@ -410,6 +430,19 @@ Describe 'single-capture behaviour is unchanged' {
         $out | Should -Not -Match 'Catalogue over'
         # It reaches capture-har.js, which says what a single run says.
         $out | Should -Match 'nothing to catalogue|does not exist'
+    }
+
+    It 'a bare not-recorder-output directory still fails as it did before' {
+        # Pointing the catalogue stage straight at a mitmproxy dump resolved to
+        # exactly one capture, so it must take the single-capture path and fail
+        # the way it always has. Routing it into the batch instead would report
+        # "1 declined" and exit 0 -- a run that did nothing, announcing success.
+        $mitm = Join-Path $script:Captures 'www.other.test/2026-01-03-000001'
+        $out = (& $script:Catalogue -Path $mitm 6>&1 2>&1) -join "`n"
+
+        $out | Should -Not -Match 'Catalogue over'
+        $out | Should -Match 'nothing to catalogue|does not exist'
+        $LASTEXITCODE | Should -Not -Be 0 -Because 'nothing was catalogued'
     }
 
     It 'a single session directory is one capture, not a batch of one' {

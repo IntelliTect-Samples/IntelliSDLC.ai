@@ -154,10 +154,27 @@ if ($Path -and (Test-Path -LiteralPath $Path -PathType Container)) {
     $captureStoreJs = Join-Path $PSScriptRoot 'capture-store.js'
     $inventory = Get-HarCaptureInventory -Path $Path -CaptureStoreJs $captureStoreJs
 
+    # Path equality across two runtimes: .NET resolved it, Node resolved it, and
+    # `-eq` compares them case-insensitively -- which is the right reading of a
+    # Windows path and the only platform this pipeline targets. On a
+    # case-sensitive filesystem the two could legitimately disagree about a path
+    # typed in a different case than the directory entry; the effect would be a
+    # single capture taking the batch path, which is a cosmetic difference and
+    # not a wrong answer.
     $resolvedPath = (Resolve-Path -LiteralPath $Path).ProviderPath
-    $isSingleCapture = $inventory.Count -eq 1 -and
-        $inventory[0].dir -eq $resolvedPath -and
-        $inventory[0].captureClass -ne 'foreign'
+
+    # ONE capture, and the operator pointed straight at it. That is the
+    # single-capture command however the capture is classified -- including a
+    # DECLINED one.
+    #
+    # Excluding foreign here looked tidier and was wrong. Pointing this script
+    # at a mitmproxy dump used to reach capture-har.js and fail, correctly,
+    # because there is nothing verified to catalogue. Routing it into the batch
+    # instead answered "1 declined" and exited 0: a run that did nothing,
+    # reporting success, for a path that had a perfectly good answer before.
+    # Declining belongs to a capture found WHILE WALKING A STORE, not to the one
+    # the operator named.
+    $isSingleCapture = $inventory.Count -eq 1 -and $inventory[0].dir -eq $resolvedPath
 
     if ($inventory.Count -and -not $isSingleCapture) {
         if ($OutputPath) {

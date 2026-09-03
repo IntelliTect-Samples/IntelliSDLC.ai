@@ -79,8 +79,25 @@ const CLASS_FOREIGN = 'foreign';
  * thing that means it.
  */
 function classifySessionDir(dir) {
-    const parent = path.basename(path.dirname(dir));
-    return parent.toLowerCase() === CAPTURES_DIR ? CLASS_LEGACY : CLASS_SESSION;
+    return isAtCapturesRoot(dir) ? CLASS_LEGACY : CLASS_SESSION;
+}
+
+/** Does this directory sit DIRECTLY under `.har-captures`, with no host layer? */
+function isAtCapturesRoot(dir) {
+    return path.basename(path.dirname(dir)).toLowerCase() === CAPTURES_DIR;
+}
+
+/**
+ * The site this capture belongs to, or null when there is no host layer to
+ * read one from.
+ *
+ * Null rather than `.har-captures`, which is what the parent directory
+ * literally is for a root-level capture -- printing that in a summary would
+ * name the store as though it were a site. Applies to a DECLINED capture at the
+ * root as much as to a legacy one: the question is the layout, not the class.
+ */
+function hostOf(dir) {
+    return isAtCapturesRoot(dir) ? null : path.basename(path.dirname(dir));
 }
 
 function readJson(p) {
@@ -132,7 +149,7 @@ function describeCaptureDir(dir) {
         return {
             dir,
             stamp,
-            host: path.basename(path.dirname(dir)),
+            host: hostOf(dir),
             captureClass: classifySessionDir(dir),
             reason: null,
             raw: exists(raw) ? raw : null,
@@ -156,7 +173,7 @@ function describeCaptureDir(dir) {
     return {
         dir,
         stamp,
-        host: path.basename(path.dirname(dir)),
+        host: hostOf(dir),
         captureClass: CLASS_FOREIGN,
         reason: `${marker} with no ${SESSION_FILE}`,
         raw: null,
@@ -250,15 +267,20 @@ function listCaptureDirs(root) {
  * captures root is a capture by every test `stop` and `status` apply, and the
  * only reason they could not see it was that the walk started one level too
  * deep.
+ *
+ * THE CLASS COMES WITH THEM, and it is not decoration. Being findable and being
+ * a candidate for "a recorder is running right now" are different questions,
+ * and only the first one was being fixed -- see `isDriverAlive`'s callers.
  */
 function listSessionDirs(root) {
     return listCaptureDirs(root)
         .filter((e) => e.captureClass === CLASS_SESSION || e.captureClass === CLASS_LEGACY)
-        .map(({ dir, stamp }) => ({ dir, stamp }));
+        .map(({ dir, stamp, captureClass }) => ({ dir, stamp, captureClass }));
 }
 
 module.exports = {
     listCaptureDirs,
+    isAtCapturesRoot,
     listSessionDirs,
     describeCaptureDir,
     classifySessionDir,

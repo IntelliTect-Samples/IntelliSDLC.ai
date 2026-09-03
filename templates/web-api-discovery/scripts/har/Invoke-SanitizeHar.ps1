@@ -384,12 +384,37 @@ if (Test-Path -LiteralPath $InputHar -PathType Container) {
         $temp = Join-Path $sessionDir '.scrubbing-scrubbed.har'
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
 
+        # The scrub's output is SEEN, not RELAYED. It goes to the console as it
+        # always has; what the summary carries is the exit code and nothing else.
+        #
+        # WHY THE MESSAGE IS NOT REPUBLISHED, tempting as it is. A failing scrub
+        # can quote the capture it failed on: Node's JSON parser answers a
+        # malformed HAR with `Unexpected token 'x', "<the first ten bytes>"...`,
+        # and sanitize-har.js passes that message through. Lifting the last
+        # output line into the summary therefore puts the capture's own bytes in
+        # front of the operator -- in the one artifact of a batch run that is
+        # meant to be safe to read, paste and share.
+        #
+        # "It is only ten characters" is not a defence: they are the ten
+        # characters at the start of a file this pipeline exists to keep
+        # unpublished. The capture is named, the code is given, and re-running
+        # that one capture shows the message in full.
+        # CAPTURED, then written to the host -- not left in the pipeline. This
+        # scriptblock's return value is the outcome record and nothing else; a
+        # stray stdout line in it makes the loop read node's chatter as the
+        # result. Out-Host puts the text where the operator can see it without
+        # it ever becoming a value this code passes on.
         $said = & node $sanitizeJs --in $capture.raw --out $temp @profileArgs 2>&1
         $scrubExit = $LASTEXITCODE
+        $said | Out-Host
         if ($scrubExit -ne 0) {
             if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
-            $tail = @($said | Where-Object { "$_".Trim() }) | Select-Object -Last 1
-            return @{ Outcome = 'failed'; Reason = "sanitize-har.js exit $scrubExit -- $tail" }
+            return @{
+                Outcome = 'failed'
+                Reason  = "sanitize-har.js exit $scrubExit -- its message is above and is not " +
+                          'repeated here (a scrub error can quote the capture); re-run this ' +
+                          'capture alone to see it in full'
+            }
         }
 
         & node $verifyJs --in $temp @profileArgs 2>&1 | Out-Null
