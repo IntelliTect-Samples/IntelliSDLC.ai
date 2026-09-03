@@ -45,6 +45,27 @@
     Omit it to catalogue the most recent capture under .har-captures/, which is
     the same resolution `capture-har.js stop` and `status` use.
 
+    OR A FOLDER HOLDING SEVERAL CAPTURES, WHICH MEANS ALL OF THEM (#386). A
+    store root or one host's folder is catalogued capture by capture, skipping
+    those that already have a catalogue.json. The captures are found through the
+    same enumeration `resolveSession` uses -- not a second walk -- so the batch
+    and the single-capture command can never disagree about what a capture is.
+
+    Every shape that worked before still takes the identical path: a session
+    directory, an output directory holding a scrubbed.har, and a scrubbed HAR
+    file are all single-capture runs exactly as they were.
+
+.PARAMETER Force
+    Catalogue a capture again even though it already has a catalogue.json. Only
+    meaningful with a folder holding several captures, and refused otherwise.
+
+    IT DOES NOT OVERRIDE THE RECORDER'S REFUSAL to replace a catalogue that
+    carries described actions. Cataloguing is an AI pass rather than a
+    recomputation, so a second run may group a session differently, and
+    discarding a catalogue somebody reviewed is the expensive mistake. -Force
+    means only "do not skip this capture"; a capture whose catalogue holds work
+    is still reported as skipped, with the reason.
+
 .PARAMETER OutputPath
     Where the digest and catalogue are written. Defaults to the directory the
     scrubbed HAR is in -- for a session directory, the output path that
@@ -76,7 +97,10 @@ param(
     [Parameter(Position = 0)]
     [string]$Path,
 
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    # The ONE option this feature adds, and the only one approved for it.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -90,6 +114,118 @@ if (-not $node) {
 $captureJs = Join-Path $PSScriptRoot 'capture-har.js'
 if (-not (Test-Path -LiteralPath $captureJs)) {
     Write-Error "capture-har.js not found at $captureJs"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# A FOLDER MEANS "EVERY CAPTURE UNDER IT" (#386)
+# ---------------------------------------------------------------------------
+#
+# The same plural argument the scrub stage takes, on the stage that follows it,
+# so the two halves of the pipeline can be driven over a store the same way.
+#
+# WHAT MUST NOT CHANGE, AND DOES NOT. -Path already accepted three directory
+# shapes: a session directory, an output directory holding a scrubbed.har, and
+# nothing at all. Each of those still reaches `capture-har.js catalogue`
+# untouched, and the test that decides is the inventory itself:
+#
+#   the walk finds NOTHING            an output directory, or any other folder
+#                                     that is not a capture. Falls through --
+#                                     this is the `.\Invoke-HarCatalogue.ps1
+#                                     .\app.example.com` case from the examples.
+#   the walk finds THE PATH ITSELF    a single session directory. Falls through,
+#                                     because a batch of one is the single
+#                                     capture command and re-routing it would
+#                                     change behaviour for nothing.
+#   the walk finds captures UNDER it  a store root or a host folder. Batch.
+#
+# So the folder cases that worked before still take the identical code path, and
+# the new behaviour appears only where the old one had nothing to say.
+if ($Path -and (Test-Path -LiteralPath $Path -PathType Container)) {
+    # The summary goes to the information stream, and is on unless the caller
+    # says otherwise -- the same bargain Invoke-SanitizeHar.ps1 already makes.
+    # Honouring an explicit -InformationAction rather than pinning 'Continue'
+    # keeps it suppressable.
+    if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
+        $InformationPreference = 'Continue'
+    }
+
+    Import-Module (Join-Path $PSScriptRoot '..' 'har' 'HarStoreBatch.psm1') -Force
+    $captureStoreJs = Join-Path $PSScriptRoot 'capture-store.js'
+    $inventory = Get-HarCaptureInventory -Path $Path -CaptureStoreJs $captureStoreJs
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $isSingleCapture = $inventory.Count -eq 1 -and
+        $inventory[0].dir -eq $resolvedPath -and
+        $inventory[0].captureClass -ne 'foreign'
+
+    if ($inventory.Count -and -not $isSingleCapture) {
+        if ($OutputPath) {
+            # One destination for many captures would put every catalogue.json
+            # on top of the last. Each capture's output goes to its own session
+            # directory, which is #377's placement rule and needs no option.
+            Write-Error ('-OutputPath cannot be combined with a folder holding several captures: ' +
+                'digest.json and catalogue.json are fixed names, so one destination would have ' +
+                'each capture overwrite the last. Each capture is catalogued into its own session directory.')
+            exit 1
+        }
+
+        $catalogueOne = {
+            param($capture)
+
+            # Cataloguing a capture nobody scrubbed FAILS rather than writing a
+            # catalogue that merely looks safe -- that is the property this
+            # script's own header protects, and a batch is not allowed to be the
+            # thing that erodes it. So an unscrubbed capture is reported as
+            # skipped WITH THE REASON, which is precisely #386's complaint: 83
+            # of 88 captures are in this state and nothing ever said so.
+            if (-not $capture.scrubbed) {
+                $why = if ($capture.rejected) {
+                    'no scrubbed.har -- an earlier scrub was REJECTED and quarantined; triage it and scrub again'
+                }
+                else {
+                    'no scrubbed.har -- scrub it first (Invoke-SanitizeHar.ps1)'
+                }
+                return @{ Outcome = 'skipped'; Reason = $why }
+            }
+
+            & node $captureJs catalogue $capture.dir --output-path $capture.dir 2>&1 | Out-Null
+            $code = $LASTEXITCODE
+            switch ($code) {
+                0 { return @{ Outcome = 'processed'; Reason = $null } }
+                # Advisory: the catalogue WAS produced, over a capture whose
+                # gate reported advisory findings. Non-zero so nothing reads it
+                # as clean, but not a failure -- the same distinction the single
+                # run makes, carried through rather than collapsed.
+                7 { return @{ Outcome = 'processed'; Reason = 'gate reported ADVISORY findings (exit 7) -- catalogue produced' } }
+                # The recorder's refusal to replace a catalogue somebody has
+                # worked on. -Force means "do not skip"; it does NOT mean
+                # "overwrite described work", and there is deliberately no
+                # option on the recorder that would.
+                2 { return @{ Outcome = 'skipped'; Reason = 'catalogue already carries described actions -- not replaced (move it aside to re-catalogue)' } }
+                default { return @{ Outcome = 'failed'; Reason = "capture-har.js catalogue exit $code" } }
+            }
+        }
+
+        $results = Invoke-HarCaptureBatch -Inventory $inventory -Stage 'catalogued' -Force:$Force `
+            -IsProcessed { param($c) [bool]$c.catalogue } -Process $catalogueOne
+
+        Write-Information ''
+        Get-HarBatchSummaryLines -Results $results -Stage 'Catalogue' |
+            ForEach-Object { Write-Information $_ }
+        $failures = @($results | Where-Object { $_.Outcome -eq 'failed' })
+        exit ($failures.Count ? 1 : 0)
+    }
+}
+
+# -Force is the folder run's resume override and means nothing here. Refused
+# rather than ignored, because ignoring it would let an operator believe it had
+# overridden the recorder's refusal to replace a catalogue carrying described
+# work -- which nothing overrides.
+if ($Force) {
+    Write-Error ('-Force applies to a folder holding several captures only: it means "catalogue ' +
+        'captures that already have a catalogue.json". It does not override the refusal to ' +
+        'replace a catalogue that carries described actions -- move that file aside instead.')
     exit 1
 }
 

@@ -18,6 +18,10 @@ templates/web-api-discovery/
 │   │   │                            #   attach, incremental fallback recorder,
 │   │   │                            #   scrub, verify, digest
 │   │   ├── capture-har.test.js      # zero-dep behavior suite for the above
+│   │   ├── capture-store.js         # the ONE walk over a capture store; classifies
+│   │   │                            #   current / legacy / not-recorder-output
+│   │   ├── capture-store.test.js    # zero-dep behavior suite for the walk
+│   │   ├── Invoke-HarCatalogue.ps1  # digest + catalogue; a folder means all of them
 │   │   ├── Invoke-HarCapture.ps1    # front door: URL in, catalogue objects out
 │   │   ├── Stop-HarRecording.ps1    # end a recording (automation / AI path)
 │   │   ├── ConvertFrom-HarCatalogue.ps1  # catalogue.json -> typed objects
@@ -28,7 +32,9 @@ templates/web-api-discovery/
 │   ├── har/             # scrub, extract, and catalogue a captured HAR
 │   │   ├── sanitize-har.js          # token/PII redaction with deterministic faker
 │   │   ├── verify-scrub.js          # double-check pass; fails CI on leak
-│   │   ├── Invoke-SanitizeHar.ps1   # PowerShell wrapper for sanitize-har.js
+│   │   ├── Invoke-SanitizeHar.ps1   # wrapper for sanitize-har.js; a folder means
+│   │   │                            #   every capture under it (resume + -Force)
+│   │   ├── HarStoreBatch.psm1       # the batch loop both entry points share
 │   │   ├── extract-har-reference.js # emit the reviewable API reference
 │   │   ├── verify-har-reference.js  # re-check the emitted reference for leaks
 │   │   ├── detect-auth.js           # classify the observed auth model
