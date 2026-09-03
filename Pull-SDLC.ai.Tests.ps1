@@ -2297,6 +2297,103 @@ Describe 'Complete-SelfReExec restore/cleanup (issue #200)' {
     }
 }
 
+Describe 'Invoke-SelfReExec restores the parent tree when the child aborts (issue #118)' {
+    # Invoke-SelfReExec ends in `exit`, which Pester cannot survive in-process,
+    # so these run the REAL function in a child pwsh -- no mocks at all. The
+    # fixture stands in for the self-refreshed Pull-SDLC.ai.ps1: a tracked file
+    # whose committed content is the ORIGINAL, overwritten on disk with the
+    # "new upstream" body, with a backup of the original beside it. That is
+    # exactly the on-disk state Invoke-SelfRefresh leaves behind.
+    #
+    # The assertion is the one the operator actually sees: `git status` on the
+    # branch they ran from.
+    BeforeAll {
+        $script:abSut = Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1'
+
+        # Runs the real Invoke-SelfReExec in a child process against a fixture
+        # "new upstream" body, and returns the child's exit code.
+        function Invoke-RealSelfReExec {
+            param([string]$NewBody, [switch]$RestoreOriginal)
+            Set-Content -LiteralPath $script:abScript -Value $NewBody -NoNewline
+            $restoreArg = if ($RestoreOriginal) { '-RestoreOriginal' } else { '' }
+            $cmd = ". '$($script:abSut)'; Invoke-SelfReExec -ScriptPath '$($script:abScript)' -BackupPath '$($script:abBackup)' $restoreArg"
+            $out = Join-Path $script:abRoot 'out.txt'
+            $err = Join-Path $script:abRoot 'err.txt'
+            $proc = Start-Process pwsh `
+                -ArgumentList '-NoProfile', '-NonInteractive', '-Command', $cmd `
+                -WorkingDirectory $script:abRoot -RedirectStandardOutput $out -RedirectStandardError $err `
+                -Wait -PassThru -WindowStyle Hidden
+            return $proc.ExitCode
+        }
+    }
+
+    BeforeEach {
+        $script:abRoot = Join-Path $TestDrive ("selfreexec-abort-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:abRoot -Force | Out-Null
+        $script:abScript = Join-Path $script:abRoot 'Pull-SDLC.ai.ps1'
+        $script:abBackup = Join-Path $script:abRoot 'backup.ps1'
+        $script:abOriginal = "param([switch]`$NoSelfUpdate)`nexit 0`n"
+        Set-Content -LiteralPath $script:abBackup -Value $script:abOriginal -NoNewline
+
+        Push-Location $script:abRoot
+        try {
+            git init -q -b feat/other
+            git config user.email c@c.c
+            git config user.name c
+            Set-Content -LiteralPath $script:abScript -Value $script:abOriginal -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+        } finally { Pop-Location }
+    }
+
+    It 'restores the pre-refresh bytes when the child exits non-zero (the rc=5 dirty-worktree abort)' {
+        $newBody = "param([switch]`$NoSelfUpdate)`nexit 5`n"
+        $rc = Invoke-RealSelfReExec -NewBody $newBody
+
+        $rc | Should -Be 5
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+        # The symptom issue #118 reports: `modified: Pull-SDLC.ai.ps1` left on
+        # a branch the operator never edited.
+        Push-Location $script:abRoot
+        try { $status = @(git status --porcelain -- 'Pull-SDLC.ai.ps1') } finally { Pop-Location }
+        $status | Should -BeNullOrEmpty
+        Test-Path -LiteralPath $script:abBackup | Should -BeFalse
+    }
+
+    It 'restores the pre-refresh bytes on the rc=6 inner-sync-failed abort too' {
+        $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nexit 6`n"
+
+        $rc | Should -Be 6
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+    }
+
+    It 'restores the pre-refresh bytes when the child throws instead of exiting' {
+        $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nthrow 'boom'`n"
+
+        $rc | Should -Not -Be 0
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+    }
+
+    It 'keeps the refreshed content when the child succeeds -- the run wanted the newer script' {
+        $newBody = "param([switch]`$NoSelfUpdate)`n# NEW-UPSTREAM`nexit 0`n"
+        $rc = Invoke-RealSelfReExec -NewBody $newBody
+
+        $rc | Should -Be 0
+        # Mirror image of the abort cases: on a feature branch (or under
+        # -CommitOnMain) a successful run is meant to leave the newest upstream
+        # script on disk -- issue #200. Restoring here would undo the self-update.
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $newBody
+        Test-Path -LiteralPath $script:abBackup | Should -BeFalse
+    }
+
+    It 'still restores under -RestoreOriginal when the child succeeds (-WhatIf / issue #247 path)' {
+        $rc = Invoke-RealSelfReExec -NewBody "param([switch]`$NoSelfUpdate)`nexit 0`n" -RestoreOriginal
+
+        $rc | Should -Be 0
+        (Get-Content -LiteralPath $script:abScript -Raw) | Should -Be $script:abOriginal
+    }
+}
+
 Describe 'Invoke-PullSDLC self-refresh wiring' {
     BeforeEach {
         $script:fixtureRoot = Join-Path $TestDrive ("sr-" + [guid]::NewGuid().ToString('N'))
