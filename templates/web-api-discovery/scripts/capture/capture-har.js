@@ -160,6 +160,11 @@ const { spawnSync } = require('child_process');
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+// The ONE walk over a capture store (#386/#387). It USED to be the body of
+// `listSessionDirs` right here; it moved out so the batch drivers could reuse
+// this exact enumeration -- with its classification of legacy and foreign
+// captures intact -- instead of growing a second notion of what a capture is.
+const captureStore = require(path.join(__dirname, 'capture-store.js'));
 // The ONE gitignore check in this subsystem (#318). It wraps `git check-ignore`
 // and already defends against a forged `.gitignore` containing `*` and against
 // `core.excludesFile` injection, so nothing here asks the question a second
@@ -2641,39 +2646,17 @@ function reportPostProcess(session) {
  * Accepts SEVERAL roots since #367 moved where new captures are written: an
  * older capture still under a working-directory root has to remain findable,
  * and a union is how it is found without anything being moved.
+ *
+ * THE BODY LIVES IN `capture-store.js` NOW (#386/#387). It moved rather than
+ * being copied, because the batch drivers need this same enumeration and a
+ * second walk beside it would give the store two notions of what a capture is.
+ * The contract here is unchanged; what the move added is that a LEGACY session
+ * directory sitting at the captures root -- one written before the host layer
+ * existed -- is now found too. It always satisfied every test `stop` and
+ * `status` apply; the walk simply started one level below it.
  */
 function listSessionDirs(root) {
-    const roots = Array.isArray(root) ? root : [root];
-    if (roots.length > 1) {
-        const seen = new Set();
-        const all = [];
-        for (const r of roots) {
-            for (const entry of listSessionDirs(r)) {
-                if (seen.has(entry.dir)) continue;
-                seen.add(entry.dir);
-                all.push(entry);
-            }
-        }
-        return all;
-    }
-    root = roots[0];
-    if (!root || !fs.existsSync(root)) return [];
-    const found = [];
-    for (const host of fs.readdirSync(root)) {
-        const hostDir = path.join(root, host);
-        let stamps;
-        try {
-            if (!fs.statSync(hostDir).isDirectory()) continue;
-            stamps = fs.readdirSync(hostDir);
-        } catch (e) {
-            continue;   // a stray file, or anything else non-traversable
-        }
-        for (const sessionStamp of stamps) {
-            const dir = path.join(hostDir, sessionStamp);
-            if (fs.existsSync(path.join(dir, SESSION_FILE))) found.push({ dir, stamp: sessionStamp });
-        }
-    }
-    return found;
+    return captureStore.listSessionDirs(root);
 }
 
 /**

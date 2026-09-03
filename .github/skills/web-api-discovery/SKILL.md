@@ -215,6 +215,53 @@ The mechanical phases -- scrub via `sanitize-har.js`, gate via
 every ending. **Cataloguing is a required phase, not an optional flourish**,
 and it is AI work: see Phase 3.5.
 
+### Processing a STORE: point an entry point at a folder
+
+A store accumulates faster than anyone will drive a per-capture tool by hand.
+Measured in a real project: **88 raw captures, 9.0 GB, 5 of them ever
+processed** -- not carelessness, just what happens when the only available
+motion is one capture at a time.
+
+So **a directory argument means "every capture under it"**, on the two entry
+points that already name the two stages. There is no batch verb, no `--store`,
+and no `--host`:
+
+```powershell
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures          # scrub the whole store
+.\Invoke-HarCatalogue.ps1 -Path     .har-captures          # then catalogue it
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures/app.example.com   # one host
+.\Invoke-SanitizeHar.ps1  -InputHar .har-captures -Force   # redo what is done
+```
+
+* **Pointing at the host folder IS the host filter.** The path already says it.
+* **A file, and a folder that holds a single capture, behave exactly as before.**
+* **Resume is behaviour, not a flag.** A capture is skipped when the stage's
+  completed artifact is already beside the raw -- `scrubbed.har` for the scrub,
+  `catalogue.json` for the catalogue. A 9.0 GB store *will* be interrupted, so
+  the second run is the normal one. `-Force` is the one option this adds, and it
+  means only "ignore that check".
+* **The scrub is written under a temporary name and only called `scrubbed.har`
+  once the gate has passed it**, so the verified name never exists for a capture
+  that has not earned it -- not even in the window an interruption could land in.
+* **The gate is not softened.** A rejected scrub quarantines into its own
+  session directory as `scrubbed.rejected.har`, with its findings report,
+  promotes nothing, and is retried on the next run.
+* **One bad capture does not abort the run.** It is recorded against itself and
+  the run continues.
+* **Three input classes, all reported.** The current `<host>/<stamp>` layout;
+  the **legacy** date-stamped session directories at the captures root, which a
+  host-scoped walk never reaches; and captures this recorder did not make --
+  mitmproxy `raw.mitm` dumps with no `session.json` -- which are **named and
+  declined**, never fed to the HAR scrub and never skipped in silence.
+
+The run ends with a summary of **processed / skipped / declined / failed with
+reasons**, so 88 directories do not have to be read. It prints host, stamp and
+reason, and **never a captured value**.
+
+The enumeration is `capture-store.js`, which is the same walk `resolveSession`
+uses for `stop`, `status` and `catalogue`. It is deliberately not a second one:
+two notions of what a capture is, is the defect this subsystem exists to avoid.
+
 ## Inputs (asked one at a time)
 
 | # | Prompt | Default | Token | Notes |

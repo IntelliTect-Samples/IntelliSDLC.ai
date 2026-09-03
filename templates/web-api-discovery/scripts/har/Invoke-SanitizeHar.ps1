@@ -26,6 +26,24 @@
     Path to the input HAR file (original, unscrubbed -- or, with -VerifyOnly,
     the HAR to verify directly).
 
+    OR A FOLDER, WHICH MEANS "EVERY CAPTURE UNDER IT" (#386). A store root, one
+    host's folder, or a single session directory -- the enumeration is the same
+    one `capture-har.js` uses to answer `stop`, `status` and `catalogue`, so the
+    batch and the single-capture commands can never disagree about what a
+    capture is. A FILE behaves exactly as it always has; nothing about the
+    single-capture path changed.
+
+    Pointing at a host folder IS the host filter. There is no --host, because
+    there is nothing for it to do that the path does not already say.
+
+    Each capture is scrubbed into its OWN session directory, which is where
+    #377 already puts a capture's artifacts: beside the raw it came from,
+    carrying the stamp, inside the gitignored capture tree. -OutputHar,
+    -SubstitutionsFile, -VerifyOnly and -RemoveSource are all refused with a
+    folder -- the first two name one destination for many captures, and the
+    last two are single-artifact decisions that should not be taken 88 at a
+    time.
+
 .PARAMETER OutputHar
     Path to write the scrubbed HAR to. Ignored when -VerifyOnly is set.
 
@@ -78,6 +96,18 @@
         after the choice. Interim until #355's provenance stamp makes the
         question answerable.
 
+.PARAMETER Force
+    Scrub a capture again even though it already has a `scrubbed.har`. Only
+    meaningful with a folder, and refused otherwise.
+
+    RESUME IS BEHAVIOUR, NOT A FLAG. A folder run skips what is already done by
+    looking for the completed artifact beside the raw, because a 9.0 GB store
+    with a 1.6 GB capture in it WILL be interrupted and the second run has to
+    pick up rather than start over. -Force is the way to say "do it anyway"
+    after the profile's literals changed, or after a scrub was rejected and
+    corrected. It replaces that capture's derived `scrubbed.har`; it never
+    touches a raw.
+
 .EXAMPLE
     .\Invoke-SanitizeHar.ps1 -InputHar capture.har -OutputHar clean.har
 
@@ -86,6 +116,18 @@
 
     Scrub, verify, and -- only if the gate passed clean -- delete raw.har and
     the substitution tables the run wrote.
+
+.EXAMPLE
+    .\Invoke-SanitizeHar.ps1 -InputHar .har-captures
+
+    Scrub every capture in the store that does not already have a scrubbed HAR,
+    then print processed / skipped / declined / failed with reasons.
+
+.EXAMPLE
+    .\Invoke-SanitizeHar.ps1 -InputHar .har-captures/app.example.com -Force
+
+    The same, narrowed to one host by pointing at its folder, and re-running the
+    captures that were already scrubbed.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -101,7 +143,12 @@ param(
 
     [switch]$VerifyOnly,
 
-    [switch]$RemoveSource
+    [switch]$RemoveSource,
+
+    # The ONE option this feature adds, and the only one approved for it. See
+    # .PARAMETER Force -- it means "ignore the resume check", nothing else, and
+    # in particular it does not soften the leak gate.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,6 +156,15 @@ $ErrorActionPreference = 'Stop'
 # Refused, not quietly ignored. -VerifyOnly scrubs nothing, so there is no
 # "source" that has been superseded -- the file -InputHar names IS the artifact
 # under inspection, and the combination reads as a request to delete it.
+# -Force is the resume override, and resume only exists for a folder. Accepting
+# it silently on a single file would imply it overrode something -- the leak
+# gate, the -RemoveSource conditions -- that it does not.
+if ($Force -and -not (Test-Path -LiteralPath $InputHar -PathType Container)) {
+    Write-Error ('-Force applies to a folder run only: it means "scrub captures that already have a ' +
+        'scrubbed.har". Scrubbing a single HAR is not skipped, so there is nothing for it to override.')
+    exit 1
+}
+
 if ($RemoveSource -and $VerifyOnly) {
     Write-Error ('-RemoveSource cannot be combined with -VerifyOnly: nothing is scrubbed, so ' +
         '-InputHar is the artifact being inspected rather than a spent source.')
@@ -239,6 +295,154 @@ function Write-ScrubPlan {
 # 'Continue' on every call, which would make the messages unsuppressable.
 if (-not $PSBoundParameters.ContainsKey('InformationAction')) {
     $InformationPreference = 'Continue'
+}
+
+# ---------------------------------------------------------------------------
+# A FOLDER MEANS "EVERY CAPTURE UNDER IT" (#386)
+# ---------------------------------------------------------------------------
+#
+# A store accumulates faster than anyone will drive a per-capture tool by hand:
+# 88 raw captures, 9.0 GB, 5 ever scrubbed. That ratio is not carelessness, it
+# is what happens when the only available motion is one at a time.
+#
+# So the plural argument is a DIRECTORY on the entry point that already exists,
+# rather than a `batch` verb or a --store flag. -InputHar naming a file is
+# untouched by every line below.
+#
+# WHY THIS ENTRY POINT AND NOT ONLY THE CATALOGUE ONE. The scrub is the stage
+# the store is starving for -- 83 of the 88 have no scrubbed HAR at all, and a
+# batch catalogue would decline every one of them, correctly, because
+# cataloguing an unscrubbed capture is refused by design. Scrub is where the
+# work is; catalogue gets the same treatment so the two halves of the pipeline
+# stay symmetrical, but this is the one that moves the number.
+if (Test-Path -LiteralPath $InputHar -PathType Container) {
+
+    # REFUSED, not quietly ignored, and each for its own reason.
+    #
+    # -OutputHar and -SubstitutionsFile name ONE destination; with many captures
+    # they would either collide or silently mean something other than what was
+    # typed. Each capture's artifacts go to its own session directory instead,
+    # which is where #377 already puts them.
+    #
+    # -VerifyOnly and -RemoveSource are single-artifact decisions. -RemoveSource
+    # in particular deletes a raw, and "delete the raws for every capture under
+    # this folder" is not a thing this pipeline will offer -- nothing under
+    # .har-captures/ is removed in bulk.
+    $refusals = [ordered]@{
+        OutputHar         = 'names one destination file, and a folder holds many captures. Each capture is scrubbed into its own session directory.'
+        SubstitutionsFile = 'names one table, and a folder holds many captures. sanitize-har.js places each table in the gitignored capture tree.'
+        VerifyOnly        = 'is a single-artifact inspection. Point it at the HAR you want verified.'
+        RemoveSource      = 'deletes a raw capture. It is not offered over a folder: nothing under .har-captures/ is removed in bulk.'
+    }
+    foreach ($name in $refusals.Keys) {
+        if ($PSBoundParameters.ContainsKey($name) -and $PSBoundParameters[$name]) {
+            Write-Error "-$name cannot be combined with a folder: it $($refusals[$name])"
+            exit 1
+        }
+    }
+
+    Import-Module (Join-Path $PSScriptRoot 'HarStoreBatch.psm1') -Force
+    $captureStoreJs = Join-Path $PSScriptRoot '..' 'capture' 'capture-store.js'
+
+    # THE SAME WALK `resolveSession` USES. Asked of Node, because a PowerShell
+    # reimplementation would be a second answer to "what is a capture" and free
+    # to disagree with the one `stop`, `status` and `catalogue` already give.
+    $inventory = Get-HarCaptureInventory -Path $InputHar -CaptureStoreJs $captureStoreJs
+    if (-not $inventory.Count) {
+        Write-Error ("$InputHar holds no captures. A capture is a directory with a session.json in " +
+            'it, at the captures root or one level under a host folder.')
+        exit 3
+    }
+
+    $scrubOne = {
+        param($capture)
+
+        $sessionDir = $capture.dir
+        if (-not $capture.raw) {
+            return @{ Outcome = 'failed'; Reason = 'session.json but no raw.har -- nothing to scrub' }
+        }
+
+        $final = Join-Path $sessionDir 'scrubbed.har'
+        if (-not $PSCmdlet.ShouldProcess($final, 'Scrub HAR -- replace detected secrets and PII')) {
+            return @{ Outcome = 'skipped'; Reason = 'reported only; nothing was written' }
+        }
+
+        # SCRUBBED UNDER A TEMPORARY NAME, AND ONLY CALLED scrubbed.har ONCE THE
+        # GATE HAS PASSED IT.
+        #
+        # This is what keeps resume correct rather than approximate. sanitize
+        # writes its output before verify ever runs, so a rejected scrub written
+        # straight to `scrubbed.har` would leave the completed artifact's own
+        # name sitting beside the raw -- and the next run would read that as
+        # "already processed" and skip a capture the leak gate had REFUSED. The
+        # temporary name means the finished name never exists for a capture that
+        # did not earn it, not even briefly.
+        #
+        # The prefix is deliberately not `.publishing-`: capture-har.js sweeps
+        # abandoned temporaries under that prefix out of the output path, and
+        # since #377 the output path IS this directory.
+        $temp = Join-Path $sessionDir '.scrubbing-scrubbed.har'
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
+
+        $said = & node $sanitizeJs --in $capture.raw --out $temp @profileArgs 2>&1
+        $scrubExit = $LASTEXITCODE
+        if ($scrubExit -ne 0) {
+            if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
+            $tail = @($said | Where-Object { "$_".Trim() }) | Select-Object -Last 1
+            return @{ Outcome = 'failed'; Reason = "sanitize-har.js exit $scrubExit -- $tail" }
+        }
+
+        & node $verifyJs --in $temp @profileArgs 2>&1 | Out-Null
+        $gate = $LASTEXITCODE
+
+        if ($gate -eq 0 -or $gate -eq 4) {
+            # -Force replaces the DERIVED artifact of a capture the operator
+            # asked to redo. It never replaces a raw; no path here writes to one.
+            Move-Item -LiteralPath $temp -Destination $final -Force
+            $note = if ($gate -eq 4) {
+                'gate returned ADVISORY findings (exit 4) -- artifact kept, findings to review'
+            }
+            else { $null }
+            return @{ Outcome = 'processed'; Reason = $note }
+        }
+
+        # REJECTED. Quarantined in this capture's own session directory, exactly
+        # as a single run does, and nothing is promoted.
+        #
+        # A BATCH DOES NOT SOFTEN THE GATE. "Keep the run going" is a reason to
+        # move on to the next capture; it is never a reason to accept this one.
+        # The rejected artifact keeps every byte under a name nothing reads as
+        # finished, and its findings report moves with it -- a report separated
+        # from the artifact it describes is one nobody can act on.
+        $quarantine = Get-HarFreeName -Directory $sessionDir -Stem 'scrubbed.rejected' -Extension '.har'
+        Move-Item -LiteralPath $temp -Destination $quarantine
+        $findings = Join-Path $sessionDir 'scrub-findings.json'
+        if (Test-Path -LiteralPath $findings) {
+            $suffix = [IO.Path]::GetFileNameWithoutExtension($quarantine).Substring('scrubbed.rejected'.Length)
+            $moved = Get-HarFreeName -Directory $sessionDir -Stem "scrub-findings$suffix" -Extension '.json'
+            Move-Item -LiteralPath $findings -Destination $moved
+        }
+        return @{
+            Outcome = 'failed'
+            Reason  = "leak gate REJECTED the scrub (exit $gate) -- quarantined as $(Split-Path -Leaf $quarantine), nothing promoted"
+        }
+    }
+
+    # RESUME, ASKED OF THE ARTIFACT. Not of a state file and not of a log: a
+    # `scrubbed.har` beside the raw is the only thing that means the scrub
+    # finished, and it is written under that name only after the gate passed.
+    $results = Invoke-HarCaptureBatch -Inventory $inventory -Stage 'scrubbed' -Force:$Force `
+        -IsProcessed { param($c) [bool]$c.scrubbed } -Process $scrubOne
+
+    Write-Information ''
+    Get-HarBatchSummaryLines -Results $results -Stage 'Scrub' |
+        ForEach-Object { Write-Information $_ }
+
+    # One code for "some capture failed", because a batch's exit cannot carry 88
+    # verdicts and the summary above is where they are. The per-capture codes are
+    # not collapsed into it -- they are reported, by capture, with reasons.
+    $failures = @($results | Where-Object { $_.Outcome -eq 'failed' })
+    exit ($failures.Count ? 1 : 0)
 }
 
 if (-not $VerifyOnly) {
