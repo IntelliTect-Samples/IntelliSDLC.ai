@@ -721,6 +721,26 @@ test('Provider agrees with the <provider>/ directory the reference is nested in'
     assert.strictEqual(row.Provider, nestingDirectory);
 });
 
+test('Provider agrees with the directory for a PORT-bearing host too', () => {
+    // `group.host` comes from `URL#host` (host PLUS port, e.g.
+    // `localhost:3000`); `referenceRelativePath` slugs `URL#hostname` (host
+    // only) to pick the nesting directory. A local dev server is a routine
+    // capture target, and slugging `group.host` unstripped would turn
+    // `localhost:3000` into `Provider: 'localhost-3000'` while the reference
+    // still lands under `localhost/` -- the exact disagreement the previous
+    // test cannot see because its host carries no port.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'http://localhost:3000/a' }, response: { status: 200, content: {} } }
+    ]), { uri: 'http://localhost:3000/start' });
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+    const relativePath = capture.referenceRelativePath({ uri: 'http://localhost:3000/start', describe: 'test' }, { action: 'test', now: new Date('2026-01-01') });
+    const nestingDirectory = relativePath.split('/')[0];
+
+    assert.strictEqual(row.Provider, 'localhost');
+    assert.strictEqual(row.Provider, nestingDirectory);
+});
+
 test('the scaffold templates endpoints with the shared function, not a private copy', () => {
     // buildCatalogueScaffold writes `Endpoints` from the digest; the guard
     // recomputes them from the reference. Two implementations that agree today

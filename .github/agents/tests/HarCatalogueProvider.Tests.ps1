@@ -5,12 +5,13 @@
 # from the ROW's own endpoint host (`group.host`), never from the capture's
 # start URI.
 #
-# The wrapper is not ceremony -- CI runs Pester over ./.github only, so the
-# zero-dep Node suite that actually pins this behavior reaches the pipeline
-# solely by being shelled out to from here. The assertions themselves live in
-# capture-har.test.js, alongside the rest of the scaffold's behavior tests;
-# this wrapper only makes sure they run in CI and surfaces the output on
-# failure.
+# capture-har.test.js already reaches CI through har-recording.Tests.ps1 --
+# this is a second, issue-scoped entry point onto the SAME node suite, not
+# the only one, matching the convention other single-issue wrappers in this
+# directory follow (e.g. HarAuditEnvelopeFieldNames.Tests.ps1). It names the
+# suite where issue #428 is easy to find and re-run, and it surfaces the
+# output on failure; the assertions themselves live in capture-har.test.js,
+# alongside the rest of the scaffold's behavior tests.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path

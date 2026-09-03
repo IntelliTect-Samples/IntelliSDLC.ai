@@ -812,6 +812,25 @@ function uriHostOf(uri) {
 }
 
 /**
+ * `group.host` minus a trailing `:<port>`, so it slugs the same way
+ * `uriHostOf` does.
+ *
+ * `group.host` comes from `URL#host` (host **plus** port, e.g.
+ * `localhost:3000`), because `Endpoints` needs the port to name the
+ * endpoint precisely. `uriHostOf` -- what `referenceRelativePath` slugs to
+ * pick the `<provider>/` directory -- comes from `URL#hostname` (host
+ * only). Slugging `group.host` unstripped would turn every port-bearing
+ * host, most commonly a local dev server, into a `Provider` that
+ * disagrees with that directory: `localhost:3000` -> `localhost-3000`
+ * against a directory named `localhost`. Stripping the port first is what
+ * keeps the two in agreement for exactly the hosts that would otherwise
+ * differ only by it.
+ */
+function stripPort(host) {
+    return String(host || '').replace(/:\d+$/, '');
+}
+
+/**
  * The reference filename this capture's extract would take.
  *
  * `<provider>-<action>-<yyyy-MM-dd>.har`, which is exactly what
@@ -1389,12 +1408,10 @@ function buildCatalogueScaffold(digest, meta = {}) {
         // defect #379 exists to prevent. `providerSlug` returns null when the
         // host yields no slug, and that null is left as-is -- it means "a
         // human still has to say", and inventing a value to avoid it would be
-        // the same defect. This is also what keeps the value honest against
-        // the filesystem: `referenceRelativePath` nests the extracted
-        // reference under `<provider>/` using this same `providerSlug`, so a
-        // row's `Provider` and the directory its reference lands in are
-        // derived the same way and cannot disagree.
-        Provider: providerSlug(group.host),
+        // the same defect. `stripPort` first, so this agrees with
+        // `referenceRelativePath` (which slugs `URL#hostname`, no port) for
+        // the `<provider>/` directory the reference lands in.
+        Provider: providerSlug(stripPort(group.host)),
         Methods: [group.method],
         Endpoints: [`${group.host}${group.pathTemplate}`],
         EntryCount: group.count,
