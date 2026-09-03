@@ -528,7 +528,36 @@ function Test-IsUpstreamPrivatePath {
 }
 
 function Test-IsUpstreamRepo {
+    <#
+    .SYNOPSIS
+        Returns $true when this repository is a copy of the tooling repository
+        itself, rather than a project consuming it.
+
+    .DESCRIPTION
+        Used to skip steps that only make sense against a consumer, because
+        upstream is the source they operate on:
+
+          - Test-SelfRefreshRequired -- never self-refresh here, or the script
+            overwrites the maintainer's working copy of Pull-SDLC.ai.ps1, quite
+            possibly mid-edit.
+          - The Get-UpstreamPrivatePruneOps step -- that deletes upstream-private
+            paths (.github/**/tests/, fixtures/) from consumers that synced
+            before the carve-out existed (issue #226). Upstream those files ARE
+            the test suite, so pruning would delete it.
+
+        Identity is the repository NAME only, deliberately, and so is broader
+        than it looks: a fork -- same name, different owner -- is still the
+        tooling repo for both purposes above. Its tests are still source of
+        truth and its Pull-SDLC.ai.ps1 is still under development.
+
+        NOT interchangeable with Test-IsSelfSyncTarget, which asks a different
+        question with a narrower, owner-aware identity. See the note there
+        before changing either (issue #419).
+    .OUTPUTS
+        [bool]
+    #>
     [CmdletBinding()]
+    [OutputType([bool])]
     param([string]$RemoteUrl = (git remote get-url origin 2>$null))
     if (-not $RemoteUrl) { return $false }
     return $RemoteUrl -match 'IntelliSDLC\.ai(\.git)?/?$'
@@ -632,6 +661,13 @@ function Test-IsSelfSyncTarget {
 
         Returns $false when either URL is missing, which keeps the guard silent
         for a repo with no `origin` rather than guessing.
+
+        Not to be confused with Test-IsUpstreamRepo, which asks "is this a copy
+        of the tooling repo?" using the repository NAME alone. That question has
+        different right answers -- notably a fork counts as upstream there and
+        does NOT count as a self-sync here -- so the two identities diverge on
+        purpose. Reconciling them to one rule breaks one of the two callers;
+        see issue #419.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
