@@ -1316,8 +1316,10 @@ function Confirm-SyncBootstrap {
     param(
         [Parameter(Mandatory)]$Cmdlet
     )
-    $query = 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor), overwriting the upstream-managed files already present. Proceed with bootstrap?'
-    $caption = 'No .sdlc-ai-sync.json and no prior sync commit found'
+    # The caller has already warned, in detail, what a bootstrap would do, so
+    # keep the prompt itself short rather than repeating all of it.
+    $query = 'Proceed with bootstrap?'
+    $caption = 'Full refresh from upstream HEAD -- overwrites the upstream-managed files listed above'
     return $Cmdlet.ShouldContinue($query, $caption)
 }
 
@@ -1341,6 +1343,14 @@ function Resolve-SyncAnchor {
            so answering the prompt for the operator here changes nothing on
            disk (issue #114).
         7. Otherwise prompt the user (Confirm-SyncBootstrap).
+    .NOTES
+        SupportsShouldProcess is declared for the -WhatIf contract only. This
+        function decides an anchor; it mutates nothing, so there is no action
+        to gate with $PSCmdlet.ShouldProcess -- the writes it feeds are gated
+        in Invoke-PullSDLC. The one prompt it does raise goes through
+        ShouldContinue, which (unlike ShouldProcess) does not consult
+        $ConfirmPreference, so -Confirm:$false does not suppress it. -NoPrompt
+        remains the way to run unattended.
     #>
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
