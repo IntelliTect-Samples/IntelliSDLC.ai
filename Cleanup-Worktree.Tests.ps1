@@ -782,4 +782,12 @@ Describe 'Targeted-site path resolution' {
         $raw | Should -Match 'Assert-WorktreeRemovalConsent -WorktreePath \$absWorktree'
         $raw | Should -Not -Match 'Assert-WorktreeRemovalConsent -WorktreePath \$WorktreePath '
     }
+
+    It 'force-removes the SAME path the consent gate inspected' {
+        # A gate that inspects one directory while the command deletes another
+        # is the defect this whole change is about. Pinned so the pair cannot
+        # drift back apart -- and so nobody "fixes" the gate to match the call.
+        $raw = Get-Content -LiteralPath $script:ScriptPath -Raw
+        $raw | Should -Match "'worktree', 'remove', '--force', \`$absWorktree"
+    }
 }

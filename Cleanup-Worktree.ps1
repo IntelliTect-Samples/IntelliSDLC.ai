@@ -786,7 +786,12 @@ if ($hasTarget -and $WorktreePath) {
         # same reason -- a guard that inspects the wrong directory reports the
         # wrong answer, and here the wrong answer is "nothing to lose".
         Assert-WorktreeRemovalConsent -WorktreePath $absWorktree -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
-        Invoke-Git -Arguments @('worktree', 'remove', '--force', $WorktreePath) -IgnoreFailure | Out-Null
+        # $absWorktree here too: a gate that inspects one directory while the
+        # command deletes another is the defect this whole change is about,
+        # and leaving the pair disagreeing invites someone to "fix" the gate
+        # back. Resolution falls back to $WorktreePath, so this is the same
+        # path in every case where it resolved.
+        Invoke-Git -Arguments @('worktree', 'remove', '--force', $absWorktree) -IgnoreFailure | Out-Null
     }
 }
 
