@@ -21,7 +21,7 @@
 // whether or not a shape rule exists and a shape test there passes for the
 // wrong reason. Every assertion below uses `client_note`, a benign name, and
 // section 1 proves no name-based control can see it. Ablate the PATTERNS entry
-// in `sanitize-har.js` and sections 2, 3, 4, 5 and 6 fail; nothing here can
+// in `sanitize-har.js` and sections 2, 3, 4, 5, 6 and 10 fail; nothing here can
 // pass on the name control's behalf.
 //
 // NOTHING here is a real credential. Every value is synthetic and generated in
@@ -319,6 +319,44 @@ function assertReportIsQuiet(label, report, ...values) {
     assert.notStrictEqual(v.code, 0,
         '9.a: the gate reported a RAW capture carrying a live password envelope as clean');
     assertReportIsQuiet('9.b', `${v.stdout}${v.stderr}`, ENVELOPE);
+}
+
+// --- 10. ONE DEFINITION OF AN ENVELOPE, IN TWO FILES. -------------------
+// FALSIFIER for drift between the halves. The scrubber removes what the gate
+// fails on; if the two disagreed about what an envelope IS, one of them would
+// be wrong on every capture -- either the scrub misses a spelling the gate
+// blocks (a file that can never be committed) or the gate misses one the scrub
+// rewrites (a redaction nobody asked for). `har-shapes.js` says the same thing
+// about `mac-address` and `RE.mac` in prose; here it is asserted.
+//
+// The gate's pattern is read LIVE off the exported table; the scrubber's is
+// read out of its source, because `sanitize-har.js` is a CLI and exports
+// nothing. A textual comparison of two source files would pass on two copies
+// of the same mistake -- this compares the object the gate actually runs
+// against the text the scrubber actually ships.
+//
+// The fixtures in sections 2, 3 and 5 exercise both halves, but only over the
+// spellings this file happens to carry: a rule widened or narrowed on one side
+// alone still passes them. This is the assertion that does not depend on
+// having guessed the right fixture.
+{
+    const gate = shapes.LEAK_PATTERNS.find((p) => p.name === 'pwd-envelope');
+    assert.ok(gate, '10.a: the gate no longer carries a pwd-envelope pattern at all');
+
+    const src = fs.readFileSync(sanitize, 'utf8');
+    const m = /\{\s*kind:\s*'pwd-envelope',\s*re:\s*\/(.+?)\/([a-z]*)\s*\}/.exec(src);
+    assert.ok(m, '10.b: no pwd-envelope PATTERNS entry found in sanitize-har.js, or it is ' +
+        'no longer a plain regex literal this assertion can read');
+
+    assert.strictEqual(m[1], gate.re.source,
+        '10.c: the scrubber and the gate disagree about what a password envelope IS. ' +
+        'One of them is then wrong on every capture: either the scrub misses a spelling ' +
+        'the gate blocks, which is a file that can never be committed, or the gate misses ' +
+        'one the scrub rewrites');
+    assert.strictEqual(m[2], gate.re.flags,
+        '10.d: the two patterns carry different flags. `i` in particular doubles the ' +
+        'spelling space of the one token the precision argument rests on, and doing that ' +
+        'on one side only is the same disagreement as a different pattern');
 }
 
 console.log('All har-pwd-envelope-scrub tests passed');

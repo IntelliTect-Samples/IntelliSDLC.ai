@@ -103,12 +103,18 @@ const LEAK_PATTERNS = [
         // this kind (issue #407) with a FORMAT-PRESERVING replacement, so the
         // fake matches the pattern above and an exemption is mandatory.
         //
-        // The sentinel is three tokens the real format cannot produce, not one:
-        // the label `REDACTED` is not a product, version `0` is below the
-        // lowest observed, and epoch `0` is 1970. Requiring all three plus an
-        // exact-length lowercase-hex tail, anchored, is what keeps this an
-        // exemption for OUR output rather than a hole a capture can walk
-        // through by naming itself conveniently.
+        // What carries the exemption is the LABEL. `REDACTED` is not a product,
+        // and the label is the product -- Facebook `BROWSER`, Instagram
+        // `INSTAGRAM_BROWSER`, Messenger `MSGR`. Version and epoch are
+        // supporting evidence and NOT safe discriminators on their own: this
+        // file's own fixtures include a real-shaped envelope at version `0`,
+        // because #378 measured one. `0:0` is implausible as a PAIR beside a
+        // `REDACTED` label, not because either number is unreachable.
+        //
+        // Anchored, and with an exact-length lowercase-hex tail, so the
+        // exemption covers OUR output and not a value that merely opens with
+        // the same token. A live credential would have to be spelled
+        // `#PWD_REDACTED:0:0:<24 lowercase hex>` in full to reach it.
         //
         // Kept character-identical to `PWD_ENVELOPE_FAKE_PREFIX` and the
         // 24-char slice in sanitize-har.js's `fakeFor`. If the two ever
