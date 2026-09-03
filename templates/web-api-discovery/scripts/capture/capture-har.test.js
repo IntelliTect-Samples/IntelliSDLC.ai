@@ -653,7 +653,72 @@ test('the scaffold leaves the reference facts NULL, never zero', () => {
         assert.strictEqual(row[field], null, `${field} must not claim a measurement`);
     }
     assert.deepStrictEqual(row.Related, []);
-    assert.strictEqual(row.Provider, null);
+});
+
+// ---------------------------------------------------------------------------
+// Stage 7a -- Provider, derived PER ROW from the row's own endpoint host
+// (issue #428)
+// ---------------------------------------------------------------------------
+
+test('Provider is derived from the ROW\'s own endpoint host, not the capture start URI', () => {
+    // THE FALSIFIER. A capture of one site routinely spans several hosts --
+    // the site's own API, a CDN, a third party. Deriving every row's
+    // Provider from the capture's single start URI would stamp one
+    // provider onto rows that are not that provider: a row asserting
+    // something nobody checked (issue #379's defect). Two groups on two
+    // different hosts MUST end up with two different Provider values. An
+    // implementation that instead reads `digest.uri` (the start URI) would
+    // give both rows the same value here and fail this assertion.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } },
+        { startedDateTime: '2026-01-01T12:00:01Z', time: 5, request: { method: 'GET', url: 'https://cdn.otherhost.net/b' }, response: { status: 200, content: {} } }
+    ]), { uri: 'https://api.example.com/start' });
+
+    const rows = capture.buildCatalogueScaffold(digest);
+    const byHost = new Map(rows.map((row) => [row.Endpoints[0].split('/')[0], row.Provider]));
+
+    assert.strictEqual(byHost.get('api.example.com'), 'example');
+    assert.strictEqual(byHost.get('cdn.otherhost.net'), 'otherhost');
+    assert.notStrictEqual(byHost.get('api.example.com'), byHost.get('cdn.otherhost.net'),
+        'rows for different hosts must carry different Provider values');
+});
+
+test('Provider stays null when the row\'s host yields no slug', () => {
+    // A GUARD, not the falsifier above: `providerSlug` itself decides
+    // derivability, and this pins that the scaffold does not paper over a
+    // host it cannot name with an invented value. Constructed directly
+    // against buildCatalogueScaffold (rather than through buildDigest+a HAR)
+    // because a real URL parsed by `new URL()` always yields a non-empty
+    // host, and the case under test is precisely a group whose host does not.
+    const digest = {
+        capturedUtc: '2026-01-01T12:00:00Z',
+        groups: [{ host: '', method: 'GET', pathTemplate: '/x', count: 1 }]
+    };
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+
+    assert.strictEqual(row.Provider, null,
+        'null means "a human still has to say" -- inventing a value here would repeat the #379 defect');
+});
+
+test('Provider agrees with the <provider>/ directory the reference is nested in', () => {
+    // The catalogue (Provider) and the filesystem (the directory
+    // referenceRelativePath nests the extract under) must not be able to
+    // disagree, because both are read to place the same file. Both are
+    // driven by the same providerSlug: this row's host for Provider, the
+    // capture's own start URI for the nesting directory (issue #377). They
+    // agree here because the row's host and the capture's start host are the
+    // same registrable provider -- the ordinary case a scaffolded capture is
+    // extracted from.
+    const digest = capture.buildDigest(har([
+        { startedDateTime: '2026-01-01T12:00:00Z', time: 5, request: { method: 'GET', url: 'https://api.example.com/a' }, response: { status: 200, content: {} } }
+    ]), { uri: 'https://api.example.com/start' });
+
+    const row = capture.buildCatalogueScaffold(digest)[0];
+    const relativePath = capture.referenceRelativePath({ uri: 'https://api.example.com/start', describe: 'test' }, { action: 'test', now: new Date('2026-01-01') });
+    const nestingDirectory = relativePath.split('/')[0];
+
+    assert.strictEqual(row.Provider, nestingDirectory);
 });
 
 test('the scaffold templates endpoints with the shared function, not a private copy', () => {
