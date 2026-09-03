@@ -24,6 +24,20 @@
         leave the local branch "unmerged" from git's perspective.
       * Remove any worktree whose branch no longer exists.
 
+    UNCOMMITTED-WORK SAFETY (both modes, issue #392):
+    `git worktree remove` refuses when the worktree is dirty. That refusal
+    IS the protection -- unstaged edits are not in the object store, so once
+    the directory is gone `git fsck --lost-found` has nothing to offer. This
+    script used to escalate to `--force` unconditionally, and on 2026-09-02
+    that destroyed an authoring agent's in-progress work. Now, before any
+    `--force`, it reports what is dirty (file names and counts, never
+    contents) and distinguishes untracked build output -- discarded with a
+    note -- from modified or staged TRACKED files, which need consent:
+    interactive runs prompt with the list, non-interactive runs fail and name
+    -Force as the authorisation. In sweep mode the refusal stops the sweep,
+    the same way the capture guard does: an unattended run is exactly the
+    case where continuing past a warning nobody read is the whole problem.
+
     CAPTURE SAFETY (both modes, issue #371):
     Removing a worktree destroys its gitignored files outright -- no Recycle
     Bin, no undo -- and `git status` reports such a worktree CLEAN, because
@@ -73,8 +87,20 @@
     Name of the branch to return to after cleanup. Default: main.
 
 .PARAMETER Force
-    Force-delete the feature branch with `git branch -D` (discards unmerged
-    commits). Use for PRs that were closed without merging.
+    Authorises DISCARDING WORK, in two places (widened in issue #392):
+
+      1. Force-delete the feature branch with `git branch -D` (discards
+         unmerged commits). Use for PRs that were closed without merging.
+      2. Destroy uncommitted changes to TRACKED files in the worktree being
+         removed. Without -Force, an interactive run prompts and shows the
+         file list; a non-interactive run FAILS and names -Force as the
+         authorisation.
+
+    One switch covers both because they are one decision -- "discard work I
+    have decided I do not need" -- and because adding a command-line option
+    is an API decision that requires explicit human approval. Untracked files
+    are reported and discarded without -Force: build output is a nuisance,
+    not work.
 
 .PARAMETER KeepBranch
     Skip deletion of the local branch. Useful when only removing the worktree.
@@ -245,7 +271,13 @@ function Test-WorktreeInSafeLocation {
     $repoName = Split-Path -Leaf $root
     if ([string]::IsNullOrEmpty($repoName)) { return $false }
 
-    $pattern = '(?i)\\copilot-worktrees\\' + [regex]::Escape($repoName) + '\\[^\\]+'
+    $pattern = '\\copilot-worktrees\\' + [regex]::Escape($repoName) + '\\[^\\]+'
+    # Case-insensitivity comes from the OPERATOR, not the pattern: `-notmatch`
+    # is case-insensitive by definition. An inline `(?i)` here was redundant
+    # (issue #390) and actively misleading -- it would have kept the comparison
+    # case-insensitive even after a future edit switched this to `-cnotmatch`
+    # for deliberate case sensitivity, leaving the literal and the operator
+    # disagreeing. Do not re-add it; change the operator instead.
     if ($abs -notmatch $pattern) { return $false }
 
     foreach ($registered in $RegisteredWorktreePaths) {
@@ -379,6 +411,210 @@ function Assert-WorktreeCaptureSafe {
     throw $message
 }
 
+<#
+.SYNOPSIS
+    Uncommitted work inside a worktree that `worktree remove --force` would destroy.
+.DESCRIPTION
+    Splits `git status --porcelain` into the two cases that deserve different
+    answers (issue #392):
+
+      Tracked   -- modified, staged, renamed, deleted or unmerged entries.
+                   This is WORK. It exists nowhere else: unstaged changes are
+                   not in the object store, so `git fsck --lost-found` cannot
+                   recover them after the directory is gone.
+      Untracked -- `??` entries. Usually build or ephemeral output; a nuisance,
+                   not a loss, and the reason `git worktree remove` refuses at
+                   all in the common case.
+
+    Ignored entries are deliberately NOT requested here: those are the capture
+    guard's business (Assert-WorktreeCaptureSafe, issue #371), and `--ignored`
+    would flood this list with build directories.
+
+    Unknown is the conservative third state. If the path exists but git cannot
+    report on it, "no output" must not read as "nothing to lose" -- that is
+    precisely the failure mode recorded in this script's WHY A GUARD banner.
+.OUTPUTS
+    [pscustomobject] with Tracked (string[]), Untracked (string[]), Unknown (bool).
+#>
+function Get-WorktreeDirtyState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$WorktreePath)
+
+    $empty = [pscustomobject]@{ Tracked = @(); Untracked = @(); Unknown = $false }
+
+    # A path that is not on disk holds nothing. This is the only "no output"
+    # that is safe to read as "nothing to lose".
+    if (-not (Test-Path -LiteralPath $WorktreePath)) { return $empty }
+
+    $status = & git -C $WorktreePath status --porcelain 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ Tracked = @(); Untracked = @(); Unknown = $true }
+    }
+
+    $tracked = @()
+    $untracked = @()
+    foreach ($line in ($status -split "`r?`n")) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line.Length -le 3) { continue }
+        $code = $line.Substring(0, 2)
+        $path = $line.Substring(3).Trim()
+        if ($code -eq '??') { $untracked += $path }
+        elseif ($code -eq '!!') { continue }
+        else { $tracked += "$code $path" }
+    }
+    return [pscustomobject]@{ Tracked = $tracked; Untracked = $untracked; Unknown = $false }
+}
+
+<#
+.SYNOPSIS
+    Renders a dirty worktree as file names and counts -- never file contents.
+.DESCRIPTION
+    The operator has to decide whether to destroy this, so the report has to
+    name it. It names paths and counts only: a status report is not a place to
+    spill the contents of someone's unsaved work into a terminal or a log.
+#>
+function Format-WorktreeDirtyReport {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)]$DirtyState,
+        [int]$MaxListed = 20
+    )
+
+    $lines = @()
+    if ($DirtyState.Unknown) {
+        $lines += "Cannot determine what '$WorktreePath' would lose -- git status failed there."
+    }
+    $tracked = @($DirtyState.Tracked)
+    $untracked = @($DirtyState.Untracked)
+    if ($tracked.Count -gt 0) {
+        $lines += "$($tracked.Count) uncommitted change(s) to TRACKED files in '$WorktreePath':"
+        $lines += ($tracked | Select-Object -First $MaxListed | ForEach-Object { "    $_" })
+        if ($tracked.Count -gt $MaxListed) { $lines += "    ... and $($tracked.Count - $MaxListed) more" }
+    }
+    if ($untracked.Count -gt 0) {
+        $lines += "$($untracked.Count) untracked file(s):"
+        $lines += ($untracked | Select-Object -First $MaxListed | ForEach-Object { "    $_" })
+        if ($untracked.Count -gt $MaxListed) { $lines += "    ... and $($untracked.Count - $MaxListed) more" }
+    }
+    return ($lines -join [Environment]::NewLine)
+}
+
+<#
+.SYNOPSIS
+    Is there a human on the other end of this run?
+.DESCRIPTION
+    Extracted so tests can mock it, and because the obvious probe is wrong:
+    `[Environment]::UserInteractive` returns $true inside an agent session,
+    which is exactly the unattended case this gate exists for. Input being
+    redirected is the signal that no one can answer a prompt.
+#>
+function Test-CleanupInteractive {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    return (-not [Console]::IsInputRedirected)
+}
+
+<#
+.SYNOPSIS
+    Asks the operator whether to destroy uncommitted work. Extracted so tests
+    can answer deterministically -- $PSCmdlet.ShouldContinue cannot be mocked.
+#>
+function Confirm-WorktreeDirtyDiscard {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]$Cmdlet,
+        [Parameter(Mandatory)][string]$Report
+    )
+    # ShouldContinue defaults to Yes and cannot be made to default to No, so the
+    # caption -- not the default -- has to carry the weight.
+    return $Cmdlet.ShouldContinue(
+        'Destroy these uncommitted changes and remove the worktree?',
+        "PERMANENT: unstaged changes are not in the object store and git fsck cannot recover them.$([Environment]::NewLine)$Report")
+}
+
+<#
+.SYNOPSIS
+    Refuse to force-remove a worktree holding uncommitted work without consent.
+.DESCRIPTION
+    Issue #392. `git worktree remove` refusing on dirty state IS the protection;
+    this script escalates to `--force`, so the protection has to be re-created
+    here or it is simply defeated. On 2026-09-02 the unconditional escalation
+    destroyed an authoring agent's in-progress polish pass, unrecoverably.
+
+    The decision table:
+
+      tracked changes, -Force            -> warn, naming them, and proceed
+      tracked changes, interactive       -> prompt, showing them
+      tracked changes, non-interactive   -> THROW, naming -Force as the authorisation
+      untracked only                     -> report and proceed (build output is a nuisance)
+      unknown state                      -> treated as tracked: unknown is not empty
+
+    -Force is the authorisation deliberately: it already means "discard work I
+    have decided I do not need" for `git branch -D`, and adding a command-line
+    option is an API decision requiring explicit human approval.
+
+    Under -DryRun this reports instead of throwing -- nothing is removed, so
+    there is no consent to obtain, and an audit run must be able to finish.
+#>
+function Assert-WorktreeRemovalConsent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        # Passed explicitly rather than read off the script scope, for the same
+        # reason Assert-WorktreeCaptureSafe does: under Set-StrictMode an unset
+        # $Force/$DryRun throws, turning this guard into a crash when dot-sourced.
+        [switch]$Force,
+        [switch]$DryRun,
+        # The calling cmdlet, so the prompt is attributed to the script rather
+        # than to this helper. Absent => nothing can prompt => non-interactive.
+        $Cmdlet
+    )
+
+    $state = Get-WorktreeDirtyState -WorktreePath $WorktreePath
+    $tracked = @($state.Tracked)
+    $untracked = @($state.Untracked)
+    $atRisk = ($tracked.Count -gt 0) -or $state.Unknown
+
+    if (-not $atRisk) {
+        if ($untracked.Count -gt 0) {
+            # Named, not silently forced -- the same shape as the .evidence/
+            # pre-clean: say what is being discarded rather than force blindly.
+            Write-Host ("  Discarding $($untracked.Count) untracked file(s) in '$WorktreePath' (no tracked changes at risk).") -ForegroundColor DarkGray
+        }
+        return
+    }
+
+    $report = Format-WorktreeDirtyReport -WorktreePath $WorktreePath -DirtyState $state
+
+    if ($DryRun) {
+        Write-Warning ("Would need consent to remove '$WorktreePath':" + [Environment]::NewLine + $report)
+        return
+    }
+
+    if ($Force) {
+        Write-Warning ("-Force: destroying uncommitted work in '$WorktreePath'." + [Environment]::NewLine + $report)
+        return
+    }
+
+    if (-not $Cmdlet -or -not (Test-CleanupInteractive)) {
+        throw (@(
+            "Refusing to force-remove '$WorktreePath': it holds uncommitted work and nothing here can ask you about it."
+            $report
+            'These changes exist nowhere else -- unstaged edits are not in the object store, so `git fsck` cannot recover them.'
+            'Commit or stash them, or re-run with -Force to authorise destroying them.'
+        ) -join [Environment]::NewLine)
+    }
+
+    Write-Warning ("'$WorktreePath' holds uncommitted work:" + [Environment]::NewLine + $report)
+    if (-not (Confirm-WorktreeDirtyDiscard -Cmdlet $Cmdlet -Report $report)) {
+        throw "Aborted at operator request: '$WorktreePath' still holds uncommitted work. Commit or stash it, then re-run."
+    }
+}
+
 # Skip the rest of the script when dot-sourced (e.g. by tests). Supersedes
 # the regex-slicing loader the #371 tests used, which cut the file at this
 # banner and re-parsed it -- fragile, and broken by moving the banner.
@@ -497,8 +733,11 @@ if ($hasTarget -and $WorktreePath) {
 
     Invoke-Git -Arguments @('worktree', 'remove', $WorktreePath) -IgnoreFailure | Out-Null
     if (-not $DryRun -and (Test-Path $WorktreePath)) {
-        # `worktree remove` can refuse on dirty state -- retry with --force.
-        Write-Warning "Worktree still present; retrying with --force."
+        # `worktree remove` refused. That refusal is the protection, not an
+        # obstacle (issue #392): say what is dirty, and get consent before
+        # escalating past it.
+        Write-Warning 'Worktree still present -- git refused to remove it.'
+        Assert-WorktreeRemovalConsent -WorktreePath $WorktreePath -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
         Invoke-Git -Arguments @('worktree', 'remove', '--force', $WorktreePath) -IgnoreFailure | Out-Null
     }
 }
@@ -566,6 +805,10 @@ if ($Sweep) {
                 Write-Host "  Branch '$b' is checked out at '$($wt.Path)' -- removing worktree first." -ForegroundColor Yellow
                 # Issue #371: a sweep must not destroy captures either.
                 Assert-WorktreeCaptureSafe -WorktreePath $wt.Path -DryRun:$DryRun
+                # Issue #392: nor uncommitted work. A gone upstream says the PR
+                # branch was deleted on the remote; it says nothing about what
+                # the authoring agent is still editing here.
+                Assert-WorktreeRemovalConsent -WorktreePath $wt.Path -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
                 Invoke-Git -Arguments @('worktree', 'unlock', $wt.Path) -IgnoreFailure | Out-Null
                 Invoke-Git -Arguments @('worktree', 'remove', '--force', $wt.Path) -IgnoreFailure | Out-Null
             }
@@ -582,6 +825,9 @@ if ($Sweep) {
             Write-Host "  Worktree '$($wt.Path)' references missing branch '$($wt.Branch)' -- removing." -ForegroundColor Yellow
             # Issue #371: a missing branch does not make the captures expendable.
             Assert-WorktreeCaptureSafe -WorktreePath $wt.Path -DryRun:$DryRun
+            # Issue #392: nor the uncommitted work. A worktree whose branch is
+            # gone is the MOST likely to hold edits no ref points at.
+            Assert-WorktreeRemovalConsent -WorktreePath $wt.Path -Force:$Force -DryRun:$DryRun -Cmdlet $PSCmdlet
             Invoke-Git -Arguments @('worktree', 'unlock', $wt.Path) -IgnoreFailure | Out-Null
             Invoke-Git -Arguments @('worktree', 'remove', '--force', $wt.Path) -IgnoreFailure | Out-Null
         }
