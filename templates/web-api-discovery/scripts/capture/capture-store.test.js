@@ -91,6 +91,8 @@ const done = makeCapture(path.join(hostA, '2026-01-02-000002'), { scrubbed: true
 const quarantined = makeCapture(path.join(hostA, '2026-01-02-000003'), { rejected: true });
 const legacy = makeCapture(path.join(root, '2026-01-01-000001'));
 const mitm = makeCapture(path.join(hostB, '2026-01-03-000001'), { session: false, mitm: true });
+// A dump dropped straight under the captures root, with no host layer at all.
+const rootMitm = makeCapture(path.join(root, '2020-01-01-mitmdump'), { session: false, mitm: true });
 const orphanRaw = makeCapture(path.join(hostB, '2026-01-03-000002'), { session: false });
 
 // Directories and files that are NOT captures, which is the population the
@@ -139,8 +141,8 @@ section('2', () => {
         assert.ok(!dirs.includes(path.join(root, notACapture)),
             `2.a: ${notACapture} has neither a session nor a raw and is not a capture, but it was listed`);
     }
-    assert.strictEqual(dirs.length, 6,
-        '2.b: the store holds exactly six captures; found ' + dirs.length + ': ' + dirs.join(', '));
+    assert.strictEqual(dirs.length, 7,
+        '2.b: the store holds exactly seven captures; found ' + dirs.length + ': ' + dirs.join(', '));
 });
 
 // ---------------------------------------------------------------------------
@@ -222,6 +224,13 @@ section('4b', () => {
         'host, which would print in the summary as though it were a site');
     assert.strictEqual(found.get(current).host, 'www.example.test',
         '4b.b: a host-layout capture must still report its host');
+    // The question is the LAYOUT, not the class. A declined capture at the root
+    // has no host either, and the label built from it must not be told
+    // otherwise.
+    assert.strictEqual(found.get(rootMitm).host, null,
+        '4b.c: a DECLINED capture at the captures root reported a host it does not have');
+    assert.strictEqual(found.get(rootMitm).captureClass, store.CLASS_FOREIGN,
+        '4b.d: a root-level dump with no session.json must still be declined');
 });
 
 // ---------------------------------------------------------------------------

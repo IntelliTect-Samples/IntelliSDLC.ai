@@ -117,6 +117,9 @@ BeforeAll {
         & $makeCapture (Join-Path $hostA '2026-01-02-000003') @{ Malformed = $true }
         & $makeCapture (Join-Path $captures '2026-01-01-000001') @{}
         & $makeCapture (Join-Path $hostB '2026-01-03-000001') @{ NoSession = $true; Mitm = $true }
+        # A dump dropped straight under the captures root: declined, and with no
+        # host layer to name it by.
+        & $makeCapture (Join-Path $captures '2020-01-01-mitmdump') @{ NoSession = $true; Mitm = $true }
         New-Item -ItemType Directory -Path (Join-Path $captures '_analysis') -Force | Out-Null
 
         return $captures
@@ -211,8 +214,16 @@ Describe 'a folder means every capture under it' {
     It 'names and declines a capture this recorder did not make' {
         $out = (& $script:Sanitize -InputHar $script:Captures 6>&1) -join "`n"
 
-        $out | Should -Match '1 declined'
+        $out | Should -Match '2 declined'
         $out | Should -Match 'www\.other\.test/2026-01-03-000001 -- not recorder output \(raw\.mitm'
+
+        # A DECLINED CAPTURE AT THE CAPTURES ROOT has no host layer, so it is
+        # named by its stamp alone -- exactly as a legacy capture is. Labelling
+        # it by class rather than by whether a host exists produced a leading
+        # slash and an empty host segment, in the one output an operator reads
+        # to decide what to triage.
+        $out | Should -Match '(?m)^\s*2020-01-01-mitmdump -- not recorder output'
+        $out | Should -Not -Match '(?m)^\s*/2020-01-01-mitmdump'
         # Declined, not scrubbed: it has no session.json, so nothing can say
         # whose traffic it is.
         Test-Path -LiteralPath (Join-Path $script:Captures 'www.other.test/2026-01-03-000001/scrubbed.har') |
@@ -252,7 +263,7 @@ Describe 'a folder means every capture under it' {
 
         # Reviewable without reading 88 directories -- one line of counts, then
         # only the captures that need a decision.
-        $out | Should -Match 'Scrub over 5 capture\(s\): 2 processed, 1 skipped, 1 declined, 1 failed'
+        $out | Should -Match 'Scrub over 6 capture\(s\): 2 processed, 1 skipped, 2 declined, 1 failed'
         foreach ($section in 'skipped:', 'declined:', 'failed:') { $out | Should -Match $section }
     }
 
@@ -297,7 +308,7 @@ Describe 'a folder means every capture under it' {
         # unprocessed and nothing ever reported it.
         $out | Should -Match 'www\.example\.test/2026-01-02-000003 -- no scrubbed\.har'
         $out | Should -Match 'www\.example\.test/2026-01-02-000002 -- already catalogued'
-        $out | Should -Match '1 declined'
+        $out | Should -Match '2 declined'
     }
 }
 
