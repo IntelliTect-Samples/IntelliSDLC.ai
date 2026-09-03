@@ -1305,9 +1305,18 @@ function Confirm-SyncBootstrap {
         The caller passes its own $PSCmdlet so the prompt is attributed to
         the calling cmdlet rather than to this helper.
 
-        NOTE: the default answer stays "no". Changing the default answer of a
-        destructive full-overwrite confirmation is a deliberate policy call
-        and is intentionally not part of this fix.
+        NOTE: the default answer is YES, and that is intended. ShouldContinue
+        renders PowerShell's standard choice menu, whose default choice is
+        "Yes"; there is no ShouldContinue overload that sets a different one,
+        so this cannot be made explicit in code and is recorded here instead.
+
+        This is deliberate policy, not an accident of the Read-Host removal in
+        issue #114 (whose "[y/N]" prompt did default to no). The prompt exists
+        to tell an operator what a first-time bootstrap will overwrite, not to
+        obstruct one they deliberately invoked -- and since issue #412 it can
+        no longer fire in the upstream repo at all, so it only ever reaches a
+        genuine first-time consumer. Do not "restore" a no default here
+        believing it was lost by mistake (issue #416).
     .OUTPUTS
         [bool] $true when the operator accepts the bootstrap.
     #>
