@@ -573,6 +573,78 @@ function ConvertTo-GitHubRepoSlug {
     return $null
 }
 
+function ConvertTo-ComparableRemoteUrl {
+    <#
+    .SYNOPSIS
+        Normalizes a git remote URL into a comparable repository identity.
+
+    .DESCRIPTION
+        Prefers the canonical GitHub "<owner>/<repo>" slug so that every
+        transport spelling of the same repository collapses to one value --
+        https://github.com/Owner/Repo.git, git@github.com:Owner/Repo.git and
+        the ssh.github.com:443 alias git@ssh.github.com:Owner/Repo.git all
+        normalize to "owner/repo".
+
+        URLs that are not GitHub (local paths, self-hosted git servers, the
+        fixture remotes the test suite builds) fall back to a lexical
+        normalization: lower-cased, back-slashes folded to forward slashes,
+        and any trailing slash or `.git` suffix removed. That is weaker than
+        slug parsing but still collapses the spellings a single machine
+        produces for one path.
+
+        Returns $null for empty input.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([AllowNull()][AllowEmptyString()][string]$RemoteUrl)
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) { return $null }
+    $slug = ConvertTo-GitHubRepoSlug -RemoteUrl $RemoteUrl
+    if ($slug) { return $slug.ToLowerInvariant() }
+    $u = $RemoteUrl.Trim().Replace('\', '/').TrimEnd('/')
+    if ($u.EndsWith('.git', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $u = $u.Substring(0, $u.Length - 4).TrimEnd('/')
+    }
+    if (-not $u) { return $null }
+    return $u.ToLowerInvariant()
+}
+
+function Test-IsSelfSyncTarget {
+    <#
+    .SYNOPSIS
+        Returns $true when the repository being synced IS the repository the
+        sync would pull from -- i.e. the upstream is being asked to sync from
+        itself (issue #412).
+
+    .DESCRIPTION
+        Deliberately compares remote *URLs*, never remote *names*. The upstream
+        checkout carries several remotes -- some named `origin`, `instructions`
+        and `sdlc.ai` all pointing at the upstream repository, plus unrelated
+        ones -- so "is there a remote called sdlc.ai" says nothing about which
+        repository is on the other end. Both URLs are reduced to a canonical
+        identity by ConvertTo-ComparableRemoteUrl first, so an ssh alias and an
+        https URL for one repository compare equal, and an org rename is
+        irrelevant because both sides of the comparison come from the same
+        local config.
+
+        A fork -- same repository *name*, different owner -- is not a self-sync:
+        syncing a fork from the canonical upstream is exactly what a consumer
+        that forked instead of copying does.
+
+        Returns $false when either URL is missing, which keeps the guard silent
+        for a repo with no `origin` rather than guessing.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OriginUrl,
+        [AllowNull()][AllowEmptyString()][string]$UpstreamUrl
+    )
+    $origin = ConvertTo-ComparableRemoteUrl -RemoteUrl $OriginUrl
+    $upstream = ConvertTo-ComparableRemoteUrl -RemoteUrl $UpstreamUrl
+    if (-not $origin -or -not $upstream) { return $false }
+    return $origin -eq $upstream
+}
+
 function Test-LsRemoteOutputHasExactBranch {
     <#
     .SYNOPSIS
@@ -2649,6 +2721,37 @@ function Invoke-PullSDLC {
             }
         }
         $RepoRoot = $topLevel.Trim()
+    }
+
+    # Guard: the upstream repository must never sync from itself (issue #412).
+    #
+    # Upstream has no .sdlc-ai-sync.json and no `chore: sync IntelliSDLC...`
+    # commit -- and never will, because it is the source. Test-IsBootstrapSync
+    # therefore reads the upstream checkout as a first-time consumer, which
+    # both defaults -CommitOnMain to $true (a commit attempt on the protected
+    # branch) and takes the empty-tree bootstrap path, whose 113 add-ops
+    # overwrite every managed path with no drift guard in the way.
+    #
+    # This runs before the remote is added, before the fetch, before the
+    # bootstrap prompt, and regardless of -WhatIf: there is no dry run of
+    # "would sync the upstream from itself" worth printing, and nothing here
+    # is a policy violation the caller can resolve and retry. There is
+    # deliberately no override -- see the PR for #412.
+    $selfOriginUrl = (& git -C $RepoRoot remote get-url origin 2>$null | Select-Object -First 1)
+    $selfUpstreamUrl = (& git -C $RepoRoot remote get-url $RemoteName 2>$null | Select-Object -First 1)
+    # No such remote yet: the sync would add it pointing at $RemoteUrl, so that
+    # is the URL to test.
+    if ([string]::IsNullOrWhiteSpace($selfUpstreamUrl)) { $selfUpstreamUrl = $RemoteUrl }
+    if (Test-IsSelfSyncTarget -OriginUrl $selfOriginUrl -UpstreamUrl $selfUpstreamUrl) {
+        $refusal = New-Object System.Text.StringBuilder
+        [void]$refusal.AppendLine('ABORT: this repository IS the sync source -- refusing to sync it from itself.')
+        [void]$refusal.AppendLine("  repo root: $RepoRoot")
+        [void]$refusal.AppendLine("  origin:    $selfOriginUrl")
+        [void]$refusal.AppendLine("  $RemoteName" + ":      $selfUpstreamUrl")
+        [void]$refusal.AppendLine('Both name the same repository, so there is nothing to pull. Run')
+        [void]$refusal.Append('Pull-SDLC.ai.ps1 from a consuming repository instead.')
+        Write-Error $refusal.ToString() -ErrorAction Continue
+        return 7
     }
 
     # Determine the effective -CommitOnMain setting.

@@ -5151,3 +5151,122 @@ Describe 'Issue #301: Git LFS hooks in .githooks/ are consumer-owned' {
         }
     }
 }
+
+Describe 'Issue #412: refuse to sync the upstream repository from itself' {
+
+    Context 'Test-IsSelfSyncTarget -- URL identity, not remote name' {
+
+        It 'matches an ssh.github.com alias against the https form of the same repo' {
+            Test-IsSelfSyncTarget `
+                -OriginUrl 'git@ssh.github.com:IntelliTect-Samples/IntelliSDLC.ai.git' `
+                -UpstreamUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' |
+                Should -BeTrue
+        }
+
+        It 'ignores a missing .git suffix and a trailing slash' {
+            Test-IsSelfSyncTarget `
+                -OriginUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai' `
+                -UpstreamUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git/' |
+                Should -BeTrue
+        }
+
+        It 'returns $false for a fork -- same repo name, different owner' {
+            Test-IsSelfSyncTarget `
+                -OriginUrl 'https://github.com/SomeOrg/IntelliSDLC.ai.git' `
+                -UpstreamUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' |
+                Should -BeFalse
+        }
+
+        It 'returns $false for an ordinary consumer repo' {
+            Test-IsSelfSyncTarget `
+                -OriginUrl 'https://github.com/SomeOrg/SomeProject.git' `
+                -UpstreamUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' |
+                Should -BeFalse
+        }
+
+        It 'returns $false when the repo has no origin' {
+            Test-IsSelfSyncTarget -OriginUrl '' -UpstreamUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' |
+                Should -BeFalse
+        }
+
+        It 'returns $false when no upstream URL is known' {
+            Test-IsSelfSyncTarget -OriginUrl 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' -UpstreamUrl '' |
+                Should -BeFalse
+        }
+
+        It 'matches two non-GitHub URLs that name the same repository' {
+            Test-IsSelfSyncTarget -OriginUrl 'C:\Git\Thing' -UpstreamUrl 'C:/Git/Thing/' | Should -BeTrue
+        }
+
+        It 'returns $false for two different non-GitHub URLs' {
+            Test-IsSelfSyncTarget -OriginUrl 'C:\Git\Thing' -UpstreamUrl 'C:\Git\Other' | Should -BeFalse
+        }
+    }
+
+    Context 'Invoke-PullSDLC refuses before doing anything' {
+
+        BeforeEach {
+            $script:selfRepo = Join-Path $TestDrive ("self-sync-" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $script:selfRepo -Force | Out-Null
+            Push-Location $script:selfRepo
+            try {
+                git init -q -b main
+                git config user.email u@u.u
+                git config user.name u
+                # Upstream-managed content is present, so the bootstrap path
+                # would otherwise reach the interactive prompt.
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'agent'  | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+                git add -A | Out-Null
+                git commit -q -m seed
+                # Four remotes, several pointing at this same repository, plus an
+                # unrelated one -- exactly the upstream checkout's shape. The
+                # guard must not depend on which remote is called what.
+                git remote add origin 'git@ssh.github.com:IntelliTect-Samples/IntelliSDLC.ai.git'
+                git remote add instructions 'git@ssh.github.com:IntelliTect-Samples/IntelliSDLC.ai.git'
+                git remote add sdlc.ai 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git'
+                git remote add hanselman-thing 'git@ssh.github.com:shanselman/some-other-repo.git'
+            } finally { Pop-Location }
+        }
+
+        It 'returns the self-sync refusal code and never prompts' {
+            Mock -CommandName Read-Host -MockWith { throw 'the bootstrap prompt must never be reached in the upstream repo' }
+
+            $rc = Invoke-PullSDLC -RepoRoot $script:selfRepo -RemoteName 'sdlc.ai' -NoFetch
+
+            $rc | Should -Be 7
+            Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+        }
+
+        It 'refuses under -WhatIf as well' {
+            Mock -CommandName Read-Host -MockWith { throw 'the bootstrap prompt must never be reached in the upstream repo' }
+
+            $rc = Invoke-PullSDLC -RepoRoot $script:selfRepo -RemoteName 'sdlc.ai' -NoFetch -WhatIf
+
+            $rc | Should -Be 7
+            Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+        }
+
+        It 'leaves the working tree clean -- no ops applied, no state file written' {
+            $null = Invoke-PullSDLC -RepoRoot $script:selfRepo -RemoteName 'sdlc.ai' -NoFetch 2>$null
+
+            Test-Path (Join-Path $script:selfRepo '.sdlc-ai-sync.json') | Should -BeFalse
+            Push-Location $script:selfRepo
+            try { (git status --porcelain) | Should -BeNullOrEmpty }
+            finally { Pop-Location }
+        }
+
+        It 'refuses even when the sdlc.ai remote does not exist yet -- the default URL is the upstream' {
+            Push-Location $script:selfRepo
+            try { git remote remove sdlc.ai } finally { Pop-Location }
+
+            $rc = Invoke-PullSDLC -RepoRoot $script:selfRepo -RemoteName 'sdlc.ai' -NoFetch
+
+            $rc | Should -Be 7
+            Push-Location $script:selfRepo
+            try { (git remote) | Should -Not -Contain 'sdlc.ai' -Because 'the guard runs before the remote is added' }
+            finally { Pop-Location }
+        }
+    }
+}
