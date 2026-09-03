@@ -159,6 +159,34 @@ section('3', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 3b -- a directory that is DECLINED must not take its contents with it
+// ---------------------------------------------------------------------------
+section('3b', () => {
+    // A stray `raw.har` sitting at HOST level is enough to make that directory
+    // look like somebody else's capture. If being declined also stopped the
+    // walk descending, one stray file would hide every capture under that host
+    // -- silently, which is the failure mode this whole classification exists
+    // to remove. Declining is a statement about the directory, never about the
+    // tree below it.
+    //
+    // A recorder session is different and DOES stop the descent: its own
+    // scrub output lives inside it, and a `<stamp>/` directory is a leaf by
+    // construction.
+    fs.writeFileSync(path.join(hostA, 'raw.har'), '{}');
+    try {
+        const found = byDir(store.listCaptureDirs(root));
+        assert.strictEqual(found.get(hostA) && found.get(hostA).captureClass, store.CLASS_FOREIGN,
+            '3b.a: a host directory holding a stray raw.har should be declined');
+        assert.ok(found.has(current),
+            '3b.b: declining the host directory hid every capture underneath it');
+        assert.ok(found.has(done) && found.has(quarantined),
+            '3b.c: the rest of the host went missing behind one stray file');
+    } finally {
+        fs.unlinkSync(path.join(hostA, 'raw.har'));
+    }
+});
+
+// ---------------------------------------------------------------------------
 // 4 -- the artifact facts the resume check is built on
 // ---------------------------------------------------------------------------
 section('4', () => {
