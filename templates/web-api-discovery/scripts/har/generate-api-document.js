@@ -89,11 +89,16 @@ const fs = require('fs');
 const path = require('path');
 
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
-// The SAME path templating the digest uses. `api.json` is the aggregate of
-// what `digest.json` already computes per session, so a second, subtly
-// different notion of "the same endpoint" here would make the two artifacts
-// disagree about the API they both describe.
-const { pathTemplate } = require(path.join(__dirname, '..', 'capture', 'capture-har.js'));
+// The SAME path templating the digest and the catalogue guard use. `api.json`
+// is the aggregate of what `digest.json` already computes per session, so a
+// second, subtly different notion of "the same endpoint" here would make the
+// artifacts disagree about the API they all describe.
+//
+// Imported from the module that OWNS the definition. It was reached through
+// `capture-har.js` when that was where it lived; since the implementation moved
+// here, going through the recorder would load `net`, `readline`,
+// `child_process` and the incremental recorder to obtain one pure function.
+const { pathTemplate } = require(path.join(__dirname, 'har-catalogue.js'));
 
 const DOCUMENT_FILE = 'api.json';
 const SCHEMA_VERSION = 1;
