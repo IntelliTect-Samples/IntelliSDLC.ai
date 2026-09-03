@@ -1642,9 +1642,10 @@ Describe 'Resolve-SyncAnchor auto-detect (issue #136)' {
             git commit -q -m seed
         } finally { Pop-Location }
 
-        # Without -NoPrompt and with managed files present, Read-Host would
-        # prompt -- mock it to simulate the user typing 'n'.
-        Mock -CommandName Read-Host -MockWith { 'n' }
+        # Without -NoPrompt and with managed files present the operator is
+        # prompted -- mock the prompt to simulate a decline (issue #114
+        # replaced the Read-Host call with Confirm-SyncBootstrap).
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { $false }
 
         $anchor = Resolve-SyncAnchor -RepoRoot $root
         $anchor | Should -BeNullOrEmpty
@@ -5268,5 +5269,95 @@ Describe 'Issue #412: refuse to sync the upstream repository from itself' {
             try { (git remote) | Should -Not -Contain 'sdlc.ai' -Because 'the guard runs before the remote is added' }
             finally { Pop-Location }
         }
+    }
+}
+
+Describe 'Issue #114: -WhatIf must never block on the bootstrap prompt' {
+
+    BeforeEach {
+        # A repo in the ambiguous bootstrap state: upstream-managed files are
+        # present, but there is no .sdlc-ai-sync.json and no prior
+        # `chore: sync IntelliSDLC...` commit. This is the only path in
+        # Resolve-SyncAnchor that reaches the interactive prompt.
+        $script:ambiguousRepo = Join-Path $TestDrive ("whatif-anchor-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:ambiguousRepo -Force | Out-Null
+        Push-Location $script:ambiguousRepo
+        try {
+            git init -q -b main
+            git config user.email c@c.c
+            git config user.name c
+            New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+            'claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            'agent'  | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            git add -A | Out-Null
+            git commit -q -m seed
+        } finally { Pop-Location }
+    }
+
+    It 'auto-selects the bootstrap anchor under $WhatIfPreference instead of prompting' {
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host must not be invoked under -WhatIf' }
+
+        $WhatIfPreference = $true
+        $anchor = Resolve-SyncAnchor -RepoRoot $script:ambiguousRepo
+
+        $anchor | Should -Not -BeNullOrEmpty
+        $anchor.Source | Should -Be 'bootstrap'
+        $anchor.Sha | Should -BeNullOrEmpty
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+    }
+
+    It 'still prompts -- via ShouldContinue, not Read-Host -- when not dry-running' {
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host is not preference-aware; use ShouldContinue' }
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { $true }
+
+        $anchor = Resolve-SyncAnchor -RepoRoot $script:ambiguousRepo
+
+        $anchor.Source | Should -Be 'bootstrap'
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 1 -Exactly
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+    }
+
+    It 'returns $null when the user declines the prompt' {
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { $false }
+
+        Resolve-SyncAnchor -RepoRoot $script:ambiguousRepo | Should -BeNullOrEmpty
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 1 -Exactly
+    }
+
+    It 'does not consult the prompt at all under $WhatIfPreference' {
+        Mock -CommandName Confirm-SyncBootstrap -MockWith { throw 'the prompt must not be reached under -WhatIf' }
+
+        $WhatIfPreference = $true
+        (Resolve-SyncAnchor -RepoRoot $script:ambiguousRepo).Source | Should -Be 'bootstrap'
+        Should -Invoke -CommandName Confirm-SyncBootstrap -Times 0 -Exactly
+    }
+
+    It 'Invoke-PullSDLC -WhatIf prints the would-be op list and exits 0 without prompting' {
+        $fx = New-DiffReplayFixture -Root (Join-Path $TestDrive ("whatif-e2e-" + [guid]::NewGuid().ToString('N'))) `
+            -Seed {
+                New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
+            } `
+            -Tweak {
+                'changed-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+
+        # The fixture consumer has no .sdlc-ai-sync.json and no sync commit, so
+        # the ambiguous prompt path is the only way forward.
+        Test-Path (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
+
+        Mock -CommandName Read-Host -MockWith { throw 'Read-Host must not be invoked under -WhatIf' }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -WhatIf -InformationVariable info
+
+        $rc | Should -Be 0
+        Should -Invoke -CommandName Read-Host -Times 0 -Exactly
+        ($info | ForEach-Object { $_.ToString() }) -join "`n" |
+            Should -Match 'Files to update' -Because 'the dry run must reach and print the would-be op list'
+        Test-Path (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
+        Push-Location $fx.Consumer
+        try { (git status --porcelain) | Should -BeNullOrEmpty -Because '-WhatIf must not write anything' }
+        finally { Pop-Location }
     }
 }

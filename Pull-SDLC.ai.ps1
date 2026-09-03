@@ -1285,6 +1285,42 @@ function Test-NoManagedFilesPresent {
     return $true
 }
 
+function Confirm-SyncBootstrap {
+    <#
+    .SYNOPSIS
+        Asks the operator whether to bootstrap a first-time sync -- a full
+        refresh from upstream HEAD that overwrites every upstream-managed
+        path already present in the working tree.
+
+    .DESCRIPTION
+        Wraps $PSCmdlet.ShouldContinue, the idiomatic PowerShell yes/no risk
+        prompt, in place of Read-Host. Read-Host is not preference-aware, so
+        it fired even under -WhatIf (issue #114); ShouldContinue at least
+        participates in the standard prompting plumbing, and callers can
+        short-circuit it on $WhatIfPreference.
+
+        Extracted as its own function purely so tests can mock the prompt
+        deterministically -- $PSCmdlet.ShouldContinue cannot be mocked.
+
+        The caller passes its own $PSCmdlet so the prompt is attributed to
+        the calling cmdlet rather than to this helper.
+
+        NOTE: the default answer stays "no". Changing the default answer of a
+        destructive full-overwrite confirmation is a deliberate policy call
+        and is intentionally not part of this fix.
+    .OUTPUTS
+        [bool] $true when the operator accepts the bootstrap.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]$Cmdlet
+    )
+    $query = 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor), overwriting the upstream-managed files already present. Proceed with bootstrap?'
+    $caption = 'No .sdlc-ai-sync.json and no prior sync commit found'
+    return $Cmdlet.ShouldContinue($query, $caption)
+}
+
 function Resolve-SyncAnchor {
     <#
     .SYNOPSIS
@@ -1299,9 +1335,14 @@ function Resolve-SyncAnchor {
         4. Auto-detect: no managed files in working tree -> silent
            auto-bootstrap with banner (the unambiguous from-zero case).
         5. -NoPrompt -> bootstrap (CI mode).
-        6. Otherwise prompt the user.
+        6. -WhatIf -> bootstrap, without prompting, so the caller's dry run
+           can go on to print the would-be op list. Every real write and the
+           sync commit are still gated by ShouldProcess in Invoke-PullSDLC,
+           so answering the prompt for the operator here changes nothing on
+           disk (issue #114).
+        7. Otherwise prompt the user (Confirm-SyncBootstrap).
     #>
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [string]$RepoRoot = '.',
         [switch]$Bootstrap,
@@ -1336,8 +1377,11 @@ function Resolve-SyncAnchor {
     Write-Warning 'No .sdlc-ai-sync.json and no prior sync commit found.'
     Write-Warning 'Existing upstream-managed files were detected; bootstrap will overwrite them.'
     Write-Warning 'Bootstrap will perform a full refresh from upstream HEAD (empty-tree anchor).'
-    $ans = Read-Host 'Proceed with bootstrap? [y/N]'
-    if ($ans -match '^[Yy]') {
+    if ($WhatIfPreference) {
+        Write-Information 'What if: would prompt to proceed with bootstrap; assuming yes for the dry-run preview.'
+        return @{ Sha = ''; Source = 'bootstrap' }
+    }
+    if (Confirm-SyncBootstrap -Cmdlet $PSCmdlet) {
         return @{ Sha = ''; Source = 'bootstrap' }
     }
     return $null
