@@ -254,6 +254,73 @@ test('annotation is idempotent, so the assembled path is a no-op and a second st
     assert.strictEqual(D.attachDescriptors(assembled, [entry]), 0);
 });
 
+test('GUARD: an entry that already carries its body is never told the body was not retained', () => {
+    // The two recorders read the request through different code paths, so they
+    // CAN disagree. The disagreement that matters is the one where the driver
+    // kept the body and our own observation did not: annotating there would
+    // write `bodyRetained: false` beside a populated `postData` -- a
+    // self-contradicting entry, and the same class of false statement this
+    // descriptor exists to remove.
+    const driverHar = [{
+        request: {
+            method: 'POST',
+            url: 'https://i.instagram.com/rupload_igvideo/fb_uploader_1234',
+            headers: [{ name: 'content-length', value: '12' }],
+            bodySize: 12,
+            postData: { mimeType: 'text/plain', text: 'hello world!' },
+        },
+    }];
+    // Our recorder saw the same request and failed to read its body.
+    const logged = [capture.buildEntry({
+        request: {
+            method: 'POST',
+            url: 'https://i.instagram.com/rupload_igvideo/fb_uploader_1234',
+            headers: { 'content-length': '12' },
+            postDataBuffer: null,
+        },
+        response: null,
+    })];
+    assert.ok(logged[0].request[KEY], 'fixture precondition: the log entry carries a descriptor');
+
+    assert.strictEqual(D.attachDescriptors(driverHar, logged), 0);
+    assert.strictEqual(driverHar[0].request[KEY], undefined,
+        'a retained body was labelled not-retained');
+    assert.strictEqual(driverHar[0].request.bodySize, 12, 'a real measured size was overwritten');
+    assert.strictEqual(driverHar[0].request.postData.text, 'hello world!');
+});
+
+test('GUARD: the raw is replaced atomically, never truncated in place', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'har-442-atomic-'));
+    const logPath = path.join(dir, 'raw.ndjson');
+    const entry = capture.buildEntry({ request: chunkedUploadRequest(19299725), response: null });
+    fs.writeFileSync(logPath, JSON.stringify(entry) + '\n', 'utf8');
+
+    const harPath = path.join(dir, 'raw.har');
+    fs.writeFileSync(harPath, JSON.stringify({
+        log: {
+            version: '1.2',
+            entries: [{
+                request: {
+                    method: 'POST',
+                    url: 'https://i.instagram.com/rupload_igvideo/fb_uploader_1234',
+                    headers: [{ name: 'content-length', value: '19299725' }],
+                    bodySize: 0,
+                },
+            }],
+        },
+    }), 'utf8');
+
+    assert.deepStrictEqual(capture.annotateUnretainedBodies(harPath, logPath), { annotated: 1 });
+    // `raw.har` is the one artifact that cannot be re-made, so the replacement
+    // must leave nothing else behind in the session directory either -- a
+    // lingering stage would read as a second capture to anything that globs.
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['raw.har', 'raw.ndjson']);
+    assert.strictEqual(JSON.parse(fs.readFileSync(harPath, 'utf8'))
+        .log.entries[0].request[KEY].declaredLength, 19299725);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('annotateUnretainedBodies works over files, on BOTH raw.har paths', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'har-442-'));
     const logPath = path.join(dir, 'raw.ndjson');

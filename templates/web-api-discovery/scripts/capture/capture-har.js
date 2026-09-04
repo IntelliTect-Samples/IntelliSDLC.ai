@@ -1305,14 +1305,28 @@ function annotateUnretainedBodies(harPath, logPath) {
     if (!harPath || !fs.existsSync(harPath)) return null;
     const { entries: logged } = readLogEntries(logPath);
     if (!logged.length) return null;
+    const staged = `${harPath}.annotating`;
     try {
         const har = JSON.parse(fs.readFileSync(harPath, 'utf8'));
         const entries = (har && har.log && har.log.entries) || [];
         const annotated = bodyDescriptor.attachDescriptors(entries, logged);
         if (!annotated) return { annotated: 0 };
-        writeJson(harPath, har);
+        // WRITE BESIDE IT, THEN RENAME. This is the only place in this file
+        // that overwrites an ALREADY-EXISTING HAR rather than writing a fresh
+        // one, and the file it overwrites is `raw.har` -- the one artifact
+        // whose loss is unrecoverable. A bare `writeFileSync` truncates first,
+        // so a kill between truncate and completion leaves a corrupt raw where
+        // a whole one stood; and this runs at exactly the moments a driver may
+        // be dying. `rename` over the same directory is atomic, so the file is
+        // either the old one or the new one and never a prefix of either.
+        writeJson(staged, har);
+        fs.renameSync(staged, harPath);
         return { annotated };
     } catch (e) {
+        // The half-written stage is removed rather than left beside the raw,
+        // where it would look like a second capture to anything that globs the
+        // session directory.
+        try { if (fs.existsSync(staged)) fs.unlinkSync(staged); } catch (_) { /* best effort */ }
         log.verbose(`capture-har: could not annotate unretained request bodies: ${e.message}`);
         return null;
     }
