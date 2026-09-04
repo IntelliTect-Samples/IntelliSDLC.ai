@@ -165,6 +165,7 @@ const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard
 // this exact enumeration -- with its classification of legacy and foreign
 // captures intact -- instead of growing a second notion of what a capture is.
 const captureStore = require(path.join(__dirname, 'capture-store.js'));
+const bodyDescriptor = require(path.join(__dirname, 'request-body-descriptor.js'));
 // The ONE gitignore check in this subsystem (#318). It wraps `git check-ignore`
 // and already defends against a forged `.gitignore` containing `*` and against
 // `core.excludesFile` injection, so nothing here asks the question a second
@@ -1053,6 +1054,14 @@ function buildEntry(observed) {
     const reqHeaders = request.headers || {};
     const resHeaders = (response && response.headers) || {};
     const postBuf = request.postDataBuffer || null;
+    // What we can say about a request body we did NOT keep (#442). null when
+    // there is nothing to say -- no body was declared, or the whole of it is
+    // in `postBuf` -- so a genuinely bodiless request is untouched.
+    const unretained = bodyDescriptor.describeRequestBody({
+        headers: reqHeaders,
+        postDataBuffer: postBuf,
+        postMimeType: request.postMimeType
+    });
 
     const phases = timing
         ? { send: timing.send, wait: timing.wait, receive: timing.receive }
@@ -1070,7 +1079,13 @@ function buildEntry(observed) {
             queryString: queryStringOf(request.url),
             cookies: cookiesOf(reqHeaders),
             headersSize: headerBytes(reqHeaders, `${request.method} ${request.url}`),
-            bodySize: postBuf ? postBuf.length : 0
+            // -1 is HAR's "not available", and it is what this recorder
+            // already reports for a RESPONSE body it could not read. Reporting
+            // 0 for a body the request declared and we did not keep is a false
+            // statement, and it is the same text a genuinely bodiless GET
+            // produces -- which is the whole of #442. 0 still means 0: no
+            // descriptor, no body, nothing withheld.
+            bodySize: postBuf ? postBuf.length : (unretained ? -1 : 0)
         },
         response: {
             // A failed request has no status. 0 is the established HAR
@@ -1104,6 +1119,7 @@ function buildEntry(observed) {
                 bodyContent(postBuf, request.postMimeType))
         );
     }
+    if (unretained) entry.request[bodyDescriptor.DESCRIPTOR_KEY] = unretained;
     if (failure && failure.errorText) entry._failure = failure.errorText;
     return entry;
 }
@@ -1227,12 +1243,7 @@ function attachRecorder(context, recorder) {
  */
 function assembleFromLog(logPath, outPath) {
     if (!fs.existsSync(logPath)) return null;
-    const lines = fs.readFileSync(logPath, 'utf8').split('\n').filter((l) => l.trim());
-    const entries = [];
-    let dropped = 0;
-    for (const line of lines) {
-        try { entries.push(JSON.parse(line)); } catch (e) { dropped++; }
-    }
+    const { entries, dropped } = readLogEntries(logPath);
     if (!entries.length) return null;
     const har = {
         log: {
@@ -1246,6 +1257,65 @@ function assembleFromLog(logPath, outPath) {
     };
     writeJson(outPath, har);
     return { entries: entries.length, dropped };
+}
+
+/**
+ * Read the record log's entries, dropping a truncated final line.
+ *
+ * Shared with `assembleFromLog` rather than duplicated, because "a truncated
+ * last line is expected and is dropped" is a rule the two readers must not
+ * disagree about.
+ */
+function readLogEntries(logPath) {
+    if (!logPath || !fs.existsSync(logPath)) return { entries: [], dropped: 0 };
+    let text;
+    try { text = fs.readFileSync(logPath, 'utf8'); } catch (e) { return { entries: [], dropped: 0 }; }
+    const entries = [];
+    let dropped = 0;
+    for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { entries.push(JSON.parse(line)); } catch (e) { dropped++; }
+    }
+    return { entries, dropped };
+}
+
+/**
+ * Attach every unretained-request-body descriptor this recorder observed onto
+ * whichever `raw.har` exists -- THE ONE CALL SITE THAT SERVES BOTH RECORDERS.
+ *
+ * A descriptor has to be recorded at capture time because the payload it
+ * describes is gone afterwards. But on the `recordHar` path there is no moment
+ * in this process at which an entry is being built: the driver buffers the
+ * session and serialises it during `context.close()`. Writing the descriptor
+ * "while building an entry" therefore only ever runs on the assembled path --
+ * which is the path that USUALLY LOSES.
+ *
+ * What is true on both paths is that THIS RECORDER SAW THE REQUEST: that is
+ * how `raw.ndjson` exists at all. Since #377 the log is kept even when
+ * `recordHar` wins, so the observation outlives the choice of artifact, and
+ * attaching it to `raw.har` after the driver has written it is still "at
+ * capture time" in the only sense that matters -- the knowledge has not left
+ * the process, and on the `stop` path it has not left the session directory.
+ *
+ * Failure here is never fatal. An un-annotated `raw.har` is exactly today's
+ * artifact; losing the capture over a descriptor would be a far worse trade
+ * than the one this fixes.
+ */
+function annotateUnretainedBodies(harPath, logPath) {
+    if (!harPath || !fs.existsSync(harPath)) return null;
+    const { entries: logged } = readLogEntries(logPath);
+    if (!logged.length) return null;
+    try {
+        const har = JSON.parse(fs.readFileSync(harPath, 'utf8'));
+        const entries = (har && har.log && har.log.entries) || [];
+        const annotated = bodyDescriptor.attachDescriptors(entries, logged);
+        if (!annotated) return { annotated: 0 };
+        writeJson(harPath, har);
+        return { annotated };
+    } catch (e) {
+        log.verbose(`capture-har: could not annotate unretained request bodies: ${e.message}`);
+        return null;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2578,6 +2648,11 @@ async function start(args) {
     if (!fs.existsSync(paths.harPath)) {
         assembled = assembleFromLog(paths.recordLog, paths.harPath);
     }
+    // Unconditional, and BEFORE post-processing reads the raw (#442). On the
+    // assembled path every entry already carries its descriptor and this is a
+    // no-op; on the recordHar path it is the only place the descriptors can be
+    // attached at all.
+    annotateUnretainedBodies(paths.harPath, paths.recordLog);
     // THE RECORD LOG IS KEPT EVEN WHEN recordHar WON (#377).
     //
     // It used to be deleted here, on the reasoning that keeping both invites
@@ -2856,6 +2931,14 @@ async function stop(args) {
         // run the phases here instead. `driverLost` alone is not the test: a
         // driver that died AFTER writing endedUtc never sets it.
         if (driverLost || !isDriverAlive(session)) {
+            // `stop` runs in a DIFFERENT PROCESS from the recorder and holds no
+            // in-memory index -- which is exactly why the descriptors are read
+            // back from `raw.ndjson` rather than carried in a variable (#442).
+            // Only in THIS branch: while the driver is alive it owns the raw,
+            // and two processes rewriting one file is not an improvement over
+            // an un-annotated one. Idempotent, so a raw the driver already
+            // annotated is left alone.
+            annotateUnretainedBodies(session.harPath, session.recordLog);
             session.postProcess = postProcess(session);
             writeJson(sessionFile, session);
         } else {
@@ -3132,6 +3215,8 @@ module.exports = {
     postProcessLines,
     buildEntry,
     assembleFromLog,
+    annotateUnretainedBodies,
+    readLogEntries,
     resolveSessionPaths,
     uriFolder,
     resolveSession,

@@ -137,6 +137,9 @@ const path = require('path');
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const pii = require(path.join(__dirname, 'pii.js'));
+// Imported, never re-spelled -- see the note on the same import in pii.js.
+const { DESCRIPTOR_KEY: BODY_DESCRIPTOR_KEY } =
+    require(path.join(__dirname, '..', 'capture', 'request-body-descriptor.js'));
 
 const CLEAN = 'CLEAN';
 const CORRUPTED = 'CORRUPTED';
@@ -355,10 +358,38 @@ function emitEntryStrings(entry, emit) {
         }
         const text = req.postData && req.postData.text;
         if (typeof text === 'string') emitBody(text, 'request.postData', emit);
+        emitBodyDescriptor(req[BODY_DESCRIPTOR_KEY], `request.${BODY_DESCRIPTOR_KEY}`, emit);
     }
     const res = entry && entry.response;
     const body = res && res.content && res.content.text;
     if (typeof body === 'string') emitBody(body, 'response.content', emit);
+}
+
+/**
+ * Emit the strings of an unretained-request-body descriptor (#442).
+ *
+ * `field` is `null` for every one of them, unconditionally, and that is the
+ * whole point of writing this by hand rather than routing the descriptor
+ * through `emitBody`.
+ *
+ * The descriptor's keys -- `filename`, `fieldName`, `mimeType`, `length` --
+ * are OURS. They are HAR-envelope property names in exactly the sense #375
+ * means: a part's `filename` is real captured data, but `filename` is not a
+ * field name the captured document chose, and letting a project's
+ * identifier-field policy match it would switch off reporting for the one node
+ * most likely to carry a person's name. This is #369/#374's bug in the shape
+ * it would take here, refused at the source.
+ */
+function emitBodyDescriptor(descriptor, base, emit) {
+    if (!descriptor || typeof descriptor !== 'object') return;
+    const visit = (node, at) => {
+        if (typeof node === 'string') { emit(at, node, null); return; }
+        if (Array.isArray(node)) { node.forEach((v, i) => visit(v, `${at}[${i}]`)); return; }
+        if (node && typeof node === 'object') {
+            for (const k of Object.keys(node)) visit(node[k], `${at}.${k}`);
+        }
+    };
+    visit(descriptor, base);
 }
 
 function emitBody(text, base, emit) {
@@ -838,6 +869,7 @@ module.exports = {
     discoverCaptures,
     claimingCaptures,
     countWholeRuns,
+    forEachHarString,
     recoverFromRaw,
     verdictFor,
     runAudit,
