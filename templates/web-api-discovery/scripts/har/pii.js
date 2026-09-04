@@ -36,6 +36,14 @@
 
 const crypto = require('crypto');
 
+// The recorder's key for an unretained-request-body descriptor (#442),
+// IMPORTED rather than spelled again. A second copy of a node name is how the
+// scrub and the recorder end up disagreeing about which node exists, and the
+// disagreement is silent in the direction that ships: the scrub simply never
+// visits it. `request-body-descriptor.js` requires nothing, so naming it from
+// here cannot make a cycle.
+const { DESCRIPTOR_KEY: BODY_DESCRIPTOR_KEY } = require('../capture/request-body-descriptor.js');
+
 const PII_TYPES = [
     'email', 'phone', 'person-name', 'street-address',
     'city', 'region', 'postal-code', 'country',
@@ -801,6 +809,20 @@ function detectPii(har, policy) {
         if (entry.response && entry.response.content && typeof entry.response.content.text === 'string') {
             tryWalkJsonText(entry.response.content.text, entryIndex, 'response.content', out, policy);
         }
+        // The unretained-request-body descriptor (#442). A `filename` IS
+        // captured data -- `emily-watson-birthday-2019.jpg` carries a person,
+        // a date and an occasion -- so the descriptor must be scrubbed like
+        // any other captured value and must NOT become a channel that bypasses
+        // the scrub. This walk is a SELECTIVE node list, not a generic descent,
+        // so a new node is invisible to it until it is named here; the legacy
+        // regex pass in `sanitize-har.js` walks the whole document and would
+        // have caught an email- or card-shaped filename, but a person's NAME is
+        // only ever found by THIS pass, which is context-driven.
+        const descriptor = entry.request && entry.request[BODY_DESCRIPTOR_KEY];
+        if (descriptor && typeof descriptor === 'object') {
+            walkJsonForDetect(descriptor, null, entryIndex,
+                `request.${BODY_DESCRIPTOR_KEY}`, out, policy);
+        }
     });
     return out;
 }
@@ -1036,6 +1058,14 @@ function applyReplacementsToEntry(entry, replacements, policy) {
     }
     if (entry.response && entry.response.content && typeof entry.response.content.text === 'string') {
         entry.response.content.text = replaceJsonOrText(entry.response.content.text, replacements, policy);
+    }
+    // The unretained-request-body descriptor (#442). Paired with the walk in
+    // `detectPii` for the reason stated on the cookie arrays above: detection
+    // that never reaches the scrub is a report nobody acts on, and the gate
+    // would then fail a value the scrubber was never asked to remove.
+    const descriptor = entry.request && entry.request[BODY_DESCRIPTOR_KEY];
+    if (descriptor && typeof descriptor === 'object') {
+        entry.request[BODY_DESCRIPTOR_KEY] = replaceInJson(descriptor, null, replacements, policy);
     }
 }
 
