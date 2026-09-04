@@ -78,6 +78,10 @@ function makeCapture(dir, opts = {}) {
     if (opts.scrubbed) writeHar(path.join(dir, 'scrubbed.har'));
     if (opts.rejected) writeHar(path.join(dir, 'scrubbed.rejected.har'));
     if (opts.catalogue) fs.writeFileSync(path.join(dir, 'catalogue.json'), '[]');
+    // Fixture content only -- never a real credential. This exercises EXISTENCE
+    // reporting, so the file need not even be valid JSON.
+    if (opts.legacySubs) fs.writeFileSync(path.join(dir, store.LEGACY_SUBS_FILENAME), '{}');
+    if (opts.piiSubs) fs.writeFileSync(path.join(dir, store.PII_SUBS_FILENAME), '{}');
     return dir;
 }
 
@@ -89,11 +93,26 @@ const hostB = path.join(root, 'www.other.test');
 const current = makeCapture(path.join(hostA, '2026-01-02-000001'));
 const done = makeCapture(path.join(hostA, '2026-01-02-000002'), { scrubbed: true, catalogue: true });
 const quarantined = makeCapture(path.join(hostA, '2026-01-02-000003'), { rejected: true });
+// The credential file itself: a legacy-style substitution table beside the
+// raw, with no other artifact present. Proves the field reports the table's
+// existence on its own terms, not as a side effect of scrubbed/catalogue.
+// Stamped BEFORE the other hostA captures -- section 6 pins `quarantined` as
+// the newest recorder session by stamp, and these two must not steal that.
+const subbed = makeCapture(path.join(hostA, '2026-01-01-500001'), { legacySubs: true });
+// The typed-PII table is the OTHER of the two names -- exercised separately so
+// neither name alone would make the assertion pass by accident.
+const piiSubbed = makeCapture(path.join(hostA, '2026-01-01-500002'), { piiSubs: true });
 const legacy = makeCapture(path.join(root, '2026-01-01-000001'));
 const mitm = makeCapture(path.join(hostB, '2026-01-03-000001'), { session: false, mitm: true });
 // A dump dropped straight under the captures root, with no host layer at all.
 const rootMitm = makeCapture(path.join(root, '2020-01-01-mitmdump'), { session: false, mitm: true });
 const orphanRaw = makeCapture(path.join(hostB, '2026-01-03-000002'), { session: false });
+// A capture this recorder did not make, that ALSO has a substitution table
+// beside it -- the shape an operator leaves by running sanitize-har.js by
+// hand against an orphan raw.har. Existence is a fact about the directory,
+// not about who produced the capture, so this must still report true.
+const foreignSubbed = makeCapture(path.join(hostB, '2026-01-03-000003'),
+    { session: false, legacySubs: true });
 
 // Directories and files that are NOT captures, which is the population the
 // counts depend on being excluded.
@@ -141,8 +160,8 @@ section('2', () => {
         assert.ok(!dirs.includes(path.join(root, notACapture)),
             `2.a: ${notACapture} has neither a session nor a raw and is not a capture, but it was listed`);
     }
-    assert.strictEqual(dirs.length, 7,
-        '2.b: the store holds exactly seven captures; found ' + dirs.length + ': ' + dirs.join(', '));
+    assert.strictEqual(dirs.length, 10,
+        '2.b: the store holds exactly ten captures; found ' + dirs.length + ': ' + dirs.join(', '));
 });
 
 // ---------------------------------------------------------------------------
@@ -155,7 +174,7 @@ section('3', () => {
     const fromHost = byDir(store.listCaptureDirs(hostA));
     assert.strictEqual(fromHost.get(current) && fromHost.get(current).captureClass, store.CLASS_SESSION,
         '3.a: narrowing the walk to a host folder re-classified its captures as legacy');
-    assert.strictEqual(fromHost.size, 3,
+    assert.strictEqual(fromHost.size, 5,
         '3.b: pointing at one host must find that host\'s captures and no others, found ' + fromHost.size);
 
     // And the same directory, asked for on its own, is still what it was.
@@ -212,6 +231,58 @@ section('4', () => {
         '4.d: a quarantined scrub was reported as a completed one -- resume would skip a REJECTED capture');
     assert.strictEqual(found.get(quarantined).rejected, true,
         '4.e: the quarantined scrub was not reported at all, so triage has nothing to go on');
+});
+
+// ---------------------------------------------------------------------------
+// 4c -- the one fact #387 asked for that nothing else computed: a
+// substitution table beside the raw
+// ---------------------------------------------------------------------------
+section('4c', () => {
+    const found = byDir(store.listCaptureDirs(root));
+
+    // The literal spellings, pinned. Both the fixtures above and
+    // hasSubstitutionTable() read these same exported constants, so without
+    // this a renamed constant would pass this whole section while silently
+    // no longer recognising a table a real sanitize-har.js run wrote under
+    // the ACTUAL name.
+    assert.strictEqual(store.LEGACY_SUBS_FILENAME, '.har-substitutions.json',
+        '4c.0a: the legacy substitution-table filename drifted from what sanitize-har.js writes');
+    assert.strictEqual(store.PII_SUBS_FILENAME, '.substitutions.json',
+        '4c.0b: the typed-PII substitution-table filename drifted from what sanitize-har.js writes');
+
+    // Neither canonical name is present: no scrub has ever run here.
+    assert.strictEqual(found.get(current).substitutions, false,
+        '4c.a: an unprocessed capture with no substitution table reported one existing');
+
+    // The two tables are two DIFFERENT filenames (legacy hash-keyed vs.
+    // typed-PII), and each is checked on its own -- either one existing must
+    // be enough to report `true`, not only their conjunction.
+    assert.strictEqual(found.get(subbed).substitutions, true,
+        '4c.b: an existing .har-substitutions.json table was not reported');
+    assert.strictEqual(found.get(piiSubbed).substitutions, true,
+        '4c.c: an existing .substitutions.json table was not reported');
+
+    // Never the path, never the contents -- existence only. A path would be
+    // a location the operator could carry into a shared summary without
+    // thinking, and these tables are keyed by the plaintext values a scrub
+    // replaced.
+    assert.strictEqual(found.get(subbed).substitutionsPath, undefined,
+        '4c.d: the inventory carries a substitution-table PATH, not just its existence');
+    const serialised = JSON.stringify(found.get(subbed));
+    assert.ok(!/\.har-substitutions\.json|\.substitutions\.json/.test(serialised),
+        '4c.e: the inventory names the substitution-table FILENAME, which is one step from its path');
+
+    // A DECLINED capture is not exempt. Existence of a substitution table is a
+    // fact about the DIRECTORY, not about who made the capture in it -- an
+    // operator who ran sanitize-har.js by hand against an orphan raw.har
+    // leaves exactly this shape, and a blanket false here would tell them the
+    // credential table is not there when it is.
+    assert.strictEqual(found.get(foreignSubbed).captureClass, store.CLASS_FOREIGN,
+        '4c.f: the foreign fixture with a substitution table was not classed as foreign -- this assertion checks nothing');
+    assert.strictEqual(found.get(foreignSubbed).substitutions, true,
+        '4c.g: a substitution table beside a DECLINED capture was reported as absent');
+    assert.strictEqual(found.get(orphanRaw).substitutions, false,
+        '4c.h: a declined capture with no substitution table reported one existing');
 });
 
 // ---------------------------------------------------------------------------

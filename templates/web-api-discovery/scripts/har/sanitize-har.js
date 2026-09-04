@@ -86,8 +86,16 @@ function parseArgs(argv) {
 // They are recorder state, not a deliverable, so they never default into the
 // output path -- the directory the operator has been told holds scrubbed,
 // verified artifacts and which is tracked by git (issue #294).
-const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
-const PII_SUBS_FILENAME = '.substitutions.json';
+//
+// The filenames themselves live in subs-destination.js, not here -- that
+// module is the one place both this script (which writes the tables) and
+// capture-store.js (which, for #387, only needs to ask whether one exists)
+// can safely `require()`. This file cannot be required as a library itself:
+// its `main()` runs unconditionally at the bottom with no `require.main`
+// guard, so requiring it would run a scrub. Keeping the names in the
+// dependency-free module both sides already share is what keeps this a single
+// definition instead of two that can drift.
+const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 const CAPTURES_DIR = '.har-captures';
 
 /**
