@@ -43,6 +43,15 @@
 
 const fs = require('fs');
 const path = require('path');
+// The substitution-table filenames come from subs-destination.js, which
+// this file and sanitize-har.js (the writer of the tables) now share.
+// sanitize-har.js itself cannot be required as a library: it runs its main()
+// unconditionally with no `require.main` guard, so importing it would
+// trigger a scrub. Re-spelling '.substitutions.json' / '.har-substitutions.json'
+// here would be a second copy of the one this file and sanitize-har.js
+// share -- see subs-destination.js for the fuller picture of where else in
+// this tree the two names are still spelled out literally.
+const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
 
 const CAPTURES_DIR = '.har-captures';
 const SESSION_FILE = 'session.json';
@@ -51,6 +60,9 @@ const RAW_MITM = 'raw.mitm';
 const SCRUBBED_HAR = 'scrubbed.har';
 const DIGEST_FILE = 'digest.json';
 const CATALOGUE_FILE = 'catalogue.json';
+// The two substitution-table names, imported rather than re-spelled -- see
+// the `subsDestination` require above.
+const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 // Same stem `capture-har.js` quarantines onto. Matched as a PREFIX because a
 // second rejection is given a distinguishing suffix rather than overwriting the
 // first -- nothing under .har-captures/ is replaced.
@@ -131,6 +143,20 @@ function hasRejectedScrub(dir) {
 }
 
 /**
+ * Does a substitution table already sit beside this capture's raw?
+ *
+ * The only fact from #387's list this walk did not already compute. Existence
+ * ONLY -- these tables are keyed by the plaintext values a scrub replaced, so
+ * `.har-substitutions.json` in particular is a reverse lookup of live
+ * credentials. Reporting THAT one exists is as far as this goes: never which
+ * of the two, never a path handed to a caller that might print it into a
+ * shared summary without thinking, and never, ever the contents.
+ */
+function hasSubstitutionTable(dir) {
+    return exists(path.join(dir, LEGACY_SUBS_FILENAME)) || exists(path.join(dir, PII_SUBS_FILENAME));
+}
+
+/**
  * What one directory IS, or null if it is not a capture at all.
  *
  * The `session.json` test comes first and decides everything: with it, the
@@ -162,7 +188,8 @@ function describeCaptureDir(dir) {
             scrubbed: exists(path.join(dir, SCRUBBED_HAR)),
             rejected: hasRejectedScrub(dir),
             digest: exists(path.join(dir, DIGEST_FILE)),
-            catalogue: exists(path.join(dir, CATALOGUE_FILE))
+            catalogue: exists(path.join(dir, CATALOGUE_FILE)),
+            substitutions: hasSubstitutionTable(dir)
         };
     }
 
@@ -183,7 +210,19 @@ function describeCaptureDir(dir) {
         scrubbed: false,
         rejected: false,
         digest: false,
-        catalogue: false
+        catalogue: false,
+        // Unlike the fields above, this one is NOT hard-coded false. Every
+        // other field here describes PROCESSING this walk knows this recorder
+        // never did to a directory it does not own the provenance of, so
+        // "false" is the honest answer regardless of what is on disk. A
+        // substitution table is different: its existence is a fact about the
+        // DIRECTORY, not about who produced the capture in it, and these
+        // tables hold live credentials in the clear. An operator who ran
+        // sanitize-har.js by hand against an orphan raw.har leaves exactly
+        // this shape -- foreign, but with a table sitting right there -- and
+        // a blanket false would tell them it is not, which is the one wrong
+        // answer this field exists to prevent.
+        substitutions: hasSubstitutionTable(dir)
     };
 }
 
@@ -290,7 +329,9 @@ module.exports = {
     CAPTURES_DIR,
     SCRUBBED_HAR,
     CATALOGUE_FILE,
-    REJECTED_PREFIX
+    REJECTED_PREFIX,
+    LEGACY_SUBS_FILENAME,
+    PII_SUBS_FILENAME
 };
 
 // A JSON printer, and deliberately nothing more.
@@ -300,7 +341,11 @@ module.exports = {
 // takes a path and prints the classified inventory; it has no options, no
 // filters and no verbs, because every one of those would be a decision made
 // twice. It is plumbing between two halves of one feature, not an operator
-// surface -- the read-only store REPORT an operator runs is #387.
+// surface. #387 asked for a read-only store REPORT on top of this; that
+// report was deliberately never built -- an agent reads this JSON directly,
+// and a formatted report with no caller was not worth a new command-line
+// surface. #387's scope narrowed to the one field this walk was still
+// missing (substitutions, above) instead.
 if (require.main === module) {
     const target = process.argv[2];
     if (!target) {

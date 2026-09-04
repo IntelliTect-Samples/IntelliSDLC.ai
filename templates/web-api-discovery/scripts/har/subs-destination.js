@@ -38,6 +38,22 @@ const NOT_IGNORED = 'not-ignored';
 const OUTSIDE_WORK_TREE = 'outside-work-tree';
 const UNVERIFIABLE = 'unverifiable';
 
+// THE canonical substitution-table filenames, as `sanitize-har.js` and
+// `capture-store.js` share them. This module is where BOTH can safely
+// `require()` them from: `sanitize-har.js` runs its `main()`
+// unconditionally at the bottom of the file with no `require.main` guard, so
+// it cannot itself be required as a library without executing a scrub, and
+// this module has neither problem -- it only exports pure functions and
+// constants. A few older call sites elsewhere in this tree
+// (codegen/generate-wrapper.js, codegen/run-agent.js,
+// har/audit-scrub-drift.js, har/verify-har-reference.js) still spell these
+// two names as literals; this is not a claim that every one of them was
+// hunted down, only that the files this issue touches -- the one that WRITES
+// the tables and the one that now reports their existence -- share a single
+// definition instead of growing a second one between them.
+const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
+const PII_SUBS_FILENAME = '.substitutions.json';
+
 /**
  * The nearest ancestor of `p` that exists on disk.
  *
@@ -214,4 +230,6 @@ module.exports = {
     NOT_IGNORED,
     OUTSIDE_WORK_TREE,
     UNVERIFIABLE,
+    LEGACY_SUBS_FILENAME,
+    PII_SUBS_FILENAME,
 };

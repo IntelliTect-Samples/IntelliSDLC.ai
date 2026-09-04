@@ -622,11 +622,14 @@ function outputDestinationWarning(paths) {
 // committed artifacts of this whole pipeline, and a blanket rule would make a
 // NEW reference silently un-committable until somebody remembered `git add -f`.
 // By name and by suffix is what the shipped .gitignore already does.
+// The two substitution-table names come from subsDestination (already
+// required above for the gitignore CHECK), not retyped here -- #387 made this
+// the one other spot in this file that named them literally.
 const CAPTURE_GITIGNORE_ENTRIES = [
     '.har-captures/',
     '.har-profile.json',
-    '.har-substitutions.json',
-    '.substitutions.json'
+    subsDestination.LEGACY_SUBS_FILENAME,
+    subsDestination.PII_SUBS_FILENAME
 ];
 
 // The block says what it is FOR, and names only what it writes. The scaffolder's
