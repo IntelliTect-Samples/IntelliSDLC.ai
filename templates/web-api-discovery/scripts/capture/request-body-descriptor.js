@@ -292,6 +292,22 @@ function attachDescriptors(harEntries, logEntries) {
     for (const entry of harEntries || []) {
         if (!entry || !entry.request) continue;
         if (entry.request[DESCRIPTOR_KEY]) continue;
+        // A TARGET THAT ALREADY CARRIES THE BODY IS NEVER ANNOTATED.
+        //
+        // The two recorders read the request through genuinely different code
+        // paths -- Playwright's own HAR writer inside the driver, and this
+        // process's `request.postDataBuffer()` -- which is the entire reason
+        // this merge exists. They can therefore disagree, and the disagreement
+        // that matters is the one where the driver DID keep the body and our
+        // observation did not: attaching `bodyRetained: false` beside a
+        // populated `postData` would write a self-contradicting entry, which is
+        // the very class of false statement this descriptor exists to remove,
+        // arriving from the opposite direction.
+        //
+        // "Both recorders saw the same request" is an observation about the
+        // measured failure mode, not an invariant. It is enforced here rather
+        // than argued in a comment.
+        if (entry.request.postData) continue;
         const queue = queues.get(keyForEntry(entry));
         if (!queue || !queue.length) continue;
         entry.request[DESCRIPTOR_KEY] = queue.shift();
