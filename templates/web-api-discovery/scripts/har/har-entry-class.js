@@ -42,10 +42,18 @@ const CATEGORY_LABEL = {
 // whole safety property: a new resource type cannot silently start being
 // dropped.
 //
-// It decides everything EXCEPT an entry carrying a request body, which outranks
-// it (#435). The label describes what the browser thought it was fetching; a
-// request body is evidence of what was actually sent, and the label can be
-// `image` for a POST that uploaded one.
+// It decides everything EXCEPT an entry carrying a request body under a label
+// that describes THE RESPONSE, which such a body outranks (#435). See
+// `classifyEntry` for the scope: `ping` is exempt, because it describes how the
+// request was sent rather than what came back.
+//
+// NOTE FOR WHOEVER ADDS THE NEXT RESOURCE TYPE. The exemption is keyed on the
+// category being `telemetry`, which is correct today only because every
+// asset-tagged type here happens to be response-inferred and the single
+// telemetry-tagged type happens to be send-mechanism-inferred. That alignment
+// is not enforced. If you add a type whose label describes the REQUEST but
+// which is not telemetry -- or a telemetry type inferred from the response --
+// the key stops matching the reasoning, and the reasoning is what matters.
 const RESOURCE_TYPE_CATEGORY = {
     xhr: ['api', 'xhr'],
     fetch: ['api', 'fetch'],
