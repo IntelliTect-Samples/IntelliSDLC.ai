@@ -38,17 +38,19 @@
 const fs = require('fs');
 const path = require('path');
 
-// ONE definition of "is this a body", shared with the gate that wrote it.
+// ONE definition of "is this a body", shared with the gate that needs it too.
 //
-// verify-har-reference.js gate 7 recognises a request body by WIRE GRAMMAR --
-// composite JSON, form-urlencoded, multipart, NDJSON, XML -- rather than by a
-// list of known placeholders, because the sentinel that prompted it was
-// emitted by no tool in this pipeline and the next one will be spelled
-// differently. That reasoning is documented at length beside the gate, and it
-// stays there: this module imports the predicate rather than forming a second
-// opinion about what a body is. Two implementations that agree today are the
-// standard way a guard and the thing it guards drift apart.
-const { bodyCarriesPayloadStructure } = require(path.join(__dirname, 'verify-har-reference.js'));
+// Recognised by WIRE GRAMMAR -- composite JSON, form-urlencoded, multipart,
+// NDJSON, XML -- rather than by a list of known placeholders, because the
+// sentinel that prompted the rule was emitted by no tool in this pipeline and
+// the next one will be spelled differently.
+//
+// This used to import the predicate from verify-har-reference.js, a CLI, which
+// is a dependency pointing the wrong way and forced that script to grow a
+// `require.main` guard so importing it would not run the whole gate. It now
+// comes from a module both callers import (#429). Two implementations that
+// agree today are the standard way a guard and the thing it guards drift apart.
+const { bodyCarriesPayloadStructure } = require(path.join(__dirname, 'har-body-grammar.js'));
 
 const CATALOGUE_FILE = 'catalogue.json';
 const README_FILE = 'README.md';
