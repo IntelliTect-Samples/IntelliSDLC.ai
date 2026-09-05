@@ -69,6 +69,33 @@ Describe 'the classifier is shared, not duplicated' {
     }
 }
 
+Describe 'the body-grammar predicate is shared, not imported from a CLI (#429)' {
+    It 'har-catalogue.js takes it from har-body-grammar.js, not from verify-har-reference.js' {
+        # A library importing a predicate from a command-line tool is a
+        # dependency pointing the wrong way, and it forced verify-har-reference.js
+        # to grow a require.main guard so that importing it would not run the
+        # whole gate and exit the process.
+        $text = Get-Content -LiteralPath (Join-Path $script:HarDir 'har-catalogue.js') -Raw
+        $text | Should -Match 'har-body-grammar'
+        $text | Should -Not -Match "require\(.*verify-har-reference" `
+            -Because 'a library must not import from a CLI'
+    }
+
+    It 'the gate takes it from the same module rather than defining its own' {
+        $text = Get-Content -LiteralPath (Join-Path $script:HarDir 'verify-har-reference.js') -Raw
+        $text | Should -Match 'har-body-grammar'
+        $text | Should -Not -Match "function bodyCarriesPayloadStructure" `
+            -Because 'the gate and the catalogue must not hold two opinions about what a body is'
+    }
+
+    It 'ships har/har-body-grammar.js, and it parses' {
+        $script = Join-Path $script:HarDir 'har-body-grammar.js'
+        Test-Path -LiteralPath $script | Should -BeTrue
+        & node --check $script 2>&1 | Out-Null
+        $LASTEXITCODE | Should -Be 0
+    }
+}
+
 Describe 'SKILL.md documents what the tooling enforces' {
     It 'names <Needle>' -ForEach @(
         @{ Needle = 'trim-har-capture.js' }
