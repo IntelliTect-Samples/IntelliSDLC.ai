@@ -116,15 +116,33 @@ function classifyEntry(entry) {
     // whether to KEEP something; a placeholder body still means the request
     // sent something, and erring toward keeping is free where erring toward
     // dropping is not.
+    const resourceType = entry && typeof entry._resourceType === 'string'
+        ? entry._resourceType.toLowerCase() : null;
+    const labelled = resourceType ? RESOURCE_TYPE_CATEGORY[resourceType] : null;
+
+    // SCOPED, not absolute: a body outranks a label that describes THE
+    // RESPONSE, and does not outrank one that describes HOW THE REQUEST WAS
+    // SENT.
+    //
+    // `image`, `font`, `stylesheet`, `media`, `script` all say what came back,
+    // and the browser can be wrong about a POST that merely answered with one.
+    // `ping` says the request went out through `navigator.sendBeacon` or
+    // `<a ping>` -- telemetry by construction, and not wrong in that way.
+    //
+    // The distinction earns its keep. sendBeacon exists to ship a payload, so
+    // most real beacons CARRY a body; an unscoped rule would keep every one of
+    // them, and beacon volume is much of why a capture reaches gigabytes. It
+    // would have quietly gutted the command that exists to shrink them.
+    const labelIsAboutTheResponse = !labelled || labelled[0] !== 'telemetry';
+
     const request = (entry && entry.request) || {};
     const postData = request.postData;
-    if (postData && (typeof postData.text === 'string' && postData.text.length > 0
-        || Array.isArray(postData.params) && postData.params.length > 0)) {
+    if (labelIsAboutTheResponse && postData
+        && (typeof postData.text === 'string' && postData.text.length > 0
+            || Array.isArray(postData.params) && postData.params.length > 0)) {
         return { category: 'api', kind: 'request bodies', basis: 'requestBody' };
     }
 
-    const resourceType = entry && typeof entry._resourceType === 'string'
-        ? entry._resourceType.toLowerCase() : null;
     if (resourceType) {
         const known = RESOURCE_TYPE_CATEGORY[resourceType];
         if (known) return { category: known[0], kind: known[1], basis: 'resourceType' };

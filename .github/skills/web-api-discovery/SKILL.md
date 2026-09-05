@@ -1434,8 +1434,8 @@ identification as an asset or a beacon drops an entry. Anything else -- includin
 a resource type it has never heard of -- is kept as `unclassified`. A wrongly
 dropped entry is invisible; a wrongly kept one is merely noise.
 
-**A request body outranks every other signal, including the recorder's own
-label.** That precedence was not there originally, and its absence was a real
+**A request body outranks a label that describes the RESPONSE, and does not
+outrank one that describes how the request was SENT.** That precedence was not there originally, and its absence was a real
 defect: the body test sat below the `_resourceType` branch, where it was
 unreachable for any capture Playwright had labelled. A `POST` carrying a form
 body, recorded as `image` because that is what it answered with, was classified
@@ -1443,6 +1443,17 @@ as a static asset and dropped. The reasoning for the fix was already written one
 branch further along and simply was not applied -- a multipart upload answering
 `image/jpeg` is the single most interesting entry in a capture, and a request
 body is the half of an entry that cannot be reconstructed from anything else.
+
+The rule is **scoped**, and the scope is the point. `image`, `font`,
+`stylesheet`, `media` and `script` all say what came *back*, and the browser can
+be wrong about a `POST` that merely answered with one. `ping` says the request
+went out through `navigator.sendBeacon` or `<a ping>` -- telemetry by
+construction, and not wrong in that way.
+
+Unscoped, the rule would have been a regression. `sendBeacon` exists to ship a
+payload, so most real beacons **carry a body**; keeping every one of them would
+have quietly gutted the command that exists to shrink beacon-heavy captures.
+A beacon with a body is still dropped, and that case is pinned by a test.
 
 #### 5. The two defects that motivated the tooling
 
