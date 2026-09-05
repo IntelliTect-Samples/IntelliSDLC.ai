@@ -1380,6 +1380,70 @@ Three further answers the design had to give:
 > check regenerates everything rather than only what appears to have changed --
 > "appears to have changed" being another proxy for the thing being measured.
 
+#### 4c. Trimming a capture: smaller, and still raw
+
+A capture store is gigabytes of fonts, images and beacons wrapped around a few
+hundred kilobytes of the calls anyone cares about. One real Facebook session ran
+to 1.6 GB.
+
+Until this existed, the only way to make a capture smaller was to extract a
+reference -- which also **scrubs** it. That is a one-way door: a scrubbed
+artifact cannot be re-scrubbed with a corrected profile, and the raw is the only
+thing that can be reprocessed when the tooling improves. So the operator's real
+choice was "keep gigabytes" or "lose the ability to reprocess", and everyone
+kept the gigabytes.
+
+```
+node trim-har-capture.js --in <raw.har> --out <trimmed.har>
+```
+
+**`trim-har-capture.js`** drops the cruft and leaves the capture **raw**. The
+output is still unscrubbed, still carries live credentials, still belongs under
+`.har-captures/`, and is still something every later stage consumes as though it
+were the original recording -- scrub, catalogue and `api.json` all run on it
+unchanged. That is the point.
+
+What it refuses to do is the important half:
+
+- **It never writes to the input.** Not with a flag, not with a force. This is a
+  lossy, irreversible operation against the only ground truth that exists about
+  someone else's API, applied to recordings that cannot be repeated. Removing
+  the original is a separate act, by a person who has looked at what came out.
+  Input and output are compared by resolved real path, so two spellings of one
+  file cannot slip through.
+- **It never overwrites an existing output.**
+- **It never writes an empty capture.** Every entry classifying as cruft means
+  the capture or the classifier is wrong, and a zero-entry HAR passes every
+  downstream gate while proving nothing.
+
+**Trim raws, never references.** A committed reference's `EntryCount` and
+`Endpoints` are facts the catalogue declares and `verify-har-catalogue.js`
+recomputes from the file. Trimming a reference would make its row false and fail
+that guard -- correct behaviour, and a confusing way to find out.
+
+##### One classifier, two commands
+
+The decision of what counts as an asset or a beacon lives in
+**`har-entry-class.js`**, shared by `trim-har-capture.js` and
+`extract-har-reference.js`. It began inside the extractor when that was the only
+caller; it moved out when a second appeared, because two implementations that
+agree today are how a filter and the thing it feeds drift into disagreeing.
+
+Its safety property is in the **default**, not the cleverness: only a positive
+identification as an asset or a beacon drops an entry. Anything else -- including
+a resource type it has never heard of -- is kept as `unclassified`. A wrongly
+dropped entry is invisible; a wrongly kept one is merely noise.
+
+**A request body outranks every other signal, including the recorder's own
+label.** That precedence was not there originally, and its absence was a real
+defect: the body test sat below the `_resourceType` branch, where it was
+unreachable for any capture Playwright had labelled. A `POST` carrying a form
+body, recorded as `image` because that is what it answered with, was classified
+as a static asset and dropped. The reasoning for the fix was already written one
+branch further along and simply was not applied -- a multipart upload answering
+`image/jpeg` is the single most interesting entry in a capture, and a request
+body is the half of an entry that cannot be reconstructed from anything else.
+
 #### 5. The two defects that motivated the tooling
 
 Both are the kind of thing that passes review:

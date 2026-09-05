@@ -204,8 +204,16 @@ section('3', () => {
     // WHICH SIGNAL decided. Without it an operator cannot tell a capture that
     // was classified by the recorder's own labels from one that fell through
     // to the weaker content-type path.
-    assert.ok(/^ {2}basis .*resourceType 12/m.test(r.stdout),
-        '3.h: the report does not say every entry was classified by _resourceType:\n' + r.stdout);
+    // 11, not 12: a request body OUTRANKS the recorder's own label, so the one
+    // entry carrying one is attributed to `requestBody` instead. That
+    // precedence is deliberate (#435) -- a POST recorded as `image` because
+    // that is what it answered with would otherwise be classified as a static
+    // asset and dropped, taking with it the half of the entry that cannot be
+    // reconstructed from anything else.
+    assert.ok(/^ {2}basis .*resourceType 11/m.test(r.stdout),
+        '3.h: the labelled entries are not attributed to _resourceType:\n' + r.stdout);
+    assert.ok(/^ {2}basis .*requestBody 1/m.test(r.stdout),
+        '3.h2: the entry carrying a request body is not attributed to it:\n' + r.stdout);
 });
 
 // --- 4. The report never echoes a captured value. --------------------------
