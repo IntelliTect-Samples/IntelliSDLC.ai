@@ -164,12 +164,68 @@ test('an entry carrying a request body is NEVER dropped, whatever it claims to b
 });
 
 test('kept + dropped equals scanned, and the run says so', () => {
-    const src = writeCapture('counts', [apiEntry(), imageEntry(), beaconEntry()]);
+    // Asserted against the ARITHMETIC THE TOOL REPORTS, not against a digit
+    // appearing somewhere in its output. An earlier version matched /3/, which
+    // that output satisfies three times over -- including in a line driven
+    // straight off `entries.length` rather than by the classifier at all -- so
+    // it could not fail on the property its name promises.
+    const src = writeCapture('counts', [apiEntry(), imageEntry(), beaconEntry(), apiEntry()]);
     const out = path.join(path.dirname(src), 'trimmed.har');
     const r = run(['--in', src, '--out', out]);
 
-    assert.match(r.stdout, /3/, `the scanned total is not reported:\n${r.stdout}`);
-    assert.strictEqual(readEntries(out).length + 2, 3);
+    const m = /entries scanned = (\d+) kept \+ (\d+) dropped/.exec(r.stdout);
+    assert.ok(m, `the run does not report the kept/dropped split:\n${r.stdout}`);
+    const kept = Number(m[1]);
+    const dropped = Number(m[2]);
+
+    assert.strictEqual(kept + dropped, 4, 'the reported split does not account for every entry');
+    assert.strictEqual(kept, readEntries(out).length,
+        'the reported kept count disagrees with what was actually written');
+    assert.strictEqual(dropped, 2);
+});
+
+test('a beacon carrying a body is still dropped', () => {
+    // THE LIMIT OF "a request body outranks the label", and why that rule is
+    // scoped rather than absolute.
+    //
+    // `navigator.sendBeacon` exists to ship a payload, so most real beacons
+    // CARRY a body. An unscoped rule would keep all of them -- and beacon
+    // volume is a large part of why a capture reaches 1.6 GB, so it would
+    // quietly gut the one thing this command is for.
+    //
+    // The distinction is what the label describes. `image` describes what came
+    // BACK, and the browser can be wrong about a POST that merely answered with
+    // one. `ping` describes how the request was SENT: telemetry by
+    // construction, and not wrong in that way.
+    const beaconWithBody = entry({
+        _resourceType: 'ping',
+        request: {
+            method: 'POST', url: 'https://example.invalid/beacon',
+            postData: { mimeType: 'application/json', text: '{"event":"scroll","ms":1200}' },
+        },
+    });
+
+    const src = writeCapture('beacon-body', [apiEntry(), beaconWithBody]);
+    const out = path.join(path.dirname(src), 'trimmed.har');
+    assert.strictEqual(run(['--in', src, '--out', out]).code, 0);
+
+    const kept = readEntries(out);
+    assert.strictEqual(kept.length, 1, 'a beacon carrying a body was kept');
+    assert.ok(kept[0].request.url.includes('/v1/posts'));
+});
+
+test('a missing output directory is reported, not thrown', () => {
+    // The rule here is "the message, never the stack". extract-har-reference.js
+    // creates the parent for exactly this reason; this command dropped that
+    // step and leaked an ENOENT trace under an exit code that collides with
+    // unrelated failures.
+    const src = writeCapture('nodir', [apiEntry(), imageEntry()]);
+    const out = path.join(path.dirname(src), 'does', 'not', 'exist', 'trimmed.har');
+
+    const r = run(['--in', src, '--out', out]);
+    assert.ok(!/ at .*\.js:\d+/.test(r.stderr), `a stack trace reached the operator:\n${r.stderr}`);
+    if (r.code === 0) assert.ok(fs.existsSync(out), 'reported success without writing');
+    else assert.match(r.stderr, /trim-har-capture:/);
 });
 
 test('the trimmed capture is still a HAR, with the log envelope intact', () => {

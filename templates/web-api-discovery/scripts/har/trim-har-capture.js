@@ -95,10 +95,21 @@ function fail(message, code) {
 /**
  * Same file, whatever the caller spelled?
  *
- * Compared by resolved real path, not by string. `./raw.har` and an absolute
- * path to the same file are the same file, and on a case-insensitive filesystem
- * so are two different spellings of its name. A string comparison would let the
- * one thing this command must never do through on a technicality.
+ * Resolved real paths where both exist, so `./raw.har`, an absolute path, a
+ * symlink and a junction to one file all compare equal.
+ *
+ * BE HONEST ABOUT WHEN THIS ACTUALLY FIRES. In the normal invocation the output
+ * does NOT exist yet -- that is the whole point -- so `realpathSync` throws
+ * ENOENT on it and this degrades to a plain `path.resolve` comparison that
+ * resolves no links on either side. The protection in that case comes from the
+ * separate "output already exists" refusal, not from here: any alias of the
+ * input necessarily exists on disk, so that check catches it.
+ *
+ * This is therefore the second of two guards, not the first, and it earns its
+ * place only for the case where the caller names an existing output that is an
+ * alias of the input. Documented rather than removed, because a comment
+ * crediting the wrong mechanism is how the next person deletes the check that
+ * is really doing the work.
  */
 function samePath(a, b) {
     try {
@@ -162,7 +173,27 @@ function main() {
         log: Object.assign({}, doc.log, { entries: kept }),
     });
 
-    fs.writeFileSync(args.out, JSON.stringify(trimmed, null, 2), 'utf8');
+    // The parent may not exist. extract-har-reference.js creates it for the
+    // same reason: without this the write throws a bare ENOENT and the operator
+    // gets a Node stack trace under an exit code that means something else.
+    fs.mkdirSync(path.dirname(path.resolve(args.out)), { recursive: true });
+
+    // 'wx' -- fail if it exists, rather than truncate. The existence check above
+    // happens before the input is read, parsed and classified, which on the
+    // multi-gigabyte captures this command targets is a real wall-clock window.
+    // Without the flag, anything that appeared in that window would be silently
+    // overwritten, and the promise never to clobber an output would hold only
+    // when nothing raced it.
+    try {
+        fs.writeFileSync(args.out, JSON.stringify(trimmed, null, 2), { encoding: 'utf8', flag: 'wx' });
+    } catch (e) {
+        if (e.code === 'EEXIST') {
+            fail(`${args.out} appeared while this capture was being read. Refusing to
+`
+                + '  replace it. Nothing was written.', EXIT_REFUSED);
+        }
+        fail(`cannot write ${args.out}: ${e.message}`, EXIT_UNREADABLE);
+    }
 
     const before = fs.statSync(args.in).size;
     const after = fs.statSync(args.out).size;
