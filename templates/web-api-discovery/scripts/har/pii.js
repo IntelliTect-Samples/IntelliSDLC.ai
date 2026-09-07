@@ -29,7 +29,9 @@
  * Substitutions returned by scrubPii contain only { type, originalHash,
  * replacement, locations }. The originalHash is the first 8 hex chars of
  * the SHA-256 -- never the plaintext original -- so the resulting
- * .substitutions.json file is safe to commit.
+ * substitution table is safe to commit. (The table filenames themselves are
+ * spelled once, in subs-destination.js, and are deliberately not restated
+ * here -- see the single-definition check in sanitize-har-importable.test.js.)
  */
 
 'use strict';
