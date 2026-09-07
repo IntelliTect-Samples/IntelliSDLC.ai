@@ -87,14 +87,19 @@ function parseArgs(argv) {
 // output path -- the directory the operator has been told holds scrubbed,
 // verified artifacts and which is tracked by git (issue #294).
 //
-// The filenames themselves live in subs-destination.js, not here -- that
-// module is the one place both this script (which writes the tables) and
-// capture-store.js (which, for #387, only needs to ask whether one exists)
-// can safely `require()`. This file cannot be required as a library itself:
-// its `main()` runs unconditionally at the bottom with no `require.main`
-// guard, so requiring it would run a scrub. Keeping the names in the
-// dependency-free module both sides already share is what keeps this a single
-// definition instead of two that can drift.
+// The filenames themselves live in subs-destination.js, not here. That module
+// is dependency-free and every consumer of the names already needs it, so it
+// is the natural home for them: this script writes the tables, capture-store.js
+// asks whether one exists (#387), the scaffolded .gitignore lists them
+// (codegen/generate-wrapper.js), run-agent.js names them for a nested scrub,
+// and two gates recognise them by name (audit-scrub-drift.js,
+// verify-har-reference.js). All six now read ONE definition (#446).
+//
+// This file is required-able as of #446 -- `main()` runs behind a
+// `require.main === module` guard at the bottom -- so the names could live
+// here now. They stay where they are: the consumers above have no other reason
+// to load the scrubber, and pulling a 770-line CLI in to read a string is how
+// the copies get made again.
 const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 const CAPTURES_DIR = '.har-captures';
 
@@ -766,5 +771,35 @@ function main() {
     process.exit(0);
 }
 
-main();
+// Only run as a command when invoked as one (issue #446).
+//
+// Without this guard `main()` ran on import, so `require('./sanitize-har.js')`
+// -- even to read one constant -- performed a live scrub, wrote substitution
+// tables and called `process.exit()` in the requiring process. Nothing could
+// reuse anything this file defines, so callers copied instead: the two
+// substitution-table filenames alone reached seven spellings across the tree.
+// An unimportable module cannot be the single definition of anything.
+//
+// The guard is packaging only. `node sanitize-har.js --in ...` takes exactly
+// the path it always did -- `require.main === module` is true for the entry
+// script -- so argument parsing, scrubbing, the files written and the exit
+// code are unchanged.
+if (require.main === module) main();
 
+// The reusable surface. `main` is here so the CLI path is a callable rather
+// than a side effect of loading the file; the rest are the pure pieces other
+// modules and tests would otherwise have to re-derive. `PATTERNS` in
+// particular is what lets a test compare the scrubber's shape rules against
+// the gate's as OBJECTS -- har-pwd-envelope-scrub.test.js currently
+// regex-matches this file's source text, which is the same defect wearing a
+// different hat (issue #395).
+module.exports = {
+    main,
+    parseArgs,
+    deriveOutPath,
+    deriveSubsDir,
+    fakeFor,
+    PATTERNS,
+    CAPTURES_DIR,
+    PWD_ENVELOPE_FAKE_PREFIX,
+};

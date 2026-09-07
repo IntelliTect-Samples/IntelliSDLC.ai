@@ -33,6 +33,11 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const sdlc = require('./sdlc-integration.js');
 const harProfile = require('../har/har-profile.js');
+// The canonical substitution-table filenames, imported rather than re-spelled
+// (issue #446). A local copy here would silently stop matching the tables the
+// scrub actually writes, and these two paths are what the run then cleans up
+// and what the gitignore entries below protect.
+const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = require('../har/subs-destination.js');
 
 function parseArgs(argv) {
     const out = {};
@@ -121,8 +126,8 @@ function main() {
     // recorder state rather than something the operator has to remember about.
     const subsDir     = path.join(work, '.har-captures');
     fs.mkdirSync(subsDir, { recursive: true });
-    const legacySubs  = path.join(subsDir, '.har-substitutions.json');
-    const piiSubs     = path.join(subsDir, '.substitutions.json');
+    const legacySubs  = path.join(subsDir, LEGACY_SUBS_FILENAME);
+    const piiSubs     = path.join(subsDir, PII_SUBS_FILENAME);
     const authJson    = path.join(work, 'auth.json');
     // Transcript captures stage outcomes for post-hoc inspection and tests.
     // Truncated on each run; contents are intentionally timestamp-free to

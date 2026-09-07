@@ -78,6 +78,10 @@ const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+// The canonical substitution-table filenames, imported rather than re-spelled
+// (issue #446). This gate refuses a reference tree containing one, so a name
+// spelled differently here than by the scrub is a table waved through.
+const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 
 // Matches extract-har-reference.js: references live beside the capture output,
 // not under a second 'docs/har-reference' nested inside it.
@@ -111,7 +115,10 @@ const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
 // this project's primary platform -- is case-preserving but case-insensitive.
 // An exact-case lookup would wave `.Substitutions.json` through while git, on
 // the same filesystem, still treats it as the ignored file.
-const FORBIDDEN_FILENAMES = new Set(['.substitutions.json', '.har-substitutions.json']);
+const FORBIDDEN_FILENAMES = new Set([
+    subsDestination.PII_SUBS_FILENAME,
+    subsDestination.LEGACY_SUBS_FILENAME,
+].map((n) => n.toLowerCase()));
 const isForbiddenFilename = (name) => FORBIDDEN_FILENAMES.has(name.toLowerCase());
 
 function listForbiddenFiles(dir) {

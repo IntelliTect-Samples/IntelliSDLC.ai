@@ -33,6 +33,9 @@ const { emitSolution } = require('./sln-emit.js');
 const { emitSecretGate, secretGateReadmeSection } = require('./secret-gate-emit.js');
 const { sdlcIntegrationReadmeSection } = require('./sdlc-integration.js');
 const { detectAntiBotCookies } = require('../har/detect-auth.js');
+// The canonical substitution-table filenames, imported rather than re-spelled
+// (issue #446). subs-destination.js is dependency-free and safe to require.
+const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = require('../har/subs-destination.js');
 
 // -------------------- CLI --------------------
 
@@ -67,6 +70,9 @@ function fail(msg) { console.error('generate-wrapper: ' + msg); process.exit(1);
 //                            refuses to run without it.
 // - .har-substitutions.json  the legacy substitution map, keyed by
 //                            `<kind>:<original>` -- the KEYS are the secrets.
+//                            Spelled by subs-destination.js, not here: an
+//                            entry that names a file the scrub no longer
+//                            writes protects nothing (issue #446).
 // - .substitutions.json      the typed-PII table, keyed the same way. Both
 //                            default beside the raw capture in the gitignored
 //                            captures tree now (issue #294), but an operator
@@ -84,8 +90,8 @@ const SCAFFOLD_GITIGNORE_ENTRIES = [
     'Samples/HAR-Original/',
     'Samples/MobileApp-Binaries/',
     '.har-profile.json',
-    '.har-substitutions.json',
-    '.substitutions.json',
+    LEGACY_SUBS_FILENAME,
+    PII_SUBS_FILENAME,
     '.har-captures/',
 ];
 
