@@ -38,19 +38,31 @@ const NOT_IGNORED = 'not-ignored';
 const OUTSIDE_WORK_TREE = 'outside-work-tree';
 const UNVERIFIABLE = 'unverifiable';
 
-// THE canonical substitution-table filenames, as `sanitize-har.js` and
-// `capture-store.js` share them. This module is where BOTH can safely
-// `require()` them from: `sanitize-har.js` runs its `main()`
-// unconditionally at the bottom of the file with no `require.main` guard, so
-// it cannot itself be required as a library without executing a scrub, and
-// this module has neither problem -- it only exports pure functions and
-// constants. A few older call sites elsewhere in this tree
-// (codegen/generate-wrapper.js, codegen/run-agent.js,
-// har/audit-scrub-drift.js, har/verify-har-reference.js) still spell these
-// two names as literals; this is not a claim that every one of them was
-// hunted down, only that the files this issue touches -- the one that WRITES
-// the tables and the one that now reports their existence -- share a single
-// definition instead of growing a second one between them.
+// THE canonical substitution-table filenames. Every module in this tree that
+// needs them reads them from here, and as of #446 that is all of them:
+//
+//   * har/sanitize-har.js          writes the tables
+//   * capture/capture-store.js     reports that one exists (#387)
+//   * codegen/generate-wrapper.js  puts them in a scaffolded .gitignore
+//   * codegen/run-agent.js         names them for a nested scrub
+//   * har/audit-scrub-drift.js     recovers originals from them
+//   * har/verify-har-reference.js  refuses a reference tree containing one
+//
+// This module is where all six can safely `require()` them: it has no
+// side effects, only pure functions and constants. That property is the whole
+// point. #387 had to MOVE the names here because `sanitize-har.js` -- their
+// original home -- ran its `main()` unconditionally at the bottom of the file
+// and so could not be imported at all, and the four call sites in the list
+// above were literals precisely because nothing could import their owner.
+// #446 put a `require.main === module` guard on that file, which is what made
+// consolidating the rest possible; the names stay here rather than move back,
+// because a consumer that only wants a string should not have to load a
+// 770-line CLI to get it.
+//
+// Anything that spells one of these two names as a literal from now on is a
+// second definition, with one deliberate exception: a TEST may restate a
+// literal as an independent pin. A test that imports the constant it is
+// checking asserts only that a string equals itself.
 const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
 const PII_SUBS_FILENAME = '.substitutions.json';
 

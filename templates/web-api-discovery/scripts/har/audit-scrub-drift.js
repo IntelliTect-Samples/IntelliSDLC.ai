@@ -137,6 +137,11 @@ const path = require('path');
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const pii = require(path.join(__dirname, 'pii.js'));
+// The canonical substitution-table filenames, imported rather than re-spelled
+// (issue #446): this audit recovers originals FROM those tables, so a name it
+// spells differently than the scrub is an audit that reports ignorance it does
+// not have.
+const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 // Imported, never re-spelled -- see the note on the same import in pii.js.
 const { DESCRIPTOR_KEY: BODY_DESCRIPTOR_KEY } =
     require(path.join(__dirname, '..', 'capture', 'request-body-descriptor.js'));
@@ -150,7 +155,10 @@ const RAW_FILENAME = 'raw.har';
 // Both spellings the scrub has used. A table under the legacy name is still a
 // table, and treating it as absent would report ignorance the store does not
 // actually have.
-const TABLE_FILENAMES = ['.substitutions.json', '.har-substitutions.json'];
+const TABLE_FILENAMES = [
+    subsDestination.PII_SUBS_FILENAME,
+    subsDestination.LEGACY_SUBS_FILENAME,
+];
 
 // The one type this audit adjudicates. The drift #334 describes is specific to
 // the card predicate; widening to every PII type would mean claiming a tightened

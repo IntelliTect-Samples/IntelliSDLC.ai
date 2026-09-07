@@ -43,14 +43,12 @@
 
 const fs = require('fs');
 const path = require('path');
-// The substitution-table filenames come from subs-destination.js, which
-// this file and sanitize-har.js (the writer of the tables) now share.
-// sanitize-har.js itself cannot be required as a library: it runs its main()
-// unconditionally with no `require.main` guard, so importing it would
-// trigger a scrub. Re-spelling '.substitutions.json' / '.har-substitutions.json'
-// here would be a second copy of the one this file and sanitize-har.js
-// share -- see subs-destination.js for the fuller picture of where else in
-// this tree the two names are still spelled out literally.
+// The substitution-table filenames come from subs-destination.js, the one
+// place every module that needs them reads them from -- this file, the
+// scrubber that writes the tables, the scaffolded .gitignore that protects
+// them, and the two gates that recognise them by name (issue #446).
+// Re-spelling '.substitutions.json' / '.har-substitutions.json' here would be
+// a second copy of a definition that now has exactly one.
 const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
 
 const CAPTURES_DIR = '.har-captures';
