@@ -228,115 +228,125 @@ function scrubArtifacts(dir) {
 // 4. The two substitution-table filenames have exactly ONE definition.
 // ---------------------------------------------------------------------------
 //
-// This is what the guard was for. A comment naming `.substitutions.json` while
-// explaining why it is not spelled there is documentation, not a second
-// definition, and a check that cannot tell those apart pushes authors toward
-// deleting the explanation. But telling them apart is a JS-tokenizing problem,
-// and the first version of this check tried to do it by hand -- with a comment
-// stripper that read the two adjacent slashes inside a regex like
-// `/http:\/\//` as the start of a line comment and silently discarded the rest
-// of the line. A guard whose own parser can drop a real second copy without
-// saying so is worse than no guard, which is exactly the class of defect this
-// suite exists to catch. (Found by independent review; pinned as 4.d below.)
+// THE INVARIANT: a production script that spells either filename must also
+// import the shared constant from subs-destination.js. Nothing else is asked,
+// and in particular nothing here decides whether an occurrence is "in a
+// comment".
 //
-// So the rule is now line-oriented and DELIBERATELY CONSERVATIVE. An
-// occurrence is exempt only when its line is plainly a comment line -- trimmed,
-// it begins with `//`, `*` or `/*`. Everything else is reported, including a
-// trailing comment on a line that also carries code.
+// Why not, given that deciding it is the obvious thing to want: three
+// successive attempts were made, and each was falsified by independent review
+// in the SILENT direction.
 //
-// That over-reports: `const x = PII_SUBS_FILENAME; // was '.substitutions.json'`
-// is flagged even though it defines nothing. That is the direction to be wrong
-// in. Over-reporting fails loudly on the pull request and is fixed by moving
-// the note to its own line; under-reporting ships a second copy of a filename
-// that decides whether live credentials stay out of version control. The check
-// can only be satisfied by not spelling the name in code, which is the claim
-// being made.
+//   1. A comment stripper read the two adjacent slashes in a pattern like
+//      /http:\/\// as the start of a line comment and discarded the rest of
+//      the line.
+//   2. Exempting any line trimming to `//`, `*` or `/*` also exempted
+//      `/** @type {string} */ const w = '<name>';` -- an ordinary annotated
+//      declaration, which an autoformatter can produce -- and leading-operator
+//      continuations like `  * lookupTable[name]`.
+//   3. Tightening that to "a `*` line carrying no ; = ( ) { } [ ] is prose"
+//      still exempted `  * '<name>'`: a bare quoted operand on a continuation
+//      line is real code with none of that punctuation on it.
 //
-// Test files are excluded in the opposite spirit: a test that imports the
+// Each fix was right about the case it was shown and revealed the next one.
+// That is the signature of a predicate of the wrong shape: deciding whether an
+// arbitrary byte range is commented out is lexing JavaScript, and a regex over
+// lines is not a lexer. A guard that can silently miss the thing it guards is
+// worse than no guard, because it reads as coverage.
+//
+// This invariant cannot be defeated by comment syntax, because it never looks
+// at comment syntax. It asks two questions of raw text -- does this file
+// contain the name, and does it require the module that owns the name -- and
+// neither can be made to answer "no" by how the surrounding code is written.
+//
+// THE TRADE, deliberate and pinned by 4.c: it OVER-reports. A file mentioning a
+// filename only in prose, with no import, fails. That is loud, visible on the
+// pull request, and silenced in one line -- add the import, or reword the
+// comment. har/pii.js was reworded rather than made to import a module it has
+// no use for. Wrong in the loud direction is the only acceptable direction for
+// a name that decides whether live credentials stay out of version control.
+//
+// WHAT IT DOES NOT CATCH, stated plainly: a file that legitimately imports the
+// constant AND also hardcodes a literal. That is covered at the value level
+// instead -- section 5 and ablation C pin that each consumer's observable value
+// follows the constant when it changes. codegen/run-agent.js is the one
+// consumer section 5 cannot reach, because it still runs its own main() on
+// import; that is issue #456.
+//
+// Test files are excluded, in the opposite spirit: a test that imports the
 // constant it is checking asserts that a string equals itself, so restating a
 // literal there is an independent pin and is wanted.
 
-// Is this occurrence of a literal on a line that is nothing but comment?
-//
-// Independent review falsified the first, looser version of this predicate,
-// which exempted any line whose trimmed text began with `//`, `*` or `/*`.
-// That is true of plenty of real code, and two of the three shapes it wrongly
-// exempted are ordinary JS rather than contrivances -- see 4.d2 and 4.d3.
-function isPlainCommentLine(line) {
-    const t = line.trim();
+// A require() of the module that owns the names. Matched as a require CALL
+// rather than a bare mention of the module, so a comment saying "see
+// subs-destination.js" above a hardcoded literal does not satisfy it.
+const OWNER_REQUIRE = /require\([^;\n]*?subs-destination\.js/;
 
-    // A line comment consumes the rest of its line by definition, so nothing
-    // executable can follow the literal on it.
-    if (t.startsWith('//')) return true;
-
-    // A one-line block comment is exempt only when the line IS the comment.
-    // `/** @type {string} */ const w = <name>;` is how an annotated
-    // declaration is routinely written -- by an autoformatter, even -- and the
-    // definition on it is real. Requiring the line to END at the comment close
-    // is what tells the two apart.
-    if (t.startsWith('/*')) return t.endsWith('*/') && t.indexOf('*/') === t.length - 2;
-
-    // A JSDoc continuation line carries prose. Code that happens to begin with
-    // `*` -- a leading-operator continuation like `  * lookupTable[name]` --
-    // carries punctuation that prose does not.
-    if (t.startsWith('*')) return !/[;=(){}\[\]]/.test(t);
-
-    return false;
-}
-
-// Every line of `src` that spells `literal` in something other than a plain
-// comment line. Operates on RAW text, so no occurrence can be lost to a parser.
-function offendingLines(src, literal) {
-    return src.split('\n')
-        .map((line, i) => ({ line, n: i + 1 }))
-        .filter((e) => e.line.includes(literal) && !isPlainCommentLine(e.line))
-        .map((e) => e.n);
+function violatesSingleDefinition(src, literals) {
+    const spelled = literals.filter((l) => src.includes(l));
+    if (spelled.length === 0) return null;
+    if (OWNER_REQUIRE.test(src)) return null;
+    return spelled;
 }
 
 {
-    // Self-tests first, both directions. A scan whose own rule is wrong reports
-    // confident nonsense, and which way it is wrong decides whether the failure
-    // is loud or silent.
+    // Self-tests, both directions, driven by synthetic sources so they pin the
+    // rule itself rather than whatever the tree happens to contain today.
     const LIT = '.substitutions.json';
+    const LITS = ['.har-substitutions.json', LIT];
+    const IMPORT = "const sd = require(path.join(__dirname, 'subs-destination.js'));\n";
+
+    assert.deepStrictEqual(violatesSingleDefinition("const x = '" + LIT + "';", LITS), [LIT],
+        '4.a: a hardcoded filename in a file that does not import the constant is not ' +
+        'reported. The check is inert.');
+
+    assert.strictEqual(
+        violatesSingleDefinition(IMPORT + 'const x = sd.PII_SUBS_FILENAME;', LITS), null,
+        '4.b: a file that imports the constant and spells no literal is reported, so the ' +
+        'check would fail every consolidated consumer.');
+
+    // The deliberate over-report. If this ever stops reporting, the rule has
+    // started reasoning about comments again -- which is exactly what the three
+    // previous versions got wrong, every time in the silent direction.
+    assert.deepStrictEqual(violatesSingleDefinition('// prose about ' + LIT + '\n', LITS), [LIT],
+        '4.c: a prose-only mention with no import is NOT reported. Over-reporting here is ' +
+        'the trade that buys immunity to comment syntax; losing it means the rule is ' +
+        'guessing at comments again.');
+
+    assert.strictEqual(
+        violatesSingleDefinition(IMPORT + '// prose about ' + LIT + '\n', LITS), null,
+        '4.d: a file that imports the constant may not also explain the name in prose. ' +
+        'That makes the rule unusable for the modules that legitimately document these ' +
+        'filenames.');
+
+    assert.deepStrictEqual(
+        violatesSingleDefinition("// see subs-destination.js\nconst x = '" + LIT + "';", LITS),
+        [LIT],
+        '4.e: a comment naming subs-destination.js satisfies the import check, so a ' +
+        'hardcoded literal can be waved through by a see-also.');
+
+    // The shapes independent review used to falsify the three previous
+    // comment-based predicates. Under this invariant every one is reported, and
+    // none of them depends on parsing anything.
     const BS = String.fromCharCode(92);
-
-    assert.deepStrictEqual(offendingLines("// mentions " + LIT + " in prose", LIT), [],
-        '4.a: a whole-line // comment is reported, so the check cannot coexist with ' +
-        'the explanation of why the name is not spelled there.');
-    assert.deepStrictEqual(offendingLines(" * mentions " + LIT + " in a JSDoc block", LIT), [],
-        '4.b: a JSDoc continuation line is reported.');
-    assert.deepStrictEqual(offendingLines("const x = '" + LIT + "';", LIT), [1],
-        '4.c: a plain second definition is NOT reported. The check is inert.');
-
-    // The exact reproduction that defeated the previous hand-rolled stripper:
-    // the two escaped slashes in the regex put a literal `//` in the raw text,
-    // which a naive scanner treats as a line comment and throws the rest away.
-    const regexLine = 'const re = /http:' + BS + '/' + BS + '//; const y = ' +
-        "'" + LIT + "';";
-    assert.deepStrictEqual(offendingLines(regexLine, LIT), [1],
-        '4.d: a second definition sharing a line with a slash-escaping regex is not ' +
-        'reported. This is the false negative the line-oriented rule replaced a ' +
-        'comment stripper to close -- do not reintroduce a stripper here.');
-
-    // Independent review's attack on the line-oriented rule. Two of its three
-    // shapes were REAL under-reports -- a definition silently unseen -- and are
-    // pinned here as reported. The third is pinned below as a KNOWN LIMIT.
-    assert.deepStrictEqual(
-        offendingLines("/** @type {string} */ const w = '" + LIT + "';", LIT), [1],
-        '4.d2: a definition on the same line as a one-line block comment is not ' +
-        'reported. `/** @type {string} */ const w = ...` is how an annotated ' +
-        'declaration is routinely written, so this is the shape most likely to ' +
-        'arrive by accident -- an autoformatter can produce it.');
-    assert.deepStrictEqual(
-        offendingLines("const z = a\n  * lookupTable['" + LIT + "'];", LIT), [2],
-        '4.d3: a leading-operator continuation line is treated as a comment. ' +
-        'Starting a wrapped expression with its operator is ordinary formatting, ' +
-        'not a comment.');
-    // Documented over-reporting, pinned so it is a decision rather than a surprise.
-    assert.deepStrictEqual(offendingLines("const x = A; // was '" + LIT + "'", LIT), [1],
-        '4.e: a trailing comment naming the literal is NOT reported. The rule is ' +
-        'meant to over-report here; if that changed, check it did not also start ' +
-        'under-reporting.');
+    const shapes = {
+        'regex with escaped slashes':
+            'const re = /http:' + BS + '/' + BS + "//; const y = '" + LIT + "';",
+        'annotated one-line block comment':
+            "/** @type {string} */ const w = '" + LIT + "';",
+        'leading-operator continuation with brackets':
+            "const z = a\n  * lookupTable['" + LIT + "'];",
+        'bare quoted operand on a continuation line':
+            "const v = base\n  * '" + LIT + "'\n  * m;",
+        'prose-shaped line inside a template literal':
+            'const doc = `\n* see ' + LIT + ' for the table name\n`;',
+    };
+    for (const [name, src] of Object.entries(shapes)) {
+        assert.deepStrictEqual(violatesSingleDefinition(src, LITS), [LIT],
+            `4.f: the shape "${name}" is not reported. Every predicate that reasoned about ` +
+            'comments missed at least one of these silently; this one is supposed to catch ' +
+            'them all by not reasoning about comments at all.');
+    }
 }
 
 {
@@ -357,35 +367,31 @@ function offendingLines(src, literal) {
 
     const scanned = walkJs(scriptsDir, []);
     assert.ok(scanned.length > 10,
-        `4.f: only ${scanned.length} production scripts were scanned, so this section is ` +
+        `4.g: only ${scanned.length} production scripts were scanned, so this section is ` +
         'green because it looked almost nowhere.');
 
     const offenders = [];
     for (const file of scanned) {
         if (path.resolve(file) === path.resolve(owner)) continue;
-        const src = fs.readFileSync(file, 'utf8');
-        for (const lit of literals) {
-            for (const n of offendingLines(src, lit)) {
-                offenders.push(path.relative(scriptsDir, file) + ':' + n + ' -> ' + lit);
-            }
-        }
+        const spelled = violatesSingleDefinition(fs.readFileSync(file, 'utf8'), literals);
+        if (spelled) offenders.push(path.relative(scriptsDir, file) + ' -> ' + spelled.join(', '));
     }
 
     assert.deepStrictEqual(offenders, [],
-        '4.g: a substitution-table filename is spelled outside subs-destination.js. ' +
-        'These two names are what the scrub writes, what the scaffolded .gitignore ' +
-        'protects, and what two gates recognise; a copy that drifts is a table nothing ' +
-        'keeps out of version control. Import LEGACY_SUBS_FILENAME / PII_SUBS_FILENAME ' +
-        'from har/subs-destination.js instead. If the line is only a comment, put it on ' +
-        'a line of its own. Offenders: ' + offenders.join(', '));
+        '4.h: a substitution-table filename is spelled in a script that does not import it ' +
+        'from har/subs-destination.js. These two names are what the scrub writes, what the ' +
+        'scaffolded .gitignore protects, and what two gates recognise; a copy that drifts ' +
+        'is a table nothing keeps out of version control. Import LEGACY_SUBS_FILENAME / ' +
+        'PII_SUBS_FILENAME and use them -- or, if the mention is only prose, reword it so ' +
+        'the name is not restated. Offenders: ' + offenders.join(', '));
 
-    // The scan is only meaningful if it can see the owner's own definition;
+    // The check is only meaningful if the owner still spells the names;
     // otherwise a rename would make it vacuously green.
     const ownerSrc = fs.readFileSync(owner, 'utf8');
     for (const lit of literals) {
-        assert.ok(offendingLines(ownerSrc, lit).length > 0,
-            `4.h: ${lit} is not defined in executable text in subs-destination.js, so ` +
-            'section 4 is passing because the definition moved, not because there is one.');
+        assert.ok(ownerSrc.includes(lit),
+            `4.i: ${lit} is not spelled in subs-destination.js, so section 4 is passing ` +
+            'because the definition moved, not because there is one.');
     }
 }
 
@@ -424,41 +430,5 @@ function offendingLines(src, literal) {
         '5.e: requiring verify-har-reference.js ran work.');
 }
 
-
-// ---------------------------------------------------------------------------
-// KNOWN LIMIT -- one under-reporting shape survives, and is PERMITTED.
-// ---------------------------------------------------------------------------
-//
-// Section 4 exempts a `*`-leading line that carries no code punctuation,
-// because that is what a JSDoc continuation line looks like and the tree has
-// real ones (har/pii.js explains these very filenames that way). A line INSIDE
-// a template literal is raw string data, not a comment, but if its content
-// happens to lead with `*` and read like prose it is exempted too.
-//
-// This is asserted rather than aspirational: it pins what the check does today
-// so the limit lives in the suite instead of only in a paragraph, following
-// node-test-coverage.Tests.ps1, which documents its own file-scoped-association
-// limit the same way.
-//
-// Closing it means tokenizing JS properly -- tracking block comments, all three
-// quote forms, `${}` nesting, and regex-literal context via the was-the-previous-
-// token-a-value heuristic real lexers use to tell `/` division from `/` regex.
-// The first version of this check tried to hand-roll a fraction of that and
-// shipped a false negative (4.d). More parser is not obviously the answer here.
-//
-// Why the residual is narrow enough to accept: the miss requires a second copy
-// of a filename to sit inside a template literal, on a line leading with `*`,
-// containing none of `; = ( ) { } [ ]`. A template that EMITS one of these names
-// -- the shape that would actually matter, a generated .gitignore -- does not
-// look like that, and section 5 plus ablation C independently pin that every
-// consumer's value tracks the constant.
-{
-    const LIT = '.substitutions.json';
-    const inTemplate = 'const doc = `\n* see ' + LIT + ' for the table name\n`;';
-    assert.deepStrictEqual(offendingLines(inTemplate, LIT), [],
-        'PERMITTED: a prose-shaped template-literal line leading with `*` is exempt. ' +
-        'If this now reports, the limit was closed -- delete this block rather ' +
-        'than loosening the rule to keep it passing.');
-}
 
 console.log('All sanitize-har-importable tests passed');
