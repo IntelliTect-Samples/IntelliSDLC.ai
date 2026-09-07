@@ -228,52 +228,82 @@ function scrubArtifacts(dir) {
 // 4. The two substitution-table filenames have exactly ONE definition.
 // ---------------------------------------------------------------------------
 //
-// This is what the guard was for. The names are compared against EXECUTABLE
-// text only: a comment naming `.substitutions.json` while explaining why it is
-// not spelled there is documentation, not a second definition, and a check that
-// cannot tell those apart pushes authors toward deleting the explanation.
+// This is what the guard was for. A comment naming `.substitutions.json` while
+// explaining why it is not spelled there is documentation, not a second
+// definition, and a check that cannot tell those apart pushes authors toward
+// deleting the explanation. But telling them apart is a JS-tokenizing problem,
+// and the first version of this check tried to do it by hand -- with a comment
+// stripper that read the two adjacent slashes inside a regex like
+// `/http:\/\//` as the start of a line comment and silently discarded the rest
+// of the line. A guard whose own parser can drop a real second copy without
+// saying so is worse than no guard, which is exactly the class of defect this
+// suite exists to catch. (Found by independent review; pinned as 4.d below.)
 //
-// Test files are excluded deliberately and in the opposite spirit: a test that
-// imports the constant it is checking asserts that a string equals itself, so
-// restating a literal there is an independent pin and is wanted.
+// So the rule is now line-oriented and DELIBERATELY CONSERVATIVE. An
+// occurrence is exempt only when its line is plainly a comment line -- trimmed,
+// it begins with `//`, `*` or `/*`. Everything else is reported, including a
+// trailing comment on a line that also carries code.
+//
+// That over-reports: `const x = PII_SUBS_FILENAME; // was '.substitutions.json'`
+// is flagged even though it defines nothing. That is the direction to be wrong
+// in. Over-reporting fails loudly on the pull request and is fixed by moving
+// the note to its own line; under-reporting ships a second copy of a filename
+// that decides whether live credentials stay out of version control. The check
+// can only be satisfied by not spelling the name in code, which is the claim
+// being made.
+//
+// Test files are excluded in the opposite spirit: a test that imports the
+// constant it is checking asserts that a string equals itself, so restating a
+// literal there is an independent pin and is wanted.
 
-function stripJsCommentsAndTemplates(src) {
-    const BACKSLASH = String.fromCharCode(92);
-    let out = '';
-    let i = 0;
-    let quote = null;
-    while (i < src.length) {
-        const two = src.substr(i, 2);
-        if (quote === null && two === '//') {
-            const nl = src.indexOf('\n', i);
-            i = nl < 0 ? src.length : nl;
-            continue;
-        }
-        if (quote === null && two === '/*') {
-            const end = src.indexOf('*/', i + 2);
-            i = end < 0 ? src.length : end + 2;
-            continue;
-        }
-        const c = src[i];
-        if (quote !== null && c === BACKSLASH) { out += src.substr(i, 2); i += 2; continue; }
-        if (quote === null && (c === "'" || c === '"' || c === '`')) { quote = c; }
-        else if (quote !== null && c === quote) { quote = null; }
-        out += c;
-        i += 1;
-    }
-    return out;
+// Is this occurrence of a literal on a line that is nothing but comment?
+function isPlainCommentLine(line) {
+    const t = line.trim();
+    return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
+}
+
+// Every line of `src` that spells `literal` in something other than a plain
+// comment line. Operates on RAW text, so no occurrence can be lost to a parser.
+function offendingLines(src, literal) {
+    return src.split('\n')
+        .map((line, i) => ({ line, n: i + 1 }))
+        .filter((e) => e.line.includes(literal) && !isPlainCommentLine(e.line))
+        .map((e) => e.n);
 }
 
 {
-    // Self-test of the stripper first. A scan whose own comment handling is
-    // wrong reports confident nonsense in whichever direction it is wrong.
-    const probe = "const a = 'keep-me'; // drop-me\n/* drop-me-too */ const b = 'keep-two';";
-    const stripped = stripJsCommentsAndTemplates(probe);
-    assert.ok(stripped.includes('keep-me') && stripped.includes('keep-two'),
-        '4.a: the comment stripper removed executable text, so this scan under-reports.');
-    assert.ok(!stripped.includes('drop-me'),
-        '4.b: the comment stripper left comment text behind, so this scan over-reports.');
+    // Self-tests first, both directions. A scan whose own rule is wrong reports
+    // confident nonsense, and which way it is wrong decides whether the failure
+    // is loud or silent.
+    const LIT = '.substitutions.json';
+    const BS = String.fromCharCode(92);
 
+    assert.deepStrictEqual(offendingLines("// mentions " + LIT + " in prose", LIT), [],
+        '4.a: a whole-line // comment is reported, so the check cannot coexist with ' +
+        'the explanation of why the name is not spelled there.');
+    assert.deepStrictEqual(offendingLines(" * mentions " + LIT + " in a JSDoc block", LIT), [],
+        '4.b: a JSDoc continuation line is reported.');
+    assert.deepStrictEqual(offendingLines("const x = '" + LIT + "';", LIT), [1],
+        '4.c: a plain second definition is NOT reported. The check is inert.');
+
+    // The exact reproduction that defeated the previous hand-rolled stripper:
+    // the two escaped slashes in the regex put a literal `//` in the raw text,
+    // which a naive scanner treats as a line comment and throws the rest away.
+    const regexLine = 'const re = /http:' + BS + '/' + BS + '//; const y = ' +
+        "'" + LIT + "';";
+    assert.deepStrictEqual(offendingLines(regexLine, LIT), [1],
+        '4.d: a second definition sharing a line with a slash-escaping regex is not ' +
+        'reported. This is the false negative the line-oriented rule replaced a ' +
+        'comment stripper to close -- do not reintroduce a stripper here.');
+
+    // Documented over-reporting, pinned so it is a decision rather than a surprise.
+    assert.deepStrictEqual(offendingLines("const x = A; // was '" + LIT + "'", LIT), [1],
+        '4.e: a trailing comment naming the literal is NOT reported. The rule is ' +
+        'meant to over-report here; if that changed, check it did not also start ' +
+        'under-reporting.');
+}
+
+{
     const literals = [subsDestination.LEGACY_SUBS_FILENAME, subsDestination.PII_SUBS_FILENAME];
     const owner = path.join(__dirname, 'subs-destination.js');
 
@@ -289,30 +319,37 @@ function stripJsCommentsAndTemplates(src) {
         return found;
     }
 
+    const scanned = walkJs(scriptsDir, []);
+    assert.ok(scanned.length > 10,
+        `4.f: only ${scanned.length} production scripts were scanned, so this section is ` +
+        'green because it looked almost nowhere.');
+
     const offenders = [];
-    for (const file of walkJs(scriptsDir, [])) {
+    for (const file of scanned) {
         if (path.resolve(file) === path.resolve(owner)) continue;
-        const code = stripJsCommentsAndTemplates(fs.readFileSync(file, 'utf8'));
+        const src = fs.readFileSync(file, 'utf8');
         for (const lit of literals) {
-            if (code.includes(lit)) offenders.push(path.relative(scriptsDir, file) + ' -> ' + lit);
+            for (const n of offendingLines(src, lit)) {
+                offenders.push(path.relative(scriptsDir, file) + ':' + n + ' -> ' + lit);
+            }
         }
     }
 
     assert.deepStrictEqual(offenders, [],
-        '4.c: a substitution-table filename is spelled as a literal outside ' +
-        'subs-destination.js. These two names are what the scrub writes, what the ' +
-        "scaffolded .gitignore protects, and what two gates recognise; a copy that " +
-        'drifts is a table nothing keeps out of version control. Import ' +
-        'LEGACY_SUBS_FILENAME / PII_SUBS_FILENAME from har/subs-destination.js ' +
-        'instead. Offenders: ' + offenders.join(', '));
+        '4.g: a substitution-table filename is spelled outside subs-destination.js. ' +
+        'These two names are what the scrub writes, what the scaffolded .gitignore ' +
+        'protects, and what two gates recognise; a copy that drifts is a table nothing ' +
+        'keeps out of version control. Import LEGACY_SUBS_FILENAME / PII_SUBS_FILENAME ' +
+        'from har/subs-destination.js instead. If the line is only a comment, put it on ' +
+        'a line of its own. Offenders: ' + offenders.join(', '));
 
     // The scan is only meaningful if it can see the owner's own definition;
     // otherwise a rename would make it vacuously green.
-    const ownerCode = stripJsCommentsAndTemplates(fs.readFileSync(owner, 'utf8'));
+    const ownerSrc = fs.readFileSync(owner, 'utf8');
     for (const lit of literals) {
-        assert.ok(ownerCode.includes(lit),
-            `4.d: ${lit} is not defined in subs-destination.js, so section 4 is passing ` +
-            'because the definition moved, not because there is one.');
+        assert.ok(offendingLines(ownerSrc, lit).length > 0,
+            `4.h: ${lit} is not defined in executable text in subs-destination.js, so ` +
+            'section 4 is passing because the definition moved, not because there is one.');
     }
 }
 
