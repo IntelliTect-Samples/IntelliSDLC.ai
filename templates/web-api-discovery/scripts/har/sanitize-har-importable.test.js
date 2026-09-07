@@ -257,9 +257,31 @@ function scrubArtifacts(dir) {
 // literal there is an independent pin and is wanted.
 
 // Is this occurrence of a literal on a line that is nothing but comment?
+//
+// Independent review falsified the first, looser version of this predicate,
+// which exempted any line whose trimmed text began with `//`, `*` or `/*`.
+// That is true of plenty of real code, and two of the three shapes it wrongly
+// exempted are ordinary JS rather than contrivances -- see 4.d2 and 4.d3.
 function isPlainCommentLine(line) {
     const t = line.trim();
-    return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*');
+
+    // A line comment consumes the rest of its line by definition, so nothing
+    // executable can follow the literal on it.
+    if (t.startsWith('//')) return true;
+
+    // A one-line block comment is exempt only when the line IS the comment.
+    // `/** @type {string} */ const w = <name>;` is how an annotated
+    // declaration is routinely written -- by an autoformatter, even -- and the
+    // definition on it is real. Requiring the line to END at the comment close
+    // is what tells the two apart.
+    if (t.startsWith('/*')) return t.endsWith('*/') && t.indexOf('*/') === t.length - 2;
+
+    // A JSDoc continuation line carries prose. Code that happens to begin with
+    // `*` -- a leading-operator continuation like `  * lookupTable[name]` --
+    // carries punctuation that prose does not.
+    if (t.startsWith('*')) return !/[;=(){}\[\]]/.test(t);
+
+    return false;
 }
 
 // Every line of `src` that spells `literal` in something other than a plain
@@ -296,6 +318,20 @@ function offendingLines(src, literal) {
         'reported. This is the false negative the line-oriented rule replaced a ' +
         'comment stripper to close -- do not reintroduce a stripper here.');
 
+    // Independent review's attack on the line-oriented rule. Two of its three
+    // shapes were REAL under-reports -- a definition silently unseen -- and are
+    // pinned here as reported. The third is pinned below as a KNOWN LIMIT.
+    assert.deepStrictEqual(
+        offendingLines("/** @type {string} */ const w = '" + LIT + "';", LIT), [1],
+        '4.d2: a definition on the same line as a one-line block comment is not ' +
+        'reported. `/** @type {string} */ const w = ...` is how an annotated ' +
+        'declaration is routinely written, so this is the shape most likely to ' +
+        'arrive by accident -- an autoformatter can produce it.');
+    assert.deepStrictEqual(
+        offendingLines("const z = a\n  * lookupTable['" + LIT + "'];", LIT), [2],
+        '4.d3: a leading-operator continuation line is treated as a comment. ' +
+        'Starting a wrapped expression with its operator is ordinary formatting, ' +
+        'not a comment.');
     // Documented over-reporting, pinned so it is a decision rather than a surprise.
     assert.deepStrictEqual(offendingLines("const x = A; // was '" + LIT + "'", LIT), [1],
         '4.e: a trailing comment naming the literal is NOT reported. The rule is ' +
@@ -386,6 +422,43 @@ function offendingLines(src, literal) {
         '5.d: requiring audit-scrub-drift.js ran work.');
     assert.doesNotThrow(() => require(path.join(__dirname, 'verify-har-reference.js')),
         '5.e: requiring verify-har-reference.js ran work.');
+}
+
+
+// ---------------------------------------------------------------------------
+// KNOWN LIMIT -- one under-reporting shape survives, and is PERMITTED.
+// ---------------------------------------------------------------------------
+//
+// Section 4 exempts a `*`-leading line that carries no code punctuation,
+// because that is what a JSDoc continuation line looks like and the tree has
+// real ones (har/pii.js explains these very filenames that way). A line INSIDE
+// a template literal is raw string data, not a comment, but if its content
+// happens to lead with `*` and read like prose it is exempted too.
+//
+// This is asserted rather than aspirational: it pins what the check does today
+// so the limit lives in the suite instead of only in a paragraph, following
+// node-test-coverage.Tests.ps1, which documents its own file-scoped-association
+// limit the same way.
+//
+// Closing it means tokenizing JS properly -- tracking block comments, all three
+// quote forms, `${}` nesting, and regex-literal context via the was-the-previous-
+// token-a-value heuristic real lexers use to tell `/` division from `/` regex.
+// The first version of this check tried to hand-roll a fraction of that and
+// shipped a false negative (4.d). More parser is not obviously the answer here.
+//
+// Why the residual is narrow enough to accept: the miss requires a second copy
+// of a filename to sit inside a template literal, on a line leading with `*`,
+// containing none of `; = ( ) { } [ ]`. A template that EMITS one of these names
+// -- the shape that would actually matter, a generated .gitignore -- does not
+// look like that, and section 5 plus ablation C independently pin that every
+// consumer's value tracks the constant.
+{
+    const LIT = '.substitutions.json';
+    const inTemplate = 'const doc = `\n* see ' + LIT + ' for the table name\n`;';
+    assert.deepStrictEqual(offendingLines(inTemplate, LIT), [],
+        'PERMITTED: a prose-shaped template-literal line leading with `*` is exempt. ' +
+        'If this now reports, the limit was closed -- delete this block rather ' +
+        'than loosening the rule to keep it passing.');
 }
 
 console.log('All sanitize-har-importable tests passed');
