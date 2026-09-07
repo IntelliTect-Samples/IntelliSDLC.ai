@@ -115,6 +115,9 @@ const SKIP_DIRS = new Set(['.har-captures', 'node_modules', '.git']);
 // this project's primary platform -- is case-preserving but case-insensitive.
 // An exact-case lookup would wave `.Substitutions.json` through while git, on
 // the same filesystem, still treats it as the ignored file.
+// Lower-cased on the way in rather than assumed: both constants are lowercase
+// today, so the map is a no-op, and it is there so that the day one of them is
+// not, this Set does not quietly stop matching what readdirSync reports.
 const FORBIDDEN_FILENAMES = new Set([
     subsDestination.PII_SUBS_FILENAME,
     subsDestination.LEGACY_SUBS_FILENAME,
