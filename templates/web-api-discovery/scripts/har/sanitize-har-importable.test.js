@@ -266,8 +266,10 @@ function scrubArtifacts(dir) {
 // no use for. Wrong in the loud direction is the only acceptable direction for
 // a name that decides whether live credentials stay out of version control.
 //
-// WHAT IT DOES NOT CATCH, stated plainly: a file that legitimately imports the
-// constant AND also hardcodes a literal. That is covered at the value level
+// WHAT IT DOES NOT CATCH, stated plainly: a file that imports the constant AND
+// also hardcodes a literal. The import does not have to be USED for this -- its
+// presence as a real declaration is what silences the per-file check, so an
+// unused leftover import counts too. That is covered at the value level
 // instead -- section 5 and ablation C pin that each consumer's observable value
 // follows the constant when it changes. codegen/run-agent.js is the one
 // consumer section 5 cannot reach, because it still runs its own main() on
@@ -277,10 +279,30 @@ function scrubArtifacts(dir) {
 // constant it is checking asserts that a string equals itself, so restating a
 // literal there is an independent pin and is wanted.
 
-// A require() of the module that owns the names. Matched as a require CALL
-// rather than a bare mention of the module, so a comment saying "see
-// subs-destination.js" above a hardcoded literal does not satisfy it.
-const OWNER_REQUIRE = /require\([^;\n]*?subs-destination\.js/;
+// A require() of the module that owns the names, anchored to a DECLARATION at
+// the start of a line.
+//
+// The looser first version searched raw text for `require(...subs-destination.js`
+// anywhere, and independent review defeated it with one commented-out line:
+//
+//     // TODO: wire this up -- require('./subs-destination.js')
+//     const LEGACY_SUBS_FILENAME = '.har-substitutions.json';
+//
+// which silenced the check for a hardcoded copy sitting directly beneath it.
+// That is the same "a comment defeats the guard" failure this whole section was
+// redesigned to rule out -- it had merely moved from the literal side to the
+// require side.
+//
+// Anchoring is safe HERE in a way that reasoning about comments was not safe on
+// the literal side, and the asymmetry is the point. Being too strict about what
+// counts as an import can only make a compliant file fail -- loud, visible, one
+// line to fix. Being too lax about what counts as a definition lets a second
+// copy ship silently. The two halves of this check have opposite failure modes,
+// so they get opposite treatment: the literal side never interprets syntax, and
+// the require side interprets only enough to demand the shape of a real
+// declaration.
+const OWNER_REQUIRE =
+    /^\s*(?:const|let|var)\s+[^=\n]+=\s*require\([^;\n]*?subs-destination\.js/m;
 
 function violatesSingleDefinition(src, literals) {
     const spelled = literals.filter((l) => src.includes(l));
@@ -325,6 +347,28 @@ function violatesSingleDefinition(src, literals) {
         '4.e: a comment naming subs-destination.js satisfies the import check, so a ' +
         'hardcoded literal can be waved through by a see-also.');
 
+    // The require side, both directions. A commented-out require must NOT count,
+    // and every spelling of the import actually used in this tree MUST count --
+    // over-tightening here fails compliant files, which is loud but still wrong.
+    assert.deepStrictEqual(
+        violatesSingleDefinition(
+            "// TODO: wire this up -- require('./subs-destination.js')\n" +
+            "const L = '" + LIT + "';", LITS),
+        [LIT],
+        '4.j: a commented-out require satisfies the import check, so one dead line ' +
+        'silences detection of every hardcoded copy in the file. This is the bypass ' +
+        'the anchored form exists to close.');
+
+    const realImportForms = [
+        "const subsDestination = require(path.join(__dirname, 'subs-destination.js'));",
+        "const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));",
+        "const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = require('../har/subs-destination.js');",
+    ];
+    for (const form of realImportForms) {
+        assert.strictEqual(
+            violatesSingleDefinition(form + "\nconst L = '" + LIT + "';", LITS), null,
+            `4.k: the real import form \`${form.slice(0, 48)}...\` is not recognised, so the check now fails files that do exactly what it asks.`);
+    }
     // The shapes independent review used to falsify the three previous
     // comment-based predicates. Under this invariant every one is reported, and
     // none of them depends on parsing anything.
@@ -358,8 +402,12 @@ function violatesSingleDefinition(src, literals) {
             if (name === 'node_modules') continue;
             const full = path.join(dir, name);
             if (fs.statSync(full).isDirectory()) { walkJs(full, found); continue; }
-            if (!name.endsWith('.js')) continue;
-            if (name.endsWith('.test.js') || name.endsWith('.test-support.js')) continue;
+            // .mjs/.cjs as well as .js: none exist in this tree today, and a
+            // scan that would silently skip one if it appeared is the wrong
+            // default for a check about copies that must not exist.
+            if (!/\.(?:js|mjs|cjs)$/.test(name)) continue;
+            if (/\.test\.(?:js|mjs|cjs)$/.test(name)) continue;
+            if (name.endsWith('.test-support.js')) continue;
             found.push(full);
         }
         return found;
