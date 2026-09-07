@@ -254,10 +254,10 @@ function scrubArtifacts(dir) {
 // lines is not a lexer. A guard that can silently miss the thing it guards is
 // worse than no guard, because it reads as coverage.
 //
-// This invariant cannot be defeated by comment syntax, because it never looks
-// at comment syntax. It asks two questions of raw text -- does this file
-// contain the name, and does it require the module that owns the name -- and
-// neither can be made to answer "no" by how the surrounding code is written.
+// It asks two questions of raw text: does this file contain the name, and does
+// it declare a require of the module that owns the name. The literal half never
+// interprets syntax at all, so no comment form, template literal, continuation
+// style or quoting can hide a name from it.
 //
 // THE TRADE, deliberate and pinned by 4.c: it OVER-reports. A file mentioning a
 // filename only in prose, with no import, fails. That is loud, visible on the
@@ -266,14 +266,50 @@ function scrubArtifacts(dir) {
 // no use for. Wrong in the loud direction is the only acceptable direction for
 // a name that decides whether live credentials stay out of version control.
 //
-// WHAT IT DOES NOT CATCH, stated plainly: a file that imports the constant AND
-// also hardcodes a literal. The import does not have to be USED for this -- its
-// presence as a real declaration is what silences the per-file check, so an
-// unused leftover import counts too. That is covered at the value level
-// instead -- section 5 and ablation C pin that each consumer's observable value
-// follows the constant when it changes. codegen/run-agent.js is the one
-// consumer section 5 cannot reach, because it still runs its own main() on
-// import; that is issue #456.
+// ------------------------------------------------------------------------
+// WHAT THIS IS, AND IS NOT, EVIDENCE OF. Read this before trusting a green run.
+// ------------------------------------------------------------------------
+//
+// WHAT IT CATCHES -- the ordinary failure, the one that actually happens: a
+// hardcoded copy of a filename in a script that does not import the constant.
+// Someone re-spelling a name because reaching for the shared one was
+// inconvenient. Every such copy is reported, wherever in the file it sits and
+// whatever surrounds it.
+//
+// WHAT IT DOES NOT CATCH. Four cases, all demonstrated by independent review
+// and reproduced here, not theorised:
+//
+//   1. A hardcoded copy in a file that also has a REAL import of the constant.
+//      The import does not have to be USED -- its presence as a declaration is
+//      what silences the per-file check, so an unused leftover counts.
+//   2. A hardcoded copy beside a declaration-shaped line inside a TEMPLATE
+//      LITERAL -- a usage example in a doc string, say. The line looks like an
+//      import to a per-line regex.
+//   3. The same, inside a multi-line `/* ... */` block whose continuation lines
+//      are not `*`-prefixed. Free-flowing prose in a block comment is ordinary,
+//      and nothing marks those lines as non-code.
+//   4. In the other, LOUD direction: a require() call wrapped across lines by a
+//      formatter is not recognised, so a compliant file is falsely flagged.
+//      Wrong, but it fails visibly rather than passing silently.
+//
+// Cases 2 and 3 are the same shape as the bypass 4.j closes, one level up: a
+// per-line regex cannot know it is inside a string or a comment. Closing them
+// needs real comment- and string-state tracking -- the parser this section was
+// redesigned to stop needing, after three attempts at one produced three silent
+// misses. Narrowing the anchor again would restart that cycle on the require
+// side, so it is deliberately not done.
+//
+// The line that makes this an acceptable trade rather than false coverage:
+// every remaining bypass needs a CONTRIVED adjacent artifact -- a fake require
+// line placed inside a template literal or a block comment, next to a real
+// hardcoded copy. Nobody writes that by accident. This check exists to make the
+// accidental case loud, not to stop someone determined to evade it, and it
+// should not be read as proof that no second copy exists.
+//
+// Case 1 has a second line of defence at the VALUE level: section 5 and
+// ablation C pin that each consumer's observable value follows the constant
+// when it changes. codegen/run-agent.js is the one consumer section 5 cannot
+// reach, because it still runs its own main() on import -- that is issue #456.
 //
 // Test files are excluded, in the opposite spirit: a test that imports the
 // constant it is checking asserts that a string equals itself, so restating a
@@ -332,7 +368,8 @@ function violatesSingleDefinition(src, literals) {
     // previous versions got wrong, every time in the silent direction.
     assert.deepStrictEqual(violatesSingleDefinition('// prose about ' + LIT + '\n', LITS), [LIT],
         '4.c: a prose-only mention with no import is NOT reported. Over-reporting here is ' +
-        'the trade that buys immunity to comment syntax; losing it means the rule is ' +
+        'the trade that keeps the LITERAL half from interpreting syntax at all; ' +
+        'losing it means the rule is ' +
         'guessing at comments again.');
 
     assert.strictEqual(
