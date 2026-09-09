@@ -154,14 +154,10 @@ function percentDecode(value) {
     }
 }
 
-/**
- * Percent-decode a parameter value and return the JSON object/array it
- * carries, or null when it carries neither.
- */
-function decodeNestedJson(value) {
-    const decoded = percentDecode(value);
-    if (decoded === null) return null;
-    const trimmed = decoded.trim();
+/** The JSON object/array `text` parses to, or null when it is not one. */
+function parseJsonObject(text) {
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
     if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
     try {
         const parsed = JSON.parse(trimmed);
@@ -169,6 +165,30 @@ function decodeNestedJson(value) {
     } catch {
         return null;
     }
+}
+
+/**
+ * Return the JSON object/array a value carries, percent-encoded or not, or
+ * null when it carries neither.
+ *
+ * PARSE FIRST, DECODE SECOND (issue #454, defect D3). This used to
+ * percent-decode unconditionally before parsing, which made a JSON document
+ * that was ALREADY decoded and contained a bare `%` -- "discount 50%off" --
+ * unreadable: `decodeURIComponent` throws on the invalid escape,
+ * `percentDecode` returns null, and the document was skipped entirely.
+ *
+ * It was skipped by BOTH engines, because the gate (`har-secrets.js`) and the
+ * scrubber (`sanitize-har.js`) both reach nested payloads through here. So a
+ * secret inside such a document survived the scrub AND the gate reported the
+ * artifact clean -- the one outcome the gate exists to prevent. Decoding is
+ * the fallback now, not the precondition.
+ */
+function decodeNestedJson(value) {
+    const direct = parseJsonObject(value);
+    if (direct !== null) return direct;
+    const decoded = percentDecode(value);
+    if (decoded === null) return null;
+    return parseJsonObject(decoded);
 }
 
 /**
