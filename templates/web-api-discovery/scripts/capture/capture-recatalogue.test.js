@@ -44,6 +44,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 const captureJs = path.join(__dirname, 'capture-har.js');
 const capture = require(captureJs);
@@ -234,6 +235,68 @@ test('`capture-har.js catalogue` is a command, not a usage error', () => {
         'the digest must be rebuilt by the command line entry point');
     assert.ok(fs.existsSync(path.join(s.outputPath, CATALOGUE_FILE)),
         'and so must the catalogue');
+});
+
+// ---------------------------------------------------------------------------
+// The placement notice belongs to the DESTINATION, not the checkout (#471)
+//
+// `catalogue` used to ask only where the operator was standing, so a default
+// run from the protected branch was told to `mv` its own output -- output that
+// sits in the gitignored captures root and was never misplaced. That is the
+// false warning this issue exists to remove, and it survived the first pass
+// because only `start` was fixed. These two cases are what stop it returning.
+// ---------------------------------------------------------------------------
+
+/** `repo()`, plus the tracked pre-commit hook that makes it DECLARE the rule. */
+function guardedRepo(name) {
+    const dir = repo(name);
+    const g = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+    fs.mkdirSync(path.join(dir, '.githooks'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.githooks', 'pre-commit'), '#!/bin/sh\nexit 0\n', 'utf8');
+    g('config', 'user.email', 't@example.com');
+    g('config', 'user.name', 'Test');
+    g('add', '-A');
+    g('commit', '-m', 'seed', '--quiet');
+    g('config', 'core.hooksPath', '.githooks');
+    // The guard discovers the protected branch from origin/HEAD and falls back
+    // to a conventional trunk name when there is no remote. Pin the branch so
+    // the fixture does not depend on the machine's init.defaultBranch.
+    g('branch', '-M', 'main');
+    return dir;
+}
+
+test('cataloguing into the gitignored captures root is not warned about (#471)', () => {
+    const dir = guardedRepo('cat-default');
+    const s = session(dir, '2026-01-01-120000');
+    // The #377 default: output IS the session directory, under `.har-captures`.
+    s.outputPath = s.sessionDir;
+    fs.writeFileSync(path.join(s.sessionDir, SESSION_FILE), JSON.stringify(s, null, 2), 'utf8');
+    inDir(dir, () => capture.postProcess(s, {}));
+    fs.rmSync(path.join(s.outputPath, CATALOGUE_FILE), { force: true });
+
+    let said = '';
+    withStderr((line) => { said += line; },
+        () => { inDir(dir, () => capture.catalogueCommand({ _: [s.outputPath] })); });
+
+    assert.doesNotMatch(said, /primary checkout/i,
+        'the captures root is gitignored by construction; there is nothing to relocate');
+    assert.doesNotMatch(said, /git worktree add/, 'and so no worktree command to give');
+});
+
+test('cataloguing into a committable destination still is (#471)', () => {
+    // The other half: narrowing the guard must not have turned it off. Same
+    // checkout, same branch -- only the destination differs.
+    const dir = guardedRepo('cat-committable');
+    const { session: s } = published(dir);
+    fs.rmSync(path.join(s.outputPath, CATALOGUE_FILE), { force: true });
+
+    let said = '';
+    withStderr((line) => { said += line; },
+        () => { inDir(dir, () => capture.catalogueCommand({ _: [s.outputPath] })); });
+
+    assert.match(said, /primary checkout/i,
+        'docs/har-reference is committable, so this run really does strand output');
+    assert.match(said, /git worktree add/, 'and the operator is given the command that fixes it');
 });
 
 // ---------------------------------------------------------------------------

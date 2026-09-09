@@ -445,13 +445,17 @@ function Pop-GuardProbeEnvironment {
     # session, which is exactly the class of bug this function guards against.
     foreach ($name in @('HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE',
             'HOMEPATH', 'GIT_CONFIG_GLOBAL')) {
-        if ($script:GuardEnvSaved.ContainsKey($name) -and $script:GuardEnvSaved[$name]) {
+        # $null means "there was none"; '' means "there was one, and it was
+        # empty". Testing truthiness would conflate them and delete a variable
+        # that existed, in the one function whose job is exact restoration.
+        if ($script:GuardEnvSaved.ContainsKey($name) -and
+            $null -ne $script:GuardEnvSaved[$name]) {
             Set-Item "Env:$name" -Value $script:GuardEnvSaved[$name]
         }
         else { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     }
     foreach ($name in $script:GuardEnvSaved.Keys) {
-        if ($name -match '^(?i)GIT_' -and $script:GuardEnvSaved[$name]) {
+        if ($name -match '^(?i)GIT_' -and $null -ne $script:GuardEnvSaved[$name]) {
             Set-Item "Env:$name" -Value $script:GuardEnvSaved[$name]
         }
     }
@@ -509,8 +513,14 @@ function Get-DestinationIgnoreStatus {
     # terminating CommandNotFoundException rather than setting $LASTEXITCODE, so
     # without the catch the unverifiable answer would be unreachable and the
     # caller would get an exception where it expected one of four strings.
+    # OUTSIDE the try, deliberately. Push throws only on re-entry, and that is a
+    # programming error which must reach the caller -- caught by the block below
+    # it would be reported as "git unavailable" and quietly downgraded to
+    # unverifiable, which is precisely the silence its own comment forbids.
+    # Push publishes its saved copy before mutating anything, so the finally
+    # still restores a push that failed part-way.
+    Push-GuardProbeEnvironment
     try {
-        Push-GuardProbeEnvironment
         $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
         if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
             return $script:GuardOutsideWorkTree
