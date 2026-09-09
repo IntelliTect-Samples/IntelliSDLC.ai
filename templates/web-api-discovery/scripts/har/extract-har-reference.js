@@ -94,6 +94,7 @@ const { spawnSync } = require('child_process');
 
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
 
 // The reference root is the CURRENT DIRECTORY. The cataloguer runs with its cwd
 // set to the capture's output path, which is already the host-named folder, so
@@ -226,6 +227,33 @@ function main() {
         // the file is opened in an editor tab, attached to an issue, pasted
         // into a diff, or downloaded.
         outPath = path.join(REFERENCE_ROOT, provider, `${provider}-${action}-${today()}.har`);
+    }
+
+    // WHERE THIS LANDS, asked before the trim rather than after it (#471).
+    //
+    // This is the step that actually produces a committed artifact: the raw and
+    // scrubbed captures live under the gitignored captures root, and a
+    // reference is the trimmed extract meant to be checked in. Run from the
+    // primary checkout on the protected branch it drops an untracked file where
+    // commits are blocked, and until #471 nothing said so -- the guard was
+    // wired only into capture, which since #377 could no longer strand
+    // anything.
+    //
+    // Advisory, never fatal, and placed ahead of the work for the reason #300
+    // gives: a guard that fires after the trim would be asking whether to
+    // discard something the operator already waited for.
+    const stranding = repoGuard.strandingPlacement(path.resolve(outPath));
+    if (stranding) {
+        // Relative to the checkout root, because that is what makes the
+        // suggested path meaningful once it is re-rooted at the worktree. An
+        // absolute --out pasted after `.worktrees/<name>/` would be nonsense.
+        const reRun = 'node ' + repoGuard.commandPath(__filename)
+            + ' --in ' + repoGuard.commandPath(path.resolve(args.in))
+            + ' --out .worktrees/<name>/'
+            + repoGuard.commandPath(path.resolve(outPath), stranding.topLevel);
+        process.stderr.write('extract-har-reference: '
+            + repoGuard.strandingNotice(stranding, outPath, reRun, 'har-reference')
+                .split('\n').join('\n  ') + '\n');
     }
 
     let har;

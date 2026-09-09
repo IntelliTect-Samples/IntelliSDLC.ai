@@ -179,6 +179,11 @@ if (-not $node) {
 
 $scriptDir = $PSScriptRoot
 $sanitizeJs = Join-Path $scriptDir 'sanitize-har.js'
+
+# The placement guard is SHARED, not reimplemented here. Bespoke per-script
+# logic about where output may land is how the defect in #300 arrived, so every
+# script that writes a committable artifact dot-sources the one implementation.
+. (Join-Path $scriptDir '..' 'lib' 'RepoWorkflowGuard.ps1')
 $verifyJs   = Join-Path $scriptDir 'verify-scrub.js'
 
 if (-not (Test-Path -LiteralPath $sanitizeJs)) {
@@ -481,6 +486,27 @@ if (-not $VerifyOnly) {
     # (issue #294). Omitting --subs lets sanitize-har.js place it in the
     # gitignored capture tree, which is the one place the decision belongs.
     $subsArgs = if ($SubstitutionsFile) { @('--subs', $SubstitutionsFile) } else { @() }
+
+    # WHERE THE SCRUBBED HAR LANDS (#471). A scrubbed capture is the artifact
+    # that is safe to commit, so -OutputHar is a committable destination by
+    # definition. Run from the primary checkout on the protected branch it
+    # leaves an untracked file where commits are blocked -- and until #471
+    # nothing said so, because the guard was wired only into capture, which
+    # since #377 could no longer strand anything.
+    #
+    # Ahead of the scrub for the reason #300 gives, and it may retarget into a
+    # worktree the operator accepts here, which is why $OutputHar is reassigned
+    # rather than merely warned about.
+    $reRun = "Invoke-SanitizeHar.ps1 -InputHar $(Get-GuardCommandPath -Target $InputHar) " +
+        "-OutputHar .worktrees/<name>/$(Get-GuardCommandPath -Target $OutputHar -From (Get-RepoTopLevel))"
+    $placement = Assert-DestinationCommittable -Destination $OutputHar `
+        -WorktreeName 'scrubbed-har' -ReRunCommand $reRun
+    if (-not $placement.Proceed) {
+        Write-Information 'Cancelled before scrubbing -- nothing was written.'
+        exit 0
+    }
+    $OutputHar = $placement.Destination
+
     if (-not $PSCmdlet.ShouldProcess($OutputHar, 'Scrub HAR -- replace detected secrets and PII')) {
         Write-ScrubPlan
         exit 0

@@ -346,3 +346,316 @@ function Get-RelocationNotice {
     $lines += '    mv ' + (($paths | ForEach-Object { """$_""" }) -join ' ') + ' .worktrees/<name>/'
     return ($lines -join [Environment]::NewLine)
 }
+
+# ---------------------------------------------------------------------------
+# THE DESTINATION QUESTION (#471)
+#
+# Everything above answers "where is the operator standing". That was the whole
+# question while capture wrote its default output into the work tree root. It
+# is not the question any more, and #471 is what happened when it kept being
+# asked: capture warned on runs that could not strand anything, the operator
+# learned to click past it, and the four steps that DO write committable output
+# -- the reference extract, the api document, the standalone scrub and the
+# standalone catalogue -- said nothing at all, because the guard had never been
+# wired into them.
+#
+# So the guard gains the second half: will THIS write land somewhere that shows
+# up as untracked? Location plus destination, and both must be true.
+# ---------------------------------------------------------------------------
+
+$script:GuardIgnored = 'ignored'
+$script:GuardNotIgnored = 'not-ignored'
+$script:GuardOutsideWorkTree = 'outside-work-tree'
+$script:GuardUnverifiable = 'unverifiable'
+
+<#
+.SYNOPSIS
+    Whether a path would show up as untracked: ignored, not-ignored,
+    outside-work-tree, or unverifiable.
+
+.DESCRIPTION
+    The same four answers, spelled the same way, as classifyDestination() in
+    subs-destination.js -- capture-output-placement.Tests.ps1 drives both over
+    one table and fails if they ever disagree.
+
+    Asked about the FILE, not its directory, because a consumer's .gitignore
+    covers these artifacts by name at any depth as well as by directory, and
+    asking about the directory would miss that.
+
+    The path need not exist yet -- that is the point, the guard runs before the
+    write -- so the probe is made from the nearest ancestor that does.
+
+    UNVERIFIABLE is not folded into "ignored". git declining to answer is not
+    the same as git answering no, and treating them alike would make the warning
+    vanish in exactly the case where nobody can tell whether it was needed.
+#>
+function Get-DestinationIgnoreStatus {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Destination)
+
+    $full = Resolve-GuardPath $Destination
+    if (-not $full) { return $script:GuardUnverifiable }
+
+    $probe = $full
+    while ($probe -and -not (Test-Path -LiteralPath $probe -PathType Container)) {
+        $parent = Split-Path -Parent $probe
+        if ($parent -eq $probe) { break }
+        $probe = $parent
+    }
+    if (-not $probe -or -not (Test-Path -LiteralPath $probe -PathType Container)) {
+        return $script:GuardUnverifiable
+    }
+
+    # "not a repository" is an ANSWER, and git delivers it as a non-zero exit --
+    # the same shape Invoke-GuardGit collapses to $null for probes where absence
+    # is the answer. Here the two must stay apart: git saying no means
+    # outside-work-tree, and only git failing to run at all is unverifiable.
+    $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
+    if ($null -eq $LASTEXITCODE) { return $script:GuardUnverifiable }
+    if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
+        return $script:GuardOutsideWorkTree
+    }
+
+    # check-ignore's EXIT CODE is the answer: 0 ignored, 1 not ignored, anything
+    # else is git refusing to say. Invoke-GuardGit collapses non-zero to $null,
+    # so this one probe is made directly to keep 1 apart from 2.
+    & git -C $probe check-ignore -q -- $full 2>$null
+    switch ($LASTEXITCODE) {
+        0 { return $script:GuardIgnored }
+        1 { return $script:GuardNotIgnored }
+        default { return $script:GuardUnverifiable }
+    }
+}
+
+<#
+.SYNOPSIS
+    How to NAME a path inside a suggested command. The PowerShell twin of
+    commandPath in repo-workflow-guard.js.
+
+.DESCRIPTION
+    A suggestion built by gluing a prefix onto whatever the operator typed
+    breaks the moment they typed an absolute path -- `.worktrees/<name>/C:\x\y`
+    is not a command anybody can paste. The relative form is used while it stays
+    inside the tree and the absolute one otherwise, and separators are
+    normalised to `/` so the line does not read like a typo.
+#>
+function Get-GuardCommandPath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Target,
+        [string]$From
+    )
+
+    $full = Resolve-GuardPath $Target
+    if (-not $full) { return $Target }
+    $base = Resolve-GuardPath ($From ? $From : (Get-Location).ProviderPath)
+    if (-not $base) { return ($full -replace '\\', '/') }
+
+    $prefix = $base.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if ($full.StartsWith($prefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        return ($full.Substring($prefix.Length + 1) -replace '\\', '/')
+    }
+    return ($full -replace '\\', '/')
+}
+
+<#
+.SYNOPSIS
+    Will writing to $Destination strand committable output on the protected
+    branch? Returns the placement to warn about, or $null.
+
+.DESCRIPTION
+    The PowerShell twin of placementForRun in capture-har.js. Both halves must
+    hold: a primary checkout on the protected branch of a repo that declares the
+    rule, AND a destination that will show as untracked there.
+#>
+function Get-StrandingPlacement {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Destination,
+        [psobject]$Placement,
+        [string]$Path = '.'
+    )
+
+    if (-not $Placement) { $Placement = Get-CheckoutPlacement -Path $Path }
+    if (-not $Placement.ShouldWarn) { return $null }
+
+    $status = Get-DestinationIgnoreStatus -Destination $Destination
+    if ($status -eq $script:GuardIgnored -or $status -eq $script:GuardOutsideWorkTree) {
+        return $null
+    }
+    return $Placement
+}
+
+<#
+.SYNOPSIS
+    The advisory for a step that is about to write committable output, with the
+    commands that fix it.
+
+.DESCRIPTION
+    A pre-write guard cannot end in `mv` the way the capture epilogue does --
+    nothing has been written yet. The actionable fix is the pair: make a
+    worktree, then run this same command with its output landing inside it. Both
+    are printed filled in, because a command an operator has to reconstruct from
+    a description is one they will skip.
+
+    $ReRunCommand is supplied by the caller rather than reconstructed here. Only
+    the caller knows its own argument vector, and a library guessing at it would
+    print something subtly wrong -- which is worse than printing nothing.
+#>
+function Get-StrandingNotice {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][psobject]$Placement,
+        [Parameter(Mandatory)][string]$Destination,
+        [string]$ReRunCommand,
+        [string]$WorktreeName = '<name>'
+    )
+
+    $branch = if ($Placement.ProtectedBranch) { $Placement.ProtectedBranch } else { 'main' }
+    $lines = @(
+        "This is the primary checkout on the protected branch ($branch)."
+        "About to write $Destination, which is not gitignored there,"
+        'so the output will show as untracked where commits are blocked.'
+        'To put it somewhere committable:'
+        "    git worktree add .worktrees/$WorktreeName -b <type>/<issue#>-$WorktreeName $branch"
+    )
+    if ($ReRunCommand) {
+        $lines += '    ' + $ReRunCommand
+    }
+    $lines += 'Continuing anyway is safe -- nothing is discarded.'
+    return ($lines -join [Environment]::NewLine)
+}
+
+<#
+.SYNOPSIS
+    Warn before writing committable output to the protected branch, and offer to
+    create the worktree that fixes it. Returns where to write.
+
+.DESCRIPTION
+    Returns a Proceed/Destination pair: Proceed $false only when an interactive
+    operator declined outright, and Destination the possibly-retargeted path.
+
+    THE OFFER IS INTERACTIVE-ONLY, and not because prompting an agent would be
+    rude -- ShouldContinue THROWS under -NonInteractive, and
+    [Environment]::UserInteractive reports True inside an agent session, so
+    [Console]::IsInputRedirected is the probe and the call is wrapped anyway.
+    A non-interactive caller is given the commands and proceeds, unchanged.
+
+    Retargeting only happens for a destination INSIDE the checkout. One pointing
+    somewhere else was not describing a path relative to the work tree, and
+    rewriting it against a worktree root would move it somewhere the operator
+    never asked for.
+#>
+function Assert-DestinationCommittable {
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][string]$Destination,
+        [string]$ReRunCommand,
+        [string]$WorktreeName,
+        [string]$Path = '.',
+        [psobject]$Placement
+    )
+
+    $proceed = [pscustomobject]@{ Proceed = $true; Destination = $Destination; Relocated = $false }
+
+    $stranding = Get-StrandingPlacement -Destination $Destination -Placement $Placement -Path $Path
+    if (-not $stranding) { return $proceed }
+
+    if (-not $WorktreeName) {
+        # The file's stem, not its name: the suggestion becomes both a directory
+        # and a branch, and `.worktrees/scrubbed.har` on `chore/scrubbed.har`
+        # reads like a mistake even though git would accept it.
+        $leaf = [IO.Path]::GetFileNameWithoutExtension((Resolve-GuardPath $Destination))
+        $WorktreeName = if ($leaf) { ($leaf -replace '[^A-Za-z0-9_-]', '-').ToLowerInvariant() } else { 'output' }
+    }
+
+    $message = Get-StrandingNotice -Placement $stranding -Destination $Destination `
+        -ReRunCommand $ReRunCommand -WorktreeName $WorktreeName
+
+    $interactive = -not [Console]::IsInputRedirected -and
+        -not ([Environment]::GetCommandLineArgs() -contains '-NonInteractive')
+
+    if ($interactive) {
+        try {
+            $create = $PSCmdlet.ShouldContinue(
+                "$message$([Environment]::NewLine)Create the worktree now and write there instead?",
+                'Output placement')
+            if ($create) {
+                $made = New-GuardWorktree -Placement $stranding -Name $WorktreeName -Destination $Destination
+                if ($made) { return $made }
+                # Creating it failed and said why. Fall through: the step still
+                # runs, because refusing here would discard nothing but the
+                # operator's time.
+            }
+            return $proceed
+        }
+        catch {
+            Write-Verbose "ShouldContinue unavailable ($($_.Exception.Message)); warning instead."
+        }
+    }
+
+    Write-Warning $message
+    return $proceed
+}
+
+<#
+.SYNOPSIS
+    Create `.worktrees/<name>` off the protected branch and retarget the
+    destination into it.
+
+.DESCRIPTION
+    Returns the same Proceed/Destination shape as its caller, or $null when the
+    worktree could not be made -- a name already taken, a branch that exists, a
+    detached state. Failure is reported and never thrown: the guard is advisory,
+    and a step that would have run without the offer must still run when the
+    offer does not work out.
+#>
+function New-GuardWorktree {
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [Parameter(Mandatory)][psobject]$Placement,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    $top = $Placement.TopLevel
+    $branchBase = if ($Placement.ProtectedBranch) { $Placement.ProtectedBranch } else { 'main' }
+    $worktree = Join-Path (Join-Path $top '.worktrees') $Name
+    $branch = "chore/$Name"
+
+    if (Test-Path -LiteralPath $worktree) {
+        Write-Warning "$worktree already exists -- writing to the original destination instead."
+        return $null
+    }
+    if (-not $PSCmdlet.ShouldProcess($worktree, 'git worktree add')) { return $null }
+
+    & git -C $top worktree add $worktree -b $branch $branchBase 2>&1 | Write-Verbose
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $worktree)) {
+        Write-Warning "could not create $worktree (git exited $LASTEXITCODE) -- writing to the original destination instead."
+        return $null
+    }
+
+    # Only a destination inside the checkout can be re-rooted; see the caller.
+    $full = Resolve-GuardPath $Destination
+    $prefix = $top.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $relative = if ($full -and $full.StartsWith($prefix + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        $full.Substring($prefix.Length + 1)
+    }
+    else { $null }
+
+    if (-not $relative) {
+        Write-Warning "created $worktree, but $Destination is outside $top -- writing to the original destination."
+        return [pscustomobject]@{ Proceed = $true; Destination = $Destination; Relocated = $false }
+    }
+
+    $moved = Join-Path $worktree $relative
+    Write-Information "Created $worktree on $branch. Writing to $moved." -InformationAction Continue
+    return [pscustomobject]@{ Proceed = $true; Destination = $moved; Relocated = $true }
+}

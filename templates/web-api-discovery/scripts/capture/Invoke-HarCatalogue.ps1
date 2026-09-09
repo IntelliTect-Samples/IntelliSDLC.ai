@@ -117,6 +117,11 @@ if (-not (Test-Path -LiteralPath $captureJs)) {
     exit 1
 }
 
+# The placement guard is SHARED, not reimplemented here. Bespoke per-script
+# logic about where output may land is how the defect in #300 arrived, so every
+# script that writes a committable artifact dot-sources the one implementation.
+. (Join-Path $PSScriptRoot '..' 'lib' 'RepoWorkflowGuard.ps1')
+
 # ---------------------------------------------------------------------------
 # A FOLDER MEANS "EVERY CAPTURE UNDER IT" (#386)
 # ---------------------------------------------------------------------------
@@ -244,6 +249,28 @@ if ($Force) {
         'captures that already have a catalogue.json". It does not override the refusal to ' +
         'replace a catalogue that carries described actions -- move that file aside instead.')
     exit 1
+}
+
+# WHERE THE CATALOGUE LANDS (#471). Only an explicitly named -OutputPath can
+# strand anything: the default writes back into the capture's own session
+# directory under the gitignored captures root, which is why this is gated on
+# the parameter rather than on the operator's location alone. That distinction
+# is the whole of #471 -- capture warned about location for years while the
+# steps that actually produce committable output said nothing.
+#
+# Ahead of the node call for the reason #300 gives, and it may retarget into a
+# worktree the operator accepts, so $OutputPath is reassigned, not just warned
+# about.
+if ($OutputPath) {
+    $reRun = "Invoke-HarCatalogue.ps1 $Path " +
+        "-OutputPath .worktrees/<name>/$(Get-GuardCommandPath -Target $OutputPath -From (Get-RepoTopLevel))"
+    $placement = Assert-DestinationCommittable -Destination $OutputPath `
+        -WorktreeName 'har-catalogue' -ReRunCommand $reRun
+    if (-not $placement.Proceed) {
+        Write-Information 'Cancelled before cataloguing -- nothing was written.'
+        exit 0
+    }
+    $OutputPath = $placement.Destination
 }
 
 $captureArgs = @('catalogue')

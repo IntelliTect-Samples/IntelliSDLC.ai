@@ -389,6 +389,95 @@ function relocationNotice(info, writtenPaths) {
     return lines.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// THE DESTINATION QUESTION (#471)
+//
+// Everything above answers "where is the operator standing". That was the whole
+// question while capture wrote its default output into the work tree root. It
+// is not the question any more, and #471 is what happened when it kept being
+// asked: capture warned on runs that could not strand anything, the operator
+// learned to click past it, and the steps that DO write committable output --
+// the reference extract and the api document here, the standalone scrub and
+// catalogue on the PowerShell side -- said nothing, because the guard had never
+// been wired into them.
+//
+// RepoWorkflowGuard.ps1 carries the twin. capture-output-placement.Tests.ps1
+// drives both over one table of destination shapes and fails if they disagree.
+// ---------------------------------------------------------------------------
+
+/**
+ * How to NAME a path inside a suggested command.
+ *
+ * `path.relative` from the working directory is the readable form when the
+ * target is nearby, and unusable when it is not: run against a checkout in a
+ * temp directory it produced eleven `..` segments followed by an absolute-ish
+ * tail, which is not a command anybody would paste. So the relative form is
+ * used only while it stays inside the tree, and the absolute path otherwise.
+ *
+ * Separators are normalised to `/`. The suggestion is meant to be pasted, and
+ * a half-backslash half-slash path reads like a typo even where the shell
+ * accepts it.
+ */
+function commandPath(target, from) {
+    const rel = path.relative(from || process.cwd(), target);
+    const usable = rel && !rel.startsWith('..' + path.sep) && rel !== '..';
+    return (usable ? rel : path.resolve(target)).split('\\').join('/');
+}
+
+/**
+ * Will writing to `destination` strand committable output on the protected
+ * branch? Returns the placement to warn about, or null.
+ *
+ * Both halves must hold: a primary checkout on the protected branch of a repo
+ * that declares the rule, AND a destination that will show as untracked there.
+ *
+ * The gitignore half is asked through classifyDestination() and nowhere else --
+ * it already refuses to trust a forged .gitignore containing `*` or an injected
+ * core.excludesFile, and a second check written here would be a second answer
+ * free to disagree with it.
+ */
+function strandingPlacement(destination, cwd) {
+    const placement = inspectCheckout(cwd || process.cwd());
+    if (!placement.shouldWarn) { return null; }
+    // Required lazily: this module is loaded by the capture store before the
+    // har/ tree is necessarily reachable, and only this function needs it.
+    const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destination.js'));
+    const status = subsDestination.classifyDestination(destination);
+    if (status === subsDestination.IGNORED
+        || status === subsDestination.OUTSIDE_WORK_TREE) { return null; }
+    return placement;
+}
+
+/**
+ * The advisory for a step about to write committable output, with the commands
+ * that fix it.
+ *
+ * A pre-write guard cannot end in `mv` the way the capture epilogue does --
+ * nothing has been written yet. The actionable fix is the pair: make a
+ * worktree, then run this same command with its output landing inside it. Both
+ * are printed filled in, because a command the operator has to reconstruct from
+ * a description is one they will skip.
+ *
+ * `reRunCommand` comes from the caller rather than being reconstructed here.
+ * Only the caller knows its own argument vector, and a library guessing at it
+ * would print something subtly wrong, which is worse than printing nothing.
+ */
+function strandingNotice(placement, destination, reRunCommand, worktreeName) {
+    if (!placement) { return null; }
+    const branch = placement.protectedBranch || 'main';
+    const name = worktreeName || '<name>';
+    const lines = [
+        'This is the primary checkout on the protected branch (' + branch + ').',
+        'About to write ' + destination + ', which is not gitignored there,',
+        'so the output will show as untracked where commits are blocked.',
+        'To put it somewhere committable:',
+        '    git worktree add .worktrees/' + name + ' -b <type>/<issue#>-' + name + ' ' + branch
+    ];
+    if (reRunCommand) { lines.push('    ' + reRunCommand); }
+    lines.push('Continuing anyway is safe -- nothing is discarded.');
+    return lines.join('\n');
+}
+
 module.exports = {
     inspectCheckout,
     resolveDefaultOutputRoot,
@@ -397,5 +486,8 @@ module.exports = {
     captureRootNotice,
     guardMessage,
     relocationNotice,
+    strandingPlacement,
+    commandPath,
+    strandingNotice,
     FALLBACK_TRUNKS
 };

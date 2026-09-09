@@ -89,6 +89,7 @@ const fs = require('fs');
 const path = require('path');
 
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
+const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
 // The SAME path templating the digest and the catalogue guard use. `api.json`
 // is the aggregate of what `digest.json` already computes per session, so a
 // second, subtly different notion of "the same endpoint" here would make the
@@ -951,6 +952,26 @@ function main(argv) {
     if (!args.dir || args.dir === true) usage('--dir is required');
 
     const dir = path.resolve(args.dir);
+
+    // WHERE THIS LANDS (#471). The api document is a committed artifact, so
+    // writing it from the primary checkout on the protected branch leaves an
+    // untracked file where commits are blocked. --check writes nothing and is
+    // deliberately not guarded: a read-only run has nothing to strand.
+    //
+    // Ahead of readReferences for the reason #300 gives -- a guard downstream
+    // of the work would be asking whether to discard something already done.
+    if (!args.check) {
+        const stranding = repoGuard.strandingPlacement(path.join(dir, DOCUMENT_FILE));
+        if (stranding) {
+            const reRun = 'node ' + repoGuard.commandPath(__filename)
+                + ' --dir .worktrees/<name>/' + repoGuard.commandPath(dir, stranding.topLevel);
+            process.stderr.write('generate-api-document: '
+                + repoGuard.strandingNotice(
+                    stranding, path.join(dir, DOCUMENT_FILE), reRun, 'api-document')
+                    .split('\n').join('\n  ') + '\n');
+        }
+    }
+
     const references = readReferences(dir);
     const document = serialize(buildDocument(path.basename(dir), references));
 
