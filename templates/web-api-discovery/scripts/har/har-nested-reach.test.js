@@ -42,6 +42,8 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const { makeTempRepo } = require(path.join(__dirname, 'har-test-repo.test-support.js'));
+const secrets = require(path.join(__dirname, 'har-secrets.js'));
+const nested = require(path.join(__dirname, 'har-nested.js'));
 
 const sanitize = path.join(__dirname, 'sanitize-har.js');
 const verify = path.join(__dirname, 'verify-scrub.js');
@@ -288,6 +290,123 @@ function assertReportIsQuiet(label, report) {
     assert.strictEqual(r.verifyCode, 0,
         `5.c: the gate refuses the artifact, so the gate sees this pair and the `
         + `scrubber does not -- the asymmetry of #454 one layer down: ${r.report}`);
+}
+
+// --- 6. The GATE still reaches a MULTIPART field at depth. ---------------
+// Found by independent review of the first cut of this change, which NARROWED
+// the gate: it called `replaceMultipartSecretFields` once on the top-level
+// string and then handed the value to the shared traversal, whose visitor only
+// asked `isUnredactedSecret(name, value)`. The walk this replaced called the
+// multipart detector at EVERY level it visited.
+//
+// Asserted against the gate directly rather than through the scrub pipeline,
+// deliberately. The scrubber runs its own multipart pass at every depth, so it
+// removes this value before the gate ever sees it -- an end-to-end fixture
+// would pass while the gate was blind. `verify-har-reference.js` runs this
+// same gate over files THIS scrubber did not produce, so the gate's own reach
+// is the thing that has to hold.
+{
+    const multipart = [
+        '------B',
+        'Content-Disposition: form-data; name="lsd"',
+        '',
+        'AVsyntheticCsrfTokenForTest',
+        '------B--',
+    ].join('\r\n');
+
+    const reported = [];
+    secrets.walkForUnredactedSecrets(
+        { entries: [{ body: `variables=${enc(JSON.stringify({ blob: multipart }))}` }] },
+        (name, where) => reported.push({ name, where }),
+    );
+
+    assert.ok(reported.some((r) => r.name === 'lsd'),
+        '6.a: the gate no longer reports a multipart secret field nested inside an '
+        + 'encoded payload. The traversal it now shares does not run the multipart '
+        + 'detector at depth, so the gate certifies clean a shape it used to catch');
+}
+
+// --- 7. The SCRUBBER reaches a secret HEADER name at depth. --------------
+// Also from independent review. The nested-pair substitution consulted
+// `isKnownSecretField` alone, while the gate's `isUnredactedSecret` consults
+// the field list AND the header list. So a `secretHeaders` name -- `x-fb-lsd`,
+// `x-csrftoken`, `x-ig-app-id`, `x-instagram-rupload-params` -- nested as a
+// pair was reported by the gate and unreachable by the scrubber.
+//
+// That is this issue's own failure re-created on a second axis, inside the fix
+// for it. Section 5 could not see it: `datr` is a secretFields name, so the
+// header list was never exercised.
+{
+    const HEADER_TOKEN = 'SyntheticHeaderTokenForTest12345';
+    const r = scrubAndVerify('nested-secret-header-name',
+        `variables=${enc(JSON.stringify({
+            headers: [{ name: 'x-fb-lsd', value: HEADER_TOKEN }],
+        }))}`,
+        'application/x-www-form-urlencoded');
+
+    assert.strictEqual(r.scrubCode, 0, `7.a: sanitize-har failed: ${r.report}`);
+    assert.ok(!survives(r.text, HEADER_TOKEN),
+        '7.b: a secret HEADER name nested as a {name, value} pair was not scrubbed. '
+        + 'The nested substitution checks the field list only, while the gate checks '
+        + 'both lists -- so the gate reports what the scrubber cannot remove');
+    assert.strictEqual(r.verifyCode, 0,
+        `7.c: the gate refuses the artifact, which is #454's own failure on the `
+        + `header axis: ${r.report}`);
+}
+
+// --- 8. ONE definition, asserted by IDENTITY rather than by source text. --
+// The anti-drift invariant of this change. A grep for `function
+// looksFormEncoded` in each file is the broken-oracle shape this repo has
+// named: it asserts what the code LOOKS like, passes for a correct
+// implementation that spells it differently, and fails for one that does not.
+//
+// Object identity is the real property. `har-secrets.js` re-exports the
+// traversal's predicate, so the two names are the SAME FUNCTION; if anyone
+// reintroduces a private copy this stops being true, whatever it is called.
+{
+    assert.strictEqual(secrets.looksFormEncoded, nested.looksFormEncoded,
+        '8.a: har-secrets.looksFormEncoded is no longer the same function object as '
+        + 'har-nested.looksFormEncoded, so a second definition has come back -- the '
+        + 'drift the comment on the old copy said nothing could detect');
+
+    // And it still behaves, so 8.a cannot pass by both sides being broken.
+    assert.strictEqual(nested.looksFormEncoded('variables=%7B%22a%22%3A1%7D&doc_id=1'), true,
+        '8.b: the shared predicate no longer recognises a percent-carrying form body');
+    assert.strictEqual(nested.looksFormEncoded('a=1&b=2'), false,
+        '8.c: the shared predicate decodes a body carrying no percent escapes');
+    assert.strictEqual(nested.looksFormEncoded('c_user=42; xs=%41%42%43'), false,
+        '8.d: the shared predicate treats a Cookie header as a form body');
+
+    assert.strictEqual(typeof nested.MAX_DEPTH, 'number',
+        '8.e: MAX_DEPTH is not exported, so each engine is free to pick its own '
+        + 'reach again -- which is the bug, one layer down');
+}
+
+// --- 9. Both engines stop at the SAME depth. -----------------------------
+// The parity guarantee, measured rather than asserted from a shared constant.
+// A secret one layer BELOW the cap must be handled by both; the gate must
+// report when it stops, so a capped gate cannot fail open in silence.
+{
+    // Nest `datr` MAX_DEPTH + 2 layers down, past what either engine will walk.
+    let payload = JSON.stringify({ datr: DATR });
+    for (let i = 0; i < nested.MAX_DEPTH + 2; i++) payload = JSON.stringify({ next: payload });
+
+    const reported = [];
+    secrets.walkForUnredactedSecrets(
+        { entries: [{ body: payload }] },
+        (name, where) => reported.push({ name, where }),
+    );
+
+    assert.ok(reported.length > 0,
+        '9.a: the gate walked a payload nested past MAX_DEPTH and reported NOTHING. '
+        + 'A traversal that stops early in silence is a gate that fails open, which '
+        + 'is exactly the D3 defect one layer further down');
+    assert.ok(reported.some((r) => /depth limit/.test(r.where)),
+        '9.b: the gate reported something, but not that it had stopped early, so a '
+        + 'reader cannot tell "nothing is there" from "I did not look"');
+    // Never the value, not even at the depth limit.
+    assert.ok(!reported.some((r) => String(r.name).includes(DATR)),
+        '9.c: the depth-limit report named a detected value');
 }
 
 console.log('har-nested-reach.test.js: all sections passed');

@@ -310,6 +310,21 @@ function walkForUnredactedSecrets(root, report, options) {
                 if (node.name && isUnredactedSecret(node.name, node.value, policy)) {
                     report(node.name, `${location} (inside encoded '${node.name}')`);
                 }
+                // AT EVERY DEPTH, not just the top-level string. The walk this
+                // replaced called the multipart detector at every level it
+                // visited; running it only on the outer value narrowed the
+                // gate, so a multipart field nested inside an encoded payload
+                // -- a shape the old gate caught -- was certified clean.
+                //
+                // The scrubber's `scrubFlat` runs its multipart pass at every
+                // depth, so today's pipeline removes such a value before the
+                // gate sees it. That is not a reason to leave the gate blind:
+                // `verify-har-reference.js` runs this same gate over files
+                // this scrubber did not produce.
+                replaceMultipartSecretFields(node.value, (name) => {
+                    report(name, `${location} (multipart field, nested)`);
+                    return null;
+                }, policy);
                 return node.value;
             }, {
                 // A traversal that stopped early has not looked everywhere.
