@@ -470,6 +470,50 @@ function Test-RootHelpRequest {
     return $false
 }
 
+$script:TransientStatusLength = 0
+
+# In-place status only makes sense on a live console. When output is
+# redirected -- a CI log, a captured bug report, a pipe into grep -- the
+# carriage returns and padding land in the file as one garbled physical
+# line, because Write-Host still writes to stdout. Detect that once and
+# degrade to silence: the transient messages are progress, and progress is
+# exactly what a log does not need.
+$script:TransientStatusEnabled = -not [Console]::IsOutputRedirected
+
+function Write-TransientStatus {
+    <#
+    .SYNOPSIS
+        Writes an in-place status message that a later Write-TransientStatus or
+        Clear-TransientStatus call overwrites, instead of scrolling the console.
+    .DESCRIPTION
+        Returns the cursor to the start of the line and pads to erase leftover
+        characters from a longer previous message. The status is progress, not
+        output: it never survives the run, so it cannot be pasted into a bug
+        report as though it were a result.
+
+        A no-op when output is redirected (see $script:TransientStatusEnabled).
+    #>
+    param([string]$Message, [string]$ForegroundColor = 'DarkGray')
+
+    if (-not $script:TransientStatusEnabled) { return }
+    $pad = ''.PadRight([Math]::Max(0, $script:TransientStatusLength - $Message.Length))
+    Write-Host -NoNewline "`r$Message$pad" -ForegroundColor $ForegroundColor
+    $script:TransientStatusLength = $Message.Length
+}
+
+function Clear-TransientStatus {
+    <#
+    .SYNOPSIS
+        Blanks the line written by Write-TransientStatus, leaving no trace.
+        A no-op when output is redirected, or when nothing was written.
+    #>
+    if (-not $script:TransientStatusEnabled) { return }
+    if ($script:TransientStatusLength -gt 0) {
+        Write-Host -NoNewline ("`r" + ''.PadRight($script:TransientStatusLength) + "`r")
+        $script:TransientStatusLength = 0
+    }
+}
+
 # Allow dot-sourcing for testing (loads functions only)
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -585,37 +629,6 @@ Write-Host ''
 Write-Host "Running: $projectPath" -ForegroundColor Green
 Write-Host ''
 
-$script:TransientStatusLength = 0
-
-function Write-TransientStatus {
-    <#
-    .SYNOPSIS
-        Writes an in-place status message that a later Write-TransientStatus or
-        Clear-TransientStatus call overwrites, instead of scrolling the console.
-    .DESCRIPTION
-        Returns the cursor to the start of the line and pads to erase leftover
-        characters from a longer previous message. The status is progress, not
-        output: it never survives the run, so it cannot be pasted into a bug
-        report as though it were a result.
-    #>
-    param([string]$Message, [string]$ForegroundColor = 'DarkGray')
-
-    $pad = ''.PadRight([Math]::Max(0, $script:TransientStatusLength - $Message.Length))
-    Write-Host -NoNewline "`r$Message$pad" -ForegroundColor $ForegroundColor
-    $script:TransientStatusLength = $Message.Length
-}
-
-function Clear-TransientStatus {
-    <#
-    .SYNOPSIS
-        Blanks the line written by Write-TransientStatus, leaving no trace.
-    #>
-    if ($script:TransientStatusLength -gt 0) {
-        Write-Host -NoNewline ("`r" + ''.PadRight($script:TransientStatusLength) + "`r")
-        $script:TransientStatusLength = 0
-    }
-}
-
 # Build the dotnet run command
 $dotnetArgs = @('run', '--project', $selectedProject.FullName)
 
@@ -632,7 +645,7 @@ else {
     # Nothing to report. Flash it, then erase it: a skipped build is the
     # uneventful case and should not survive into copied console output.
     Write-TransientStatus 'No build required.'
-    Start-Sleep -Milliseconds 800
+    if ($script:TransientStatusEnabled) { Start-Sleep -Milliseconds 800 }
     Clear-TransientStatus
 }
 

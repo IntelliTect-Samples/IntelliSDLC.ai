@@ -594,3 +594,58 @@ Describe 'Test-RootHelpRequest' {
         Test-RootHelpRequest -Command '' -Argument $null | Should -BeFalse
     }
 }
+Describe 'Transient build status (issue #249)' {
+
+    BeforeEach {
+        $script:TransientStatusLength = 0
+        $script:TransientStatusEnabled = $true
+    }
+
+    AfterEach {
+        $script:TransientStatusEnabled = -not [Console]::IsOutputRedirected
+        $script:TransientStatusLength = 0
+    }
+
+    It 'tracks the length of the message it wrote' {
+        Write-TransientStatus 'abcd' 6>$null
+        $script:TransientStatusLength | Should -Be 4
+    }
+
+    It 'pads a shorter message to erase the longer one before it' {
+        # The bug this guards: 'No build required.' is shorter than
+        # 'Checking whether a build is required...', so without padding the
+        # tail of the longer message would stay on screen.
+        Write-TransientStatus 'Checking whether a build is required...' 6>$null
+        $long = $script:TransientStatusLength
+        Write-TransientStatus 'No build required.' 6>$null
+        $long | Should -BeGreaterThan $script:TransientStatusLength
+        $script:TransientStatusLength | Should -Be 18
+    }
+
+    It 'resets the tracked length when cleared' {
+        Write-TransientStatus 'something' 6>$null
+        Clear-TransientStatus 6>$null
+        $script:TransientStatusLength | Should -Be 0
+    }
+
+    It 'is a no-op to clear when nothing was written' {
+        { Clear-TransientStatus 6>$null } | Should -Not -Throw
+        $script:TransientStatusLength | Should -Be 0
+    }
+
+    It 'writes nothing when output is redirected' {
+        # Redirected output is a log or a captured bug report. Carriage
+        # returns and padding would land in it as one garbled physical line.
+        $script:TransientStatusEnabled = $false
+        Write-TransientStatus 'should not appear' 6>$null
+        $script:TransientStatusLength | Should -Be 0
+    }
+
+    It 'does not clear a live status when redirected' {
+        $script:TransientStatusEnabled = $true
+        Write-TransientStatus 'live' 6>$null
+        $script:TransientStatusEnabled = $false
+        Clear-TransientStatus 6>$null
+        $script:TransientStatusLength | Should -Be 4
+    }
+}
