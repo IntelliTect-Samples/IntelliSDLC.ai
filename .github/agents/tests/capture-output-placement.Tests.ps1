@@ -680,6 +680,7 @@ Describe 'the destination guards agree -- one rule, two runtimes (#471)' {
         @{ Name = 'a gitignored path on the protected branch';  Setup = 'ignored' }
         @{ Name = 'a committable path in a worktree';           Setup = 'worktree' }
         @{ Name = 'a path outside any work tree';               Setup = 'outside' }
+        @{ Name = 'a forged core.excludesFile in the environment'; Setup = 'forged' }
     ) {
         $ctx = switch ($Setup) {
             'committable' {
@@ -702,11 +703,49 @@ Describe 'the destination guards agree -- one rule, two runtimes (#471)' {
                 New-Item -ItemType Directory -Path $d -Force | Out-Null
                 @{ Cwd = $d; Dest = (Join-Path $d 'x.har') }
             }
+            'forged' {
+                # subs-destination.js strips the whole GIT_* namespace before
+                # asking check-ignore, precisely so an injected core.excludesFile
+                # cannot make git call a path ignored that the repository does
+                # not protect. The PowerShell probe has to do the same or the
+                # two runtimes disagree here and nowhere else -- and the
+                # disagreement direction is the dangerous one: a suppressed
+                # warning for output that really will show as untracked.
+                $w = New-Checkout -Name "dcmp-$Setup" -TrackedHooks -HooksPath '.githooks'
+                $excludes = Join-Path $script:Tmp "dcmp-$Setup-excludes"
+                Set-Content -LiteralPath $excludes -Value '*'
+                @{ Cwd = $w; Dest = (Join-Path $w 'docs/x.har'); Forge = $excludes }
+            }
         }
 
-        $ps = [bool](Get-StrandingPlacement -Destination $ctx.Dest -Path $ctx.Cwd)
-        $js = (Get-NodeStranding -Cwd $ctx.Cwd -Destination $ctx.Dest).warns
-        $ps | Should -Be $js -Because 'the two runtimes must not drift on the destination question'
+        $saved = @{}
+        if ($ctx.Forge) {
+            # Set for the duration of this case only, and restored in the
+            # finally below -- leaving it set would quietly change git's answer
+            # for every later test in the file.
+            foreach ($n in @('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')) {
+                $saved[$n] = (Get-Item "Env:$n" -ErrorAction SilentlyContinue).Value
+            }
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'core.excludesFile'
+            $env:GIT_CONFIG_VALUE_0 = $ctx.Forge
+        }
+
+        try {
+            $ps = [bool](Get-StrandingPlacement -Destination $ctx.Dest -Path $ctx.Cwd)
+            $js = (Get-NodeStranding -Cwd $ctx.Cwd -Destination $ctx.Dest).warns
+            $ps | Should -Be $js -Because 'the two runtimes must not drift on the destination question'
+
+            if ($ctx.Forge) {
+                $ps | Should -BeTrue -Because 'a forged excludesFile must not suppress the warning'
+            }
+        }
+        finally {
+            foreach ($n in $saved.Keys) {
+                if ($saved[$n]) { Set-Item "Env:$n" -Value $saved[$n] }
+                else { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+            }
+        }
     }
 }
 

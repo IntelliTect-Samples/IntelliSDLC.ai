@@ -368,6 +368,83 @@ $script:GuardNotIgnored = 'not-ignored'
 $script:GuardOutsideWorkTree = 'outside-work-tree'
 $script:GuardUnverifiable = 'unverifiable'
 
+
+# The environment the ignore probes run in: everything except what can tell git
+# where to find configuration.
+#
+# THIS MIRRORS probeEnv() IN subs-destination.js, and exists for the reason
+# given there. `GIT_CONFIG_COUNT` with a `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`
+# pair injects `core.excludesFile`, so `check-ignore` calls a path ignored that
+# the repository does not protect; `GIT_DIR` and `GIT_WORK_TREE` redirect the
+# answer to another repository entirely. Without this, the PowerShell half of
+# the guard would answer "ignored" where the Node half answers "not ignored" --
+# two implementations of one rule disagreeing, which is the failure the shared
+# library exists to prevent.
+#
+# The whole `GIT_*` namespace goes rather than the variables known to be
+# dangerous today, because a blocklist is the wrong shape and the next release
+# may add a third way. The home variables are OVERRIDDEN rather than removed:
+# a home that does not exist is one nothing can be planted in, and on Windows
+# clearing HOMEDRIVE/HOMEPATH is not reliably honoured.
+#
+# System config stays honoured. Once `GIT_*` is stripped its location is fixed
+# rather than environment-named, and an admin-installed rule is a real fact
+# about the machine.
+$script:GuardEnvSaved = $null
+
+function Push-GuardProbeEnvironment {
+    [CmdletBinding()]
+    param()
+
+    $saved = @{}
+    $noHome = Join-Path ([IO.Path]::GetTempPath()) ("guard-no-home-" + [guid]::NewGuid().ToString('N'))
+
+    foreach ($entry in (Get-ChildItem Env: | Where-Object { $_.Name -match '^(?i)GIT_' })) {
+        $saved[$entry.Name] = $entry.Value
+        Remove-Item "Env:$($entry.Name)" -ErrorAction SilentlyContinue
+    }
+    foreach ($name in @('HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH')) {
+        if (-not $saved.ContainsKey($name)) {
+            $saved[$name] = (Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
+        }
+    }
+
+    $env:HOME = $noHome
+    $env:XDG_CONFIG_HOME = $noHome
+    $env:USERPROFILE = $noHome
+    $env:HOMEDRIVE = $noHome.Substring(0, 2)
+    $env:HOMEPATH = $noHome.Substring(2)
+    # A second way of saying the same thing, for git versions that honour it,
+    # without depending on how home discovery happens to be implemented.
+    $env:GIT_CONFIG_GLOBAL = Join-Path $noHome 'gitconfig'
+
+    $script:GuardEnvSaved = $saved
+}
+
+function Pop-GuardProbeEnvironment {
+    [CmdletBinding()]
+    param()
+
+    if ($null -eq $script:GuardEnvSaved) { return }
+    # Everything touched is restored, including the variables that were ABSENT
+    # before -- a $null saved value means "there was none", and leaving our
+    # placeholder behind would change git's behaviour for the rest of the
+    # session, which is exactly the class of bug this function guards against.
+    foreach ($name in @('HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE',
+            'HOMEPATH', 'GIT_CONFIG_GLOBAL')) {
+        if ($script:GuardEnvSaved.ContainsKey($name) -and $script:GuardEnvSaved[$name]) {
+            Set-Item "Env:$name" -Value $script:GuardEnvSaved[$name]
+        }
+        else { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+    }
+    foreach ($name in $script:GuardEnvSaved.Keys) {
+        if ($name -match '^(?i)GIT_' -and $script:GuardEnvSaved[$name]) {
+            Set-Item "Env:$name" -Value $script:GuardEnvSaved[$name]
+        }
+    }
+    $script:GuardEnvSaved = $null
+}
+
 <#
 .SYNOPSIS
     Whether a path would show up as untracked: ignored, not-ignored,
@@ -410,22 +487,74 @@ function Get-DestinationIgnoreStatus {
     # "not a repository" is an ANSWER, and git delivers it as a non-zero exit --
     # the same shape Invoke-GuardGit collapses to $null for probes where absence
     # is the answer. Here the two must stay apart: git saying no means
-    # outside-work-tree, and only git failing to run at all is unverifiable.
-    $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
-    if ($null -eq $LASTEXITCODE) { return $script:GuardUnverifiable }
-    if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
-        return $script:GuardOutsideWorkTree
-    }
+    # outside-work-tree, and only git failing to RUN is unverifiable.
+    #
+    # Both probes go through git directly rather than Invoke-GuardGit, because
+    # both need the exit CODE and not merely "did it work" -- check-ignore
+    # answers 0 / 1 / 2 and collapsing non-zero would fold "not ignored" into
+    # "cannot tell". Which is why they are wrapped: a missing git raises a
+    # terminating CommandNotFoundException rather than setting $LASTEXITCODE, so
+    # without the catch the unverifiable answer would be unreachable and the
+    # caller would get an exception where it expected one of four strings.
+    try {
+        Push-GuardProbeEnvironment
+        try {
+            $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
+            if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
+                return $script:GuardOutsideWorkTree
+            }
 
-    # check-ignore's EXIT CODE is the answer: 0 ignored, 1 not ignored, anything
-    # else is git refusing to say. Invoke-GuardGit collapses non-zero to $null,
-    # so this one probe is made directly to keep 1 apart from 2.
-    & git -C $probe check-ignore -q -- $full 2>$null
-    switch ($LASTEXITCODE) {
-        0 { return $script:GuardIgnored }
-        1 { return $script:GuardNotIgnored }
-        default { return $script:GuardUnverifiable }
+            & git -C $probe check-ignore -q -- $full 2>$null
+            switch ($LASTEXITCODE) {
+                0 { return $script:GuardIgnored }
+                1 { return $script:GuardNotIgnored }
+                default { return $script:GuardUnverifiable }
+            }
+        }
+        finally { Pop-GuardProbeEnvironment }
     }
+    catch {
+        # A missing git raises a TERMINATING CommandNotFoundException rather
+        # than setting $LASTEXITCODE -- verified, not assumed -- so without this
+        # the caller would get an exception where it expected one of four
+        # strings, and the unverifiable answer would be unreachable.
+        Write-Verbose "git unavailable for $full ($($_.Exception.Message)); treating as unverifiable."
+        return $script:GuardUnverifiable
+    }
+}
+
+<#
+.SYNOPSIS
+    $Full expressed relative to $Base, or $null when it does not sit under it.
+
+.DESCRIPTION
+    Shared by the two callers that had grown the same prefix comparison, and
+    both had the same gap: requiring a separator AFTER the base means a path
+    that IS the base compares as "outside it", so a destination naming the
+    checkout root was reported as somewhere else entirely. The equality case is
+    the empty relative path, which is a real answer and not a miss.
+
+    Case-insensitive because the platforms this runs on are, and trailing
+    separators are trimmed first so `C:\repo` and `C:\repo\` behave alike.
+#>
+function Get-GuardRelativePath {
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Full,
+        [Parameter(Mandatory)][AllowNull()][string]$Base
+    )
+
+    if (-not $Base) { return $null }
+    $sep = [IO.Path]::DirectorySeparatorChar
+    $prefix = $Base.TrimEnd($sep, [IO.Path]::AltDirectorySeparatorChar)
+    $trimmed = $Full.TrimEnd($sep, [IO.Path]::AltDirectorySeparatorChar)
+
+    if ($trimmed.Equals($prefix, [StringComparison]::OrdinalIgnoreCase)) { return '' }
+    if ($trimmed.StartsWith($prefix + $sep, [StringComparison]::OrdinalIgnoreCase)) {
+        return $trimmed.Substring($prefix.Length + 1)
+    }
+    return $null
 }
 
 <#
@@ -453,10 +582,8 @@ function Get-GuardCommandPath {
     $base = Resolve-GuardPath ($From ? $From : (Get-Location).ProviderPath)
     if (-not $base) { return ($full -replace '\\', '/') }
 
-    $prefix = $base.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    if ($full.StartsWith($prefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        return ($full.Substring($prefix.Length + 1) -replace '\\', '/')
-    }
+    $relative = Get-GuardRelativePath -Full $full -Base $base
+    if ($null -ne $relative) { return ($relative -replace '\\', '/') }
     return ($full -replace '\\', '/')
 }
 
@@ -643,19 +770,16 @@ function New-GuardWorktree {
 
     # Only a destination inside the checkout can be re-rooted; see the caller.
     $full = Resolve-GuardPath $Destination
-    $prefix = $top.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-    $relative = if ($full -and $full.StartsWith($prefix + [IO.Path]::DirectorySeparatorChar,
-            [StringComparison]::OrdinalIgnoreCase)) {
-        $full.Substring($prefix.Length + 1)
-    }
-    else { $null }
+    $relative = Get-GuardRelativePath -Full $full -Base $top
 
-    if (-not $relative) {
+    if ($null -eq $relative) {
         Write-Warning "created $worktree, but $Destination is outside $top -- writing to the original destination."
         return [pscustomobject]@{ Proceed = $true; Destination = $Destination; Relocated = $false }
     }
 
-    $moved = Join-Path $worktree $relative
+    # '' means the destination IS the checkout root, so the worktree root is
+    # where it moves to. Join-Path with '' would throw.
+    $moved = if ($relative) { Join-Path $worktree $relative } else { $worktree }
     Write-Information "Created $worktree on $branch. Writing to $moved." -InformationAction Continue
     return [pscustomobject]@{ Proceed = $true; Destination = $moved; Relocated = $true }
 }

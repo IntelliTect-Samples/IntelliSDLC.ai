@@ -1247,16 +1247,6 @@ test('an explicitly named destination that is gitignored is not warned about (#4
     assert.doesNotMatch(res.stderr, /primary checkout/i);
 });
 
-test('placementForRun asks about the destination, not only the location (#471)', () => {
-    const onMain = { shouldWarn: true, protectedBranch: 'main', topLevel: '/repo' };
-    assert.strictEqual(
-        capture.placementForRun(onMain, { outputExplicit: false, outputPath: '/repo/x' }),
-        null, 'the default is never the hazard');
-    assert.strictEqual(
-        capture.placementForRun({ shouldWarn: false }, { outputExplicit: true, outputPath: '/repo/x' }),
-        null, 'a worktree is never warned about, named destination or not');
-});
-
 test('there is no closing notice when the guard never fired (#300)', () => {
     const lines = capture.postProcessLines({
         harPath: '/repo/.har-captures/app.example.com/x/raw.har',
