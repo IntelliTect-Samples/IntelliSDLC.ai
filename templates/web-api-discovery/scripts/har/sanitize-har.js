@@ -416,7 +416,15 @@ function scrubString(s, ctx) {
     if (typeof s !== 'string' || s.length === 0) return s;
     const out = scrubFlat(s, ctx);
     return transformNested(out, ({ name, value }) => {
-        if (name && isKnownSecretField(name, ctx.policy) && !alreadySubstituted(value, ctx)) {
+        // BOTH lists, because the gate consults both. `isUnredactedSecret`
+        // asks the field list AND the header list, so checking only fields
+        // here left every `secretHeaders` name -- `x-fb-lsd`, `x-csrftoken`,
+        // `x-ig-app-id`, `x-instagram-rupload-params` -- reported by the gate
+        // and unreachable by the scrubber when it arrived nested as a pair.
+        // That is this issue's own failure re-created on a second axis.
+        const named = name
+            && (isKnownSecretField(name, ctx.policy) || isKnownSecretHeader(name, ctx.policy));
+        if (named && !alreadySubstituted(value, ctx)) {
             return substitute('field', name, value, ctx);
         }
         return scrubFlat(value, ctx);
