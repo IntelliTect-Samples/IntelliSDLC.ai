@@ -569,46 +569,33 @@ function resolveSessionPaths(opts = {}) {
 }
 
 /**
- * Whether THIS RUN can strand committable output, as opposed to merely being
- * launched from a checkout where some other run might (#471).
+ * The placement question for an output file, with the one destination that is
+ * never the hazard taken out first (#471).
  *
- * The placement probes answer a question about the OPERATOR'S LOCATION: primary
- * checkout, protected branch, repository declares the rule. That was the whole
- * question while the default output was the work tree root -- #300's warning
- * was true as written, because every run landed artifacts there.
+ * ONE function for both `start` and `catalogue`, because they write the same
+ * artifacts to the same kind of place and a second answer here is exactly the
+ * drift the shared guard exists to prevent. `catalogue` used to ask a
+ * location-only question of its own and so told operators to `mv` a file that
+ * had never been misplaced.
  *
- * #377 ended that. The default output is now the run's own session directory
- * under the gitignored captures root, so a default run cannot put anything in
- * the work tree no matter where it was started from. Location alone stopped
- * being evidence of harm, and a warning that fires without harm is not free:
- * it is how the warning gets trained out of an operator's attention, which is
- * exactly what happened -- the reported behaviour was answering yes and going
- * on capturing from the protected branch, because the advisory was noise at
- * the only step that raised it.
- *
- * So the location question gains the destination question, and the destination
- * question is asked through classifyDestination() and nowhere else -- the same
- * classifier outputDestinationWarning uses, for the same reason: a second
- * gitignore check written here would be a second answer free to disagree.
- *
- * Returns the placement to warn about, or null when there is nothing to say --
- * which is every default run, and every explicit destination that is gitignored
- * or outside a work tree.
+ * WHY THE CAPTURES ROOT IS EXEMPTED STRUCTURALLY rather than by asking
+ * classifyDestination. It is gitignored -- but this tool is what makes it so,
+ * via ensureCapturesRootIgnored, and that runs AFTER the guard, which has to
+ * fire before anything is recorded. Asking git during the window between the
+ * two gets "not ignored" for a directory that is about to be ignored, and the
+ * default run is warned about for a hazard that never materialises. That is the
+ * exact false warning #471 is about, so the exemption is the containment
+ * invariant itself and not a shortcut: nothing an operator passes can move the
+ * captures root, so nothing can move output out of the exemption either.
  */
-function placementForRun(placement, paths) {
-    if (!placement || !placement.shouldWarn) { return null; }
-    // The default cannot be the hazard; only a destination the operator named.
-    if (!paths || !paths.outputExplicit) { return null; }
-    // Classified on a FILE inside the destination, not on the directory, so a
-    // consumer's .gitignore covering these artifacts by name at any depth is
-    // honoured -- the same call outputDestinationWarning makes.
-    const status = subsDestination.classifyDestination(
-        path.join(paths.outputPath, SCRUBBED_HAR));
-    if (status === subsDestination.IGNORED
-        || status === subsDestination.OUTSIDE_WORK_TREE) { return null; }
-    return placement;
+function placementForOutput(outputFile, capturesRoot) {
+    if (capturesRoot) {
+        const root = path.resolve(capturesRoot);
+        const full = path.resolve(outputFile);
+        if (full === root || full.startsWith(root + path.sep)) { return null; }
+    }
+    return repoGuard.strandingPlacement(outputFile);
 }
-
 
 /**
  * Is an EXPLICIT `--output-path` somewhere scrubbed artifacts will show up as
@@ -2482,7 +2469,8 @@ async function start(args) {
     // tree", and only the process that resolved the destination can answer it.
     // A front door that guessed would be a second answer free to disagree.
     const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
-    const placement = placementForRun(repoGuard.inspectCheckout(process.cwd()), paths);
+    const placement = placementForOutput(
+        path.join(paths.outputPath, SCRUBBED_HAR), paths.capturesRoot);
     if (placement) {
         process.stderr.write('capture-har: ' +
             repoGuard.guardMessage(placement).split('\n').join('\n' + '  ') + '\n');
@@ -2542,19 +2530,20 @@ async function start(args) {
         // written even though the detection happened before the browser opened.
         // Null unless the guard fired, so nothing downstream has to re-probe.
         //
-        // THE RECORDER OWNS THE CLOSING NOTICE, and deliberately not the front
-        // door -- unlike the opening warning, which the front door owns via
-        // HARCAPTURE_PLACEMENT_GUARD_RAN. The asymmetry is the point. The
-        // opening warning is printed BEFORE this process is spawned, so it
-        // cannot be lost. The closing notice is printed after work has
-        // happened, and this is the process that actually wrote the files:
-        // printing it here is in-process and unconditional, so a front door
-        // that is killed between spawning us and reaching its own epilogue --
-        // a closed terminal, a hard Ctrl+C, an agent that dies mid-session --
-        // cannot take the notice with it. Deduplicating by suppressing THIS
-        // copy would make the notice depend on another process surviving, and
-        // a notice that only arrives when nothing went wrong is not a safety
-        // net.
+        // THE RECORDER OWNS BOTH NOTICES since #471, having previously owned
+        // only the closing one -- the front door printed the opening warning
+        // and marked HARCAPTURE_PLACEMENT_GUARD_RAN so this process stayed
+        // quiet. That split could not survive the guard needing to know the
+        // resolved destination, which only this process computes.
+        //
+        // What the split was protecting still holds, and is why the closing
+        // notice is printed here rather than delegated back: it is emitted
+        // after work has happened, by the process that actually wrote the
+        // files, in-process and unconditionally. A front door killed between
+        // spawning us and reaching its own epilogue -- a closed terminal, a
+        // hard Ctrl+C, an agent that dies mid-session -- cannot take the notice
+        // with it. A notice that only arrives when nothing went wrong is not a
+        // safety net.
         placement,
         profileDir,
         externalProfile,
@@ -3215,9 +3204,16 @@ function catalogueCommand(args) {
     // The shared placement guard, not a second opinion about where output may
     // land: this command writes into the same committable directory a capture
     // does, so it owes the same notice.
-    const placement = repoGuard.inspectCheckout(process.cwd());
+    //
+    // It asks about THE FILE IT WILL WRITE, not merely about the checkout it
+    // was started from (#471). Asking about location alone is what it used to
+    // do, and it was wrong in the same way capture was: the default output here
+    // is the capture's own session directory under the gitignored captures
+    // root, so a default run from the protected branch was told to `mv` an
+    // artifact that was never misplaced.
+    const placement = placementForOutput(cataloguePath, capturePlacement(process.cwd()).root);
     log.lines(postProcessLines(Object.assign({}, target.session, {
-        placement: placement.shouldWarn ? placement : null,
+        placement,
         postProcess: state
     })));
     return postProcessExitCode(state, false);
@@ -3311,7 +3307,7 @@ module.exports = {
     deriveActionSlug,
     providerSlug,
     outputDestinationWarning,
-    placementForRun,
+    placementForOutput,
     ensureCapturesRootIgnored,
     capturesRootProbe,
     CAPTURE_GITIGNORE_ENTRIES,

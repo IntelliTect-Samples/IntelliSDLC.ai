@@ -264,13 +264,18 @@ if ($Force) {
 if ($OutputPath) {
     $reRun = "Invoke-HarCatalogue.ps1 $Path " +
         "-OutputPath .worktrees/<name>/$(Get-GuardCommandPath -Target $OutputPath -From (Get-RepoTopLevel))"
-    $placement = Assert-DestinationCommittable -Destination $OutputPath `
+    # Classified on the FILE this will write, never on its directory. A
+    # consumer's .gitignore covers these artifacts by name at any depth as well
+    # as by directory, so asking about the folder would miss the rule that
+    # actually applies -- the same reason the Node callers pass a filename.
+    $catalogueFile = Join-Path $OutputPath 'catalogue.json'
+    $placement = Assert-DestinationCommittable -Destination $catalogueFile `
         -WorktreeName 'har-catalogue' -ReRunCommand $reRun
     if (-not $placement.Proceed) {
         Write-Information 'Cancelled before cataloguing -- nothing was written.'
         exit 0
     }
-    $OutputPath = $placement.Destination
+    if ($placement.Relocated) { $OutputPath = Split-Path -Parent $placement.Destination }
 }
 
 $captureArgs = @('catalogue')
