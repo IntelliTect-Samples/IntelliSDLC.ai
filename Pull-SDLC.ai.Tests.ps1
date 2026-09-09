@@ -507,29 +507,57 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
     }
 }
 
-Describe '.gitattributes.template removal (issue #167)' {
+Describe '.gitattributes delivery (issues #167, #449)' {
     BeforeAll {
         $script:upstreamRoot = Resolve-Path (Join-Path $PSScriptRoot '.') | Select-Object -ExpandProperty Path
     }
 
-    It '$script:TemplateScaffoldMap no longer maps .gitattributes.template' {
+    # #167 removed the .gitattributes.template scaffold to make room for a
+    # standalone Initialize-GitDefaults.ps1 (#160). That script was never built
+    # and #160 is closed as not-planned, which left NOTHING delivering
+    # .gitattributes to a consumer. #449 restores delivery through the
+    # mechanism that already exists -- a same-name scaffold, seeded from the
+    # live upstream file -- so #167's "no second competing template file" half
+    # still holds while its "no scaffolding" half is superseded.
+
+    It '$script:TemplateScaffoldMap does not map .gitattributes.template (issue #167)' {
         $script:TemplateScaffoldMap.Keys | Should -Not -Contain '.gitattributes.template'
     }
 
-    It '.gitattributes is no longer scaffolded by Pull-SDLC (owned by Initialize-GitDefaults.ps1)' {
-        $script:TemplateScaffoldMap.Values | Should -Not -Contain '.gitattributes'
-    }
-
-    It '.gitattributes.template file is absent from the upstream repo root' {
+    It '.gitattributes.template file is absent from the upstream repo root (issue #167)' {
         Test-Path -LiteralPath (Join-Path $script:upstreamRoot '.gitattributes.template') | Should -BeFalse
     }
 
-    It '.gitattributes.template is not in the upstream-managed path list' {
+    It '.gitattributes.template is not in the upstream-managed path list (issue #167)' {
         Test-IsUpstreamManagedPath -Path '.gitattributes.template' | Should -BeFalse
+    }
+
+    It 'scaffolds .gitattributes same-name from the live upstream file (issue #449)' {
+        $script:TemplateScaffoldMap.Keys | Should -Contain '.gitattributes'
+        $script:TemplateScaffoldMap['.gitattributes'] | Should -Be '.gitattributes'
     }
 
     It '.gitattributes remains on the always-local list (consumer-owned, never touched by sync)' {
         Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
+    }
+
+    It '.gitattributes is not upstream-managed, so a consumer edit never trips the drift guard' {
+        Test-IsUpstreamManagedPath -Path '.gitattributes' | Should -BeFalse
+    }
+
+    It '.gitattributes is NOT union-merged (issue #449)' {
+        # Merge-FileFromUpstream APPENDS absent upstream chunks, and
+        # .gitattributes is last-match-wins per attribute. Appending upstream's
+        # `* text=auto eol=lf` would silently override every earlier, more
+        # specific consumer rule -- a deliberate `*.bat text eol=crlf` would be
+        # reversed. Tolerable for .gitignore; for .gitattributes it changes how
+        # files are STORED.
+        $script:MergePaths | Should -Not -Contain '.gitattributes'
+    }
+
+    It 'the upstream .gitattributes it seeds normalizes line endings' {
+        $body = Get-Content -LiteralPath (Join-Path $script:upstreamRoot '.gitattributes') -Raw
+        $body | Should -Match '(?m)^\* text=auto eol=lf$' -Because 'the seed is what closes the "no normalization at all" gap (issue #173)'
     }
 }
 Describe 'README.md.template bootstrap (issue #158)' {
@@ -1229,6 +1257,49 @@ Describe 'Invoke-PullSDLC end-to-end' {
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
         $rc | Should -Be 0
         (Get-Content (Join-Path $fx.Consumer 'docs/README.md') -Raw) | Should -Be 'CONSUMER_EDITED_BODY'
+    }
+
+    It 'scaffolds .gitattributes from upstream content on first sync into an empty consumer (issue #449)' {
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                '* text=auto eol=lf' | Out-File -Encoding utf8 .gitattributes -NoNewline
+            }
+        # Four of five known consumers have no .gitattributes at all (issue #173).
+        Remove-Item -Force (Join-Path $fx.Consumer '.gitattributes') -ErrorAction SilentlyContinue
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        $rc | Should -Be 0
+        $scaffolded = Join-Path $fx.Consumer '.gitattributes'
+        Test-Path $scaffolded | Should -BeTrue
+        (Get-Content $scaffolded -Raw).Trim() | Should -Be '* text=auto eol=lf'
+    }
+
+    It 'never overwrites a consumer that already has a .gitattributes (issue #449)' {
+        # The scaffold fires only when the target is absent. This is the whole
+        # reason #449 chose scaffold-once over union-merge: a consumer with a
+        # 44-rule .gitattributes must come through a sync untouched.
+        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                '* text=auto eol=lf' | Out-File -Encoding utf8 .gitattributes -NoNewline
+            } `
+            -Tweak {
+                'baseline-claude-v2' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+        $consumerRules = "*.bat text eol=crlf`n* text=auto eol=lf"
+        Set-Content -LiteralPath (Join-Path $fx.Consumer '.gitattributes') -Value $consumerRules -NoNewline
+        Push-Location $fx.Consumer
+        try { git add .gitattributes; git commit -q -m 'consumer gitattributes' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer '.gitattributes') -Raw) | Should -Be $consumerRules -Because 'appending upstream rules would reverse the consumer .bat rule'
+        # And CLAUDE.md still synced, so the run was not a no-op.
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'baseline-claude-v2'
     }
 
     It 'scaffolds README.md from README.md.template on first sync into an empty consumer (issue #158)' {
