@@ -1164,11 +1164,16 @@ test('the placement guard warns before any capture begins', () => {
     // than after it. That ordering is the load-bearing part of the design: a
     // guard downstream would be choosing whether to discard a recording the
     // operator already spent minutes producing.
+    //
+    // --output-path is what makes the guard applicable at all since #471; the
+    // default lands in the gitignored session directory and is no longer a
+    // hazard to warn about. This case is still about ORDERING, not placement.
     const work = makeGuardedCheckout('guard-order');
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
             '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--output-path', 'docs/har-reference',
             // Required since #366; this case is about the guard's ORDERING.
             '--describe', 'placement-guard fixture'],
         { cwd: work, encoding: 'utf8' });
@@ -1201,42 +1206,55 @@ test('the closing notice names what was written and how to relocate it (#300)', 
     assert.match(text, /(^|\s)mv\s/m, 'reduces cleanup to a single move');
 });
 
-test('the recorder keeps the closing notice even when a front door warned (#300)', () => {
-    // Ownership is split on purpose. The front door owns the OPENING warning,
-    // because it is printed before this process exists and so cannot be lost.
-    // The recorder owns the CLOSING notice, because it is the process that
-    // actually wrote the files and prints it in-process.
-    //
-    // Suppressing this copy to avoid a duplicate would make the notice depend
-    // on the front door surviving from spawn to epilogue. A killed terminal, a
-    // hard Ctrl+C or an agent dying mid-session would then take the notice with
-    // it -- and it would be persisted as null in session.json, so `stop` and
-    // `status` recovery would stay silent too. A notice that only arrives when
-    // nothing went wrong is not a safety net.
-    const work = makeGuardedCheckout('guard-dupe');
+test('a default capture cannot strand anything, so it is not warned about (#471)', () => {
+    // The regression this issue exists for. Same checkout, same branch, same
+    // rule -- the only difference from the ordering case above is that no
+    // destination was named, so the output goes to the gitignored session
+    // directory and there is nothing to strand. Warning here is what trained
+    // the operator to answer yes and keep capturing from the protected branch.
+    const work = makeGuardedCheckout('guard-default');
     const res = require('child_process').spawnSync(
         process.execPath,
         [path.join(__dirname, 'capture-har.js'), 'start',
             '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
-            '--describe', 'closing-notice fixture'],
-        {
-            cwd: work,
-            encoding: 'utf8',
-            env: Object.assign({}, process.env, { HARCAPTURE_PLACEMENT_GUARD_RAN: '1' })
-        });
+            '--describe', 'default-destination fixture'],
+        { cwd: work, encoding: 'utf8' });
 
     assert.strictEqual(res.status, 0);
     assert.doesNotMatch(res.stderr, /primary checkout/i,
-        'the opening warning belongs to the front door that already printed it');
+        'the default destination is gitignored by construction (#377)');
 
     const session = JSON.parse(res.stdout);
-    assert.ok(session.placement, 'the recorder must keep ownership of the closing notice');
-    assert.strictEqual(session.placement.shouldWarn, true);
+    assert.strictEqual(session.placement, null,
+        'and so there is no closing relocation notice to give either');
+});
 
-    // Persisted, so a later `stop` or `status` in another process can still
-    // report it without re-probing.
-    const lines = capture.postProcessLines(session).map((l) => l[1]).join('\n');
-    assert.match(lines, /git worktree add/, 'the persisted session still yields the notice');
+test('an explicitly named destination that is gitignored is not warned about (#471)', () => {
+    // Naming a path is not itself the hazard -- naming one that will show up
+    // as untracked is. A consumer whose .gitignore already covers the
+    // destination has nothing to be told.
+    const work = makeGuardedCheckout('guard-ignored');
+    fs.writeFileSync(path.join(work, '.gitignore'), 'scratch/\n');
+    const res = require('child_process').spawnSync(
+        process.execPath,
+        [path.join(__dirname, 'capture-har.js'), 'start',
+            '--uri', 'https://app.example.com', '--port', '0', '--validate-only',
+            '--output-path', 'scratch',
+            '--describe', 'ignored-destination fixture'],
+        { cwd: work, encoding: 'utf8' });
+
+    assert.strictEqual(res.status, 0);
+    assert.doesNotMatch(res.stderr, /primary checkout/i);
+});
+
+test('placementForRun asks about the destination, not only the location (#471)', () => {
+    const onMain = { shouldWarn: true, protectedBranch: 'main', topLevel: '/repo' };
+    assert.strictEqual(
+        capture.placementForRun(onMain, { outputExplicit: false, outputPath: '/repo/x' }),
+        null, 'the default is never the hazard');
+    assert.strictEqual(
+        capture.placementForRun({ shouldWarn: false }, { outputExplicit: true, outputPath: '/repo/x' }),
+        null, 'a worktree is never warned about, named destination or not');
 });
 
 test('there is no closing notice when the guard never fired (#300)', () => {

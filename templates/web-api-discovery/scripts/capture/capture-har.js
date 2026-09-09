@@ -569,6 +569,48 @@ function resolveSessionPaths(opts = {}) {
 }
 
 /**
+ * Whether THIS RUN can strand committable output, as opposed to merely being
+ * launched from a checkout where some other run might (#471).
+ *
+ * The placement probes answer a question about the OPERATOR'S LOCATION: primary
+ * checkout, protected branch, repository declares the rule. That was the whole
+ * question while the default output was the work tree root -- #300's warning
+ * was true as written, because every run landed artifacts there.
+ *
+ * #377 ended that. The default output is now the run's own session directory
+ * under the gitignored captures root, so a default run cannot put anything in
+ * the work tree no matter where it was started from. Location alone stopped
+ * being evidence of harm, and a warning that fires without harm is not free:
+ * it is how the warning gets trained out of an operator's attention, which is
+ * exactly what happened -- the reported behaviour was answering yes and going
+ * on capturing from the protected branch, because the advisory was noise at
+ * the only step that raised it.
+ *
+ * So the location question gains the destination question, and the destination
+ * question is asked through classifyDestination() and nowhere else -- the same
+ * classifier outputDestinationWarning uses, for the same reason: a second
+ * gitignore check written here would be a second answer free to disagree.
+ *
+ * Returns the placement to warn about, or null when there is nothing to say --
+ * which is every default run, and every explicit destination that is gitignored
+ * or outside a work tree.
+ */
+function placementForRun(placement, paths) {
+    if (!placement || !placement.shouldWarn) { return null; }
+    // The default cannot be the hazard; only a destination the operator named.
+    if (!paths || !paths.outputExplicit) { return null; }
+    // Classified on a FILE inside the destination, not on the directory, so a
+    // consumer's .gitignore covering these artifacts by name at any depth is
+    // honoured -- the same call outputDestinationWarning makes.
+    const status = subsDestination.classifyDestination(
+        path.join(paths.outputPath, SCRUBBED_HAR));
+    if (status === subsDestination.IGNORED
+        || status === subsDestination.OUTSIDE_WORK_TREE) { return null; }
+    return placement;
+}
+
+
+/**
  * Is an EXPLICIT `--output-path` somewhere scrubbed artifacts will show up as
  * untracked files, and what to say about it?
  *
@@ -2418,7 +2460,7 @@ async function start(args) {
 
     const isTty = !!process.stdin.isTTY;
 
-    // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+    // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300, #471).
     //
     // This sits at the very top of `start`, ahead of the profile preflight, the
     // port scan and the browser, because the guard is only safe while nothing
@@ -2428,12 +2470,22 @@ async function start(args) {
     // than the misplacement it would prevent. So: advisory, never fatal, and
     // never moved downstream.
     //
-    // The PowerShell front door runs the same check and marks the environment,
-    // so an operator driving through Invoke-HarCapture is told once, not twice.
-    const placement = repoGuard.inspectCheckout(process.cwd());
-    if (placement.shouldWarn && !process.env.HARCAPTURE_PLACEMENT_GUARD_RAN) {
+    // The paths are resolved HERE, above the preflight they used to sit below,
+    // purely so the guard can consult them without moving downstream of the
+    // recording. resolveSessionPaths computes strings and writes nothing, so
+    // hoisting it changes no behaviour.
+    //
+    // THIS PROCESS IS THE ONLY OWNER of the decision (#471). The PowerShell
+    // front door used to run this same check first and mark the environment so
+    // the operator was told once, not twice; it no longer checks at all. The
+    // question is now "will this run write committable output into a work
+    // tree", and only the process that resolved the destination can answer it.
+    // A front door that guessed would be a second answer free to disagree.
+    const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
+    const placement = placementForRun(repoGuard.inspectCheckout(process.cwd()), paths);
+    if (placement) {
         process.stderr.write('capture-har: ' +
-            repoGuard.guardMessage(placement).split('\n').join('\n  ') + '\n');
+            repoGuard.guardMessage(placement).split('\n').join('\n' + '  ') + '\n');
     }
 
     // Preflight FIRST -- before the port scan and long before a browser.
@@ -2457,8 +2509,6 @@ async function start(args) {
             return 1;
         }
     }
-
-    const paths = resolveSessionPaths({ uri: args.uri, outputPath: args['output-path'] });
 
     // WHERE THE BYTES ARE GOING, said on the way IN (#367).
     //
@@ -2505,7 +2555,7 @@ async function start(args) {
         // copy would make the notice depend on another process surviving, and
         // a notice that only arrives when nothing went wrong is not a safety
         // net.
-        placement: placement.shouldWarn ? placement : null,
+        placement,
         profileDir,
         externalProfile,
         storageState,
@@ -3261,6 +3311,7 @@ module.exports = {
     deriveActionSlug,
     providerSlug,
     outputDestinationWarning,
+    placementForRun,
     ensureCapturesRootIgnored,
     capturesRootProbe,
     CAPTURE_GITIGNORE_ENTRIES,

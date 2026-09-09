@@ -104,8 +104,13 @@
     would be user-hostile, and the session directory keeps its own copy either
     way. The raw capture never goes here under any value.
 
-    Recording from the primary checkout on the protected branch additionally
-    warns before anything is recorded; see ../lib/RepoWorkflowGuard.ps1.
+    Recording from the primary checkout on the protected branch is NOT warned
+    about on its own (#471). It used to be, from here, back when the default
+    output was the work tree root. The default is now the gitignored session
+    directory, so where you are standing no longer decides whether anything
+    committable is left behind -- only where this parameter points does. The
+    recorder makes that call once, with the resolved destination in hand; see
+    placementForRun in capture-har.js.
 
 .PARAMETER Describe
     REQUIRED. What this recording is for, in your own words. Omitting it is a
@@ -237,11 +242,6 @@ if ([string]::IsNullOrWhiteSpace($Describe)) {
     exit 2
 }
 
-# The placement guard is SHARED, not reimplemented here. Bespoke per-script
-# logic about where output may land is how the defect in #300 arrived, so every
-# output-producing script dot-sources the one implementation.
-. (Join-Path $PSScriptRoot '..' 'lib' 'RepoWorkflowGuard.ps1')
-
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Error 'node not found on PATH -- install Node.js >= 18 to record a capture.'
     return
@@ -323,23 +323,24 @@ if (-not $uriFolder) {
     return
 }
 
-# WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300).
+# WHERE THE OUTPUT WILL LAND is decided by the RECORDER, not here (#471).
 #
-# This sits ahead of the node invocation because the guard is only safe while
-# nothing has been recorded yet. Warn a second in and cancelling costs the
-# operator nothing; warn after a capture and the choice becomes "discard the
-# recording you just spent minutes producing", which is worse than the
-# misplacement it would prevent. Advisory, never fatal, and never moved
-# downstream.
-$placement = Get-CheckoutPlacement -Path '.'
-if (-not (Assert-NotPrimaryCheckoutOnProtectedBranch -Placement $placement)) {
-    Write-Information 'Cancelled before recording -- nothing was written.'
-    return
-}
-
-# The recorder runs the same check. Telling it the guard already fired is what
-# keeps an operator coming through this front door from being warned twice.
-$env:HARCAPTURE_PLACEMENT_GUARD_RAN = '1'
+# This used to probe the checkout and warn before spawning node, then set
+# HARCAPTURE_PLACEMENT_GUARD_RAN so the recorder stayed quiet and the operator
+# was told once rather than twice.
+#
+# The question it was asking stopped being answerable from here. Since #377 the
+# default output is the run's own session directory under the gitignored
+# captures root, so being on the protected branch no longer implies this run
+# will leave anything committable in the work tree -- only an explicitly named
+# `-OutputPath` can do that, and whether THAT path is gitignored is a question
+# about a destination this script never resolves. The recorder resolves it, so
+# the recorder decides; see placementForRun in capture-har.js.
+#
+# Guessing from here would be a second answer free to disagree with the first,
+# which is the failure this guard was extracted into a shared library to avoid.
+# The handshake env var goes with it: with one owner there is no second warning
+# to suppress.
 
 # WHY THIS STILL HANDS THE WHOLE PIPELINE TO THE RECORDER, and does not call
 # Invoke-SanitizeHar.ps1 and Invoke-HarCatalogue.ps1 in turn (#352).
@@ -397,16 +398,8 @@ Write-Information 'Recording. Browse, then press ENTER in the recorder terminal 
 # Every human-facing line the recorder emits -- the banner, the ENTER prompt,
 # the Ctrl+C question, the warnings, the catalogue table -- goes to stderr, so
 # capturing stdout leaves the interactive experience untouched.
-try {
-    $recorderStdout = & node $captureJs @captureArgs
-    $exit = $LASTEXITCODE
-}
-finally {
-    # Scoped to this invocation. Leaving it set would silence the recorder's own
-    # warning for every later capture in the same session, including ones this
-    # front door never saw.
-    Remove-Item Env:HARCAPTURE_PLACEMENT_GUARD_RAN -ErrorAction SilentlyContinue
-}
+$recorderStdout = & node $captureJs @captureArgs
+$exit = $LASTEXITCODE
 Write-Verbose "capture-har.js exited $exit"
 
 # Exit codes are documented on capture-har.js. 5 means raw.har was assembled
