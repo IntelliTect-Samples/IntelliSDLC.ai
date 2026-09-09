@@ -174,6 +174,15 @@ $script:TemplateScaffoldMap = [ordered]@{
     'CLAUDE.project.md.template'                            = 'CLAUDE.project.md'
     'README.md.template'                                    = 'README.md'
     'docs/README.md'                                        = 'docs/README.md'
+    # Line-ending normalization. Scaffold-once, same-name, NOT union-merged:
+    # .gitattributes is last-match-wins per attribute, so appending upstream's
+    # `* text=auto eol=lf` to the end of a consumer's file would silently
+    # reverse every earlier, more specific rule it had made. Scaffolding only
+    # fires when the target is absent, so a consumer that already has one is
+    # never touched, and a consumer that has none stops accumulating mixed
+    # line endings (issues #167, #173, #449; supersedes the standalone
+    # Initialize-GitDefaults.ps1 of #160, closed as not-planned).
+    '.gitattributes'                                        = '.gitattributes'
     # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
     # setup workflow are consumer-owned but seeded once from upstream via the
     # same-name scaffold (like docs/README.md), so a fresh consumer gets a
