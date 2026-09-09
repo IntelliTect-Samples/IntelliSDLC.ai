@@ -139,6 +139,20 @@ BeforeAll {
     }
 
     # The Node guard's verdict for the same directory, so the two can be compared.
+    # The destination half of the guard (#471), asked of the Node side so the
+    # table below can pin it against the PowerShell one. Run WITH the checkout
+    # as cwd, because classifyDestination asks git from where it is standing.
+    function Get-NodeStranding {
+        param([Parameter(Mandatory)][string]$Cwd, [Parameter(Mandatory)][string]$Destination)
+        $js = "const g=require(process.argv[1]);" +
+              "const p=g.strandingPlacement(process.argv[2]);" +
+              "process.stdout.write(JSON.stringify({warns: !!p}));"
+        Push-Location -LiteralPath $Cwd
+        try { $json = & node -e $js $script:GuardJs $Destination }
+        finally { Pop-Location }
+        return $json | ConvertFrom-Json
+    }
+
     function Get-NodePlacement {
         param([Parameter(Mandatory)][string]$Path)
         $js = "const g=require(process.argv[1]);" +
@@ -523,6 +537,176 @@ Describe 'check-dirty-primary-checkout -- the session-level safety net' {
             ConvertFrom-Json
         $commands = $settings.hooks.Stop.hooks.command
         ($commands -join ' ') | Should -Match 'check-dirty-primary-checkout'
+    }
+}
+
+Describe 'the destination question -- will THIS write strand anything (#471)' {
+    It 'reports a path that is not gitignored as committable' {
+        $work = New-Checkout -Name 'dest-plain' -TrackedHooks -HooksPath '.githooks'
+        Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') |
+            Should -Be 'not-ignored'
+    }
+
+    It 'reports a gitignored path as ignored, even before it exists' {
+        # The guard runs BEFORE the write, so the path it asks about is by
+        # definition one that is not there yet. Answering from the nearest
+        # existing ancestor is what makes a pre-write guard possible at all.
+        $work = New-Checkout -Name 'dest-ign' -TrackedHooks -HooksPath '.githooks'
+        Set-Content -LiteralPath (Join-Path $work '.gitignore') -Value 'scratch/'
+        Get-DestinationIgnoreStatus -Destination (Join-Path $work 'scratch/deep/x.har') |
+            Should -Be 'ignored'
+    }
+
+    It 'reports a path outside any work tree as such' {
+        $plain = Join-Path $script:Tmp 'dest-outside'
+        New-Item -ItemType Directory -Path $plain -Force | Out-Null
+        Get-DestinationIgnoreStatus -Destination (Join-Path $plain 'x.har') |
+            Should -Be 'outside-work-tree'
+    }
+
+    It 'warns only when BOTH halves hold -- on the protected branch AND committable' {
+        $work = New-Checkout -Name 'strand-both' -TrackedHooks -HooksPath '.githooks'
+        Get-StrandingPlacement -Destination (Join-Path $work 'docs/x.har') -Path $work |
+            Should -Not -BeNullOrEmpty
+    }
+
+    It 'stays silent for a gitignored destination on the protected branch' {
+        # The regression #471 is named for, in its general form: being on the
+        # protected branch is not by itself evidence that this run will leave
+        # anything behind.
+        $work = New-Checkout -Name 'strand-ign' -TrackedHooks -HooksPath '.githooks'
+        Set-Content -LiteralPath (Join-Path $work '.gitignore') -Value 'scratch/'
+        Get-StrandingPlacement -Destination (Join-Path $work 'scratch/x.har') -Path $work |
+            Should -BeNullOrEmpty
+    }
+
+    It 'stays silent in a worktree, committable destination or not' {
+        $work = New-Checkout -Name 'strand-wt' -TrackedHooks -HooksPath '.githooks'
+        $wt = Join-Path $script:Tmp 'strand-wt-tree'
+        Invoke-Git $work @('worktree', 'add', $wt, '-b', 'feat/strand') | Out-Null
+        Get-StrandingPlacement -Destination (Join-Path $wt 'docs/x.har') -Path $wt |
+            Should -BeNullOrEmpty
+    }
+
+    It 'hands over the worktree command AND the retargeted re-run, both filled in' {
+        # A pre-write guard cannot end in `mv`; the actionable fix is the pair.
+        # A command the operator has to reconstruct from prose is one they skip,
+        # which is how #471 was reported in the first place.
+        $work = New-Checkout -Name 'strand-msg' -TrackedHooks -HooksPath '.githooks'
+        $placement = Get-CheckoutPlacement -Path $work
+        $notice = Get-StrandingNotice -Placement $placement -Destination 'docs/x.har' `
+            -ReRunCommand 'node extract.js --out .worktrees/<name>/docs/x.har' `
+            -WorktreeName 'har-reference'
+
+        $notice | Should -Match 'git worktree add \.worktrees/har-reference'
+        $notice | Should -Match 'extract\.js'
+        $notice | Should -Match 'Continuing anyway is safe'
+    }
+
+    It 'warns and proceeds non-interactively -- an agent is never prompted' {
+        $work = New-Checkout -Name 'strand-agent' -TrackedHooks -HooksPath '.githooks'
+        $dest = Join-Path $work 'docs/x.har'
+        $warned = @()
+        $r = Assert-DestinationCommittable -Destination $dest -Path $work `
+            -ReRunCommand 'node extract.js' -WarningVariable warned
+        $r.Proceed | Should -BeTrue
+        $r.Destination | Should -Be $dest -Because 'nothing is silently relocated without consent'
+        $r.Relocated | Should -BeFalse
+        ($warned -join ' ') | Should -Match 'git worktree add'
+    }
+
+    It 'is silent and returns the destination untouched when there is nothing to say' {
+        $work = New-Checkout -Name 'strand-quiet' -TrackedHooks -HooksPath '.githooks'
+        Set-Content -LiteralPath (Join-Path $work '.gitignore') -Value 'scratch/'
+        $dest = Join-Path $work 'scratch/x.har'
+        $warned = @()
+        $r = Assert-DestinationCommittable -Destination $dest -Path $work -WarningVariable warned
+        $r.Proceed | Should -BeTrue
+        $r.Destination | Should -Be $dest
+        ($warned -join ' ') | Should -Not -Match 'git worktree add'
+    }
+}
+
+Describe 'New-GuardWorktree -- the offer that does the work for you (#471)' {
+    It 'creates the worktree off the protected branch and retargets into it' {
+        # The whole point of offering: a guard that only prints a command still
+        # leaves the operator to run it, and the reported behaviour was not
+        # running it. Accepting has to end with the output actually going
+        # somewhere committable.
+        $work = New-Checkout -Name 'wt-make' -TrackedHooks -HooksPath '.githooks'
+        $placement = Get-CheckoutPlacement -Path $work
+        $r = New-GuardWorktree -Placement $placement -Name 'har-reference' `
+            -Destination (Join-Path $work 'docs/x.har')
+
+        $r.Relocated | Should -BeTrue
+        $r.Destination | Should -Match 'har-reference'
+        Join-Path $work '.worktrees/har-reference' | Should -Exist
+        (Invoke-Git $work @('worktree', 'list')) -join ' ' | Should -Match 'chore/har-reference'
+    }
+
+    It 'reports and declines rather than throwing when the name is taken' {
+        # Advisory to the end. A step that would have run without the offer must
+        # still run when the offer cannot be honoured -- returning $null is how
+        # the caller learns to fall back to the original destination.
+        $work = New-Checkout -Name 'wt-taken' -TrackedHooks -HooksPath '.githooks'
+        New-Item -ItemType Directory -Path (Join-Path $work '.worktrees/taken') -Force | Out-Null
+        $placement = Get-CheckoutPlacement -Path $work
+        $warned = @()
+        $r = New-GuardWorktree -Placement $placement -Name 'taken' `
+            -Destination (Join-Path $work 'docs/x.har') -WarningVariable warned
+
+        $r | Should -BeNullOrEmpty
+        ($warned -join ' ') | Should -Match 'already exists'
+    }
+
+    It 'keeps a destination outside the checkout where the operator put it' {
+        # Re-rooting a path that was never relative to this work tree would move
+        # the output somewhere nobody asked for.
+        $work = New-Checkout -Name 'wt-outside' -TrackedHooks -HooksPath '.githooks'
+        $elsewhere = Join-Path $script:Tmp 'wt-outside-elsewhere'
+        New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+        $dest = Join-Path $elsewhere 'x.har'
+        $placement = Get-CheckoutPlacement -Path $work
+        $r = New-GuardWorktree -Placement $placement -Name 'outside' -Destination $dest -WarningAction SilentlyContinue
+
+        $r.Relocated | Should -BeFalse
+        $r.Destination | Should -Be $dest
+    }
+}
+
+Describe 'the destination guards agree -- one rule, two runtimes (#471)' {
+    It 'reaches the same verdict for <Name>' -ForEach @(
+        @{ Name = 'a committable path on the protected branch'; Setup = 'committable' }
+        @{ Name = 'a gitignored path on the protected branch';  Setup = 'ignored' }
+        @{ Name = 'a committable path in a worktree';           Setup = 'worktree' }
+        @{ Name = 'a path outside any work tree';               Setup = 'outside' }
+    ) {
+        $ctx = switch ($Setup) {
+            'committable' {
+                $w = New-Checkout -Name "dcmp-$Setup" -TrackedHooks -HooksPath '.githooks'
+                @{ Cwd = $w; Dest = (Join-Path $w 'docs/x.har') }
+            }
+            'ignored' {
+                $w = New-Checkout -Name "dcmp-$Setup" -TrackedHooks -HooksPath '.githooks'
+                Set-Content -LiteralPath (Join-Path $w '.gitignore') -Value 'scratch/'
+                @{ Cwd = $w; Dest = (Join-Path $w 'scratch/x.har') }
+            }
+            'worktree' {
+                $w = New-Checkout -Name "dcmp-$Setup" -TrackedHooks -HooksPath '.githooks'
+                $t = Join-Path $script:Tmp "dcmp-$Setup-tree"
+                Invoke-Git $w @('worktree', 'add', $t, '-b', 'feat/dcmp') | Out-Null
+                @{ Cwd = $t; Dest = (Join-Path $t 'docs/x.har') }
+            }
+            'outside' {
+                $d = Join-Path $script:Tmp "dcmp-$Setup"
+                New-Item -ItemType Directory -Path $d -Force | Out-Null
+                @{ Cwd = $d; Dest = (Join-Path $d 'x.har') }
+            }
+        }
+
+        $ps = [bool](Get-StrandingPlacement -Destination $ctx.Dest -Path $ctx.Cwd)
+        $js = (Get-NodeStranding -Cwd $ctx.Cwd -Destination $ctx.Dest).warns
+        $ps | Should -Be $js -Because 'the two runtimes must not drift on the destination question'
     }
 }
 
