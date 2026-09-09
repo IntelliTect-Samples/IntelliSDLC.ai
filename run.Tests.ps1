@@ -594,6 +594,80 @@ Describe 'Test-RootHelpRequest' {
         Test-RootHelpRequest -Command '' -Argument $null | Should -BeFalse
     }
 }
+Describe 'Resolve-VerbosePassthrough (issue #461)' {
+    It 're-injects --verbose when PowerShell swallowed the flag' {
+        # ./run.ps1 mycommand -v  ->  [CmdletBinding()] prefix-matches -v to
+        # -Verbose and strips it, so the app never sees it.
+        $result = Resolve-VerbosePassthrough -ArgList @('mycommand') -VerboseBound $true
+        $result.Count | Should -Be 2
+        $result[0] | Should -Be '--verbose'
+        $result[1] | Should -Be 'mycommand'
+    }
+
+    It 'does not double the flag when --verbose is already present' {
+        $result = Resolve-VerbosePassthrough -ArgList @('--verbose', 'mycommand') -VerboseBound $true
+        $result.Count | Should -Be 2
+        $result[0] | Should -Be '--verbose'
+    }
+
+    It 'does not double the flag when -v survived in the argument list' {
+        # `./run.ps1 -- mycommand -v` keeps -v: `--` ends parameter binding.
+        $result = Resolve-VerbosePassthrough -ArgList @('mycommand', '-v') -VerboseBound $true
+        $result.Count | Should -Be 2
+        $result[1] | Should -Be '-v'
+    }
+
+    It 'leaves the argument list alone when -Verbose was not bound' {
+        $result = Resolve-VerbosePassthrough -ArgList @('mycommand') -VerboseBound $false
+        $result.Count | Should -Be 1
+        $result[0] | Should -Be 'mycommand'
+    }
+
+    It 'returns an array for a single-element list rather than unrolling it' {
+        # The `, $ArgList` comma operator guards this; without it PowerShell
+        # unrolls the one-element array to a bare string.
+        $result = Resolve-VerbosePassthrough -ArgList @('mycommand') -VerboseBound $false
+        , $result | Should -BeOfType [System.Array]
+    }
+
+    It 'accepts an empty or null argument list without throwing' {
+        $empty = Resolve-VerbosePassthrough -ArgList @() -VerboseBound $false
+        , $empty | Should -BeOfType [System.Array]
+        $empty.Count | Should -Be 0
+
+        $fromNull = Resolve-VerbosePassthrough -ArgList $null -VerboseBound $true
+        $fromNull.Count | Should -Be 1
+        $fromNull[0] | Should -Be '--verbose'
+    }
+}
+
+Describe 'Forwarded argument pipeline composes flat (issue #461)' {
+    # run.ps1 chains ConvertTo-ForwardedArgument into Resolve-VerbosePassthrough
+    # and forwards the result. Both return `, $list`, so a caller that wraps the
+    # call in @() re-nests the list one level deep. Splatting flattens that back
+    # out, which hid the mistake -- until Resolve-VerbosePassthrough's [string[]]
+    # parameter coerced a nested array into one space-joined token.
+
+    It 'keeps every token separate through both helpers' {
+        $normalized = ConvertTo-ForwardedArgument -Argument @('post', '--to', @('a', 'b'))
+        $result = Resolve-VerbosePassthrough -ArgList $normalized -VerboseBound $false
+        $result.Count | Should -Be 3
+        $result[1] | Should -Be '--to'
+        $result[2] | Should -Be 'a,b' -Because 'the comma token must not become "--to a,b"'
+    }
+
+    It 'forwards no argument at all when the caller supplied none' {
+        $normalized = ConvertTo-ForwardedArgument -Argument @()
+        $result = Resolve-VerbosePassthrough -ArgList $normalized -VerboseBound $false
+        $result.Count | Should -Be 0 -Because 'an empty list must not arrive as one empty argument'
+    }
+
+    It 'contains no nested array after normalization' {
+        $normalized = ConvertTo-ForwardedArgument -Argument @('--to', @('a', 'b'))
+        foreach ($token in $normalized) { $token | Should -BeOfType [string] }
+    }
+}
+
 Describe 'Transient build status (issue #249)' {
 
     BeforeEach {
