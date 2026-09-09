@@ -441,6 +441,42 @@ function ConvertTo-ForwardedArgument {
         })
 }
 
+function Resolve-VerbosePassthrough {
+    <#
+    .SYNOPSIS
+        Re-injects `--verbose` into the forwarded argument list when PowerShell
+        consumed the caller's `-v` before the script body ran.
+    .DESCRIPTION
+        `[CmdletBinding()]` gives this script the `-Verbose` common parameter,
+        and PowerShell resolves the unambiguous prefix `-v` to it. So
+        `./run.ps1 mycommand -v` binds -Verbose and drops `-v` from the
+        remaining arguments: the application runs without verbose output and
+        nothing reports that a flag was swallowed (issue #461).
+
+        Fires only when the caller actually bound -Verbose, and is a no-op when
+        a verbose flag already survived, so the flag can never be forwarded
+        twice. Call it AFTER the leading positional token has been folded into
+        the argument list -- `./run.ps1 -Verbose -- --verbose` binds -Verbose
+        AND leaves `--verbose` in $Command, and only the folded list can see it.
+
+        The parameter is $ArgList, not $Args: $Args is a PowerShell automatic
+        variable and cannot name a parameter.
+    .OUTPUTS
+        [string[]] the argument list to forward.
+    #>
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param(
+        [AllowNull()][string[]]$ArgList,
+        [bool]$VerboseBound
+    )
+
+    if ($null -eq $ArgList) { $ArgList = @() }
+    if (-not $VerboseBound) { return , $ArgList }
+    if ($ArgList -contains '--verbose' -or $ArgList -contains '-v') { return , $ArgList }
+    return , (@('--verbose') + $ArgList)
+}
+
 function Test-RootHelpRequest {
     <#
     .SYNOPSIS
@@ -521,7 +557,13 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 # Normalize forwarded arguments before anything inspects them, so array
 # literals survive as typed (see ConvertTo-ForwardedArgument).
-$Args = @(ConvertTo-ForwardedArgument -Argument $Args)
+#
+# Assign the result directly -- NOT `@(...)`. These helpers return `, $list`,
+# whose single level of output unrolling already yields the list itself; an
+# extra @() re-nests it, producing a one-element array holding the real one.
+# Splatting flattened that back out, so it stayed invisible until a [string[]]
+# parameter coerced the nested array to a single space-joined string (#461).
+$Args = ConvertTo-ForwardedArgument -Argument $Args
 
 # PowerShell binds positional args (even after `--`) to $Command before $Args,
 # so `.\run.ps1 -- --flag ...` or `.\run.ps1 mycmd` both land with $Command
@@ -533,6 +575,11 @@ if ($Command -and ($Command.StartsWith('-') -or $Command -notin $ReservedCommand
     $Args = @($Command) + $Args
     $Command = ''
 }
+
+# Restore a `-v` that [CmdletBinding()] prefix-matched to -Verbose and stripped
+# (issue #461). After the fold above, so a `--verbose` that landed in $Command
+# is visible here and the flag is not forwarded twice.
+$Args = Resolve-VerbosePassthrough -ArgList $Args -VerboseBound $PSBoundParameters.ContainsKey('Verbose')
 
 # --- Help mode ---
 # Root help is requested only when the LEADING token is `help` or a help flag.
