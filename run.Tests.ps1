@@ -727,7 +727,14 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         # The same nesting produced a one-element list holding an empty array,
         # which arrived at the app as a single empty argument.
         & $script:runScript | Out-Null
-        Get-ForwardedToken | Should -BeNullOrEmpty
+        $captured = @(Get-CapturedDotnetArg)
+        # Prove the shim actually fired FIRST. Get-ForwardedToken reports the
+        # same empty result whether run.ps1 forwarded nothing or never invoked
+        # dotnet at all, so asserting only on it would stay green through a
+        # regression that lost the invocation entirely.
+        $captured.Count | Should -BeGreaterThan 0 -Because 'run.ps1 must have reached `& dotnet` for this assertion to mean anything'
+        $captured[0] | Should -Be 'run'
+        $captured | Should -Not -Contain '--' -Because 'with nothing to forward, run.ps1 must not append the separator at all'
     }
 
     It 'forwards --verbose when PowerShell swallowed the caller -v' {
