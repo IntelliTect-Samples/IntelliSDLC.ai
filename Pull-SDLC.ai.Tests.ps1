@@ -537,6 +537,40 @@ Describe '.gitattributes delivery (issues #167, #449)' {
         $script:TemplateScaffoldMap['.gitattributes'] | Should -Be '.gitattributes'
     }
 
+    It 'scaffolds .gitattributes when absent and skips it when present, through the real map (issue #449)' {
+        # Drives $script:TemplateScaffoldMap itself rather than a hand-built
+        # map, so deleting the entry fails this test. Both branches are
+        # asserted in ONE test on purpose: "skips when present" alone passes
+        # just as well when the scaffolder was never told about the file at
+        # all, which is exactly how a missing entry hides.
+        $src = Join-Path $TestDrive ("ga-src-" + [guid]::NewGuid().ToString('N'))
+        $absent = Join-Path $TestDrive ("ga-absent-" + [guid]::NewGuid().ToString('N'))
+        $present = Join-Path $TestDrive ("ga-present-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $src, $absent, $present -Force | Out-Null
+
+        Push-Location $src
+        try {
+            git init -q -b main
+            git config user.email t@t.t
+            git config user.name t
+            'UPSTREAM_GITATTRIBUTES_BODY' | Out-File -Encoding utf8 .gitattributes -NoNewline
+            git add -A | Out-Null
+            git commit -q -m 'seed'
+        } finally { Pop-Location }
+
+        # Consumer has none -> upstream's is delivered.
+        $scaffolded = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $absent -ScaffoldMap $script:TemplateScaffoldMap -Ref HEAD)
+        $scaffolded | Should -Contain '.gitattributes'
+        (Get-Content (Join-Path $absent '.gitattributes') -Raw).Trim() | Should -Be 'UPSTREAM_GITATTRIBUTES_BODY'
+
+        # Consumer already has one -> the scaffolder RAN and chose to skip it.
+        $consumerRules = '*.bat text eol=crlf'
+        Set-Content -LiteralPath (Join-Path $present '.gitattributes') -Value $consumerRules -NoNewline
+        $skipped = @(Invoke-TemplateScaffold -SourceRoot $src -TargetRoot $present -ScaffoldMap $script:TemplateScaffoldMap -Ref HEAD)
+        $skipped | Should -Not -Contain '.gitattributes' -Because 'scaffolding fires only when the target is absent'
+        (Get-Content (Join-Path $present '.gitattributes') -Raw) | Should -Be $consumerRules
+    }
+
     It '.gitattributes remains on the always-local list (consumer-owned, never touched by sync)' {
         Test-IsAlwaysLocalPath -Path '.gitattributes' | Should -BeTrue
     }
@@ -1283,6 +1317,8 @@ Describe 'Invoke-PullSDLC end-to-end' {
             -Seed {
                 'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
                 '* text=auto eol=lf' | Out-File -Encoding utf8 .gitattributes -NoNewline
+                New-Item -ItemType Directory -Path docs -Force | Out-Null
+                'UPSTREAM_DOCS_README_BODY' | Out-File -Encoding utf8 docs/README.md -NoNewline
             } `
             -Tweak {
                 'baseline-claude-v2' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
@@ -1295,8 +1331,14 @@ Describe 'Invoke-PullSDLC end-to-end' {
         Push-Location $fx.Consumer
         try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
 
+        # Remove another same-name scaffold target so the scaffolder is known
+        # to have run in THIS sync. Without this, the assertion below passes
+        # equally well when scaffolding never engaged at all.
+        Remove-Item -Force (Join-Path $fx.Consumer 'docs/README.md') -ErrorAction SilentlyContinue
+
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
         $rc | Should -Be 0
+        Test-Path (Join-Path $fx.Consumer 'docs/README.md') | Should -BeTrue -Because 'the scaffolder must have run for the skip below to mean anything'
         (Get-Content (Join-Path $fx.Consumer '.gitattributes') -Raw) | Should -Be $consumerRules -Because 'appending upstream rules would reverse the consumer .bat rule'
         # And CLAUDE.md still synced, so the run was not a no-op.
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'baseline-claude-v2'
