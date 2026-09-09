@@ -455,12 +455,24 @@ function Resolve-VerbosePassthrough {
 
         Fires only when the caller actually bound -Verbose, and is a no-op when
         a verbose flag already survived, so the flag can never be forwarded
-        twice. Call it AFTER the leading positional token has been folded into
-        the argument list -- `./run.ps1 -Verbose -- --verbose` binds -Verbose
-        AND leaves `--verbose` in $Command, and only the folded list can see it.
+        twice.
 
-        The parameter is $ArgList, not $Args: $Args is a PowerShell automatic
-        variable and cannot name a parameter.
+        Call it ONLY from the run-mode path, and only after the leading
+        positional token has been folded into the argument list. See the call
+        site for both reasons.
+
+        The flag is PREPENDED. PowerShell destroyed the position information
+        -- `./run.ps1 -v mycommand` and `./run.ps1 mycommand -v` arrive
+        identically -- so no placement can be faithful to what the caller
+        typed. Prepending is the shape proven in the consuming project this is
+        backported from, and it suits a CLI whose verbose flag is a global
+        option. A CLI that accepts the flag only after its subcommand is not
+        served by it; such a project should handle -v itself rather than rely
+        on this reconstruction.
+
+        The parameter is $ArgList, not $Args: a parameter literally named
+        $Args can be declared, but it collides with the automatic variable and
+        silently binds nothing.
     .OUTPUTS
         [string[]] the argument list to forward.
     #>
@@ -576,11 +588,6 @@ if ($Command -and ($Command.StartsWith('-') -or $Command -notin $ReservedCommand
     $Command = ''
 }
 
-# Restore a `-v` that [CmdletBinding()] prefix-matched to -Verbose and stripped
-# (issue #461). After the fold above, so a `--verbose` that landed in $Command
-# is visible here and the flag is not forwarded twice.
-$Args = Resolve-VerbosePassthrough -ArgList $Args -VerboseBound $PSBoundParameters.ContainsKey('Verbose')
-
 # --- Help mode ---
 # Root help is requested only when the LEADING token is `help` or a help flag.
 # `./run.ps1 post --to fb --help` forwards `--help` to the app instead.
@@ -622,6 +629,20 @@ if ($Command -eq 'test') {
 }
 
 # --- Run mode ---
+
+# Restore a `-v` that [CmdletBinding()] prefix-matched to -Verbose and stripped
+# (issue #461).
+#
+# Here, not next to the fold above, because run mode is the only path that
+# forwards $Args to the APPLICATION. Test mode appends them straight to
+# `dotnet test`, which has no --verbose switch: injecting there turned a
+# previously harmless `./run.ps1 -Verbose test` into `MSBUILD : error MSB1001:
+# Unknown switch`. Help mode ignores $Args entirely.
+#
+# Still after the $Command fold, so a `--verbose` the caller wrote after `--`
+# -- which lands in $Command while -Verbose is ALSO bound -- is visible and
+# the flag is not forwarded twice.
+$Args = Resolve-VerbosePassthrough -ArgList $Args -VerboseBound $PSBoundParameters.ContainsKey('Verbose')
 
 # If explicit project provided, use it directly
 if ($Project) {

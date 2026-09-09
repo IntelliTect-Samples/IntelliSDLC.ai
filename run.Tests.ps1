@@ -641,30 +641,129 @@ Describe 'Resolve-VerbosePassthrough (issue #461)' {
     }
 }
 
-Describe 'Forwarded argument pipeline composes flat (issue #461)' {
-    # run.ps1 chains ConvertTo-ForwardedArgument into Resolve-VerbosePassthrough
-    # and forwards the result. Both return `, $list`, so a caller that wraps the
-    # call in @() re-nests the list one level deep. Splatting flattens that back
-    # out, which hid the mistake -- until Resolve-VerbosePassthrough's [string[]]
-    # parameter coerced a nested array into one space-joined token.
+Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)' {
+    # These exercise the MAIN BODY, which dot-sourcing cannot reach (run.ps1
+    # returns early when $MyInvocation.InvocationName is '.'). That matters:
+    # the argument-nesting defect #461 fixes lived at a CALL SITE, not inside
+    # any function, so every function-level test passed while the script itself
+    # forwarded `post --to a,b` to the app as the single token `post --to a,b`.
+    #
+    # `& $run ...` runs run.ps1 in a child SCOPE, not a child process, so a
+    # `dotnet` function defined here shadows the real executable and captures
+    # the exact argument vector run.ps1 built -- no process boundary, no
+    # command-line quoting to reinterpret, and no build to wait for.
 
-    It 'keeps every token separate through both helpers' {
-        $normalized = ConvertTo-ForwardedArgument -Argument @('post', '--to', @('a', 'b'))
-        $result = Resolve-VerbosePassthrough -ArgList $normalized -VerboseBound $false
-        $result.Count | Should -Be 3
-        $result[1] | Should -Be '--to'
-        $result[2] | Should -Be 'a,b' -Because 'the comma token must not become "--to a,b"'
+    BeforeAll {
+        $script:runFixture = Join-Path ([System.IO.Path]::GetTempPath()) ("run-argv-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:runFixture -Force | Out-Null
+        New-CsprojStub -Path (Join-Path $script:runFixture 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $script:runFixture 'run.ps1')
+        $script:runScript = Join-Path $script:runFixture 'run.ps1'
+        $script:capturePath = Join-Path $script:runFixture 'dotnet-argv.txt'
+
+        # One scriptblock holding the shim AND the accessors, dot-sourced at
+        # the top of every It so all three are defined in THAT It's scope --
+        # the only scope `& $script:runScript` inherits, and the only scope an
+        # It body can call a helper from. Deliberately not global: a global
+        # `dotnet` shim survives Invoke-Pester (the Function provider takes no
+        # scope qualifier, so `Remove-Item function:global:dotnet` silently
+        # removes nothing) and every sibling suite in the same session would
+        # then run against a fake dotnet.
+        $escapedCapture = $script:capturePath -replace "'", "''"
+        $script:UseDotnetShim = [scriptblock]::Create(@"
+            `$__capture = '$escapedCapture'
+            if (Test-Path -LiteralPath `$__capture) { Remove-Item -LiteralPath `$__capture -Force }
+
+            function dotnet {
+                # Capture to a file, not a variable: no scope rule then decides
+                # whether the assertion can see what the shim recorded.
+                Set-Content -LiteralPath `$__capture -Value (@(`$args) -join "``n") -NoNewline
+                `$global:LASTEXITCODE = 0
+            }
+
+            # These two return PLAIN arrays, never a comma-wrapped one. Their
+            # callers read them through @(...), and @() around a comma-wrapped
+            # return re-nests the list -- the very defect this Describe exists
+            # to catch. It silently made every assertion here read as empty
+            # until it was found.
+            # The full argument vector run.ps1 handed to dotnet.
+            function Get-CapturedDotnetArg {
+                if (-not (Test-Path -LiteralPath `$__capture)) { return @() }
+                `$raw = Get-Content -LiteralPath `$__capture -Raw
+                if (`$null -eq `$raw -or `$raw -eq '') { return @() }
+                return @(`$raw -split "``n")
+            }
+
+            # The tokens run.ps1 forwards to the app: everything after the `--`
+            # separator it appends. `$null when it never appended one.
+            function Get-ForwardedToken {
+                `$captured = @(Get-CapturedDotnetArg)
+                `$sep = [array]::IndexOf(`$captured, '--')
+                if (`$sep -lt 0) { return `$null }
+                # Guard the empty tail: PowerShell's .. builds a DESCENDING
+                # range when the start exceeds the end, so a trailing '--'
+                # would hand back the whole command line reversed.
+                if (`$sep -eq (`$captured.Count - 1)) { return @() }
+                return @(`$captured[(`$sep + 1)..(`$captured.Count - 1)])
+            }
+"@)
     }
 
-    It 'forwards no argument at all when the caller supplied none' {
-        $normalized = ConvertTo-ForwardedArgument -Argument @()
-        $result = Resolve-VerbosePassthrough -ArgList $normalized -VerboseBound $false
-        $result.Count | Should -Be 0 -Because 'an empty list must not arrive as one empty argument'
+    AfterAll {
+        Remove-Item -Recurse -Force -LiteralPath $script:runFixture -ErrorAction SilentlyContinue
     }
 
-    It 'contains no nested array after normalization' {
-        $normalized = ConvertTo-ForwardedArgument -Argument @('--to', @('a', 'b'))
-        foreach ($token in $normalized) { $token | Should -BeOfType [string] }
+    It 'keeps a comma token as one argument and does not merge it with the flag' {
+        . $script:UseDotnetShim
+        # Wrapping the helper call in @() re-nested the list, and a [string[]]
+        # parameter then joined it into 'post --to a,b' -- undoing issue #243.
+        & $script:runScript post --to a,b | Out-Null
+        $forwarded = Get-ForwardedToken
+        $forwarded | Should -Be @('post', '--to', 'a,b')
+    }
+
+    It 'forwards no arguments at all when the caller supplied none' {
+        . $script:UseDotnetShim
+        # The same nesting produced a one-element list holding an empty array,
+        # which arrived at the app as a single empty argument.
+        & $script:runScript | Out-Null
+        Get-ForwardedToken | Should -BeNullOrEmpty
+    }
+
+    It 'forwards --verbose when PowerShell swallowed the caller -v' {
+        . $script:UseDotnetShim
+        & $script:runScript mycommand -v | Out-Null
+        Get-ForwardedToken | Should -Be @('--verbose', 'mycommand')
+    }
+
+    It 'does not double the flag when the caller wrote --verbose explicitly' {
+        . $script:UseDotnetShim
+        & $script:runScript mycommand --verbose | Out-Null
+        Get-ForwardedToken | Should -Be @('mycommand', '--verbose')
+    }
+
+    It 'does not double the flag when -v survived past a -- separator' {
+        . $script:UseDotnetShim
+        & $script:runScript -- mycommand -v | Out-Null
+        Get-ForwardedToken | Should -Be @('mycommand', '-v')
+    }
+
+    It 'does not double the flag when -Verbose binds and --verbose lands in $Command' {
+        . $script:UseDotnetShim
+        # `-- --verbose` still binds -Verbose AND leaves --verbose as the
+        # leading positional token; only the folded list can see it.
+        & $script:runScript -Verbose -- --verbose | Out-Null
+        Get-ForwardedToken | Should -Be @('--verbose')
+    }
+
+    It 'never injects --verbose into a dotnet test command line' {
+        . $script:UseDotnetShim
+        # `dotnet test` has no --verbose switch (it takes -v/--verbosity), and
+        # test mode appends $Args with no `--` separator, so an injected flag
+        # is parsed by the dotnet CLI itself: MSBUILD error MSB1001.
+        & $script:runScript -Verbose test | Out-Null
+        @(Get-CapturedDotnetArg) | Should -Not -Contain '--verbose'
+        @(Get-CapturedDotnetArg)[0] | Should -Be 'test'
     }
 }
 
