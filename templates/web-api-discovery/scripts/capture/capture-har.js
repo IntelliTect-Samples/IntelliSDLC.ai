@@ -587,6 +587,15 @@ function resolveSessionPaths(opts = {}) {
  * exact false warning #471 is about, so the exemption is the containment
  * invariant itself and not a shortcut: nothing an operator passes can move the
  * captures root, so nothing can move output out of the exemption either.
+ *
+ * The exemption is a FAST PATH, not the authority. `catalogue` can be pointed
+ * at a session discovered under the LEGACY root (capturesSearchRoots, when
+ * placement.relocated), which the current root will not match; that run falls
+ * through to strandingPlacement and gets git's own answer, which is correct
+ * either way. So the exemption is exhaustive for `start`, which resolves its
+ * own root, and merely an optimisation for `catalogue` -- worth saying, because
+ * a reader who assumed it was exhaustive everywhere would be surprised by a
+ * legacy-rooted run taking the slow path.
  */
 function placementForOutput(outputFile, capturesRoot) {
     if (capturesRoot) {
