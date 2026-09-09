@@ -67,6 +67,7 @@ const pii = require(path.join(__dirname, 'pii.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
+const { transformNested } = require(path.join(__dirname, 'har-nested.js'));
 const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 
 function parseArgs(argv) {
@@ -365,24 +366,15 @@ function scrubKnownFields(s, ctx) {
     return out;
 }
 
-// A form-encoded body or query string worth DECODING: `k=v` pairs that
-// actually carry percent escapes. Without an escape there is nothing hidden
-// -- key-name scrubbing already sees the value on the wire -- and decoding
-// anyway would rewrite the value's spelling for no gain.
-//
-// A `; `-separated string is a Cookie header, not a form body; it has its own
-// scrubber and must keep its separators intact.
-function looksFormEncoded(s) {
-    return /%[0-9A-Fa-f]{2}/.test(s)
-        && !/;\s/.test(s)
-        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(s);
-}
-
-const MAX_DECODE_DEPTH = 3;
-
-function scrubString(s, ctx, depth) {
-    if (typeof s !== 'string' || s.length === 0) return s;
-    const level = depth || 0;
+/**
+ * The passes that act on one string in the spelling it arrives in: known field
+ * names, multipart fields, and the shape patterns.
+ *
+ * Split out from `scrubString` (#454) so the SAME passes run at every encoding
+ * depth. They used to run only at the layers the scrubber's private recursion
+ * happened to reach.
+ */
+function scrubFlat(s, ctx) {
     let out = scrubKnownFields(s, ctx);
 
     // Multipart bodies carry the field name in a header and the value on its
@@ -394,15 +386,6 @@ function scrubString(s, ctx, depth) {
         (alreadySubstituted(value, ctx) ? null : substitute('field', name, value, ctx)),
         ctx.policy, { includeRedacted: true });
 
-    // Reach INSIDE percent-encoded parameters. A form body carrying
-    // `variables=<percent-encoded JSON>` hides per-request tokens where no
-    // flat pattern over the wire body can match them, and where the inner key
-    // never appears in the form's own parameter list.
-    if (level < MAX_DECODE_DEPTH && looksFormEncoded(out)) {
-        out = harLiterals.transformEncodedParams(out, (_name, decoded) =>
-            scrubString(decoded, ctx, level + 1));
-    }
-
     for (const { kind, re } of PATTERNS) {
         out = out.replace(re, (match) => {
             const key = `${kind}:${match}`;
@@ -411,6 +394,33 @@ function scrubString(s, ctx, depth) {
         });
     }
     return out;
+}
+
+/**
+ * Scrub one string, at every encoding depth it carries.
+ *
+ * The descent is `har-nested.js:transformNested`, the SAME traversal the gate
+ * runs (#454). It used to be a private recursion here, guarded by a private
+ * `looksFormEncoded` whose character class excluded `{` and `"` -- so once
+ * this function decoded a form parameter and landed on a JSON document it
+ * could never re-enter, while the gate descended past it and reported secrets
+ * this scrubber structurally could not reach. Three real captures were refused
+ * that way in one day, every one for a value the scrubber already had a rule
+ * for.
+ *
+ * A nested value sitting under a known secret NAME is substituted whole: at
+ * depth the name is a parsed key rather than text, so `scrubKnownFields`'s
+ * `"name":"value"` regex never sees it -- that is the `datr` half of #454.
+ */
+function scrubString(s, ctx) {
+    if (typeof s !== 'string' || s.length === 0) return s;
+    const out = scrubFlat(s, ctx);
+    return transformNested(out, ({ name, value }) => {
+        if (name && isKnownSecretField(name, ctx.policy) && !alreadySubstituted(value, ctx)) {
+            return substitute('field', name, value, ctx);
+        }
+        return scrubFlat(value, ctx);
+    });
 }
 
 // A cookie is worth redacting when its value looks token-ish (16+ chars) OR

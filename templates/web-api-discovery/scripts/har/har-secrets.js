@@ -20,6 +20,7 @@ const {
     transformEncodedParams,
 } = require('./har-literals.js');
 const harPolicy = require('./har-policy.js');
+const { transformNested, looksFormEncoded } = require('./har-nested.js');
 
 // Request-signing / CSRF-adjacent body & query parameters, session cookies
 // too short to trip the 16-character cookie-value heuristic, and the headers
@@ -214,12 +215,11 @@ function isKnownSecretHeader(name, policy) {
  * either regex must be made to both -- nothing can detect the drift, because
  * neither copy imports the other.
  */
-function looksFormEncoded(text) {
-    return typeof text === 'string'
-        && /%[0-9A-Fa-f]{2}/.test(text)
-        && !/;\s/.test(text)
-        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(text);
-}
+// RE-EXPORTED, not redefined (#454). The definition now lives beside the
+// traversal that uses it, in `har-nested.js`, because a predicate is only half
+// of a reach: the scrubber and this gate agreed about which strings were form
+// bodies and still descended to different depths. Callers that want the
+// predicate keep importing it from here.
 
 /**
  * True when `value` under `name` is a credential still readable in the clear.
@@ -287,40 +287,39 @@ function walkForUnredactedSecrets(root, report, options) {
                 report(name, `${location} (multipart field)`);
                 return null;
             }, policy);
-            // A form BODY is one string of `k=v&k=v`, so the parameter names
-            // are not object keys and `decodeNestedJson` sees no JSON
-            // document at all -- it is handed `variables={...}` with the
-            // `variables=` still attached. The walk therefore stopped at the
-            // wire spelling while the scrubber, which does run this decode,
-            // reached in and redacted. Gate reporting LESS than the scrubber
-            // redacts is exactly the drift that lets a file be labelled
-            // `(verified)` over a credential (issue #378): the two controls
-            // must share one definition of "readable credential", at every
-            // depth the scrubber can reach.
+            // Descend through every encoding layer inside this string.
             //
-            // `transformEncodedParams` is reused as a VISITOR: the callback
-            // returns its input unchanged, so nothing is rewritten.
+            // ONE TRAVERSAL, SHARED WITH THE SCRUBBER (issue #454). The gate
+            // and `sanitize-har.js` each used to own a private descent, and
+            // they did not descend equally: this one followed JSON at
+            // unbounded depth while the scrubber's stopped at the first JSON
+            // document by construction. So the gate reported secrets the
+            // scrubber could not reach, and three real captures in one day
+            // were refused for values both engines already had a rule for.
             //
-            // No depth cap, unlike the scrubber's MAX_DECODE_DEPTH, and that
-            // is safe rather than an oversight: percent-decoding never grows
-            // a string, so a decode chain is strictly shortening and ends on
-            // its own, and `visited` still guards object cycles. The scrubber
-            // caps because it REWRITES at each level; a read-only walk has
-            // nothing to unwind.
-            if (looksFormEncoded(value)) {
-                transformEncodedParams(value, (paramName, decoded) => {
-                    if (isUnredactedSecret(paramName, decoded, policy)) {
-                        report(paramName, `${location} (encoded parameter)`);
-                    }
-                    const innerJson = decodeNestedJson(decoded);
-                    if (innerJson) {
-                        walk(innerJson, `${location} (inside encoded '${paramName}')`);
-                    }
-                    return decoded;
-                });
-            }
-            const nested = decodeNestedJson(value);
-            if (nested) walk(nested, `${location} (inside encoded '${key}')`);
+            // Reporting MORE than the scrubber removes refuses good captures;
+            // reporting LESS lets a file be labelled `(verified)` over a
+            // credential (issue #378). Both are the same defect -- unequal
+            // reach -- and only a shared traversal makes them equal by
+            // construction rather than by two walks happening to agree.
+            //
+            // `transformNested` is used in VISITOR mode: the callback returns
+            // its input unchanged, so this read-only gate cannot rewrite
+            // anything even though the traversal it shares is able to.
+            transformNested(value, (node) => {
+                if (node.name && isUnredactedSecret(node.name, node.value, policy)) {
+                    report(node.name, `${location} (inside encoded '${node.name}')`);
+                }
+                return node.value;
+            }, {
+                // A traversal that stopped early has not looked everywhere.
+                // Staying silent about it is how a capped gate fails OPEN --
+                // the D3 half of this issue, one layer further down.
+                onDepthLimit: () => report(
+                    '<nesting deeper than MAX_DEPTH>',
+                    `${location} (traversal stopped at the depth limit)`,
+                ),
+            });
         }
     }
 
