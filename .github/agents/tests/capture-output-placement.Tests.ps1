@@ -422,17 +422,25 @@ Describe 'Invoke-HarCapture -- the front door honours the guard' {
         }
     }
 
-    It 'warns and still records -- the advisory never becomes a hard failure' {
+    It 'does not warn about the default destination, which cannot strand (#471)' {
+        # It used to warn here, and that was right while the default output was
+        # the work tree root. Since #377 the default is the gitignored session
+        # directory, so this run leaves nothing behind and the warning was
+        # telling the operator something untrue -- which is how they learned to
+        # answer yes and go on capturing from the protected branch.
         $work = New-Checkout -Name 'fd-warn' -TrackedHooks -HooksPath '.githooks'
         $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
-        $r.Warning | Should -Match 'git worktree add'
+        $r.Warning | Should -Not -Match 'git worktree add'
         $r.NodeRan | Should -BeTrue -Because 'the recording must proceed; nothing is discarded'
     }
 
-    It 'tells the recorder the guard already ran, so the operator is warned once' {
+    It 'leaves the placement call to the recorder, which resolved the destination (#471)' {
+        # The handshake env var is gone with the front door's copy of the check.
+        # Two owners meant two answers free to disagree; the one that can see
+        # the resolved --output-path is the one that keeps the decision.
         $work = New-Checkout -Name 'fd-once' -TrackedHooks -HooksPath '.githooks'
         $r = Invoke-FrontDoorIn -Cwd $work -Arguments @{ Uri = 'https://app.example.com'; Describe = 'pester fixture' }
-        $r.NodeEnv | Should -Match 'GUARD=1'
+        $r.NodeEnv | Should -Not -Match 'GUARD=1'
     }
 
     It 'stays silent in a worktree' {
