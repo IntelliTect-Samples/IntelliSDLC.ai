@@ -260,4 +260,34 @@ function assertReportIsQuiet(label, report) {
         + 'rule that mangles any document containing a percent sign');
 }
 
+// --- 5. A `{name, value}` pair NESTED inside an encoded payload. ----------
+// Keyed by its SIBLING, not by its key. HAR spells headers, cookies and query
+// parameters this way, and those objects turn up inside nested payloads too --
+// a batched request carrying its own header list. Under the plain rule the
+// traversal offers `('value', <secret>)`, and `value` is on nobody's
+// secret-name list, so both engines would miss it.
+//
+// This is a REACH-PARITY assertion in the direction that refuses good
+// captures: the gate's old private walk had this rule and the scrubber's did
+// not, so a nested pair was reported as an unremovable secret and gated the
+// capture. Both halves are pinned -- the value is removed (5.b) AND the gate
+// accepts the result (5.c). Pinning only one would let the asymmetry come back
+// wearing the other face.
+{
+    const r = scrubAndVerify('nested-name-value-pair',
+        `variables=${enc(JSON.stringify({
+            headers: [{ name: 'datr', value: DATR }],
+        }))}`,
+        'application/x-www-form-urlencoded');
+
+    assert.strictEqual(r.scrubCode, 0, `5.a: sanitize-har failed: ${r.report}`);
+    assert.ok(!survives(r.text, DATR),
+        '5.b: a nested {name, value} pair kept its secret. The traversal keyed the '
+        + "value by its own key ('value') instead of by its sibling, so neither engine "
+        + 'recognised the name it actually travels under');
+    assert.strictEqual(r.verifyCode, 0,
+        `5.c: the gate refuses the artifact, so the gate sees this pair and the `
+        + `scrubber does not -- the asymmetry of #454 one layer down: ${r.report}`);
+}
+
 console.log('har-nested-reach.test.js: all sections passed');
