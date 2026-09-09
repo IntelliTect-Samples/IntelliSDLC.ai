@@ -392,6 +392,22 @@ $script:GuardUnverifiable = 'unverifiable'
 # about the machine.
 $script:GuardEnvSaved = $null
 
+<#
+.SYNOPSIS
+    Is a probe environment currently pushed?
+
+.DESCRIPTION
+    Exists so a caller can raise the re-entrancy error BEFORE entering a try
+    that would swallow it, without spelling the condition twice. Push keeps its
+    own identical check as a backstop for any caller that forgets.
+#>
+function Test-GuardProbeActive {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+    return ($null -ne $script:GuardEnvSaved)
+}
+
 function Push-GuardProbeEnvironment {
     [CmdletBinding()]
     param()
@@ -400,7 +416,7 @@ function Push-GuardProbeEnvironment {
     # a nested push would overwrite the outer save so the outer pop restored the
     # placeholder rather than the operator's real environment. Nothing here
     # recurses today; saying so out loud is what keeps that true.
-    if ($null -ne $script:GuardEnvSaved) {
+    if (Test-GuardProbeActive) {
         throw 'Push-GuardProbeEnvironment is already active; it does not nest.'
     }
 
@@ -513,14 +529,25 @@ function Get-DestinationIgnoreStatus {
     # terminating CommandNotFoundException rather than setting $LASTEXITCODE, so
     # without the catch the unverifiable answer would be unreachable and the
     # caller would get an exception where it expected one of four strings.
-    # OUTSIDE the try, deliberately. Push throws only on re-entry, and that is a
-    # programming error which must reach the caller -- caught by the block below
-    # it would be reported as "git unavailable" and quietly downgraded to
-    # unverifiable, which is precisely the silence its own comment forbids.
-    # Push publishes its saved copy before mutating anything, so the finally
-    # still restores a push that failed part-way.
-    Push-GuardProbeEnvironment
+    # The ASSERTION goes outside the try; the MUTATION stays inside it. Putting
+    # the whole push outside bought a loud re-entrancy error at the price of
+    # exception safety: a push that failed AFTER publishing its saved copy would
+    # then propagate with no Pop at all, leaving the environment stripped and
+    # the slot permanently occupied, so every later call in the process would
+    # report a re-entry that never happened. Putting it all inside had the
+    # opposite fault -- the catch that means "git is missing" swallowed the
+    # re-entrancy error and downgraded it to unverifiable.
+    #
+    # They are separable, because only one of the two mutates. Re-entrancy is a
+    # programming error and is raised here, before anything can have changed;
+    # everything that touches the environment is below, inside the try whose
+    # finally always pops.
+    if (Test-GuardProbeActive) {
+        throw 'Push-GuardProbeEnvironment is already active; it does not nest.'
+    }
+
     try {
+        Push-GuardProbeEnvironment
         $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
         if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
             return $script:GuardOutsideWorkTree
@@ -542,8 +569,12 @@ function Get-DestinationIgnoreStatus {
         return $script:GuardUnverifiable
     }
     finally {
-        # OUTSIDE the try that Push sits in, so a throw during the push itself
-        # is still undone. Pop is a no-op when there is nothing saved.
+        # Covers the push as well as the probes, which is the point of putting
+        # Push inside the try: a push that fails after publishing its saved copy
+        # is still undone here, rather than leaving the environment stripped and
+        # the slot occupied for the rest of the process. A no-op when there is
+        # nothing saved, so the re-entrancy path above -- which throws before
+        # entering the try -- cannot pop somebody else's push.
         Pop-GuardProbeEnvironment
     }
 }

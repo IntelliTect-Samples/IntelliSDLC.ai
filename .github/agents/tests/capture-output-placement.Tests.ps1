@@ -674,6 +674,83 @@ Describe 'New-GuardWorktree -- the offer that does the work for you (#471)' {
     }
 }
 
+Describe 'the probe environment is borrowed, never kept (#471)' {
+    # Get-DestinationIgnoreStatus strips the GIT_* namespace and repoints HOME so
+    # a forged core.excludesFile cannot answer for the repository. Everything it
+    # touches has to come back, on every path out -- a probe that leaves git
+    # reading no user configuration would break every later command in the
+    # session, which is a far worse bug than the one it is preventing.
+
+    It 'restores what it borrowed on the success path' {
+        $work = New-Checkout -Name 'env-ok' -TrackedHooks -HooksPath '.githooks'
+        $env:GIT_CONFIG_COUNT = '9'
+        $home0 = $env:HOME
+        try {
+            Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') |
+                Should -Be 'not-ignored'
+            $env:GIT_CONFIG_COUNT | Should -Be '9'
+            $env:HOME | Should -Be $home0
+            Test-GuardProbeActive | Should -BeFalse
+        }
+        finally { Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue }
+    }
+
+    It 'restores what it borrowed when git cannot run at all' {
+        # The failure path is the one that matters: it is reached by an
+        # exception, so nothing but a finally puts the environment back.
+        $work = New-Checkout -Name 'env-nogit' -TrackedHooks -HooksPath '.githooks'
+        $env:GIT_CONFIG_COUNT = '9'
+        $home0 = $env:HOME
+        $path0 = $env:PATH
+        try {
+            $env:PATH = Join-Path $script:Tmp 'no-git-here'
+            Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') |
+                Should -Be 'unverifiable' -Because 'git declining to answer is not "ignored"'
+        }
+        finally {
+            $env:PATH = $path0
+            Remove-Item Env:GIT_CONFIG_COUNT -ErrorAction SilentlyContinue
+        }
+
+        $env:HOME | Should -Be $home0
+        Test-GuardProbeActive | Should -BeFalse -Because 'a failed probe must not occupy the slot'
+        # The proof that the restore was complete: the next probe still works.
+        Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') |
+            Should -Be 'not-ignored'
+    }
+
+    It 'keeps an environment variable that was set but empty' {
+        # $null means "there was none"; '' means "there was one, and it was
+        # empty". Deleting the second would be a silent change to the caller's
+        # environment by the one function whose job is exact restoration.
+        $work = New-Checkout -Name 'env-empty' -TrackedHooks -HooksPath '.githooks'
+        $env:GIT_GUARD_EMPTY_PROBE = ''
+        try {
+            Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') | Out-Null
+            (Test-Path Env:GIT_GUARD_EMPTY_PROBE) | Should -BeTrue
+            $env:GIT_GUARD_EMPTY_PROBE | Should -Be ''
+        }
+        finally { Remove-Item Env:GIT_GUARD_EMPTY_PROBE -ErrorAction SilentlyContinue }
+    }
+
+    It 'refuses to nest rather than overwriting the saved copy' {
+        # One slot. A nested push would overwrite the outer save, so the outer
+        # pop would restore the placeholder instead of the real environment --
+        # which is exactly the leak these tests exist to prevent. The refusal is
+        # raised before anything is touched, so the outer push stays intact.
+        $work = New-Checkout -Name 'env-nest' -TrackedHooks -HooksPath '.githooks'
+        Push-GuardProbeEnvironment
+        try {
+            { Get-DestinationIgnoreStatus -Destination (Join-Path $work 'docs/x.har') } |
+                Should -Throw -ExpectedMessage '*does not nest*'
+            Test-GuardProbeActive | Should -BeTrue -Because 'the outer push must survive the refusal'
+        }
+        finally { Pop-GuardProbeEnvironment }
+
+        Test-GuardProbeActive | Should -BeFalse
+    }
+}
+
 Describe 'the destination guards agree -- one rule, two runtimes (#471)' {
     It 'reaches the same verdict for <Name>' -ForEach @(
         @{ Name = 'a committable path on the protected branch'; Setup = 'committable' }
