@@ -396,19 +396,34 @@ function Push-GuardProbeEnvironment {
     [CmdletBinding()]
     param()
 
+    # Re-entrancy is not supported and must not be silent: this is one slot, and
+    # a nested push would overwrite the outer save so the outer pop restored the
+    # placeholder rather than the operator's real environment. Nothing here
+    # recurses today; saying so out loud is what keeps that true.
+    if ($null -ne $script:GuardEnvSaved) {
+        throw 'Push-GuardProbeEnvironment is already active; it does not nest.'
+    }
+
     $saved = @{}
     $noHome = Join-Path ([IO.Path]::GetTempPath()) ("guard-no-home-" + [guid]::NewGuid().ToString('N'))
 
+    # EVERY name is recorded BEFORE anything is changed, and the slot is
+    # published before the first mutation. A throw part-way through -- a
+    # provider error on one Remove-Item, say -- would otherwise leave the
+    # environment rewritten with nothing to put it back.
     foreach ($entry in (Get-ChildItem Env: | Where-Object { $_.Name -match '^(?i)GIT_' })) {
         $saved[$entry.Name] = $entry.Value
-        Remove-Item "Env:$($entry.Name)" -ErrorAction SilentlyContinue
     }
     foreach ($name in @('HOME', 'XDG_CONFIG_HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH')) {
         if (-not $saved.ContainsKey($name)) {
             $saved[$name] = (Get-Item "Env:$name" -ErrorAction SilentlyContinue).Value
         }
     }
+    $script:GuardEnvSaved = $saved
 
+    foreach ($name in $saved.Keys) {
+        if ($name -match '^(?i)GIT_') { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+    }
     $env:HOME = $noHome
     $env:XDG_CONFIG_HOME = $noHome
     $env:USERPROFILE = $noHome
@@ -417,8 +432,6 @@ function Push-GuardProbeEnvironment {
     # A second way of saying the same thing, for git versions that honour it,
     # without depending on how home discovery happens to be implemented.
     $env:GIT_CONFIG_GLOBAL = Join-Path $noHome 'gitconfig'
-
-    $script:GuardEnvSaved = $saved
 }
 
 function Pop-GuardProbeEnvironment {
@@ -498,20 +511,17 @@ function Get-DestinationIgnoreStatus {
     # caller would get an exception where it expected one of four strings.
     try {
         Push-GuardProbeEnvironment
-        try {
-            $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
-            if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
-                return $script:GuardOutsideWorkTree
-            }
-
-            & git -C $probe check-ignore -q -- $full 2>$null
-            switch ($LASTEXITCODE) {
-                0 { return $script:GuardIgnored }
-                1 { return $script:GuardNotIgnored }
-                default { return $script:GuardUnverifiable }
-            }
+        $inTree = & git -C $probe rev-parse --is-inside-work-tree 2>$null
+        if ($LASTEXITCODE -ne 0 -or "$inTree".Trim() -ne 'true') {
+            return $script:GuardOutsideWorkTree
         }
-        finally { Pop-GuardProbeEnvironment }
+
+        & git -C $probe check-ignore -q -- $full 2>$null
+        switch ($LASTEXITCODE) {
+            0 { return $script:GuardIgnored }
+            1 { return $script:GuardNotIgnored }
+            default { return $script:GuardUnverifiable }
+        }
     }
     catch {
         # A missing git raises a TERMINATING CommandNotFoundException rather
@@ -520,6 +530,11 @@ function Get-DestinationIgnoreStatus {
         # strings, and the unverifiable answer would be unreachable.
         Write-Verbose "git unavailable for $full ($($_.Exception.Message)); treating as unverifiable."
         return $script:GuardUnverifiable
+    }
+    finally {
+        # OUTSIDE the try that Push sits in, so a throw during the push itself
+        # is still undone. Pop is a no-op when there is nothing saved.
+        Pop-GuardProbeEnvironment
     }
 }
 
@@ -583,6 +598,10 @@ function Get-GuardCommandPath {
     if (-not $base) { return ($full -replace '\\', '/') }
 
     $relative = Get-GuardRelativePath -Full $full -Base $base
+    # '' means the target IS the base. That is a correct relative path and an
+    # unusable command argument -- it would render as an empty token -- so it is
+    # spelled the way a shell spells it.
+    if ($relative -eq '') { return '.' }
     if ($null -ne $relative) { return ($relative -replace '\\', '/') }
     return ($full -replace '\\', '/')
 }
