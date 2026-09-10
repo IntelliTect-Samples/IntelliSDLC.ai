@@ -349,10 +349,19 @@ Describe 'Test-IsAlwaysLocalPath' {
         Test-IsAlwaysLocalPath -Path '.github/skills/project-example/.gitkeep' | Should -BeFalse
     }
 
-    It 'returns $true for run.ps1, run.Tests.ps1, and copilot-setup-steps.yml (consumer-owned, issue #222)' {
-        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeTrue
+    It 'returns $true for run.Tests.ps1, copilot-setup-steps.yml and run.project.ps1 (consumer-owned)' {
         Test-IsAlwaysLocalPath -Path 'run.Tests.ps1' | Should -BeTrue
         Test-IsAlwaysLocalPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path 'run.project.ps1' | Should -BeTrue -Because 'it is the consumer extension point (issue #462)'
+    }
+
+    It 'returns $false for run.ps1, which is upstream-managed as of issue #462' {
+        # It was always-local under #222. It is now delivered by diff-replay so
+        # consumers actually receive upstream fixes; a consumer that HAS changed
+        # it is protected by $script:YieldOnLocalChangePaths instead.
+        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeFalse
+        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeTrue
+        $script:YieldOnLocalChangePaths | Should -Contain 'run.ps1'
     }
 }
 
@@ -504,6 +513,123 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
         $result = @(Invoke-TemplateScaffold -SourceRoot $script:srcRepo -TargetRoot $script:dstRoot -ScaffoldMap $map -Ref HEAD)
         $result.Count | Should -Be 0
         (Get-Content (Join-Path $script:dstRoot 'run.ps1') -Raw).Trim() | Should -Be 'CONSUMER_CUSTOMIZED_RUN'
+    }
+}
+
+Describe 'run.ps1 yields to a consumer change (issue #462)' {
+    # run.ps1 is upstream-managed so consumers receive fixes, but a consumer
+    # that has changed it must be neither overwritten NOR blocked. Ordinary
+    # managed drift aborts the whole sync; this path leaves the file alone,
+    # warns, and carries on. The uncommitted half matters most: the drift scan
+    # is commit-based and cannot see it, so without an explicit check
+    # `git add -A` would sweep the edit into the sync commit -- exactly the
+    # failure issue #222 was closed to stop.
+
+    BeforeAll {
+        $script:yieldRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sdlc-yield-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:yieldRoot -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item -Recurse -Force -LiteralPath $script:yieldRoot -ErrorAction SilentlyContinue
+    }
+
+    It 'delivers run.ps1 to a consumer that has NOT touched it' {
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak { 'runner v2 WITH UPSTREAM FIX' | Out-File -Encoding utf8 run.ps1 -NoNewline }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'run.ps1') -Raw).Trim() |
+            Should -Be 'runner v2 WITH UPSTREAM FIX' -Because 'this is the whole point of issue #462'
+    }
+
+    It 'leaves a COMMITTED consumer change alone and does not abort the sync' {
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak {
+                'runner v2 UPSTREAM' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                'claude v2' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+            }
+        'CONSUMER CUSTOMIZED RUNNER' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'run.ps1') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add run.ps1; git commit -q -m 'consumer customizes run.ps1' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0 -Because 'a customized run.ps1 must not block the sync of everything else'
+        (Get-Content (Join-Path $fx.Consumer 'run.ps1') -Raw).Trim() |
+            Should -Be 'CONSUMER CUSTOMIZED RUNNER' -Because 'leave it means leave it, not overwrite it'
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw).Trim() |
+            Should -Be 'claude v2' -Because 'the rest of the sync must still happen'
+    }
+
+    It 'never stages an UNCOMMITTED consumer change into the sync commit' {
+        # The half the commit-based drift scan cannot see. This is issue #222's
+        # exact failure mode, which returned the moment run.ps1 became managed.
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak { 'claude v2 with more content' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'CONSUMER UNCOMMITTED EDIT' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'run.ps1') -NoNewline
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            $syncFiles = @(git show --name-only --pretty=format: HEAD | Where-Object { $_ })
+            $syncFiles | Should -Contain 'CLAUDE.md'
+            $syncFiles | Should -Not -Contain 'run.ps1' -Because 'an uncommitted consumer edit must never be swept into the sync commit'
+            (Get-Content run.ps1 -Raw).Trim() | Should -Be 'CONSUMER UNCOMMITTED EDIT'
+        } finally { Pop-Location }
+    }
+
+    It 'still ABORTS on drift to an ordinary managed path' {
+        # Yielding is scoped to $script:YieldOnLocalChangePaths. CLAUDE.md and
+        # friends must keep failing loudly, or this change quietly turns the
+        # policy gate off for everything.
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed { 'anchor body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak { 'upstream new body' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'consumer override' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'CLAUDE.md') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add CLAUDE.md; git commit -q -m 'local edit to managed file' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 2 -Because 'ordinary managed drift must still be a POLICY VIOLATION'
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw).Trim() | Should -Be 'consumer override'
+    }
+
+    It 'run.project.ps1 is never scaffolded' {
+        # An empty extension point in every consumer is noise; absent already
+        # means no customization.
+        $script:TemplateScaffoldMap.Keys | Should -Not -Contain 'run.project.ps1'
+        $script:TemplateScaffoldMap.Values | Should -Not -Contain 'run.project.ps1'
+    }
+
+    It 'run.project.ps1 is never delivered or deleted by sync' {
+        Test-IsAlwaysLocalPath -Path 'run.project.ps1' | Should -BeTrue
+        Test-IsUpstreamManagedPath -Path 'run.project.ps1' | Should -BeFalse
     }
 }
 
@@ -1037,7 +1163,7 @@ Describe 'Get-UpstreamOps' {
         ($ops | Where-Object { $_.Path -eq '.github/skills/project-example/.gitkeep' }) | Should -Not -BeNullOrEmpty
     }
 
-    It 'does not enqueue an op for consumer-owned run.ps1 / run.Tests.ps1 / copilot-setup-steps.yml even when upstream changes them (issue #222)' {
+    It 'does not enqueue an op for consumer-owned run.Tests.ps1 / copilot-setup-steps.yml even when upstream changes them (issue #222)' {
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed {
                 'consumer runner' | Out-File -Encoding utf8 run.ps1 -NoNewline
@@ -1051,9 +1177,11 @@ Describe 'Get-UpstreamOps' {
                 'upstream setup override' | Out-File -Encoding utf8 .github/workflows/copilot-setup-steps.yml -NoNewline
             }
         $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths @('run.ps1','run.Tests.ps1','.github/workflows/copilot-setup-steps.yml') -RepoRoot $fx.Consumer
-        ($ops | Where-Object { $_.Path -eq 'run.ps1' }) | Should -BeNullOrEmpty
         ($ops | Where-Object { $_.Path -eq 'run.Tests.ps1' }) | Should -BeNullOrEmpty
         ($ops | Where-Object { $_.Path -eq '.github/workflows/copilot-setup-steps.yml' }) | Should -BeNullOrEmpty
+        # run.ps1 is the opposite case now -- it MUST enqueue, or the whole
+        # point of issue #462 (consumers receive upstream fixes) is lost.
+        ($ops | Where-Object { $_.Path -eq 'run.ps1' }) | Should -Not -BeNullOrEmpty -Because 'run.ps1 is upstream-managed as of issue #462'
     }
 }
 
@@ -3633,7 +3761,7 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             $tracked | Should -Contain 'Cleanup-Worktree.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.Tests.ps1'
-            $tracked | Should -Not -Contain 'run.ps1' -Because 'run.ps1 is consumer-owned (issue #222): it is scaffolded untracked for the consumer to commit and customize, not auto-committed as an upstream-managed meta-script'
+            $tracked | Should -Contain 'run.ps1' -Because 'run.ps1 is upstream-managed as of issue #462, so a fresh bootstrap delivers and commits it like any other managed script'
             $tracked | Should -Not -Contain 'run.Tests.ps1' -Because 'run.Tests.ps1 is consumer-owned (issue #222), scaffolded untracked like run.ps1'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.ps1' -Because 'the legacy script name was renamed and must not be re-introduced'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.Tests.ps1'
@@ -3646,15 +3774,16 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
-        # run.ps1, run.Tests.ps1, and copilot-setup-steps.yml are consumer-owned
-        # (issue #222): scaffolded once then always-local, so they are NOT
-        # upstream-managed and never drift-gated (supersedes #206/#208).
-        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeFalse
+        # run.Tests.ps1 and copilot-setup-steps.yml stay consumer-owned
+        # (issue #222): scaffolded once then always-local, never drift-gated.
         Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeFalse
         Test-IsUpstreamManagedPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeFalse
-        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeTrue
         Test-IsAlwaysLocalPath -Path 'run.Tests.ps1' | Should -BeTrue
         Test-IsAlwaysLocalPath -Path '.github/workflows/copilot-setup-steps.yml' | Should -BeTrue
+        # run.ps1 moved to managed in issue #462 -- it IS drift-gated now, but
+        # yields to a consumer's change rather than aborting the sync.
+        Test-IsUpstreamManagedPath -Path 'run.ps1' | Should -BeTrue
+        Test-IsAlwaysLocalPath -Path 'run.ps1' | Should -BeFalse
         # All other .github/workflows/* remain consumer-owned too.
         Test-IsUpstreamManagedPath -Path '.github/workflows/validate-instructions.yml' | Should -BeFalse
         Test-IsUpstreamManagedPath -Path '.github/workflows/ci.yml' | Should -BeFalse
@@ -3871,10 +4000,12 @@ Describe 'Test-LocalDriftOnManagedPaths (issue #178: EOL false positive)' {
         $drift[0].Path | Should -Be 'CLAUDE.md'
     }
 
-    It 'does NOT report drift for a locally-customized run.ps1 (consumer-owned, issue #222)' {
-        # Reproduces the PSBitwarden POLICY VIOLATION: a consumer that customizes
-        # run.ps1 must not be blocked. run.ps1 is always-local, so the drift gate
-        # skips it even though its content genuinely differs from the anchor.
+    It 'DOES report drift for a locally-customized run.ps1 (issue #462 reclassification)' {
+        # Under #222 run.ps1 was always-local, so the scan skipped it. It is
+        # upstream-managed now, so the scan sees it -- and Invoke-PullSDLC is
+        # what keeps the consumer unblocked, by yielding on that path rather
+        # than aborting. This test covers the SCAN; the yielding is covered in
+        # 'run.ps1 yields to a consumer change (issue #462)'.
         [System.IO.File]::WriteAllText((Join-Path $script:driftRepo 'run.ps1'), "# upstream runner`n")
         git add -A | Out-Null
         git commit -q -m 'anchor'
@@ -3887,7 +4018,7 @@ Describe 'Test-LocalDriftOnManagedPaths (issue #178: EOL false positive)' {
         (git rev-parse "HEAD:run.ps1").Trim() | Should -Not -Be (git rev-parse "${anchor}:run.ps1").Trim()
 
         $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchor -ManagedPaths 'run.ps1' -RepoRoot $script:driftRepo)
-        $drift.Count | Should -Be 0 -Because 'run.ps1 is consumer-owned (always-local) and must never trip the drift gate (issue #222)'
+        $drift.Count | Should -Be 1 -Because 'run.ps1 is upstream-managed as of issue #462, so the scan no longer skips it'
     }
 
     It 'does NOT report drift for a locally-customized .github/workflows/copilot-setup-steps.yml (consumer-owned, issue #222)' {
@@ -4472,10 +4603,13 @@ Describe 'Invoke-PullSDLC anchor-only sync (issue #235)' {
                 New-Item -ItemType Directory -Path .github/agents -Force | Out-Null
                 'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
                 'aaa' | Out-File -Encoding utf8 .github/agents/a.md -NoNewline
-                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                # run.Tests.ps1, not run.ps1: run.ps1 became upstream-managed
+                # in issue #462, so editing it upstream now DOES produce an op
+                # and this fixture would no longer model a carved-out path.
+                'runner tests v1' | Out-File -Encoding utf8 run.Tests.ps1 -NoNewline
             } `
             -Tweak {
-                'runner v2' | Out-File -Encoding utf8 run.ps1 -NoNewline
+                'runner tests v2' | Out-File -Encoding utf8 run.Tests.ps1 -NoNewline
             }
 
         $fx.AnchorSha | Should -Not -Be $fx.UpstreamHead -Because 'the fixture must model a moved upstream'

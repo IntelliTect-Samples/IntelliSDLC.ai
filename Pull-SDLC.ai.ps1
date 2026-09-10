@@ -183,11 +183,14 @@ $script:TemplateScaffoldMap = [ordered]@{
     # line endings (issues #167, #173, #449; supersedes the standalone
     # Initialize-GitDefaults.ps1 of #160, closed as not-planned).
     '.gitattributes'                                        = '.gitattributes'
-    # The project-agnostic .NET runner, its tests, and the Copilot cloud-agent
-    # setup workflow are consumer-owned but seeded once from upstream via the
-    # same-name scaffold (like docs/README.md), so a fresh consumer gets a
-    # working starting point they can then customize per-repo (issue #222).
-    'run.ps1'                                               = 'run.ps1'
+    # run.Tests.ps1 and the Copilot cloud-agent setup workflow are consumer-owned
+    # but seeded once from upstream via the same-name scaffold (like
+    # docs/README.md), so a fresh consumer gets a working starting point they
+    # can then customize per-repo (issue #222).
+    #
+    # run.ps1 is NO LONGER here: it is upstream-managed as of issue #462, so it
+    # is delivered by diff-replay rather than seeded once. Project-specific
+    # behaviour belongs in run.project.ps1, which run.ps1 dot-sources.
     'run.Tests.ps1'                                         = 'run.Tests.ps1'
     '.github/workflows/copilot-setup-steps.yml'             = '.github/workflows/copilot-setup-steps.yml'
 }
@@ -256,6 +259,12 @@ $script:UpstreamManagedPaths = @(
     # must not be read as "consumer already has managed content" (issue #152).
     # Also not on $script:AlwaysLocalPaths -- unlike run.ps1 (issue #222) the
     # launcher is upstream-owned and consumers do not customize it.
+    # The project-agnostic .NET runner. Managed since issue #462 so a consumer
+    # actually receives upstream fixes to it -- it was consumer-owned, which
+    # meant a consumer that customized it never got another one. It is on
+    # $script:YieldOnLocalChangePaths, so a consumer that HAS changed it is
+    # left alone rather than overwritten or blocked.
+    'run.ps1',
     'Start-IssueAgent.ps1',
     'Start-IssueAgent.Tests.ps1',
     # Retired file (the bash forwarder, deleted upstream in issue #324). Kept on
@@ -273,6 +282,23 @@ $script:UpstreamManagedPaths = @(
     # $script:TemplateScaffoldMap). Keeping them here would sweep a consumer's
     # uncommitted edits into the sync commit's `git add -A` staging step, so
     # they are excluded (issue #222; supersedes #206/#208).
+)
+
+# Managed for DELIVERY, but a consumer's local change wins (issue #462).
+#
+# A path here is diff-replayed from upstream only while the consumer has not
+# touched it. The moment it differs -- committed OR uncommitted -- the sync
+# leaves it exactly as it is, says so, and carries on. It never aborts the
+# sync the way ordinary managed drift does, and it is never staged into the
+# sync commit.
+#
+# That combination is the point. Ordinary managed paths abort on drift, which
+# would block every sync for a consumer that had customized run.ps1 -- and the
+# uncommitted case would not abort at all, because the drift scan is
+# commit-based, so `git add -A` would sweep the edit into the sync commit
+# instead (the exact failure #222 was closed to stop).
+$script:YieldOnLocalChangePaths = @(
+    'run.ps1'
 )
 
 # Subset of UpstreamManagedPaths whose mere presence in the consumer's working
@@ -308,9 +334,13 @@ $script:AlwaysLocalPaths = @(
     # upstream via the same-name scaffold (see $script:TemplateScaffoldMap) then
     # never overwritten or deleted. This supersedes the sync-reconcile behavior
     # of issues #206/#208 (issue #222).
-    'run.ps1',
     'run.Tests.ps1',
     '.github/workflows/copilot-setup-steps.yml',
+    # The consumer's extension point for run.ps1 (issue #462). Never
+    # overwritten, never deleted, and deliberately NOT scaffolded -- an empty
+    # one in every consumer is noise, and absent already means "no
+    # customization".
+    'run.project.ps1',
     # The standard spec archive: PRDs (the *what*) under docs/specs/,
     # implementation plans (the *how*) under docs/designs/, and the
     # consumer-owned archive guide docs/README.md. All consumer-owned so
@@ -1696,6 +1726,50 @@ function Test-PathContentInUpstreamHistory {
     finally { Pop-Location }
 }
 
+function Get-LocallyChangedYieldPath {
+    <#
+    .SYNOPSIS
+        Returns the $script:YieldOnLocalChangePaths entries the consumer has
+        changed, with the reason, so the caller can leave them alone.
+    .DESCRIPTION
+        Checks the working tree FIRST and separately, because
+        Test-LocalDriftOnManagedPaths is entirely commit-based -- it compares
+        HEAD blobs to anchor blobs and never consults the working tree. An
+        uncommitted edit is therefore invisible to it, which is precisely the
+        case that would otherwise be swept into the sync commit by `git add -A`.
+    .OUTPUTS
+        Array of @{ Path = ...; Reason = ... }.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowNull()][string]$Anchor,
+        [string]$UpstreamRef,
+        [string]$RepoRoot = '.'
+    )
+
+    $changed = New-Object System.Collections.Generic.List[hashtable]
+    foreach ($path in $script:YieldOnLocalChangePaths) {
+        $reason = $null
+
+        Push-Location $RepoRoot
+        try {
+            $status = @(& git status --porcelain -- $path 2>$null | Where-Object { $_ })
+        }
+        finally { Pop-Location }
+
+        if ($status.Count -gt 0) {
+            $reason = 'uncommitted local changes'
+        }
+        elseif ($Anchor) {
+            $drift = @(Test-LocalDriftOnManagedPaths -Anchor $Anchor -ManagedPaths @($path) -UpstreamRef $UpstreamRef -RepoRoot $RepoRoot)
+            if ($drift.Count -gt 0) { $reason = "local edits committed in $($drift[0].Commit)" }
+        }
+
+        if ($reason) { $changed.Add(@{ Path = $path; Reason = $reason }) | Out-Null }
+    }
+    return $changed.ToArray()
+}
+
 function Test-LocalDriftOnManagedPaths {
     <#
     .SYNOPSIS
@@ -3012,8 +3086,18 @@ function Invoke-PullSDLC {
     }
     $anchorSha = $anchorInfo.Sha
 
+    # Paths the consumer has changed that upstream yields on (issue #462).
+    # Computed BEFORE the drift gate so they can be excluded from it: a
+    # customized run.ps1 must not abort the sync of everything else.
+    $yielded = @(Get-LocallyChangedYieldPath -Anchor $anchorSha -UpstreamRef $mergeRef -RepoRoot $RepoRoot)
+    $yieldedPaths = @($yielded | ForEach-Object { $_.Path })
+    foreach ($y in $yielded) {
+        Write-Warning ("{0} differs from upstream ({1}); leaving it. You will not receive upstream {0} updates until you reconcile it -- put project-specific behaviour in run.project.ps1 instead." -f $y.Path, $y.Reason)
+    }
+
     if ($anchorSha) {
         $drift = @(Test-LocalDriftOnManagedPaths -Anchor $anchorSha -ManagedPaths $script:UpstreamManagedPaths -UpstreamRef $mergeRef -RepoRoot $RepoRoot)
+        $drift = @($drift | Where-Object { $_.Path -notin $yieldedPaths })
         if ($drift.Count -gt 0) {
             if (-not $Force) {
                 $violation = New-Object System.Text.StringBuilder
@@ -3036,6 +3120,11 @@ function Invoke-PullSDLC {
 
     $ops = @(Get-UpstreamOps -Anchor $anchorSha -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
 
+    # Drop ops for a yielded path: "leave it" means do not overwrite it either.
+    if ($yieldedPaths.Count -gt 0) {
+        $ops = @($ops | Where-Object { $_.Path -notin $yieldedPaths })
+    }
+
     # Reconcile managed files whose HEAD content diverged from the upstream tip
     # without being a genuine local edit -- e.g. a self-update or a mis-recorded
     # anchor left HEAD out of step with the recorded anchor. The anchor->tip diff
@@ -3043,9 +3132,16 @@ function Invoke-PullSDLC {
     # tip, so add an explicit HEAD->tip op to bring it current. In the normal case
     # (HEAD == anchor) these ops duplicate the anchor->tip set and are dropped.
     # Genuine local edits only reach here under -Force (otherwise the drift gate
-    # already returned), where overwriting is the intended behavior.
+    # already returned), where overwriting is the intended behavior -- EXCEPT
+    # for a yielded path, which now reaches here without -Force precisely
+    # because it was excluded from that gate. Filter those out again: this is a
+    # second, independent route to an op for the same file, and dropping it
+    # from the anchor->tip set alone is not enough.
     if ($anchorSha) {
         $reconcileOps = @(Get-UpstreamOps -Anchor 'HEAD' -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
+        if ($yieldedPaths.Count -gt 0) {
+            $reconcileOps = @($reconcileOps | Where-Object { $_.Path -notin $yieldedPaths })
+        }
         if ($reconcileOps.Count -gt 0) {
             $covered = @{}
             foreach ($o in $ops) {
@@ -3162,6 +3258,11 @@ function Invoke-PullSDLC {
         # it is safe and is what stages the delete.
         $addPaths = @()
         foreach ($p in @($script:UpstreamManagedPaths + $script:SdlcSyncStateFile + $mergedPaths.ToArray())) {
+            # A yielded path is the consumer's, not ours. `git add -A` over it
+            # would sweep an uncommitted edit into the sync commit -- #222's
+            # exact failure, and the half the commit-based drift scan cannot
+            # see.
+            if ($p -in $yieldedPaths) { continue }
             if (Test-Path -LiteralPath $p) { $addPaths += $p; continue }
             if (@(& git ls-files -- $p 2>$null).Count -gt 0) { $addPaths += $p }
         }
