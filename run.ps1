@@ -672,14 +672,14 @@ else {
         $selectedProject = Find-VsCodeLaunchProject -Projects $runnableProjects
         if ($selectedProject) {
             $rel = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.FullName)
-            Write-Host "Auto-selected from .vscode/launch.json: $rel" -ForegroundColor DarkGray
+            Write-TransientStatus "Auto-selected from .vscode/launch.json: $rel"
         }
 
         if (-not $selectedProject) {
             $selectedProject = Find-LaunchSettingsProject -Projects $runnableProjects
             if ($selectedProject) {
                 $rel = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.FullName)
-                Write-Host "Auto-selected from launchSettings.json: $rel" -ForegroundColor DarkGray
+                Write-TransientStatus "Auto-selected from launchSettings.json: $rel"
             }
         }
 
@@ -693,29 +693,52 @@ else {
 $projectDir = $selectedProject.DirectoryName
 $projectPath = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.FullName)
 
-Write-Host ''
-Write-Host "Running: $projectPath" -ForegroundColor Green
-Write-Host ''
-
 # Build the dotnet run command
 $dotnetArgs = @('run', '--project', $selectedProject.FullName)
 
 # Skip compilation when no source file is newer than the last build output.
+#
+# The whole preamble collapses to ONE grey line here (issue #469). Everything
+# before it -- which project was auto-selected, and whether a build was needed
+# -- is progress: true while it is on screen, worthless afterwards, and paid
+# for on every single run. It flashes and is erased. What survives is one line
+# naming what is about to run, in DarkGray, because it is context for the
+# application's output rather than a result of its own.
 Write-TransientStatus 'Checking whether a build is required...'
 if (Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot) {
-    # A build IS happening, so say so permanently -- the compiler output that
-    # follows would otherwise appear unexplained.
-    Clear-TransientStatus
-    Write-Host 'Source changes detected - building.' -ForegroundColor DarkGray
+    # Say "Building" up front so the compiler output that follows is explained
+    # rather than appearing unannounced.
+    $runStatus = "Building and running $projectPath"
 }
 else {
     $dotnetArgs += '--no-build'
-    # Nothing to report. Flash it, then erase it: a skipped build is the
-    # uneventful case and should not survive into copied console output.
-    Write-TransientStatus 'No build required.'
-    if ($script:TransientStatusEnabled) { Start-Sleep -Milliseconds 800 }
-    Clear-TransientStatus
+
+    # `dotnet run` announces "Using launch settings from <abs path>..." on
+    # every single run. --verbosity quiet silences that and MSBuild's own
+    # chatter, while still printing compiler ERRORS -- verified against a
+    # deliberate syntax error, where quiet and the default emit identical CS
+    # diagnostics.
+    #
+    # ONLY on the --no-build path, and the boundary is load-bearing: quiet also
+    # hides build WARNINGS. A consumer that has not set TreatWarningsAsErrors
+    # must still see them, and this script is generic across many projects, so
+    # it cannot assume that setting. Nothing is compiling on this path, so
+    # there are no warnings to lose here -- and when a build IS running, its
+    # output is exactly what the caller wants.
+    #
+    # The cost, accepted: `dotnet run`'s launch-settings line survives on the
+    # build path. It is the only path where it still appears, so it is no
+    # longer paid on every run.
+    #
+    # --no-launch-profile would silence the line everywhere, but by DROPPING
+    # the profile and its environment variables with it -- a behaviour change,
+    # not a cosmetic one, and not acceptable in a generic launcher.
+    $dotnetArgs += @('--verbosity', 'quiet')
+
+    $runStatus = "Running $projectPath"
 }
+Clear-TransientStatus
+Write-Host $runStatus -ForegroundColor DarkGray
 
 # Add launch profile if applicable
 $profileArgs = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile

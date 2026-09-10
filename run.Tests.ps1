@@ -660,6 +660,8 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $script:runFixture 'run.ps1')
         $script:runScript = Join-Path $script:runFixture 'run.ps1'
         $script:capturePath = Join-Path $script:runFixture 'dotnet-argv.txt'
+        $script:builtFixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("run-built-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:builtFixtureRoot -Force | Out-Null
 
         # One scriptblock holding the shim AND the accessors, dot-sourced at
         # the top of every It so all three are defined in THAT It's scope --
@@ -711,6 +713,7 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
 
     AfterAll {
         Remove-Item -Recurse -Force -LiteralPath $script:runFixture -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force -LiteralPath $script:builtFixtureRoot -ErrorAction SilentlyContinue
     }
 
     It 'keeps a comma token as one argument and does not merge it with the flag' {
@@ -761,6 +764,47 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         # leading positional token; only the folded list can see it.
         & $script:runScript -Verbose -- --verbose | Out-Null
         Get-ForwardedToken | Should -Be @('--verbose')
+    }
+
+    It 'silences dotnet chatter with --verbosity quiet when no build is needed (issue #469)' {
+        . $script:UseDotnetShim
+        # `dotnet run` prints "Using launch settings from <abs path>..." on
+        # every run. --verbosity quiet silences it without dropping the launch
+        # profile, and still prints compiler errors.
+        # Staged inline, not via a helper: a function defined in the Describe
+        # body is not visible inside an It. The shimmed `dotnet` never builds
+        # anything, so an up-to-date build output has to be put on disk rather
+        # than produced.
+        $built = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $built -Force | Out-Null
+        New-CsprojStub -Path (Join-Path $built 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $built 'run.ps1')
+        $outDir = Join-Path $built 'src/App/bin/Debug/net10.0'
+        New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+        $dll = Join-Path $outDir 'App.dll'
+        Set-Content -LiteralPath $dll -Value 'stub'
+        # Stamp it into the future so it beats every source file.
+        (Get-Item -LiteralPath $dll).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+
+        & (Join-Path $built 'run.ps1') -- auth | Out-Null
+        $captured = @(Get-CapturedDotnetArg)
+        $captured | Should -Contain '--no-build' -Because 'this fixture is deliberately up to date'
+        $captured | Should -Contain 'quiet'
+        $joined = $captured -join ' '
+        $joined | Should -Match '--verbosity quiet'
+    }
+
+    It 'does NOT silence dotnet when a build is required (issue #469)' {
+        . $script:UseDotnetShim
+        # The boundary is load-bearing: quiet hides build WARNINGS, and a
+        # consumer that has not set TreatWarningsAsErrors must still see them.
+        # This script is generic across many projects, so it cannot assume that
+        # setting -- which is why quiet is confined to the path where nothing
+        # is compiling and there are no warnings to lose.
+        & $script:runScript -- auth | Out-Null
+        $captured = @(Get-CapturedDotnetArg)
+        $captured | Should -Not -Contain '--no-build' -Because 'the stub project has never been built'
+        ($captured -join ' ') | Should -Not -Match '--verbosity quiet' -Because 'build warnings must reach a consumer that has not set TreatWarningsAsErrors'
     }
 
     It 'never injects --verbose into a dotnet test command line' {
