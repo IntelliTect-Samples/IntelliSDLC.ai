@@ -818,6 +818,198 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
     }
 }
 
+Describe 'run.project.ps1 consumer hook (issue #462)' {
+    # The hook loads BELOW run.ps1's dot-source guard, so `. ./run.ps1` never
+    # loads it -- deliberately, so a consumer's overrides cannot leak into
+    # upstream's own tests. That also means hook behaviour can only be
+    # exercised by INVOKING run.ps1 as a script against a fixture that
+    # contains a run.project.ps1, which is what these do.
+
+    BeforeAll {
+        $script:hookRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("run-hook-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:hookRoot -Force | Out-Null
+        $script:hookTestsRoot = $PSScriptRoot
+
+        # This Describe needs its OWN dotnet shim: the argv Describe's capture
+        # file lives inside a fixture its AfterAll deletes, so reusing that
+        # shim writes to a directory that no longer exists.
+        $script:hookCapture = Join-Path $script:hookRoot 'dotnet-argv.txt'
+        $escapedHookCapture = $script:hookCapture -replace "'", "''"
+        $script:UseHookShim = [scriptblock]::Create(@"
+            `$__capture = '$escapedHookCapture'
+            if (Test-Path -LiteralPath `$__capture) { Remove-Item -LiteralPath `$__capture -Force }
+
+            function dotnet {
+                Set-Content -LiteralPath `$__capture -Value (@(`$args) -join "``n") -NoNewline
+                `$global:LASTEXITCODE = 0
+            }
+
+            function Get-CapturedDotnetArg {
+                if (-not (Test-Path -LiteralPath `$__capture)) { return @() }
+                `$raw = Get-Content -LiteralPath `$__capture -Raw
+                if (`$null -eq `$raw -or `$raw -eq '') { return @() }
+                return @(`$raw -split "``n")
+            }
+
+            function Get-ForwardedToken {
+                `$captured = @(Get-CapturedDotnetArg)
+                `$sep = [array]::IndexOf(`$captured, '--')
+                if (`$sep -lt 0) { return `$null }
+                if (`$sep -eq (`$captured.Count - 1)) { return @() }
+                return @(`$captured[(`$sep + 1)..(`$captured.Count - 1)])
+            }
+"@)
+
+        # Builds a fixture project + run.ps1, optionally with a
+        # run.project.ps1. A scriptblock dot-sourced into each It, because a
+        # function declared in a Describe body is not visible inside one.
+        $script:NewHookFixture = {
+            function New-HookFixture {
+                param([string]$HookBody)
+                $root = Join-Path $script:hookRoot ([guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Path $root -Force | Out-Null
+                New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+                Copy-Item -LiteralPath (Join-Path $script:hookTestsRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+                if ($PSBoundParameters.ContainsKey('HookBody')) {
+                    Set-Content -LiteralPath (Join-Path $root 'run.project.ps1') -Value $HookBody
+                }
+                return $root
+            }
+        }
+    }
+
+    AfterAll {
+        Remove-Item -Recurse -Force -LiteralPath $script:hookRoot -ErrorAction SilentlyContinue
+    }
+
+    It 'runs normally when no run.project.ps1 exists' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $root = New-HookFixture
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        Get-ForwardedToken | Should -Be @('hello')
+    }
+
+    It 'lets the hook set an environment variable the child process inherits' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $root = New-HookFixture -HookBody '$env:RUN_PROJECT_HOOK_MARKER = "set-by-hook"'
+        $env:RUN_PROJECT_HOOK_MARKER = $null
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        $env:RUN_PROJECT_HOOK_MARKER | Should -Be 'set-by-hook' -Because 'the hook is dot-sourced, so it shares run.ps1 scope'
+        $env:RUN_PROJECT_HOOK_MARKER = $null
+    }
+
+    It 'lets the hook override an upstream function' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # Redefining ConvertTo-ForwardedArgument uppercases every forwarded
+        # token -- proof that the later definition wins.
+        $body = @'
+function ConvertTo-ForwardedArgument {
+    [OutputType([string[]])]
+    param([object[]]$Argument)
+    if (-not $Argument) { return , @() }
+    return , @(foreach ($item in $Argument) { ([string]$item).ToUpperInvariant() })
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        Get-ForwardedToken | Should -Be @('HELLO') -Because 'a later definition wins in PowerShell'
+    }
+
+    It 'dispatches a subcommand the hook registered, instead of forwarding it' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $body = @'
+$ReservedCommands += 'deploy'
+function Invoke-ProjectCommand {
+    param([string]$Command, [string[]]$Argument)
+    Write-Host "PROJECT-COMMAND:$Command($($Argument -join ','))"
+    $global:LASTEXITCODE = 0
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        $out = & (Join-Path $root 'run.ps1') deploy --to prod 6>&1 | Out-String
+        $out | Should -Match 'PROJECT-COMMAND:deploy'
+        $out | Should -Match '--to,prod'
+        Get-CapturedDotnetArg | Should -BeNullOrEmpty -Because 'a dispatched subcommand must not also reach dotnet'
+    }
+
+    It 'fails loudly when a registered subcommand has no handler' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # Appending to $ReservedCommands alone only stops the token reaching
+        # the app; without Invoke-ProjectCommand it would silently do nothing.
+        $root = New-HookFixture -HookBody '$ReservedCommands += ''deploy'''
+        # run.ps1 sets $ErrorActionPreference = 'Stop', so its Write-Error is
+        # terminating and propagates out of the `&` call.
+        $message = $null
+        try { & (Join-Path $root 'run.ps1') deploy | Out-Null }
+        catch { $message = $_.Exception.Message }
+        $message | Should -Match 'defines no Invoke-ProjectCommand'
+        Get-CapturedDotnetArg | Should -BeNullOrEmpty
+    }
+
+    It 'lets the hook mutate the dotnet command line before it runs' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $body = @'
+function Invoke-ProjectPreRun {
+    param([string[]]$DotnetArgument, [string]$Project)
+    return , (@($DotnetArgument) + '--added-by-hook')
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        @(Get-CapturedDotnetArg) | Should -Contain '--added-by-hook'
+    }
+
+    It 'accepts a pre-run hook that returns a plain array, not just a comma-wrapped one' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # The other pre-run test returns `, $list`; this one returns a plain
+        # array. Both are idiomatic PowerShell and a public contract has to
+        # accept either -- wrapping the CALL in @() breaks the first.
+        $body = @'
+function Invoke-ProjectPreRun {
+    param([string[]]$DotnetArgument, [string]$Project)
+    $out = @($DotnetArgument) + '--plain-array-hook'
+    return $out
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        @(Get-CapturedDotnetArg) | Should -Contain '--plain-array-hook'
+        Get-ForwardedToken | Should -Contain 'hello' -Because 'the rest of the command line must survive the hook'
+    }
+
+    It 'calls the post-run seam with the exit code' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $body = @'
+function Invoke-ProjectPostRun {
+    param([int]$ExitCode, [string]$Project)
+    Write-Host "POST-RUN:$ExitCode"
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        $out = & (Join-Path $root 'run.ps1') -- hello 6>&1 | Out-String
+        $out | Should -Match 'POST-RUN:0'
+    }
+
+    It 'does NOT load the hook when run.ps1 is dot-sourced' {
+        . $script:NewHookFixture
+        # The guard is what stops a consumer's overrides leaking into
+        # upstream's own test session. If this regresses, every suite that
+        # dot-sources run.ps1 silently inherits whatever the consumer wrote.
+        $root = New-HookFixture -HookBody '$global:RUN_PROJECT_HOOK_DOTSOURCED = $true'
+        $global:RUN_PROJECT_HOOK_DOTSOURCED = $null
+        . (Join-Path $root 'run.ps1')
+        $global:RUN_PROJECT_HOOK_DOTSOURCED | Should -BeNullOrEmpty -Because 'the hook loads below the dot-source guard'
+    }
+}
+
 Describe 'Transient build status (issue #249)' {
 
     BeforeEach {

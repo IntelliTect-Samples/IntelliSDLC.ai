@@ -567,6 +567,36 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 
 # --- Main ---
 
+# --- Consumer extension point (issue #462) ---
+#
+# Dot-sourced, not called: that loads run.project.ps1 into THIS script's scope,
+# which is what makes the rest work. The hook can set $env: variables the child
+# process inherits, append to $ReservedCommands, and OVERRIDE any function
+# above by redefining it, because a later definition wins.
+#
+# The load point is boxed in on all four sides and every side is load-bearing:
+#
+#   after  $ReservedCommands is assigned (:85)   -- or the hook cannot add to it
+#   after  the function definitions              -- or it cannot override them
+#   after  the dot-source guard (:566)           -- or `. ./run.ps1` in a test
+#                                                   session would silently apply
+#                                                   a consumer's overrides to
+#                                                   unrelated tests
+#   before the argument-forwarding block (:578)  -- or a custom subcommand has
+#                                                   already been forwarded to
+#                                                   the application
+#
+# The consequence of sitting below the guard, accepted deliberately: hook
+# behaviour cannot be tested by dot-sourcing run.ps1. It has to be exercised by
+# INVOKING run.ps1 as a script against a fixture directory that contains a
+# run.project.ps1 -- which is how run.Tests.ps1 covers it.
+#
+# Deliberately NOT scaffolded. An empty run.project.ps1 in every consumer is
+# noise; absent means "no customization", which is the common case.
+$projectHook = Join-Path $PSScriptRoot 'run.project.ps1'
+if (Test-Path -LiteralPath $projectHook) { . $projectHook }
+
+
 # Normalize forwarded arguments before anything inspects them, so array
 # literals survive as typed (see ConvertTo-ForwardedArgument).
 #
@@ -600,6 +630,20 @@ if (Test-RootHelpRequest -Command $Command -Argument $Args) {
     # Pick the first runnable project (skip interactive selection for help)
     $selectedProject = $runnableProjects[0]
     & dotnet run --project $selectedProject.FullName -- --help
+    exit $LASTEXITCODE
+}
+
+# --- Project subcommand (issue #462) ---
+# A command that is reserved but that upstream does not handle can only have
+# come from run.project.ps1 appending to $ReservedCommands. Appending alone
+# just stops the token reaching the app -- the hook has to supply
+# Invoke-ProjectCommand to give it behaviour.
+if ($Command -and $Command -notin @('run', 'test', 'help')) {
+    if (-not (Get-Command Invoke-ProjectCommand -ErrorAction SilentlyContinue)) {
+        Write-Error "'$Command' is in `$ReservedCommands but run.project.ps1 defines no Invoke-ProjectCommand to handle it."
+        exit 1
+    }
+    Invoke-ProjectCommand -Command $Command -Argument $Args
     exit $LASTEXITCODE
 }
 
@@ -750,5 +794,34 @@ if ($Args -and $Args.Count -gt 0) {
     $dotnetArgs += $Args
 }
 
+# Last-chance mutation of the command line, and a seam after the process
+# exits (issue #462). Both optional: a hook implements only what it needs.
+#
+# There is deliberately NO seam between compilation and execution. `dotnet run`
+# compiles and launches in one invocation, so creating one would mean splitting
+# into `dotnet build` + `dotnet run --no-build` -- two invocations with
+# different error surfaces and slower startup. No known scenario needs it; it
+# should be its own issue if one appears.
+if (Get-Command Invoke-ProjectPreRun -ErrorAction SilentlyContinue) {
+    # Assign the call's result to a variable FIRST, then wrap that variable in
+    # @(). Wrapping the CALL -- `@(Invoke-ProjectPreRun ...)` -- re-nests a
+    # hook that returns `, $list`, the idiom for "an array, not unrolled",
+    # producing a one-element array holding the real one. Splatting flattens
+    # that back out, so it looks fine until something types the value (#461).
+    #
+    # This is a public extension contract: consumers will write both `, $list`
+    # and a plain array, and both must work. Wrapping the variable does that --
+    # `, $list` has already unrolled by the time it lands in $hookResult, and a
+    # plain array is unchanged by @().
+    $hookResult = Invoke-ProjectPreRun -DotnetArgument $dotnetArgs -Project $selectedProject.FullName
+    $dotnetArgs = @($hookResult)
+}
+
 & dotnet @dotnetArgs
-exit $LASTEXITCODE
+$exitCode = $LASTEXITCODE
+
+if (Get-Command Invoke-ProjectPostRun -ErrorAction SilentlyContinue) {
+    Invoke-ProjectPostRun -ExitCode $exitCode -Project $selectedProject.FullName
+}
+
+exit $exitCode
