@@ -652,6 +652,13 @@ if ($Command -and $Command -notin @('run', 'test', 'help')) {
     # session where nothing has set it at all, trip Set-StrictMode with
     # "the variable '$LASTEXITCODE' cannot be retrieved because it has not been
     # set". A handler that wants a non-zero result sets it explicitly.
+    #
+    # `$global:` is load-bearing -- do NOT shorten this to `$LASTEXITCODE = 0`.
+    # An unqualified write creates a SCRIPT-scoped shadow, while a handler
+    # reporting failure writes `$global:LASTEXITCODE = N` (the natural idiom,
+    # since the handler is dot-sourced into this scope). The unqualified read
+    # two lines down would then resolve to the nearer shadow and silently
+    # discard the handler's result, turning every failure into a success.
     $global:LASTEXITCODE = 0
     Invoke-ProjectCommand -Command $Command -Argument $Args
     exit $LASTEXITCODE
