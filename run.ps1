@@ -576,15 +576,17 @@ if ($MyInvocation.InvocationName -eq '.') { return }
 #
 # The load point is boxed in on all four sides and every side is load-bearing:
 #
-#   after  $ReservedCommands is assigned (:85)   -- or the hook cannot add to it
-#   after  the function definitions              -- or it cannot override them
-#   after  the dot-source guard (:566)           -- or `. ./run.ps1` in a test
-#                                                   session would silently apply
-#                                                   a consumer's overrides to
-#                                                   unrelated tests
-#   before the argument-forwarding block (:578)  -- or a custom subcommand has
-#                                                   already been forwarded to
-#                                                   the application
+#   after  $ReservedCommands is assigned  -- or the hook cannot add to it
+#   after  the function definitions       -- or it cannot override them
+#   after  the dot-source guard           -- or `. ./run.ps1` in a test session
+#                                            would silently apply a consumer's
+#                                            overrides to unrelated tests
+#   before the argument-forwarding block  -- or a custom subcommand has already
+#                                            been forwarded to the application
+#
+# Stated as landmarks, not line numbers: the numbers in this file have moved
+# three times in two days, and a stale one sends the next reader to the wrong
+# place with more confidence than no number at all.
 #
 # The consequence of sitting below the guard, accepted deliberately: hook
 # behaviour cannot be tested by dot-sourcing run.ps1. It has to be exercised by
@@ -643,6 +645,14 @@ if ($Command -and $Command -notin @('run', 'test', 'help')) {
         Write-Error "'$Command' is in `$ReservedCommands but run.project.ps1 defines no Invoke-ProjectCommand to handle it."
         exit 1
     }
+    # Zero $LASTEXITCODE first. It is process-wide, and a handler that never
+    # shells out leaves it untouched -- so `exit $LASTEXITCODE` would report
+    # whatever an unrelated earlier command in this process happened to leave
+    # behind (a CI script chaining commands makes that routine), or, in a fresh
+    # session where nothing has set it at all, trip Set-StrictMode with
+    # "the variable '$LASTEXITCODE' cannot be retrieved because it has not been
+    # set". A handler that wants a non-zero result sets it explicitly.
+    $global:LASTEXITCODE = 0
     Invoke-ProjectCommand -Command $Command -Argument $Args
     exit $LASTEXITCODE
 }

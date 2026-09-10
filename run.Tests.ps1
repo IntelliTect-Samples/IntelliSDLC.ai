@@ -936,6 +936,41 @@ function Invoke-ProjectCommand {
         Get-CapturedDotnetArg | Should -BeNullOrEmpty -Because 'a dispatched subcommand must not also reach dotnet'
     }
 
+    It 'does not report a stale exit code when the handler never sets one' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # $LASTEXITCODE is process-wide. A handler that never shells out leaves
+        # it untouched, so without zeroing it first run.ps1 would exit with
+        # whatever an unrelated earlier command left behind.
+        $body = @'
+$ReservedCommands += 'deploy'
+function Invoke-ProjectCommand {
+    param([string]$Command, [string[]]$Argument)
+    Write-Host "handled $Command"
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        $global:LASTEXITCODE = 5
+        & (Join-Path $root 'run.ps1') deploy 6>$null | Out-Null
+        $LASTEXITCODE | Should -Be 0 -Because 'a silent handler succeeded; 5 belonged to something else entirely'
+    }
+
+    It 'reports the exit code a handler sets deliberately' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $body = @'
+$ReservedCommands += 'deploy'
+function Invoke-ProjectCommand {
+    param([string]$Command, [string[]]$Argument)
+    $global:LASTEXITCODE = 3
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        $global:LASTEXITCODE = 0
+        & (Join-Path $root 'run.ps1') deploy 6>$null | Out-Null
+        $LASTEXITCODE | Should -Be 3 -Because 'zeroing must not clobber a handler that reports failure'
+    }
+
     It 'fails loudly when a registered subcommand has no handler' {
         . $script:UseHookShim
         . $script:NewHookFixture
