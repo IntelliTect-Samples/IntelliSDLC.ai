@@ -289,8 +289,9 @@ $script:UpstreamManagedPaths = @(
 # A path here is diff-replayed from upstream only while the consumer has not
 # touched it. The moment it differs -- committed OR uncommitted -- the sync
 # leaves it exactly as it is, says so, and carries on. It never aborts the
-# sync the way ordinary managed drift does, and it is never staged into the
-# sync commit.
+# sync the way ordinary managed drift does, and it is kept out of the sync
+# commit -- both by never being added, and by being unstaged again if the
+# consumer had already staged it themselves.
 #
 # That combination is the point. Ordinary managed paths abort on drift, which
 # would block every sync for a consumer that had customized run.ps1 -- and the
@@ -3121,8 +3122,14 @@ function Invoke-PullSDLC {
     $ops = @(Get-UpstreamOps -Anchor $anchorSha -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
 
     # Drop ops for a yielded path: "leave it" means do not overwrite it either.
+    #
+    # OldPath as well as Path. A rename or copy op is emitted as
+    # @{ Op='R'; OldPath=<old>; Path=<new> }, and applying it REMOVES OldPath
+    # unconditionally -- so an upstream rename of a yielded file would delete
+    # the consumer's customization while the warning said it had been left
+    # alone. Dormant while nothing renames run.ps1, and silent when it happens.
     if ($yieldedPaths.Count -gt 0) {
-        $ops = @($ops | Where-Object { $_.Path -notin $yieldedPaths })
+        $ops = @($ops | Where-Object { $_.Path -notin $yieldedPaths -and $_.OldPath -notin $yieldedPaths })
     }
 
     # Reconcile managed files whose HEAD content diverged from the upstream tip
@@ -3140,7 +3147,7 @@ function Invoke-PullSDLC {
     if ($anchorSha) {
         $reconcileOps = @(Get-UpstreamOps -Anchor 'HEAD' -Ref $mergeRef -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $RepoRoot)
         if ($yieldedPaths.Count -gt 0) {
-            $reconcileOps = @($reconcileOps | Where-Object { $_.Path -notin $yieldedPaths })
+            $reconcileOps = @($reconcileOps | Where-Object { $_.Path -notin $yieldedPaths -and $_.OldPath -notin $yieldedPaths })
         }
         if ($reconcileOps.Count -gt 0) {
             $covered = @{}
@@ -3298,7 +3305,15 @@ function Invoke-PullSDLC {
                     # explicitly staged above -- it records the anchor, so
                     # dropping it would make every later sync re-bootstrap.
                     $_ -ne $script:SdlcSyncStateFile -and
-                    (Test-IsAlwaysLocalPath -Path $_)
+                    # Yielded paths as well as always-local ones. Skipping a
+                    # yielded path in $addPaths only stops THIS script staging
+                    # it; a change the consumer had already staged before
+                    # running the sync is still in the index, and run.ps1 is
+                    # deliberately no longer always-local, so nothing else
+                    # unstages it. Without this the consumer's own
+                    # work-in-progress lands in a "chore: sync" commit it did
+                    # not author -- issue #222's failure by a different route.
+                    ((Test-IsAlwaysLocalPath -Path $_) -or ($_ -in $yieldedPaths))
                 })
             if ($unstage.Count -gt 0) {
                 # `git restore --staged` resolves HEAD, so it fails with

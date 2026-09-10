@@ -601,6 +601,72 @@ Describe 'run.ps1 yields to a consumer change (issue #462)' {
         } finally { Pop-Location }
     }
 
+    It 'never stages a change the consumer had already STAGED' {
+        # Skipping the path in $addPaths only stops the script staging it. A
+        # change already in the index before the sync ran is a different route
+        # to the same #222 failure: the consumer's work-in-progress ends up in
+        # a "chore: sync" commit it did not author.
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak { 'claude v2 with more content' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'CONSUMER STAGED EDIT' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'run.ps1') -NoNewline
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try {
+            git add .sdlc-ai-sync.json; git commit -q -m 'seed state'
+            git add run.ps1   # staged, deliberately NOT committed
+        } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            $syncFiles = @(git show --name-only --pretty=format: HEAD | Where-Object { $_ })
+            $syncFiles | Should -Contain 'CLAUDE.md'
+            $syncFiles | Should -Not -Contain 'run.ps1' -Because 'a staged consumer edit must be unstaged again, not committed by the sync'
+            (Get-Content run.ps1 -Raw).Trim() | Should -Be 'CONSUMER STAGED EDIT'
+        } finally { Pop-Location }
+    }
+
+    It 'does not delete a yielded file when upstream RENAMES it' {
+        # A rename op is @{ Op='R'; OldPath=<old>; Path=<new> } and applying it
+        # REMOVES OldPath unconditionally. Filtering ops on Path alone would let
+        # an upstream rename delete the consumer's customization while the
+        # warning claimed the file had been left alone.
+        $fx = New-DiffReplayFixture -Root $script:yieldRoot `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'upstream runner v1' | Out-File -Encoding utf8 run.ps1 -NoNewline
+            } `
+            -Tweak {
+                Remove-Item run.ps1 -Force
+                'upstream runner v1' | Out-File -Encoding utf8 run.launcher.ps1 -NoNewline
+            }
+        'CONSUMER CUSTOMIZED RUNNER' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'run.ps1') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add run.ps1; git commit -q -m 'consumer customizes run.ps1' } finally { Pop-Location }
+        Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+        Push-Location $fx.Consumer
+        try { git add .sdlc-ai-sync.json; git commit -q -m 'seed state' } finally { Pop-Location }
+
+        # Teach the running script about the new name, as a maintainer landing
+        # such a rename would. Restored in the finally so no other test sees it.
+        $savedManaged = $script:UpstreamManagedPaths
+        try {
+            $script:UpstreamManagedPaths = @($savedManaged) + 'run.launcher.ps1'
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch
+            $rc | Should -Be 0
+        }
+        finally { $script:UpstreamManagedPaths = $savedManaged }
+
+        Test-Path (Join-Path $fx.Consumer 'run.ps1') |
+            Should -BeTrue -Because 'a rename must not delete a yielded file out from under the consumer'
+        (Get-Content (Join-Path $fx.Consumer 'run.ps1') -Raw).Trim() | Should -Be 'CONSUMER CUSTOMIZED RUNNER'
+    }
+
     It 'still ABORTS on drift to an ordinary managed path' {
         # Yielding is scoped to $script:YieldOnLocalChangePaths. CLAUDE.md and
         # friends must keep failing loudly, or this change quietly turns the
