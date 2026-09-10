@@ -829,14 +829,88 @@ function detectPii(har, policy) {
     return out;
 }
 
-function tryWalkJsonText(text, entryIndex, basePath, out, policy) {
+// How many nested form-encoded layers to unwrap. The observed provider shape
+// needs two (a form parameter whose value is encoded JSON, whose own value is
+// an encoded string). The bound exists because the layering is provider-defined
+// and the payload is attacker-influenced; refusing to go deeper is safe here
+// because the un-decoded remainder still goes through the text scanner, which
+// is exactly the behaviour that existed before.
+const FORM_DEPTH_LIMIT = 4;
+
+/**
+ * The `name=value` pairs of an `application/x-www-form-urlencoded` body, or
+ * null when the text is not one.
+ *
+ * DELIBERATELY STRICT, because a false positive here would route a response
+ * body through the form path and re-encode it. Every `&`-separated part must
+ * carry an `=`, every name must be a bare token, and the whole text must be
+ * free of whitespace -- which a minified JS bundle or an HTML document is not,
+ * and `&amp;` entities are not (they yield a part with no `=`).
+ */
+function formEncodedPairs(text) {
+    if (typeof text !== 'string' || text.length === 0 || text.length > 8 * 1024 * 1024) return null;
+    // Whitespace or a control character. A real form body has neither; a minified
+    // JS bundle, an HTML document and pretty-printed JSON all have the first.
+    // Written as ESCAPES on purpose -- the literal bytes make the file read as
+    // binary to grep and are invisible in review.
+    if (/[\s\u0000-\u001f]/.test(text)) return null;
+    const parts = text.split('&');
+    const pairs = [];
+    for (const part of parts) {
+        const eq = part.indexOf('=');
+        if (eq <= 0) return null;
+        const name = part.slice(0, eq);
+        if (!/^[A-Za-z0-9_.\-[\]%]+$/.test(name)) return null;
+        pairs.push({ name, raw: part.slice(eq + 1) });
+    }
+    return pairs.length ? pairs : null;
+}
+
+// `+` means space in a form body, which decodeURIComponent does not know.
+// Returns null for a malformed escape so the caller can leave the value alone
+// rather than throwing on somebody else's encoding bug.
+function formDecode(raw) {
+    try { return decodeURIComponent(raw.replace(/\+/g, '%20')); }
+    catch (_) { return null; }
+}
+
+/**
+ * Detection over a request or response body.
+ *
+ * THREE BRANCHES, AND THE MIDDLE ONE IS WHY THIS EXISTS (issue #479).
+ *
+ * A percent-encoded body used to go straight to the text scanner, which read
+ * `%22` as the two digits `22` rather than as a delimiter. Those digits join
+ * whatever follows, so an adjacent value is measured at the wrong LENGTH -- and
+ * length is how the digit-run detectors decide what a value is. It fails in
+ * both directions: two extra digits can complete a 14-digit id into a
+ * card-length run (a false positive, whose replacement then overwrites the
+ * escape and corrupts the document), or extend a real 16-digit card to 18 and
+ * push it out of range entirely (a false negative -- the card survives).
+ *
+ * Decoding first removes the whole class: the scanner sees the value the
+ * operator actually sent, with delimiters as delimiters.
+ */
+function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth) {
+    depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
         walkJsonForDetect(parsed, null, entryIndex, basePath, out, policy);
-    } else {
-        detectInString(text, entryIndex, { jsonPath: basePath }, out, policy);
+        return;
     }
+    if (depth < FORM_DEPTH_LIMIT) {
+        const pairs = formEncodedPairs(text);
+        if (pairs) {
+            for (const p of pairs) {
+                const decoded = formDecode(p.raw);
+                if (decoded === null) continue;
+                tryWalkJsonText(decoded, entryIndex, basePath + '.' + p.name, out, policy, depth + 1);
+            }
+            return;
+        }
+    }
+    detectInString(text, entryIndex, { jsonPath: basePath }, out, policy);
 }
 
 // --- scrubbing: apply faker substitutions in-place on the HAR ---
@@ -1071,12 +1145,41 @@ function applyReplacementsToEntry(entry, replacements, policy) {
     }
 }
 
-function replaceJsonOrText(text, replacements, policy) {
+/**
+ * Replacement over a request or response body. Mirrors tryWalkJsonText branch
+ * for branch, because detection and replacement disagreeing about what a body
+ * IS is how a value gets detected in one shape and rewritten in another.
+ *
+ * A CHANGED PARAMETER IS RE-ENCODED; AN UNCHANGED ONE IS RE-EMITTED VERBATIM.
+ * That asymmetry is load-bearing. `encodeURIComponent(decodeURIComponent(x))`
+ * is not the identity -- `%7E` decodes to `~` and re-encodes to `~`, `+`
+ * decodes to a space and re-encodes to `%20` -- so round-tripping every
+ * parameter would rewrite bytes the scrub was never asked to touch, in a file
+ * whose whole purpose is to be a faithful record. Only a parameter that
+ * actually changed pays that cost, and only because it had to.
+ */
+function replaceJsonOrText(text, replacements, policy, depth) {
+    depth = depth || 0;
     let parsed = null;
     try { parsed = JSON.parse(text); } catch (_) { /* not JSON */ }
     if (parsed !== null && typeof parsed === 'object') {
         const rebuilt = replaceInJson(parsed, null, replacements, policy);
         return JSON.stringify(rebuilt);
+    }
+    if (depth < FORM_DEPTH_LIMIT) {
+        const pairs = formEncodedPairs(text);
+        if (pairs) {
+            let changed = false;
+            const rebuilt = pairs.map((p) => {
+                const decoded = formDecode(p.raw);
+                if (decoded === null) return p.name + '=' + p.raw;
+                const next = replaceJsonOrText(decoded, replacements, policy, depth + 1);
+                if (next === decoded) return p.name + '=' + p.raw;
+                changed = true;
+                return p.name + '=' + encodeURIComponent(next);
+            });
+            return changed ? rebuilt.join('&') : text;
+        }
     }
     return replaceAll(text, replacements);
 }
