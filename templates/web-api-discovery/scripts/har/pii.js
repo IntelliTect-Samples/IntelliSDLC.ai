@@ -859,26 +859,67 @@ function formEncodedPairs(text) {
     const parts = text.split('&');
     const pairs = [];
     for (const part of parts) {
-        // An EMPTY segment is skipped, not rejected. A trailing `&` is ordinary
-        // output from several serializers, and rejecting the body over one sent
-        // the whole thing back to the plain-text path -- reinstating, for those
-        // bodies, exactly the defect this branch exists to remove.
-        if (part.length === 0) continue;
+        // An EMPTY segment is RECORDED, not rejected and not dropped. A
+        // trailing `&` is ordinary serializer output, and rejecting the body
+        // over one sent the whole thing back to the plain-text path --
+        // reinstating, for those bodies, exactly the defect this branch exists
+        // to remove. Carrying it through the rebuild instead of skipping it is
+        // what keeps a body whose delimiters are redundant byte-identical when
+        // some other parameter changes.
+        if (part.length === 0) { pairs.push({ empty: true, name: '', raw: '' }); continue; }
         const eq = part.indexOf('=');
         if (eq <= 0) return null;
         const name = part.slice(0, eq);
         if (!/^[A-Za-z0-9_.\-[\]%]+$/.test(name)) return null;
         pairs.push({ name, raw: part.slice(eq + 1) });
     }
-    return pairs.length ? pairs : null;
+    return pairs.some((x) => !x.empty) ? pairs : null;
 }
 
-// `+` means space in a form body, which decodeURIComponent does not know.
-// Returns null for a malformed escape so the caller can leave the value alone
-// rather than throwing on somebody else's encoding bug.
+/**
+ * Percent-decode a form value, LENIENTLY, and never fail.
+ *
+ * `+` means space in a form body, which decodeURIComponent does not know.
+ *
+ * A MALFORMED ESCAPE DOES NOT DISQUALIFY THE VALUE, and getting this wrong cost
+ * two rounds. Returning null and SKIPPING the parameter hid every other secret
+ * in it from detection -- a leak the plain-text path did not have. Returning
+ * null and processing the RAW text instead put the value back on the exact
+ * path this branch exists to remove: the still-encoded `%22` beside it reads as
+ * two payload digits again, and the replacement then gets percent-encoded a
+ * second time on the way out, so the output is both corrupted AND
+ * double-escaped.
+ *
+ * Decoding what is well-formed and passing through what is not gives detection
+ * real delimiters, keeps every byte of the value in scope, and leaves the
+ * replacement on decoded text where re-encoding is correct.
+ *
+ * The one visible effect: a value that BOTH contains a malformed escape AND has
+ * something replaced in it comes back with that escape normalised (`%zz` ->
+ * `%25zz`). Only a value that was already being rewritten pays it, and a
+ * well-formed escape is a better artifact than the malformed one it replaces.
+ */
 function formDecode(raw) {
-    try { return decodeURIComponent(raw.replace(/\+/g, '%20')); }
-    catch (_) { return null; }
+    let out = '';
+    for (let i = 0; i < raw.length; i++) {
+        const c = raw[i];
+        if (c === '+') { out += ' '; continue; }
+        if (c !== '%') { out += c; continue; }
+        const hex = raw.slice(i + 1, i + 3);
+        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) { out += '%'; continue; }
+        // A multi-byte UTF-8 sequence has to decode as a unit, so hand the
+        // whole run of escapes to the real decoder and fall back to literals
+        // when it is not valid UTF-8.
+        let j = i, run = '';
+        while (j < raw.length && raw[j] === '%' && /^[0-9A-Fa-f]{2}$/.test(raw.slice(j + 1, j + 3))) {
+            run += raw.slice(j, j + 3);
+            j += 3;
+        }
+        try { out += decodeURIComponent(run); }
+        catch (_) { out += run; }
+        i = j - 1;
+    }
+    return out;
 }
 
 
@@ -892,9 +933,16 @@ function formDecode(raw) {
  * GET puts an entire JSON payload there, which is precisely the shape that
  * turns an escape's digits into part of an adjacent value.
  *
- * Only the query is treated as form data. The origin, path and fragment are
- * left to the plain-text pass: they are not `name=value` data, and re-encoding
- * a path would rewrite bytes nothing asked to change.
+ * ONLY THE QUERY. The origin, path and fragment stay on the plain-text pass:
+ * they are not `name=value` data, and rewriting a path risks changing a URL's
+ * meaning to fix a payload that is usually not there.
+ *
+ * That is a real, disclosed limit rather than a complete fix. A path segment
+ * carrying the same percent-encoded payload -- some REST APIs put a JSON or
+ * base64 blob in a segment instead of a query -- is still read as plain text
+ * and can still be corrupted exactly as a body used to be. Closing that means
+ * decoding percent-encoded runs everywhere they occur, not just where they are
+ * form data, which is a larger change than this one and is tracked separately.
  */
 function splitUrl(url) {
     const hash = url.indexOf('#');
@@ -952,20 +1000,17 @@ function tryWalkJsonText(text, entryIndex, basePath, out, policy, depth) {
         const pairs = formEncodedPairs(text);
         if (pairs) {
             for (const p of pairs) {
-                // A parameter whose escape is malformed is scanned RAW rather
-                // than skipped. Skipping it made a broken `%XX` anywhere in a
-                // value hide the rest of that value from detection -- a leak
-                // the plain-text path did not have, because it scanned
-                // everything regardless.
-                const decoded = formDecode(p.raw);
-                const value = decoded === null ? p.raw : decoded;
-                tryWalkJsonText(value, entryIndex, basePath + '.' + p.name, out, policy, depth + 1);
+                if (p.empty) continue;
+                tryWalkJsonText(formDecode(p.raw), entryIndex,
+                    basePath + '.' + p.name, out, policy, depth + 1);
                 // The NAME is scanned too. The plain-text path made no
                 // distinction between the two sides of an `=`, so leaving names
                 // out would silently stop detecting a secret used as a key.
-                const decodedName = formDecode(p.name);
-                detectInString(decodedName === null ? p.name : decodedName,
-                    entryIndex, { jsonPath: basePath + '.<name>' }, out, policy);
+                // The path names the PARAMETER as well as the side, or two
+                // secrets used as two names in one body report the same
+                // location and the findings cannot be told apart.
+                detectInString(formDecode(p.name), entryIndex,
+                    { jsonPath: basePath + '.' + p.name + '.<name>' }, out, policy);
             }
             return;
         }
@@ -1231,15 +1276,15 @@ function replaceJsonOrText(text, replacements, policy, depth) {
         if (pairs) {
             let changed = false;
             const rebuilt = pairs.map((p) => {
-                // Mirrors the detection side exactly: a malformed escape means
-                // the RAW text is processed, never that the parameter is
-                // skipped.
-                const decoded = formDecode(p.raw);
-                const value = decoded === null ? p.raw : decoded;
+                // An EMPTY segment is re-emitted as itself, so a body's
+                // redundant delimiters survive a run that changed something
+                // else in it. The byte-identical promise covers the whole body,
+                // not only the parameters that carry values.
+                if (p.empty) return '';
+                const value = formDecode(p.raw);
                 const nextValue = replaceJsonOrText(value, replacements, policy, depth + 1);
 
-                const decodedName = formDecode(p.name);
-                const name = decodedName === null ? p.name : decodedName;
+                const name = formDecode(p.name);
                 const nextName = replaceAll(name, replacements);
 
                 const valueChanged = nextValue !== value;

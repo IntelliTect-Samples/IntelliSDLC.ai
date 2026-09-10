@@ -259,6 +259,70 @@ check('an untouched value with round-trip hazards is byte-identical (#479 review
         'back different: ' + bodyOf(har));
 });
 
+// --- 5. what the SECOND review round found in the first round's fixes -----
+//
+// Round one skipped a parameter whose escape would not decode, which hid the
+// rest of it. Round two processed it RAW instead, which put it straight back on
+// the vulnerable path AND double-encoded the result. Neither is right; the
+// decoder is lenient now. These pin that.
+
+function harWithRawBody(text) {
+    const har = harWithFormBody('unused', {});
+    har.log.entries[0].request.postData.text = text;
+    return har;
+}
+
+check('a malformed escape neither corrupts nor double-encodes (#479 review 2, round 2)', () => {
+    // The reviewer's reproduction. A malformed escape beside a WELL-FORMED one
+    // in the same value: raw processing read `%22` as two payload digits again,
+    // wrote a 16-digit fake over the escape, then percent-encoded the result a
+    // second time on the way out.
+    const har = harWithRawBody('payload=x%zz%22' + ID_14);
+    pii.scrubPii(har);
+    const out = bodyOf(har);
+    assert.ok(!/%25/.test(out),
+        'the value was percent-encoded a second time: ' + out);
+    assert.ok(!/4242/.test(out),
+        'the escape was read as payload digits and a false-positive card was written: ' + out);
+});
+
+check('a malformed escape still does not hide a real secret (#479 review 2, round 1)', () => {
+    // GUARD, not a falsifier: it passes against the previous commit too, whose
+    // raw-processing had already closed this leak. It is here because the fix
+    // that replaced raw-processing could have reopened it, and the two
+    // directions have to be asserted together -- closing either one alone is
+    // exactly what went wrong in both earlier rounds.
+    const har = harWithRawBody('a=' + CARD + '%zz');
+    const found = pii.detectPii(JSON.parse(JSON.stringify(har)));
+    assert.ok(found.some((d) => d.type === 'credit-card'),
+        'a card next to a malformed escape was not detected');
+});
+
+check('redundant delimiters survive a run that changed something else (#479 review 4)', () => {
+    // The byte-identical promise covers the whole body, not only the parameters
+    // that carry values. Rebuilding from pairs alone silently dropped empties.
+    const har = harWithRawBody('a=1&&&&b=' + CARD);
+    pii.scrubPii(har);
+    const out = bodyOf(har);
+    assert.ok(!out.includes(CARD), 'the card must still be replaced');
+    assert.ok(out.startsWith('a=1&&&&b='),
+        'the empty segments were dropped by the rebuild: ' + out);
+});
+
+check('two secrets used as two names report distinct locations (#479 review 3)', () => {
+    // Every name finding used to report the same literal path, so a report
+    // naming two findings could not say which parameter either came from.
+    const OTHER = '4916123456789010';
+    const har = harWithRawBody(CARD + '=x&' + OTHER + '=y');
+    const found = pii.detectPii(JSON.parse(JSON.stringify(har)))
+        .filter((d) => d.type === 'credit-card');
+    assert.ok(found.length >= 2, 'both names must be detected, got ' + found.length);
+    const paths = new Set(found.map((d) => d.location && d.location.jsonPath));
+    assert.ok(paths.size >= 2,
+        'both findings reported the same location, so the report cannot tell them ' +
+        'apart: ' + JSON.stringify([...paths]));
+});
+
 if (failures) {
     console.error(`\npii-form-encoded-scrub: ${failures} failure(s)`);
     process.exit(1);
