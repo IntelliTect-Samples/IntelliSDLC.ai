@@ -170,6 +170,95 @@ check('a parameter the scrub did not touch is byte-identical', () => {
         'not round-tripped through a decoder');
 });
 
+// --- 4. the four holes an independent review found in the first fix -------
+//
+// Each of these failed against the first version of the form branch. They are
+// falsifiers, not guards: three are ways the defect stayed reachable, and one
+// is a regression the fix itself introduced.
+
+const CARD = '4539578763621486';
+
+check('a query string gets the same treatment as a body (#479 review, 1)', () => {
+    // A query string IS percent-encoded form data that happens to live in a
+    // URL, and `request.url` went straight to the plain-text scanner -- so
+    // every failure the body branch removes was still fully reachable here.
+    // GraphQL over GET puts a whole JSON payload in the query.
+    const har = harWithFormBody('unused', {});
+    har.log.entries[0].request.url =
+        'https://api.example.test/graphql?variables=' +
+        encodeURIComponent(JSON.stringify({ id: ID_14 }));
+    pii.scrubPii(har);
+    const url = har.log.entries[0].request.url;
+    const q = /variables=([^&#]*)/.exec(url);
+    assert.ok(q, 'the query parameter is missing after the scrub');
+    assert.doesNotThrow(() => JSON.parse(decodeURIComponent(q[1])),
+        'the query payload was corrupted the same way a body used to be: ' + url);
+});
+
+check('a card in a query string is detected, not extended past range (#479 review, 1)', () => {
+    const har = harWithFormBody('unused', {});
+    har.log.entries[0].request.url =
+        'https://api.example.test/x?payload=' +
+        encodeURIComponent(JSON.stringify({ cardNumber: CARD }));
+    pii.scrubPii(har);
+    assert.ok(!har.log.entries[0].request.url.includes(CARD),
+        'the card survived in the URL');
+});
+
+check('a trailing & does not send the whole body back to the text path (#479 review, 3)', () => {
+    // A trailing `&` is ordinary serializer output. Rejecting the body over one
+    // reinstated the original defect for every body that had it.
+    const har = harWithFormBody('variables', { id: ID_14 });
+    har.log.entries[0].request.postData.text += '&';
+    pii.scrubPii(har);
+    const decoded = decodedParam(har, 'variables');
+    assert.doesNotThrow(() => JSON.parse(decoded),
+        'a trailing & reopened the corruption: ' + JSON.stringify(decoded));
+});
+
+check('a malformed escape does not hide the rest of its value (#479 review, 2)', () => {
+    // Regression introduced by the first fix: a parameter whose escape would
+    // not decode was SKIPPED, so a real secret beside a broken `%XX` became
+    // invisible. The plain-text path had scanned it regardless.
+    const har = harWithFormBody('unused', {});
+    har.log.entries[0].request.postData.text = 'a=' + CARD + '%zz';
+    const found = pii.detectPii(JSON.parse(JSON.stringify(har)));
+    assert.ok(found.some((d) => d.type === 'credit-card'),
+        'a card next to a malformed escape was not detected at all');
+});
+
+check('a secret used as a parameter NAME is still detected (#479 review, 4)', () => {
+    // Regression introduced by the first fix: the plain-text scan made no
+    // distinction between the two sides of an `=`, and the form branch only
+    // looked at values.
+    const har = harWithFormBody('unused', {});
+    har.log.entries[0].request.postData.text = CARD + '=x';
+    const found = pii.detectPii(JSON.parse(JSON.stringify(har)));
+    assert.ok(found.some((d) => d.type === 'credit-card'),
+        'a card used as a parameter name was not detected');
+});
+
+check('an untouched value with round-trip hazards is byte-identical (#479 review, 5)', () => {
+    // GUARD, not a falsifier -- stated plainly because the distinction matters:
+    // this one passes against the broken version too. The unchanged path
+    // re-emits `name=raw` without ever decoding, so it was already correct and
+    // no version of this test can fail on today's code.
+    //
+    // It is still worth keeping, and it is stronger than the fixture it
+    // replaces. The earlier one used `a~b c/d`, whose characters
+    // encodeURIComponent never re-encodes differently, so it could not detect
+    // eager re-encoding at all. These can: `%7E` decodes to `~` and would come
+    // back as `~`, and `+` decodes to a space and would come back as `%20`.
+    // So it guards the decision not to round-trip, rather than proving it.
+    const har = harWithFormBody('variables', { id: ID_14 });
+    const hazard = 'x=%7Ea+b%2Fc';
+    har.log.entries[0].request.postData.text += '&' + hazard;
+    pii.scrubPii(har);
+    assert.ok(bodyOf(har).includes(hazard),
+        'an unchanged parameter was round-tripped through the codec and came ' +
+        'back different: ' + bodyOf(har));
+});
+
 if (failures) {
     console.error(`\npii-form-encoded-scrub: ${failures} failure(s)`);
     process.exit(1);
