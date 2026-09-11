@@ -35,11 +35,13 @@ What the script does:
 - Lays down all upstream-managed files (`CLAUDE.md`,
   `.github/copilot-instructions.md`, `.github/agents/*`, `.github/skills/*`,
   generic `.github/instructions/*`, the meta-scripts `Pull-SDLC.ai.ps1`,
-  `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1` and their `*.Tests.ps1`, plus
-  the issue-dispatch launcher `Start-IssueAgent.ps1` and its tests).
+  `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`, the issue-dispatch launcher
+  `Start-IssueAgent.ps1`, and the .NET runner `run.ps1`). Root-level
+  `*.Tests.ps1` are **not** distributed -- they test this repository's own
+  tooling (issue #409).
 - Scaffolds consumer-owned files **only if missing** (`CLAUDE.project.md`,
   `.github/instructions/project.instructions.md`, `README.md`, `docs/README.md`,
-  `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`) from
+  `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`) from
   their templates or the upstream copy. Existing copies are never overwritten.
   (`.gitattributes` and `.gitignore` baselines are owned by
   `Initialize-GitDefaults.ps1`, not Pull-SDLC.)
@@ -133,8 +135,8 @@ Files belong to one of two tiers:
 
 | Tier | Files | Edit rule |
 |---|---|---|
-| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`) and their `*.Tests.ps1`, the issue-dispatch launcher (`Start-IssueAgent.ps1`) and its tests | Never edit in a consumer project. Edits go upstream and pull down. |
-| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.ps1`, `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`, `docs/README.md` (all scaffolded once, then yours to customize), `docs/specs/`, `docs/designs/`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`), the issue-dispatch launcher (`Start-IssueAgent.ps1`), and the .NET runner `run.ps1` (issue #462 -- but a consumer that has changed it is left alone, see `run.project.ps1` below). Root-level `*.Tests.ps1` are upstream-private and never distributed (issue #409) | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`, `docs/README.md` (all scaffolded once, then yours to customize), `run.project.ps1` (the `run.ps1` extension point -- never scaffolded, create it only if you need it), `docs/specs/`, `docs/designs/`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
 
 ## Init Protocol for Consuming Projects
 
@@ -203,13 +205,16 @@ consumer project, either:
 | `.claude/settings.json` | Claude Code permission settings (**upstream-only -- not distributed**) |
 | `.claude/hooks/session-start.sh` | Claude Code session initialization (**upstream-only -- not distributed**) |
 | `Pull-SDLC.ai.ps1` | Sync this repo into a consumer project; scaffolds templates on first run |
-| `run.ps1` / `run.Tests.ps1` | Project-agnostic .NET runner -- **consumer-owned**: scaffolded once from upstream, then yours to customize per repo |
+| `run.ps1` | Project-agnostic .NET runner -- **upstream-managed** (issue #462), so consumers receive fixes to it. A consumer that has changed it is left alone rather than overwritten or blocked |
+| `run.project.ps1` | Optional consumer extension point, dot-sourced by `run.ps1`. **Never scaffolded** -- create it only if you need to customize. Put project-specific behaviour here rather than editing `run.ps1` |
+| `run.Tests.ps1` | Tests for the runner -- **consumer-owned**: scaffolded once from upstream, then yours to customize per repo |
 
 > **Distribution note:** `Pull-SDLC.ai.ps1` syncs the files on its
 > upstream-managed list (the **Upstream** tier in the File Ownership table
-> above) and scaffolds the consumer-owned files (including `run.ps1`,
-> `run.Tests.ps1`, and `copilot-setup-steps.yml`) once, leaving them for the
-> consumer to customize. `validate-instructions.yml` and `.claude/*` are
+> above) and scaffolds the consumer-owned files (including `run.Tests.ps1`
+> and `copilot-setup-steps.yml`) once, leaving them for the consumer to
+> customize. Root-level `*.Tests.ps1` other than `run.Tests.ps1` are
+> upstream-private and never reach a consumer (issue #409). `validate-instructions.yml` and `.claude/*` are
 > maintained here but are **not** distributed to consumers --
 > `validate-instructions.yml` is this repo's own CI (it hardcodes this repo's
 > sample-project leak patterns and requires `.claude/*`), and `.claude/*` is
