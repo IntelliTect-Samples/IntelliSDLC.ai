@@ -38,8 +38,14 @@ Three categories, and every new file belongs to exactly one:
 | Category | Reaches consumers? | Examples |
 |---|---|---|
 | **Shipped** | Yes | `CLAUDE.md`, `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, `templates/**` |
-| **Upstream-private** | No | Anything under a `tests/` or `fixtures/` directory in `.github/`; `.github/ci/`; this repo's CI workflow |
-| **Consumer-owned** | Scaffolded once, then theirs | `README.md`, `CLAUDE.project.md`, this file, `run.ps1`, `docs/specs/`, `docs/designs/` |
+| **Upstream-private** | No | Anything under a `tests/` or `fixtures/` directory in `.github/`; `.github/ci/`; this repo's CI workflow; root-level `*.Tests.ps1` (issue #409) |
+| **Consumer-owned** | Scaffolded once, then theirs | `README.md`, `CLAUDE.project.md`, this file, `run.Tests.ps1`, `docs/specs/`, `docs/designs/` |
+
+`run.ps1` is **not** consumer-owned. It was until issue #462; it is
+upstream-managed now, so consumers receive fixes to it, with a yield carve-out
+that leaves a consumer's own changes alone rather than overwriting them.
+`run.project.ps1` is the consumer-owned extension point, and is never
+scaffolded.
 
 The rules live in `Pull-SDLC.ai.ps1` as `$script:UpstreamManagedPaths`,
 `$script:UpstreamPrivatePrefixes`, and `$script:AlwaysLocalPaths`. Do not
@@ -110,7 +116,7 @@ a consumer's repo. All are defined in `Pull-SDLC.ai.ps1`.
 |---|---|---|
 | **Upstream-managed** | `$script:UpstreamManagedPaths` | Upstream owns it; changes are diff-replayed into consumers. An explicit allowlist -- a path not on it is invisible to the sync. |
 | **Consumer-owned** / **always-local** | `$script:AlwaysLocalPaths`, `$script:AlwaysLocalPrefixes` | The consumer owns it. Never overwritten or deleted. **Trumps upstream-managed**, so a consumer-owned file can live inside a managed tree (this file does). |
-| **Upstream-private** | `$script:UpstreamPrivatePrefixes` | Exists upstream, never ships. Filtered out of the op list *and* delete-replayed into consumers that received it before the carve-out. |
+| **Upstream-private** | `$script:UpstreamPrivatePrefixes` | Exists upstream, never ships -- filtered out of the op list. Whether an existing copy is also *deleted* is a separate question: `Get-UpstreamPrivatePruneOps` delete-replays the trees it covers (`.github/`, `templates/`), but deliberately not the repository root, so root `*.Tests.ps1` a consumer already holds are swept by hand instead (issue #409). |
 | **Merge-managed** | `$script:MergePaths` | Union-merged rather than overwritten: the consumer keeps its entries, new upstream entries are appended. Today only `.gitignore`. |
 | **Scaffold** | `$script:TemplateScaffoldMap` | Seeded once from a `*.template` (or same-name) source if absent, then never touched again. How a consumer gets its own `README.md`, `CLAUDE.project.md`, and this file. |
 | **Meta-script** | `$script:MetaScriptPaths` | Managed scripts whose mere presence must not be read as "this consumer already has managed content" -- they arrive via `iwr` to *perform* the bootstrap. |
