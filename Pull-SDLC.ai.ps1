@@ -546,14 +546,28 @@ function Test-IsUpstreamPrivatePath {
         .github/agents/ or .github/skills/ trees, or a '*.test.js' beside the
         skill tooling under templates/.
     .DESCRIPTION
-        Upstream-private files test the toolkit's own internals (Pester tests,
-        node unit tests, and HAR/PII sample fixtures) and are never shipped to
-        -- or retained by -- consuming projects. A 'tests' directory under
-        templates/ is NOT private: it holds test-project templates the
-        generator emits into the consumer's own solution. Always-local paths trump: a consumer-owned
-        .github/skills/project-*/ tree is never treated as upstream-private, so
-        a project's own tests/fixtures are preserved (Test-IsAlwaysLocalPath is
-        checked first). The path is matched against $script:UpstreamPrivatePrefixes.
+        Upstream-private files test the toolkit's own internals and are never
+        shipped to consuming projects. Today that is: Pester tests and HAR/PII
+        sample fixtures anywhere under .github/, node unit tests and their
+        .test-support.js helpers under templates/, and root-level *.Tests.ps1
+        (issue #409).
+
+        Two things are deliberately NOT private. A 'tests' directory under
+        templates/ holds test-project templates the generator emits into the
+        consumer's own solution, so it must ship. And always-local paths trump
+        outright -- Test-IsAlwaysLocalPath is checked FIRST and returns $false
+        immediately -- which is what preserves a consumer's own
+        .github/skills/project-*/ tests and fixtures, and what exempts
+        run.Tests.ps1 from the root rule above. That ordering is load-bearing:
+        inverted, new consumers would silently stop being seeded with
+        run.Tests.ps1.
+
+        Being private stops a file SHIPPING. Whether an existing copy is also
+        deleted depends on Get-UpstreamPrivatePruneOps, whose inventory covers
+        .github and templates but deliberately not the repository root -- see
+        that function.
+
+        The path is matched against $script:UpstreamPrivatePrefixes.
         Comparison is case-insensitive and tolerates a ./ or .\ prefix.
     #>
     [CmdletBinding()]

@@ -67,15 +67,26 @@ alone is protection by *omission* — a later decision to add a `.github` subtre
 to the manifest would silently start shipping test files. The pattern rule holds
 regardless of the manifest.
 
-**Do not widen the upstream-private pattern past `.github/`.** A `tests/`
-directory under `templates/` holds test-project *templates* the generator emits
-into the consumer's own solution; those must keep shipping.
+**Do not widen the upstream-private pattern to a `tests/` directory under
+`templates/`.** That one holds test-project *templates* the generator emits into
+the consumer's own solution; those must keep shipping.
 
-Note the asymmetry with the root: `Pull-SDLC.ai.Tests.ps1`,
-`Consolidate-Specs.Tests.ps1`, `Consolidate-Tasks.Tests.ps1` and
-`Start-IssueAgent.Tests.ps1` sit on `$script:UpstreamManagedPaths` and match no
-private prefix, so they **do** ship today. That is a known wart, not a pattern
-to copy — new tests go under `.github/`.
+The root is no longer an exception. `^[^/]+\.Tests\.ps1$` is an
+upstream-private prefix as of issue #409, so `Pull-SDLC.ai.Tests.ps1`,
+`Consolidate-Specs.Tests.ps1`, `Consolidate-Tasks.Tests.ps1`,
+`Cleanup-Worktree.Tests.ps1` and `Start-IssueAgent.Tests.ps1` reach no consumer.
+They test this repository's own tooling.
+
+`run.Tests.ps1` is the one exemption, and it is structural rather than a carve-out
+in the pattern: `Test-IsUpstreamPrivatePath` checks `Test-IsAlwaysLocalPath`
+first, and `run.Tests.ps1` is consumer-owned (issue #222) and seeded once via
+`$script:TemplateScaffoldMap`. It is a genuine consumer test, not one of ours
+leaking downstream — do not "fix" that ordering.
+
+Existing consumers keep any copies they already have: the prune inventory
+deliberately does not cover the repository root, because a root sweep would also
+delete a consumer's *own* root suite. Those are removed by hand, once, by
+explicit filename.
 
 ## Tech Stack
 
