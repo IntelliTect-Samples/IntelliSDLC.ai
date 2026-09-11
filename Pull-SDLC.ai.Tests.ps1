@@ -516,6 +516,95 @@ Describe 'Invoke-TemplateScaffold same-name scaffold from git ref (issue #156)' 
     }
 }
 
+Describe 'Root-level *.Tests.ps1 are upstream-private (issue #409)' {
+    # The counterpart to the #263 guard, which now excludes these from its
+    # subject set. Two small tests with one clear job each, rather than one
+    # test with a branch: #263 asserts no root script silently FAILS to reach
+    # consumers; this asserts the suites deliberately do not.
+
+    BeforeAll {
+        $script:privRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("sdlc-priv-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:privRoot -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item -Recurse -Force -LiteralPath $script:privRoot -ErrorAction SilentlyContinue
+    }
+
+    It 'is upstream-private for every root suite except the consumer-owned one' {
+        $originUrl = (& git -C $PSScriptRoot remote get-url origin 2>$null)
+        if (-not (Test-IsUpstreamRepo -RemoteUrl $originUrl)) {
+            Set-ItResult -Skipped -Because 'this invariant only applies in the upstream repo, where the manifest is authored'
+            return
+        }
+
+        $rootSuites = @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*.Tests.ps1' |
+                Select-Object -ExpandProperty Name)
+        $rootSuites | Should -Not -BeNullOrEmpty -Because 'the upstream repo root holds its own Pester suites'
+
+        foreach ($suite in $rootSuites) {
+            if ($suite -eq 'run.Tests.ps1') { continue }
+            Test-IsUpstreamPrivatePath -Path $suite |
+                Should -BeTrue -Because "$suite tests this repo's tooling and must not reach a consumer (issue #409)"
+            Test-IsUpstreamManagedPath -Path $suite |
+                Should -BeFalse -Because "$suite must not be replayed into a consumer"
+        }
+    }
+
+    It 'exempts run.Tests.ps1, which is genuinely consumer-owned' {
+        # Structural, not a special case in the regex: Test-IsUpstreamPrivatePath
+        # checks Test-IsAlwaysLocalPath first and returns $false. If that order
+        # ever inverted, new consumers would silently stop being seeded with it.
+        Test-IsAlwaysLocalPath -Path 'run.Tests.ps1' | Should -BeTrue
+        Test-IsUpstreamPrivatePath -Path 'run.Tests.ps1' |
+            Should -BeFalse -Because 'it is consumer-owned (issue #222), not one of ours leaking downstream'
+        $script:TemplateScaffoldMap.Keys |
+            Should -Contain 'run.Tests.ps1' -Because 'a fresh consumer must still be seeded with it'
+    }
+
+    It 'enqueues no op for a root suite even when upstream changes it' {
+        $fx = New-DiffReplayFixture -Root (Join-Path $script:privRoot ([guid]::NewGuid().ToString('N'))) `
+            -Seed {
+                'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+                'suite v1' | Out-File -Encoding utf8 Pull-SDLC.ai.Tests.ps1 -NoNewline
+            } `
+            -Tweak { 'suite v2' | Out-File -Encoding utf8 Pull-SDLC.ai.Tests.ps1 -NoNewline }
+
+        $ops = Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer
+        ($ops | Where-Object { $_.Path -eq 'Pull-SDLC.ai.Tests.ps1' }) |
+            Should -BeNullOrEmpty -Because 'root suites are upstream-private as of issue #409'
+    }
+
+    It 'does not auto-delete a root suite a consumer already has' {
+        # Deliberate: issue #409 chose a one-time manual sweep over replaying
+        # deletes. Auto-deleting from a consumer's working tree is a large
+        # blast radius for a cosmetic cleanup -- and a root inventory would
+        # also sweep a consumer's OWN root suite that happened to match.
+        $fx = New-DiffReplayFixture -Root (Join-Path $script:privRoot ([guid]::NewGuid().ToString('N'))) `
+            -Seed { 'baseline-claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        'stale upstream suite' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'Pull-SDLC.ai.Tests.ps1') -NoNewline
+        'the consumer OWN suite' | Out-File -Encoding utf8 (Join-Path $fx.Consumer 'Main.Tests.ps1') -NoNewline
+        Push-Location $fx.Consumer
+        try { git add -A; git commit -q -m 'consumer holds both suites' } finally { Pop-Location }
+
+        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) | ForEach-Object { $_.Path }
+        $pruned | Should -Not -Contain 'Pull-SDLC.ai.Tests.ps1' -Because 'the sweep is manual, by explicit filename'
+        $pruned | Should -Not -Contain 'Main.Tests.ps1' -Because "a consumer's own root suite must never be swept"
+    }
+
+    It 'keeps $script:MetaScriptPaths a subset of the managed paths' {
+        # The suites were paired with their scripts here. They are private now,
+        # so they can never be present downstream to be mistaken for prior
+        # managed content -- and listing an unmanaged path here would break
+        # the subset invariant that issue #152's bootstrap prompt relies on.
+        foreach ($meta in $script:MetaScriptPaths) {
+            Test-IsUpstreamManagedPath -Path $meta |
+                Should -BeTrue -Because "$meta is in MetaScriptPaths, which must be a subset of UpstreamManagedPaths"
+            $meta | Should -Not -BeLike '*.Tests.ps1' -Because 'root suites no longer ship (issue #409)'
+        }
+    }
+}
+
 Describe 'run.ps1 yields to a consumer change (issue #462)' {
     # run.ps1 is upstream-managed so consumers receive fixes, but a consumer
     # that has changed it must be neither overwritten NOR blocked. Ordinary
@@ -3815,7 +3904,7 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         $crCount | Should -Be 0 -Because "the state file must be LF-only so consumer `.gitattributes` rules like `*.json text eol=lf` cannot mark it modified"
     }
 
-    It 'F2: tracks all meta scripts (Pull-SDLC.ai.ps1, Cleanup-Worktree.ps1, Consolidate-Specs.ps1, *.Tests.ps1) after fresh bootstrap' {
+    It 'F2: tracks the meta scripts but not their suites after fresh bootstrap' {
         $fx = New-BootstrapOnMainFixture -Root $script:carveRoot
         Push-Location $fx.Consumer
         try {
@@ -3823,10 +3912,14 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
             $rc | Should -Be 0
             $tracked = git ls-files
             $tracked | Should -Contain 'Pull-SDLC.ai.ps1' -Because 'the downloaded bootstrap script must end up tracked, not untracked'
-            $tracked | Should -Contain 'Pull-SDLC.ai.Tests.ps1'
             $tracked | Should -Contain 'Cleanup-Worktree.ps1'
             $tracked | Should -Contain 'Consolidate-Specs.ps1'
-            $tracked | Should -Contain 'Consolidate-Specs.Tests.ps1'
+            # The suites are upstream-private as of issue #409 -- they test this
+            # repo's own tooling, so a consumer never receives them.
+            $tracked | Should -Not -Contain 'Pull-SDLC.ai.Tests.ps1'
+            $tracked | Should -Not -Contain 'Consolidate-Specs.Tests.ps1'
+            $tracked | Should -Not -Contain 'Cleanup-Worktree.Tests.ps1'
+            $tracked | Should -Not -Contain 'Start-IssueAgent.Tests.ps1'
             $tracked | Should -Contain 'run.ps1' -Because 'run.ps1 is upstream-managed as of issue #462, so a fresh bootstrap delivers and commits it like any other managed script'
             $tracked | Should -Not -Contain 'run.Tests.ps1' -Because 'run.Tests.ps1 is consumer-owned (issue #222), scaffolded untracked like run.ps1'
             $tracked | Should -Not -Contain 'Consolidate-Tasks.ps1' -Because 'the legacy script name was renamed and must not be re-introduced'
@@ -3838,8 +3931,12 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Cleanup-Worktree.ps1' | Should -BeTrue
         Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
+        # The suites are upstream-private as of issue #409, so they are neither
+        # managed nor drift-gated -- they never reach a consumer to drift.
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeFalse
+        Test-IsUpstreamManagedPath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeFalse
+        Test-IsUpstreamPrivatePath -Path 'Consolidate-Specs.Tests.ps1' | Should -BeTrue
+        Test-IsUpstreamPrivatePath -Path 'Pull-SDLC.ai.Tests.ps1' | Should -BeTrue
         # run.Tests.ps1 and copilot-setup-steps.yml stay consumer-owned
         # (issue #222): scaffolded once then always-local, never drift-gated.
         Test-IsUpstreamManagedPath -Path 'run.Tests.ps1' | Should -BeFalse
@@ -3857,7 +3954,15 @@ Describe 'Issue #148: bootstrap-on-main carve-out hygiene' {
         # consumer trees on their next sync (orphan cleanup). Dropping it would
         # leave every consumer with a stale Consolidate-Tasks.ps1.
         Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.ps1' | Should -BeTrue
-        Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.Tests.ps1' | Should -BeTrue
+        # The retired SUITE is private now, not managed (issue #409). It was
+        # kept managed so the #184 rename's delete would replay; making it
+        # private means a consumer that still holds it keeps it, because
+        # Get-UpstreamPrivatePruneOps deliberately does not cover the repo root.
+        # The one-time manual sweep is what removes it -- CopyToGooglePhotos
+        # was already done by hand in a222d23. The retired SCRIPT above stays
+        # managed, so its delete still replays.
+        Test-IsUpstreamManagedPath -Path 'Consolidate-Tasks.Tests.ps1' | Should -BeFalse
+        Test-IsUpstreamPrivatePath -Path 'Consolidate-Tasks.Tests.ps1' | Should -BeTrue
     }
 
     It 'F3: sync-manifest.json is not present in the upstream tree (deleted)' {
@@ -4886,9 +4991,12 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
     # start-issue-agent.sh was retired in issue #324. It stays on the managed
     # path list (see the Issue #324 Describe below) so its delete replays, but
     # it is no longer a file that must REACH consumers, so it is not listed here.
+    # Start-IssueAgent.Tests.ps1 is NOT here as of issue #409: root-level
+    # suites are upstream-private and deliberately reach no consumer. That it
+    # is private is asserted by the 'Root-level *.Tests.ps1 are
+    # upstream-private' Describe, not here.
     $script:launcherPaths = @(
         'Start-IssueAgent.ps1'
-        'Start-IssueAgent.Tests.ps1'
     )
 
     It 'treats <_> as upstream-managed' -ForEach $script:launcherPaths {
@@ -4912,20 +5020,23 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
         $script:MetaScriptPaths | Should -Not -Contain 'Start-IssueAgent.Tests.ps1'
     }
 
-    It 'keeps every bootstrap meta-script paired with its own test file (issue #399)' {
-        # README documents the bootstrap meta-scripts as Pull-SDLC.ai.ps1,
-        # Cleanup-Worktree.ps1, Consolidate-Specs.ps1 "and their *.Tests.ps1".
-        # A meta-script whose test file is missing from $script:MetaScriptPaths
-        # makes that test file read as "consumer already has managed content" on
-        # a from-zero bootstrap, which is the protective-overwrite prompt issue
-        # #152 exists to avoid. Cleanup-Worktree.Tests.ps1 was the odd one out.
+    It 'keeps every bootstrap meta-script UNpaired with a test file (issues #399, #409)' {
+        # The inverse of the #399 pairing rule, which #409 supersedes.
         #
-        # Derived from the list rather than naming a file, so the next
-        # meta-script added without its suite fails here too.
-        foreach ($meta in @($script:MetaScriptPaths | Where-Object { $_ -like '*.ps1' -and $_ -notlike '*.Tests.ps1' })) {
-            $testSibling = $meta -replace '\.ps1$', '.Tests.ps1'
-            $script:MetaScriptPaths |
-                Should -Contain $testSibling -Because "$meta is a bootstrap meta-script, so $testSibling ships with it"
+        # #399 required each meta-script's suite to be on
+        # $script:MetaScriptPaths, so a from-zero bootstrap would not read the
+        # suite as "consumer already has managed content" and trip issue #152's
+        # protective-overwrite prompt. #409 removes the suites from the shipping
+        # lists entirely, which settles that concern more directly: a file that
+        # never reaches a consumer cannot be present to be misread.
+        #
+        # The invariant that remains is the SUBSET one -- MetaScriptPaths must
+        # contain only managed paths -- so a suite reappearing here would now be
+        # a bug in the opposite direction.
+        foreach ($meta in $script:MetaScriptPaths) {
+            $meta | Should -Not -BeLike '*.Tests.ps1' -Because 'root suites are upstream-private and never reach a consumer (issue #409)'
+            Test-IsUpstreamManagedPath -Path $meta |
+                Should -BeTrue -Because 'MetaScriptPaths must stay a subset of UpstreamManagedPaths'
         }
     }
 
@@ -4950,8 +5061,15 @@ Describe 'Issue #263: Start-IssueAgent launcher reaches consumers' {
             return
         }
 
+        # *.Tests.ps1 is excluded from the subject set (issue #409). This
+        # guard's job is "no root script silently FAILS to reach consumers".
+        # Root suites now deliberately do not reach them -- a third, legitimate
+        # answer -- so folding them in would muddy what this asserts and weaken
+        # it for the scripts it actually protects. That they are all private is
+        # asserted separately, by the Describe below.
         $rootScripts = Get-ChildItem -LiteralPath $PSScriptRoot -File |
             Where-Object { $_.Extension -in '.ps1', '.sh' } |
+            Where-Object { $_.Name -notlike '*.Tests.ps1' } |
             Select-Object -ExpandProperty Name
 
         $rootScripts | Should -Not -BeNullOrEmpty -Because 'the upstream repo root ships scripts'
@@ -5063,7 +5181,7 @@ Describe 'Issue #263: launcher reaches a consumer already anchored past its intr
 
             $tracked = git ls-files
             $tracked | Should -Contain 'Start-IssueAgent.ps1'
-            $tracked | Should -Contain 'Start-IssueAgent.Tests.ps1'
+            $tracked | Should -Not -Contain 'Start-IssueAgent.Tests.ps1' -Because 'root suites are upstream-private as of issue #409'
         } finally { Pop-Location }
     }
 }

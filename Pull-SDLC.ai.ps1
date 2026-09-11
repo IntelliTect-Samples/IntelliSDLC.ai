@@ -230,27 +230,13 @@ $script:UpstreamManagedPaths = @(
     # path), instead of being left untracked in the consumer's working
     # tree (issue #148).
     'Pull-SDLC.ai.ps1',
-    'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
-    # Added to the upstream root by commit 1620912 without a managed-path entry,
-    # which is the exact gap the "#263 root-level script" test guards against:
-    # unlisted, Get-UpstreamOps emits no op for it and it reaches no consumer, so
-    # consumers get Cleanup-Worktree.ps1 without its suite (issue #399).
-    # NOTE for issue #309: that issue reconsiders whether root-level *.Tests.ps1
-    # should ship to consumers at all. This entry adds one more instance of the
-    # pattern #309 is about to weigh -- deliberately, because README already
-    # commits to shipping the meta-scripts "and their *.Tests.ps1" and leaving
-    # this one unlisted only makes the set inconsistent. If #309 carves them out,
-    # all four root suites move together and this entry goes with them.
-    'Cleanup-Worktree.Tests.ps1',
     'Consolidate-Specs.ps1',
-    'Consolidate-Specs.Tests.ps1',
     # Retired filename (renamed to Consolidate-Specs.ps1 in issue #184). Kept on
     # the managed-path list so the rename/delete replays into consumer trees on
     # their next sync -- Get-UpstreamOps filters the diff by this pathspec, so
     # the old path must appear here or consumers keep a stale orphan copy.
     'Consolidate-Tasks.ps1',
-    'Consolidate-Tasks.Tests.ps1',
     # The issue-dispatch launcher (issue #256). Managed so consumers actually
     # receive it -- added to the upstream root without a manifest entry, it was
     # invisible to Get-UpstreamOps and never reached a single consuming project
@@ -259,14 +245,13 @@ $script:UpstreamManagedPaths = @(
     # must not be read as "consumer already has managed content" (issue #152).
     # Also not on $script:AlwaysLocalPaths -- unlike run.ps1 (issue #222) the
     # launcher is upstream-owned and consumers do not customize it.
+    'Start-IssueAgent.ps1',
     # The project-agnostic .NET runner. Managed since issue #462 so a consumer
     # actually receives upstream fixes to it -- it was consumer-owned, which
     # meant a consumer that customized it never got another one. It is on
     # $script:YieldOnLocalChangePaths, so a consumer that HAS changed it is
     # left alone rather than overwritten or blocked.
     'run.ps1',
-    'Start-IssueAgent.ps1',
-    'Start-IssueAgent.Tests.ps1',
     # Retired file (the bash forwarder, deleted upstream in issue #324). Kept on
     # the managed-path list for the same reason as Consolidate-Tasks.ps1 above:
     # Get-UpstreamOps filters the upstream diff by this pathspec, so the path
@@ -310,13 +295,16 @@ $script:YieldOnLocalChangePaths = @(
 # with `iwr Pull-SDLC.ai.ps1 ...` triggers the protective overwrite prompt,
 # defeating the unambiguous auto-bootstrap path (issue #152). They remain in
 # UpstreamManagedPaths so sync still reconciles them against upstream.
+#
+# The *.Tests.ps1 halves are gone as of issue #409: they are upstream-private
+# now, so they never reach a consumer and cannot be present to be mistaken for
+# prior managed content. Listing them here would be describing files that can
+# no longer exist downstream. This list must stay a SUBSET of
+# UpstreamManagedPaths, and the suites are no longer on it.
 $script:MetaScriptPaths = @(
     'Pull-SDLC.ai.ps1',
-    'Pull-SDLC.ai.Tests.ps1',
     'Cleanup-Worktree.ps1',
-    'Cleanup-Worktree.Tests.ps1',
-    'Consolidate-Specs.ps1',
-    'Consolidate-Specs.Tests.ps1'
+    'Consolidate-Specs.ps1'
 )
 
 # Paths that are inherently consumer-owned. Always-local trumps managed-paths
@@ -422,7 +410,20 @@ $script:UpstreamPrivatePrefixes = @(
     # tests that call them, but they are not named `*.test.js` and would
     # otherwise ship. The suffix is the marker; nothing executes them directly,
     # so the Pester-wrapper coverage rule does not apply to them either.
-    '^templates/(?:[^/]+/)*[^/]+\.test-support\.js$'
+    '^templates/(?:[^/]+/)*[^/]+\.test-support\.js$',
+    # Root-level Pester suites (issue #409). They test THIS repository's own
+    # tooling: a consumer never runs them, gains nothing from them, and cannot
+    # tell them apart from its own tests sitting in the same directory.
+    #
+    # run.Tests.ps1 is NOT caught by this, and the exemption is structural
+    # rather than a special case in the pattern: Test-IsUpstreamPrivatePath
+    # checks Test-IsAlwaysLocalPath FIRST and returns $false, and run.Tests.ps1
+    # is consumer-owned (issue #222). It is a genuine consumer test, not one of
+    # ours leaking downstream.
+    #
+    # Deliberately NOT matched by Get-UpstreamPrivatePruneOps: see the note on
+    # that function. Existing consumers are swept by hand, once.
+    '^[^/]+\.Tests\.ps1$'
 )
 
 # Paths whose upstream content is union-merged into the consumer's copy rather
@@ -1582,6 +1583,16 @@ function Get-UpstreamPrivatePruneOps {
         Widen this alongside any new prefix. Every path is re-checked against
         Test-IsUpstreamPrivatePath below, so a wider inventory only ever adds
         deletions the predicate already sanctions.
+
+        ONE DELIBERATE EXCEPTION (issue #409): the root-level `*.Tests.ps1`
+        prefix is NOT covered here, and the inventory is not widened to the
+        repository root. Auto-deleting files from a consumer's working tree is
+        a large blast radius for a cosmetic cleanup, and the consumer set is
+        small and known, so those are swept by hand once instead. Widening the
+        pathspec to '.' would start replaying deletes for them -- do not, and
+        note that a root inventory would also sweep every consumer's OWN root
+        suite that happens to match, which is exactly the accident this
+        exception avoids.
     #>
     [CmdletBinding()]
     param([string]$RepoRoot = '.')
