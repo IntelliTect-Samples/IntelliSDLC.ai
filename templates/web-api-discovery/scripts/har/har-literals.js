@@ -105,6 +105,100 @@ function countAndReplace(text, needle, replacement) {
 const PLACEHOLDER_OPEN = String.fromCharCode(1) + 'har-literal:';
 const PLACEHOLDER_CLOSE = String.fromCharCode(2);
 
+/**
+ * Substitute a placeholder with its sentinel, QUOTING it when it stands where a
+ * bare JSON value used to (issue #482).
+ *
+ * The literal pass runs over the serialized HAR as text, so it has no idea what
+ * context a literal sat in. That is harmless when the literal was a quoted
+ * string -- the quotes are still there and the sentinel lands between them. It
+ * is not harmless when the literal was a bare NUMBER:
+ *
+ *     "productIdentifier":61593494464534   ->   "productIdentifier":<Sentinel>
+ *
+ * An angle-bracket sentinel is not a JSON token, so the document stops parsing
+ * and the leak gate passes it anyway -- the gate asks whether a secret survived,
+ * never whether the document is still a document.
+ *
+ * WHAT COUNTS AS A BARE VALUE, and why both sides are required: the placeholder
+ * must be preceded by `:`, `,` or `[` and followed by `,`, `}` or `]`, ignoring
+ * whitespace. "The character before it is a quote" is NOT a sufficient test,
+ * because a literal in the MIDDLE of a string has ordinary characters on both
+ * sides and must not acquire quotes. Requiring structural characters on both
+ * sides admits exactly the whole-value positions and nothing else.
+ *
+ * THE QUOTES ARE ESCAPED TO THE DEPTH THEY ARE INSERTED AT. A HAR carries
+ * bodies as strings, so an embedded JSON document appears in the serialization
+ * with its quotes escaped (`\"id\":1`). Emitting a bare `"` there would fix the
+ * outer document by breaking the inner one. The depth is read off the nearest
+ * preceding quote -- whatever backslashes escape it, escape ours.
+ *
+ * Non-JSON text is left alone: with no structural characters around the
+ * placeholder, nothing matches and the sentinel goes in bare, which is what a
+ * form body or a plain-text payload needs.
+ */
+// The character a three-character percent escape stands for, or '' when the
+// text is not one. Used to recognise a JSON delimiter that has been encoded.
+function percentChar(seq) {
+    if (!/^%[0-9A-Fa-f]{2}$/.test(seq)) return '';
+    return String.fromCharCode(parseInt(seq.slice(1), 16));
+}
+
+function substituteSentinel(text, placeholder, sentinel) {
+    if (!placeholder) return text;
+    const STRUCT_BEFORE = ':,[';
+    const STRUCT_AFTER = ',}]';
+
+    let out = '';
+    let from = 0;
+    for (;;) {
+        const at = text.indexOf(placeholder, from);
+        if (at < 0) { out += text.slice(from); return out; }
+
+        let i = at - 1;
+        while (i >= 0 && /\s/.test(text[i])) i--;
+        const encodedBefore = i >= 2 && text[i - 2] === '%' &&
+            STRUCT_BEFORE.includes(percentChar(text.slice(i - 2, i + 1)));
+        const opensValue = encodedBefore || (i >= 0 && STRUCT_BEFORE.includes(text[i]));
+
+        let j = at + placeholder.length;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        const encodedAfter = text[j] === '%' &&
+            STRUCT_AFTER.includes(percentChar(text.slice(j, j + 3)));
+        const closesValue = encodedAfter || (j < text.length && STRUCT_AFTER.includes(text[j]));
+
+        let quote = '';
+        if (opensValue && closesValue) {
+            if (encodedBefore || encodedAfter) {
+                // THE PAYLOAD IS PERCENT-ENCODED HERE, so the delimiters around
+                // it are `%3A` and `%7D` rather than `:` and `}` -- and the
+                // quote we add has to be encoded to match, or it survives the
+                // decode as a literal `"` inside an encoded value.
+                //
+                // This is the shape the defect was actually FOUND in: a form
+                // parameter that the scrub rewrote is re-encoded before the HAR
+                // is serialized, so by the time this pass runs the structural
+                // characters are escapes. A version of this check that only
+                // understood literal `:` and `}` passed every unit test and left
+                // the real capture broken.
+                quote = '%22';
+            } else {
+                // The nearest quote before this point is escaped exactly as
+                // deeply as we are, whether it closed a key or a neighbouring
+                // value.
+                let k = at - 1;
+                while (k >= 0 && text[k] !== '"') k--;
+                let slashes = 0;
+                for (let b = k - 1; b >= 0 && text[b] === '\\'; b--) slashes++;
+                quote = '\\'.repeat(slashes) + '"';
+            }
+        }
+
+        out += text.slice(from, at) + quote + sentinel + quote;
+        from = at + placeholder.length;
+    }
+}
+
 function applyLiteralPass(text, literals) {
     const ordered = byDescendingLength(literals);
     let out = text;
@@ -122,7 +216,7 @@ function applyLiteralPass(text, literals) {
     }
 
     for (const [index, { sentinel }] of ordered.entries()) {
-        out = countAndReplace(out, `${PLACEHOLDER_OPEN}${index}${PLACEHOLDER_CLOSE}`, sentinel).text;
+        out = substituteSentinel(out, `${PLACEHOLDER_OPEN}${index}${PLACEHOLDER_CLOSE}`, sentinel);
     }
 
     return { text: out, hits };
