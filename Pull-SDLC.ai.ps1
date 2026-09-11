@@ -541,10 +541,11 @@ function Test-IsMergePath {
 function Test-IsUpstreamPrivatePath {
     <#
     .SYNOPSIS
-        Returns $true if the given repo-relative path is "upstream-private": a
-        file inside a 'tests' or 'fixtures' directory at any depth under the
-        .github/agents/ or .github/skills/ trees, or a '*.test.js' beside the
-        skill tooling under templates/.
+        Returns $true if the given repo-relative path is "upstream-private":
+        a file inside a 'tests' or 'fixtures' directory at any depth under
+        .github/, a '*.test.js' or '*.test-support.js' beside the skill tooling
+        under templates/, or a root-level '*.Tests.ps1'. Consumer-owned
+        always-local paths are never private -- see .DESCRIPTION.
     .DESCRIPTION
         Upstream-private files test the toolkit's own internals and are never
         shipped to consuming projects. Today that is: Pester tests and HAR/PII
