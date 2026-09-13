@@ -25,7 +25,8 @@
     Path to the evidence artifact file. May be relative or absolute.
 
 .PARAMETER PullRequest
-    Pull request number to post the comment on.
+    Pull request number to post the comment on. Required unless -LocalOnly is
+    passed, in which case nothing is posted and this is ignored.
 
 .PARAMETER Repo
     Repository in `owner/repo` form. If omitted, inferred from the current
@@ -38,6 +39,13 @@
 .PARAMETER GhInvoker
     Test seam. A scriptblock that takes a string array of arguments and
     invokes gh. Default: real `gh` on PATH.
+
+.NOTES
+    -WhatIf does not exempt the usage guard: a run with neither -PullRequest nor
+    -LocalOnly is a usage error, not something to preview, because -WhatIf still
+    has to know whether the run WOULD post. Supply -LocalOnly (previews nothing
+    to post) or -PullRequest <n> (previews the post) and -WhatIf behaves as
+    normal.
 
 .PARAMETER LocalOnly
     Skip the PR comment entirely. The script still resolves the artifact,
@@ -67,13 +75,22 @@
     Publish-Evidence -ArtifactPath .evidence/phase-5b/evidence.md -PullRequest 42
 
     Posts the markdown content as a PR comment on PR #42.
+
+.EXAMPLE
+    Publish-Evidence -ArtifactPath .evidence/phase-5b/evidence.md -LocalOnly
+
+    Prints the clickable file:/// link and the inline result without posting.
+    This is the Phase 5b form, used before a PR exists.
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)]
     [string]$ArtifactPath,
 
-    [Parameter(Mandatory)]
+    # NOT Mandatory: the -LocalOnly path returns before this is ever read, and
+    # the Phase 5b local-link step runs before a PR exists, so there is no
+    # number to supply there. Required only when actually posting -- enforced by
+    # the guard clause below, which names both ways forward (issue #311).
     [int]$PullRequest,
 
     [string]$Repo,
@@ -89,6 +106,18 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Usage guard. Runs before ShouldProcess on purpose -- see .NOTES: -WhatIf must
+# still resolve whether the run would post, so a missing decision is a usage
+# error rather than something to preview.
+# Validated before any I/O so a usage error fails fast, and worded
+# to name both ways forward -- PowerShell's generic missing-mandatory-parameter
+# message gave no hint that -LocalOnly is the intended pre-PR path (issue #311).
+# ContainsKey rather than a 0 sentinel so "not supplied" is distinguishable from
+# an explicitly supplied 0.
+if (-not $LocalOnly -and -not $PSBoundParameters.ContainsKey('PullRequest')) {
+    throw '-PullRequest is required when posting to a PR. Pass -PullRequest <number>, or -LocalOnly to print the local file:/// link without posting.'
+}
 
 function ConvertTo-FileUri {
     <#
