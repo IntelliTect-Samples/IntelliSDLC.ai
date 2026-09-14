@@ -246,6 +246,15 @@ $script:UpstreamManagedPaths = @(
     # Also not on $script:AlwaysLocalPaths -- unlike run.ps1 (issue #222) the
     # launcher is upstream-owned and consumers do not customize it.
     'Start-IssueAgent.ps1',
+    # The issue-queue slash commands (issues #498, #500). Claude Code only
+    # surfaces a skill as /<name> from .claude/skills/<name>/, so these cannot
+    # live under .github/skills/ with the others. Named by EXACT directory on
+    # purpose: everything else under .claude/ -- settings, hooks, and any skill
+    # a consumer writes -- is the consumer's, and a '.claude/' or
+    # '.claude/skills/' prefix here would replay upstream's own settings over
+    # theirs and delete their skills.
+    '.claude/skills/next-issue/',
+    '.claude/skills/wrap-up/',
     # The project-agnostic .NET runner. Managed since issue #462 so a consumer
     # actually receives upstream fixes to it -- it was consumer-owned, which
     # meant a consumer that customized it never got another one. It is on

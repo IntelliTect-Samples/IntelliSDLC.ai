@@ -24,6 +24,8 @@ that consumes IntelliSDLC.ai, follow this protocol:
 - `.github/agents/*`
 - `.github/instructions/*` (except `project.instructions.md`)
 - `.github/skills/*` (shared skills -- but **not** the consumer-owned `.github/skills/project-*/`)
+- `.claude/skills/next-issue/` and `.claude/skills/wrap-up/` (the issue-queue
+  slash commands -- the rest of `.claude/` is the consumer's own)
 
 These are pulled from IntelliSDLC.ai and any local edits will be lost
 on the next sync. The Validate Instructions workflow may also flag leaks.

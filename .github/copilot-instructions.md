@@ -22,6 +22,8 @@ consumes IntelliSDLC.ai, follow this protocol:
 - `.github/agents/*`
 - `.github/instructions/*` (except `project.instructions.md`)
 - `.github/skills/*` (shared skills -- but **not** the consumer-owned `.github/skills/project-*/`)
+- `.claude/skills/next-issue/` and `.claude/skills/wrap-up/` (the issue-queue
+  slash commands -- the rest of `.claude/` is the consumer's own)
 
 These are pulled from IntelliSDLC.ai and any local edits will be lost
 on the next sync. The Validate Instructions workflow may also flag leaks.
@@ -140,6 +142,11 @@ backwards compatibility for its API or CLI surface.
 - Use the project's established test framework. If none exists, choose the community
   standard for the language.
 - Functional / integration tests are organized by feature or user flow.
+- **Judge a Pester run by `Result` and `FailedContainersCount`, never by
+  `PassedCount` / `FailedCount` alone.** A test file that fails to load (a
+  parse error, a throwing `BeforeAll`) is a failed *container*: its tests never
+  run, so they are counted as neither passed nor failed, and a run can report
+  `FailedCount = 0` while a whole suite did not execute.
 
 > Language-specific testing conventions are in the corresponding
 > `*.instructions.md` files referenced in the Language Detection table above.
@@ -256,6 +263,57 @@ Two mechanical controls back this up, because instructions alone did not:
 - **Lock worktrees after creation** (`git worktree lock`).
 - **Unlock before removal** (`git worktree unlock`).
 - **`--no-verify` escape hatch** -- only for exceptional circumstances.
+- **Issue bodies go stale -- re-scan before acting on them.** An inventory,
+  count, file list, or line number written into an issue describes the tree on
+  the day it was written. Re-derive it from the current default branch before
+  planning off it.
+- **A hand-applied rebase is new authorship.** Resolving conflicts by hand, or
+  re-applying a change onto a moved base, produces code no reviewer has read.
+  It needs a fresh independent review, not the one the pre-rebase diff received.
+
+## Issue Queue -- Priority Labels and Claims
+
+Work is queued on the issues themselves, not in tracking or controller issues.
+A tracker duplicates state that already lives on the issues it lists, so every
+change has to be mirrored by hand, and the mirror drifts. `/next-issue` selects
+and dispatches from this queue; `/wrap-up` ends a session against it.
+
+### Labels -- the shared contract
+
+| Label | Meaning |
+|---|---|
+| `priority-0` .. `priority-3` | Exactly one per open issue. `0` is most urgent. |
+| `hold` | Do not start (awaiting discussion or an owner decision). Never dispatched; a held PR is never merged. |
+| `in-progress` | Claimed by a session. Never dispatched while the claim is live. |
+| `area:<name>` | Optional family label, so a session can be pointed at -- or kept away from -- one area. |
+
+**When you set a priority, comment the reason on that issue.** The reason lives
+beside the label, not in a tracker.
+
+**Ordering is GitHub's native "blocked by".** "A prerequisite lands before the
+thing that consumes it" is a blocked-by link between the two issues.
+
+**Next** = open, lowest `priority-N`, not `hold`, not `in-progress`, no open
+blocker. Ties go to the oldest issue. An issue with no priority label ranks
+last and is reported as unprioritized.
+
+### Claims
+
+The assignee field cannot be the claim: every session runs as the same GitHub
+account, so an assignee cannot tell sessions apart.
+
+- **Claim** = push the feature branch (`<type>/<issue#>-<slug>`) at once, add
+  `in-progress`, and post a claim comment naming the session, the branch, and
+  the UTC time, with a marker:
+  `<!-- claim: session="<name>" branch="<branch>" -->`.
+  Claim **before** starting work or dispatching it.
+- **Race** -- after claiming, re-read the comments. Among claims not followed by
+  a matching release, the earliest wins; the loser posts a release and moves on.
+- **Stale** -- a claim with no comment on the issue and no commit on its branch
+  for **3 days** may be taken over, with a comment saying whose claim and why.
+- **Release** -- a merged PR closes the issue. An abandoned or parked attempt
+  removes `in-progress` and posts
+  `<!-- release: session="<name>" reason="<reason>" -->` with a one-line reason.
 
 ## Plan Tracking
 

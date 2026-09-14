@@ -135,7 +135,7 @@ Files belong to one of two tiers:
 
 | Tier | Files | Edit rule |
 |---|---|---|
-| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`), the issue-dispatch launcher (`Start-IssueAgent.ps1`), and the .NET runner `run.ps1` (issue #462 -- but a consumer that has changed it is left alone, see `run.project.ps1` below). Root-level `*.Tests.ps1` are upstream-private and never distributed (issue #409) | Never edit in a consumer project. Edits go upstream and pull down. |
+| **Upstream** (managed here) | `CLAUDE.md`, `.github/copilot-instructions.md`, `.github/agents/*`, generic `.github/instructions/*` (`tdd`, `csharp`, `powershell`, `typescript`, `copilot-coding-agent`), shared `.github/skills/*` (**except** the consumer-owned `.github/skills/project-*/`), the meta-scripts (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Consolidate-Specs.ps1`), the issue-dispatch launcher (`Start-IssueAgent.ps1`), the issue-queue slash commands (`.claude/skills/next-issue/`, `.claude/skills/wrap-up/` -- only those two; the rest of `.claude/` is never synced), and the .NET runner `run.ps1` (issue #462 -- but a consumer that has changed it is left alone, see `run.project.ps1` below). Root-level `*.Tests.ps1` are upstream-private and never distributed (issue #409) | Never edit in a consumer project. Edits go upstream and pull down. |
 | **Consumer** (owned by your project) | `CLAUDE.project.md`, `.github/instructions/project.instructions.md`, `.github/skills/project-*/` (per-repo skills), `run.Tests.ps1`, `.github/workflows/copilot-setup-steps.yml`, `docs/README.md` (all scaffolded once, then yours to customize), `run.project.ps1` (the `run.ps1` extension point -- never scaffolded, create it only if you need it), `docs/specs/`, `docs/designs/`, `product-spec.md`, project's own `README.md`, `.gitignore`, `.gitattributes`, project-specific `.github/workflows/*` | Owned by your project. Never touched by `Pull-SDLC.ai.ps1` after the first-sync scaffold. |
 
 ## Init Protocol for Consuming Projects
@@ -204,6 +204,8 @@ consumer project, either:
 | `.github/workflows/validate-instructions.yml` | CI: leak-scanner + structural checks for instruction files (**upstream-only -- not distributed**) |
 | `.claude/settings.json` | Claude Code permission settings (**upstream-only -- not distributed**) |
 | `.claude/hooks/session-start.sh` | Claude Code session initialization (**upstream-only -- not distributed**) |
+| `.claude/skills/next-issue/SKILL.md` | `/next-issue` -- claim the highest-priority unblocked issue and dispatch it to a dev-loop session (issue #498). **Upstream-managed** |
+| `.claude/skills/wrap-up/SKILL.md` | `/wrap-up` -- merge finished work, park the rest with a hand-off, file loose ends, then report (issue #500). **Upstream-managed** |
 | `Pull-SDLC.ai.ps1` | Sync this repo into a consumer project; scaffolds templates on first run |
 | `run.ps1` | Project-agnostic .NET runner -- **upstream-managed** (issue #462), so consumers receive fixes to it. A consumer that has changed it is left alone rather than overwritten or blocked |
 | `run.project.ps1` | Optional consumer extension point, dot-sourced by `run.ps1`. **Never scaffolded** -- create it only if you need to customize. Put project-specific behaviour here rather than editing `run.ps1` |
@@ -218,4 +220,7 @@ consumer project, either:
 > maintained here but are **not** distributed to consumers --
 > `validate-instructions.yml` is this repo's own CI (it hardcodes this repo's
 > sample-project leak patterns and requires `.claude/*`), and `.claude/*` is
-> this repo's local Claude Code config.
+> this repo's local Claude Code config. The one exception is the two
+> issue-queue skills, `.claude/skills/next-issue/` and `.claude/skills/wrap-up/`,
+> which are listed by exact directory so they ship without touching the rest of
+> a consumer's `.claude/`.

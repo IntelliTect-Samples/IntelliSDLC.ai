@@ -189,6 +189,23 @@ hand: `Invoke-Pester -Path (Resolve-Path .\Pull-SDLC.ai.Tests.ps1).Path`.
   default over adding an option, and keep project-specific names out entirely —
   the workflow's leak scan enforces this on shipped files only.
 
+## Working the Issue Queue Here
+
+The shared rules are in **Issue Queue -- Priority Labels and Claims**
+(`.github/copilot-instructions.md`). Traps specific to this repository:
+
+- **Pass `--repo IntelliTect-Samples/IntelliSDLC.ai` on every `gh` call, and
+  `--head <branch>` on `gh pr create`.** This checkout carries several remotes
+  pointing at the same repository, and the org was renamed from
+  `IntelliTect-Dev`, so `gh`'s guess about which repository is meant is not
+  reliable.
+- **Root-level `*.Tests.ps1` are not run by CI** (issue #309). A green CI run
+  says nothing about `Pull-SDLC.ai.Tests.ps1` and its siblings; run them by
+  hand and name that scope in the PR.
+- **Never run `Cleanup-Worktree.ps1 -Sweep` here.** Many sessions work this
+  repository concurrently; the sweep prunes branches and refs that other
+  sessions' worktrees still depend on. Clean up your own worktree by name.
+
 ## Known Limitations / Don'ts
 
 - Do not edit shipped instruction files to solve a problem local to this repo;
