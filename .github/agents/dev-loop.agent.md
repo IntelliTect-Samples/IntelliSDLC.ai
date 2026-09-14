@@ -390,7 +390,8 @@ pwsh -NoProfile -File .github/skills/evidence-capture/helpers/Publish-Evidence.p
 gh run list --branch <branch-name> --limit 5
 ```
 
-If CI fails, fix and push. Non-trivial fixes -> Phase 3.
+If CI fails, fix and push. Non-trivial fixes -> Phase 3. If no runs appear because
+hosted CI cannot run at all, see the hosted-CI-unavailable exception in Phase 8.
 
 #### Step 5: Obtain an independent review
 
@@ -485,14 +486,16 @@ Append dry run results to PR body using `--body-file`. Construct the complete bo
 from scratch -- never read-modify-write. See `copilot-instructions.md` > PR & Issue
 Body Formatting.
 
-**Exit criteria:** PR created, CI green, **an independent review (a reviewer that is not
+**Exit criteria:** PR created, CI green (or the hosted-CI-unavailable exception
+below applies), **an independent review (a reviewer that is not
 the authoring model) read the latest diff and surfaced no new accepted Critical /
 Important findings** -- via resolved Copilot threads or via the different-model path --
 dry run passes (if applicable), no mojibake.
 
 ### Phase 8 -- Merge
 
-Runs after Phase 7 exits cleanly. **Preconditions:** CI green, **an
+Runs after Phase 7 exits cleanly. **Preconditions:** CI green (or the
+hosted-CI-unavailable exception below applies), **an
 independent review satisfied the invariant** (a reviewer that is not the
 authoring model read the latest diff and surfaced no new accepted Critical /
 Important findings -- a substituted different-model review satisfies this
@@ -521,7 +524,12 @@ gh pr merge <pr-number> --rebase --delete-branch
 **Hosted CI that cannot run is not "CI red".** When hosted CI cannot run at all,
 a recorded local run of the same checks satisfies the gate, provided the switch
 to local CI is developer-confirmed and recorded and the PR carries the runner's
-output with real counts. If hosted CI ran and failed, that is a hard stop unless
+output with real counts. The confirmation must be verifiable by any session or
+reviewer -- a linked, timestamped developer comment cited in the PR, or the
+repository's own committed instructions or config; a personal or session-local
+memory note does not count. While on local CI, hosted CI is rechecked daily and
+the repository switches back as soon as it works -- the shared local-CI runner's
+job, not implemented by hand. If hosted CI ran and failed, that is a hard stop unless
 the identical failure is shown, with evidence in the PR, to be pre-existing on
 `main`. If a post-merge check fails, route back to Phase 3 (TDD) on a new
 branch.

@@ -97,6 +97,48 @@ Describe 'each merge rule states the authorization, the report, and the exceptio
         $script:Text | Should -Match '(?i)hosted\s+CI\s+ran\s+and\s+failed'
         $script:Text | Should -Match '(?i)pre-existing\s+on\s+`?main`?'
     }
+
+    It '<Name> requires the local-CI confirmation to be verifiable by any session' {
+        # "Recorded" alone let a personal memory note count as the record --
+        # something no other session or reviewer can see.
+        $script:Text | Should -Match '(?i)verifiable\s+by\s+any\s+session'
+        $script:Text | Should -Match '(?i)timestamped\s+developer\s+comment'
+        $script:Text | Should -Match '(?i)committed\s+instructions\s+or\s+config'
+        $script:Text | Should -Match '(?i)(personal|session-local)\s+memory\s+note\s+does\s+not\s+count'
+    }
+
+    It '<Name> names the daily hosted-CI recheck and leaves its mechanics to the runner' {
+        $script:Text | Should -Match '(?i)re-?checked\s+daily'
+        $script:Text | Should -Match '(?i)switch(es)?\s+back'
+        $script:Text | Should -Match '(?i)not\s+implemented\s+by\s+hand'
+    }
+}
+
+Describe 'the hosted-CI exception reaches the other CI checkpoints' {
+    It 'the dev-loop-phase-gate Phase 7 checklist qualifies its CI item and points at CLAUDE.md' {
+        $gate = Get-Section -Path (Join-Path $script:RepoRoot '.github/skills/dev-loop-phase-gate/SKILL.md') -HeadingPattern 'After\s+Phase\s+7'
+        $gate | Should -Not -BeNullOrEmpty
+        $ciItem = [regex]::Match($gate, '(?ims)^- \[ \] CI workflows are green.*?(?=^- \[ \]|\z)').Value
+        $ciItem | Should -Not -BeNullOrEmpty
+        $ciItem | Should -Match '(?i)hosted\s+CI\s+(cannot|can''t)\s+run'
+        $ciItem | Should -Match 'CLAUDE\.md'
+    }
+
+    It 'dev-loop Phase 7 step 4 cross-references the Phase 8 exception' {
+        $step4 = Get-Section -Path $script:DevLoop -HeadingPattern 'Step\s+4:\s+Verify\s+CI'
+        $step4 | Should -Not -BeNullOrEmpty
+        $step4 | Should -Match '(?i)hosted\s+CI\s+(cannot|can''t)\s+run'
+        $step4 | Should -Match '(?i)Phase\s+8'
+    }
+
+    It '<File> qualifies every bare "CI green" precondition' -ForEach @(
+        @{ File = '.github/agents/dev-loop.agent.md' }
+        @{ File = '.github/copilot-instructions.md' }
+    ) {
+        $raw = Get-Content -LiteralPath (Join-Path $script:RepoRoot $File) -Raw
+        $bare = [regex]::Matches($raw, '(?i)CI\s+green(?!\s+\(or\s+the\s+hosted-CI-unavailable\s+exception)')
+        $bare.Count | Should -Be 0 -Because "every 'CI green' in $File must carry the hosted-CI-unavailable qualifier"
+    }
 }
 
 Describe 'no bare "CI is red" rule survives without the hosted-CI qualification' {

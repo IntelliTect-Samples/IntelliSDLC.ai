@@ -449,7 +449,8 @@ at all, see the Merge Step below.
 
 #### Merge Step
 
-Once the expanding loop exits cleanly (CI green, all review threads resolved,
+Once the expanding loop exits cleanly (CI green (or the hosted-CI-unavailable
+exception below applies), all review threads resolved,
 **an independent review satisfied the invariant** -- a reviewer that is not the
 authoring model read the latest diff and surfaced no new accepted Critical /
 Important findings -- dry run passes if applicable), merge the PR before running
@@ -474,7 +475,12 @@ Never merge with unresolved review threads. **Hosted CI that cannot run is not
 "CI red"**: when hosted CI cannot run at all, a recorded local run of the same
 checks satisfies the gate, provided the switch to local CI is
 developer-confirmed and recorded and the PR carries the runner's output with
-real counts. If hosted CI ran and failed, that is a hard stop unless the
+real counts. The confirmation must be verifiable by any session or reviewer -- a
+linked, timestamped developer comment cited in the PR, or the repository's own
+committed instructions or config; a personal or session-local memory note does
+not count. While on local CI, hosted CI is rechecked daily and the repository
+switches back as soon as it works -- the shared local-CI runner's job, not
+implemented by hand. If hosted CI ran and failed, that is a hard stop unless the
 identical failure is shown, with evidence in the PR, to be pre-existing on
 `main`. If any post-merge check fails, route back to Phase 3 (TDD) on a new
 branch.

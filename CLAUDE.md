@@ -170,7 +170,13 @@ not optional.
 satisfies the CI gate -- provided the repository's switch to local CI is
 developer-confirmed and recorded, and the PR carries the local runner's output
 with real counts pasted in. Whether hosted CI is unavailable is not a judgement a
-session makes on its own. If hosted CI ran and failed, that is still a hard stop
+session makes on its own: the developer's confirmation must be verifiable by any
+session or reviewer -- a linked, timestamped developer comment cited in the PR,
+or the repository's own committed instructions or config. A personal or
+session-local memory note does not count. While a repository is on local CI,
+hosted CI is rechecked daily and the repository switches back as soon as it
+works; that belongs to the shared local-CI runner and is not implemented by hand
+in a session. If hosted CI ran and failed, that is still a hard stop
 -- unless the identical failure is shown, with evidence in the PR, to be
 pre-existing on `main`.
 

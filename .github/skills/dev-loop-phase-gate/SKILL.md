@@ -84,7 +84,9 @@ npx tsc && npx vitest run
 ### After Phase 7 (PR + Independent Review)
 
 - [ ] PR created with `Closes #<issue-number>`
-- [ ] CI workflows are green
+- [ ] CI workflows are green -- or, when hosted CI cannot run at all, the
+      developer-confirmed local-CI exception in `CLAUDE.md` (**Merging a
+      Finished PR Is Pre-Authorized**) applies
 - [ ] An independent review (a reviewer that is **not** the authoring model)
       read the latest diff and surfaced no new accepted Critical / Important
       findings
