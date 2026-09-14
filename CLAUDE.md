@@ -322,6 +322,8 @@ autonomous assumptions.
   fenced) captured output for CLI/markdown changes; a `file:///` link for
   UI/binary changes. Omit the inline output only when the user opted out
   (`-SkipDisplay`), and note it was skipped by user request.
+- **Results** -- the list of what was done or found, one item per outcome;
+  not the **Result display**, which is the single captured output.
 - **Assumptions** -- every assumption you made while proceeding without the user
   (autopilot / unattended), each with what you assumed and the decision it drove,
   so they can be reviewed and corrected. **Always present in every summary** --
@@ -338,7 +340,8 @@ autonomous assumptions.
 section's letter plus a number -- `R1`, `A1`, `N1` -- so the user can answer
 one by name. `N` numbers are stable for the whole session: never reused, every
 open item re-listed under its same number until answered, then marked resolved.
-`R` and `A` numbers restart at 1 in each reply. See **Numbering Report Items**.
+`R` and `A` numbers restart at 1 in each end-of-turn report.
+The **Result display** is not numbered. See **Numbering Report Items**.
 
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
