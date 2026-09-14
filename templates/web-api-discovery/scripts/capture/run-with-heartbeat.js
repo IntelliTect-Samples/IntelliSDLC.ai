@@ -25,6 +25,7 @@
  */
 
 const { spawn } = require('child_process');
+const os = require('os');
 
 const HEARTBEAT_MS = 30 * 1000;
 const LABEL = 'capture-har: cataloguing';
@@ -35,6 +36,19 @@ function formatElapsed(ms) {
     const minutes = Math.floor(total / 60);
     const seconds = total % 60;
     return minutes ? `${minutes}m${String(seconds).padStart(2, '0')}s` : `${seconds}s`;
+}
+
+/**
+ * The status to report for a child that ended with `code` or `signal`.
+ *
+ * A signalled child has no exit code. Reporting 0 would read as a successful
+ * catalogue pass, and reporting 1 would be indistinguishable from the CLI
+ * itself failing -- so it follows the shell convention, 128 + signal number.
+ */
+function exitStatusFor(code, signal) {
+    if (code !== null && code !== undefined) return code;
+    const number = signal && os.constants.signals[signal];
+    return number ? 128 + number : 1;
 }
 
 /**
@@ -67,6 +81,9 @@ function runWithHeartbeat(command, args, opts = {}) {
         // ENOENT and friends arrive here, asynchronously, and `exit` may never
         // follow -- so this settles on its own rather than waiting for it.
         child.on('error', (e) => {
+            // Guarded like finish(): a late stream error after a real exit
+            // must not announce that a child which ran "could not start".
+            if (settled) return;
             write(`${LABEL}: could not start ${command}: ${e.message}`);
             finish({ status: 127, signal: null });
         });
@@ -74,14 +91,12 @@ function runWithHeartbeat(command, args, opts = {}) {
             write(signal
                 ? `${LABEL} ended by ${signal} after ${elapsed()}`
                 : `${LABEL} finished after ${elapsed()}`);
-            // A signalled child has no exit code; reporting 0 for it would
-            // read as a successful catalogue pass.
-            finish({ status: code === null ? 1 : code, signal });
+            finish({ status: exitStatusFor(code, signal), signal });
         });
     });
 }
 
-module.exports = { HEARTBEAT_MS, formatElapsed, runWithHeartbeat };
+module.exports = { HEARTBEAT_MS, formatElapsed, exitStatusFor, runWithHeartbeat };
 
 if (require.main === module) {
     const [command, ...args] = process.argv.slice(2);

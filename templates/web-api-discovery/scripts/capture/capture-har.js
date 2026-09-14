@@ -1673,7 +1673,7 @@ function askTheGate(candidate, state, run) {
  * stage, and a second implementation of them behind a second door is the
  * two-engines defect this subsystem has spent a dozen PRs removing.
  */
-function catalogueScrubbed(session, state) {
+function catalogueScrubbed(session, state, opts = {}) {
     try {
         log.info('capture-har: building the digest ...');
         const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
@@ -1700,7 +1700,7 @@ function catalogueScrubbed(session, state) {
         }
         state.catalogue = Object.assign(
             { path: cataloguePath, actions: [], files: [] },
-            runCatalogue(session, digestPath, cataloguePath, state));
+            runCatalogue(session, digestPath, cataloguePath, state, opts));
         // Described, never performed -- see describeReference. Placed after the
         // catalogue so a rejected scrub, which returns before any of this,
         // cannot reach it: a capture the leak gate refused promotes nothing.
@@ -1935,7 +1935,7 @@ function postProcess(session, opts = {}) {
         state.completedUtc = new Date().toISOString();
         return state;
     }
-    catalogueScrubbed(session, state);
+    catalogueScrubbed(session, state, opts);
 
     state.completedUtc = new Date().toISOString();
     return state;
@@ -2136,8 +2136,15 @@ function describeSize(filePath) {
         : `${(bytes / 1024).toFixed(1)} KB`;
 }
 
-function runCatalogue(session, digestPath, cataloguePath, state) {
-    const decision = decideCatalogueRunner({
+/**
+ * `opts.runnerContext` and `opts.spawn` exist for one reason: the claude-cli
+ * branch is otherwise unreachable from a test (it needs a TTY and `claude` on
+ * PATH), and "the AI child runs under the heartbeat wrapper" is a property of
+ * THIS function, not of the helper that builds the argv (#492).
+ */
+function runCatalogue(session, digestPath, cataloguePath, state, opts = {}) {
+    const spawn = opts.spawn || spawnSync;
+    const decision = decideCatalogueRunner(opts.runnerContext || {
         env: process.env,
         isTty: !!process.stdin.isTTY,
         claudeOnPath: claudeOnPath()
@@ -2152,7 +2159,7 @@ function runCatalogue(session, digestPath, cataloguePath, state) {
             (session.describe ? `Operator intent: ${session.describe}\n` : '');
         log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
         const child = catalogueChildCommand(prompt);
-        const run = spawnSync(child.command, child.args, {
+        const run = spawn(child.command, child.args, {
             encoding: 'utf8', cwd: session.outputPath, stdio: 'inherit', windowsHide: true
         });
         if (run.status !== 0) {
