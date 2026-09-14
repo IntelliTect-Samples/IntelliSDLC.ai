@@ -426,16 +426,23 @@ function assertReportIsQuiet(label, report) {
         ['a.b', 'a.b=%41'],
         ['a-b', 'a-b=%41'],
         ['x{y}', 'x{y}=%41&b=2'],
-        ['quoted', '"q"=%41&b=2'],
         ['unicode', '名前=%41&b=2'],
         ['percent-encoded name', '%E5%90%8D=%41&b=2'],
         ['bracketed name later', 'b=2&route_urls[0]=%41'],
         ['trailing separator', 'a=%41&'],
         ['empty value', 'a=&b=%41'],
+        // A LATER segment is never judged. Judging it bought nothing -- the
+        // split is byte-preserving whatever a segment holds -- and one odd
+        // segment would disable descent into the whole body (independent
+        // review of #505: a fail-open regression, see section 12).
+        ['whitespace in a later name', 'a=%41&b c=2'],
+        ['empty later name', 'a=%41&=x'],
+        ['equals in a later value', 'a=%41&b=c=d'],
+        ['bare later name', 'a=%41&flag'],
     ];
     for (const [label, body] of accept) {
         assert.strictEqual(nested.looksFormEncoded(body), true,
-            `10.a: a form body whose first parameter is named like '${label}' is not `
+            `10.a: a form body with '${label}' is not `
             + 'recognised as form-encoded, so neither engine descends into it and the '
             + 'scrubber cannot reach anything inside (#487)');
     }
@@ -448,8 +455,12 @@ function assertReportIsQuiet(label, report) {
         ['percent-encoded JSON', enc(JSON.stringify({ a: 'b=c' }))],
         ['wholly encoded payload', 'abc%41def'],
         ['prose with an equals sign', 'the ratio a=b is 50%25 of c'],
-        ['whitespace in a later name', 'a=%41&b c=2'],
         ['empty name', '=%41&b=2'],
+        // A literal top-level JSON STRING. Split as a form body, the quote
+        // stays glued to the boundary names (`"access_token`), so neither
+        // engine would recognise the name it travels under.
+        ['literal JSON string', '"access_token=%41BC&other=1"'],
+        ['quoted first name', '"q"=%41&b=2'],
     ];
     for (const [label, body] of reject) {
         assert.strictEqual(nested.looksFormEncoded(body), false,
@@ -494,6 +505,66 @@ function assertReportIsQuiet(label, report) {
         + 'bracketed. Only the name control reached through the descent can remove it');
     assert.strictEqual(name.verifyCode, 0,
         `11.h: the gate refuses the scrubbed artifact: ${name.report}`);
+}
+
+// --- 12. One odd segment must not disable descent into the WHOLE body. ------
+// Found by independent review of the first cut of #487, which judged every
+// segment and rejected a body if any later name held whitespace. The old
+// first-name-only check accepted this body, so the "fix" FAILED OPEN: the
+// secret survived the scrub AND the gate, sharing the same predicate, looked
+// no deeper and certified the artifact clean. Both halves are pinned, plus the
+// gate's reach on the unscrubbed body, so this cannot come back as a scrubber
+// miss the gate is equally blind to.
+{
+    const body = `variables=${enc(JSON.stringify({ datr: DATR }))}&foo bar=1`;
+
+    const reported = [];
+    secrets.walkForUnredactedSecrets({ entries: [{ body }] },
+        (n) => reported.push(n));
+    assert.ok(reported.includes('datr'),
+        '12.a: the gate cannot see a known-secret field in a form body beside a '
+        + 'segment whose name holds whitespace -- one odd segment has disabled '
+        + 'descent into the whole body, so the gate fails OPEN');
+
+    const r = scrubAndVerify('odd-later-segment', body, 'application/x-www-form-urlencoded');
+    assert.strictEqual(r.scrubCode, 0, `12.b: sanitize-har failed: ${r.report}`);
+    assert.ok(!survives(r.text, DATR),
+        '12.c: a known-secret field survived the scrub because a LATER segment of '
+        + 'the body failed a per-segment rule the old predicate never applied');
+    assert.strictEqual(r.verifyCode, 0,
+        `12.d: the gate refuses the scrubbed artifact: ${r.report}`);
+    assert.ok(r.text.includes('foo bar=1'),
+        '12.e: the odd segment was rewritten; the split must preserve its bytes');
+}
+
+// --- 13. NEVER NARROWER than the predicate this replaced. -------------------
+// The regression in section 12 was a narrowing: a body the old predicate
+// descended into, the new one did not. That is the dangerous direction -- it
+// fails OPEN in both engines at once, because they share the predicate -- so
+// it is pinned as a property against the old rule, kept here verbatim as a
+// reference oracle. The only body the old rule accepted and this one may not
+// is none: every old-accepted corpus entry must still be accepted.
+{
+    const oldRule = (t) => /%[0-9A-Fa-f]{2}/.test(t) && !/;\s/.test(t)
+        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(t);
+    const names = ['a', 'a.b', 'x_y', '%41', '名前'];
+    const tails = ['', '&', '&b=2', '&b c=2', '&=x', '&flag', '&b=c=d', '&a[0]=1',
+        '& x', '&&', '&{"k":1}', '&"q"=1', '&b=%zz'];
+    const values = ['%41', 'x%41y', '%E5%90%8D', 'a b%41', '%41=%41'];
+    let checked = 0;
+    for (const n of names) {
+        for (const v of values) {
+            for (const t of tails) {
+                const body = `${n}=${v}${t}`;
+                if (!oldRule(body)) continue;
+                checked++;
+                assert.strictEqual(nested.looksFormEncoded(body), true,
+                    `13.a: '${body}' was descended into by the pre-#487 predicate and is `
+                    + 'not now -- a narrowing, which fails OPEN in both engines at once');
+            }
+        }
+    }
+    assert.ok(checked > 100, `13.b: the corpus exercised only ${checked} old-accepted bodies`);
 }
 
 console.log('har-nested-reach.test.js: all sections passed');
