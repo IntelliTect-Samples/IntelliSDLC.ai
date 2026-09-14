@@ -76,14 +76,35 @@ const MAX_DEPTH = 8;
 // A `; `-separated string is a Cookie header, not a form body; it has its own
 // scrubber and must keep its separators intact.
 //
+// A literal JSON document -- object or array -- is not a form body even when a
+// string inside it holds `=` and `&`; splitting it would shred the document
+// that the JSON branch of `transformNested` can actually read.
+//
 // THE SINGLE DEFINITION. `sanitize-har.js` and `har-secrets.js` each carried a
 // byte-identical private copy, and the comment above the second said outright
 // that nothing could detect their drift because neither imported the other.
+//
+// THE WHOLE BODY IS JUDGED, NOT ITS FIRST NAME (#487). The predicate used to
+// test only the first parameter, against a guessed name alphabet. That guess
+// failed twice in the same shape: first it excluded `{` and `"` (#454), then
+// `[` and `]` -- and Meta bodies lead with `route_urls[0]=`, so the descent
+// never started and the scrubber could not reach a secret the gate reported.
+// So no name alphabet is guessed here. What is checked instead is the property
+// that makes splitting SAFE: every `&`-separated segment is either empty or a
+// name free of `=` and whitespace, optionally followed by `=` and a value --
+// and at least one segment actually carries a `=`.
 function looksFormEncoded(text) {
     return typeof text === 'string'
         && /%[0-9A-Fa-f]{2}/.test(text)
         && !/;\s/.test(text)
-        && /^[^=&\s{[\]}"]+=[^&]*(?:&|$)/.test(text);
+        && !/^\s*[[{]/.test(text)
+        && text.includes('=')
+        && text.split('&').every(isFormSegment);
+}
+
+/** One `&`-separated segment: empty, a bare name, or `name=value`. */
+function isFormSegment(segment) {
+    return segment === '' || /^[^=\s]+(?:=|$)/.test(segment);
 }
 
 /** A string that is ONE percent-encoded payload rather than `k=v` pairs. */

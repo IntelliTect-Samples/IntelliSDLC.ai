@@ -409,4 +409,91 @@ function assertReportIsQuiet(label, report) {
         '9.c: the depth-limit report named a detected value');
 }
 
+// --- 10. The form predicate judges the WHOLE body, not its first name (#487). -
+// `looksFormEncoded` used to test only the FIRST parameter, against a guessed
+// name alphabet that excluded `[` and `]`. Meta bodies routinely lead with
+// `route_urls[0]=`, so the descent never started and every secret inside was
+// unreachable by the scrubber while the gate still reported it. That was the
+// SECOND time a guessed alphabet failed this way (the first was `{` and `"`,
+// #454), so this pins the predicate directly, by name, rather than through a
+// scrub result whose fixture happens to start with a plain name -- which is
+// exactly how the remaining gap stayed invisible last time.
+{
+    const accept = [
+        ['a[0]', 'a[0]=%41&b=2'],
+        ['a[]', 'a[]=%41&a[]=2'],
+        ['route_urls[0]', 'route_urls[0]=%2Fp%2F&routing_namespace=x'],
+        ['a.b', 'a.b=%41'],
+        ['a-b', 'a-b=%41'],
+        ['x{y}', 'x{y}=%41&b=2'],
+        ['quoted', '"q"=%41&b=2'],
+        ['unicode', '名前=%41&b=2'],
+        ['percent-encoded name', '%E5%90%8D=%41&b=2'],
+        ['bracketed name later', 'b=2&route_urls[0]=%41'],
+        ['trailing separator', 'a=%41&'],
+        ['empty value', 'a=&b=%41'],
+    ];
+    for (const [label, body] of accept) {
+        assert.strictEqual(nested.looksFormEncoded(body), true,
+            `10.a: a form body whose first parameter is named like '${label}' is not `
+            + 'recognised as form-encoded, so neither engine descends into it and the '
+            + 'scrubber cannot reach anything inside (#487)');
+    }
+
+    const reject = [
+        ['Cookie header', 'c_user=42; xs=%41%42%43'],
+        ['no percent escape', 'a=1&b=2'],
+        ['literal JSON object', '{"a":"b=%41"}'],
+        ['literal JSON array', '[{"a":"b=%41"}]'],
+        ['percent-encoded JSON', enc(JSON.stringify({ a: 'b=c' }))],
+        ['wholly encoded payload', 'abc%41def'],
+        ['prose with an equals sign', 'the ratio a=b is 50%25 of c'],
+        ['whitespace in a later name', 'a=%41&b c=2'],
+        ['empty name', '=%41&b=2'],
+    ];
+    for (const [label, body] of reject) {
+        assert.strictEqual(nested.looksFormEncoded(body), false,
+            `10.b: '${label}' is treated as a form body, so it would be split on & and =`
+            + ' instead of reaching the branch that can actually read it');
+    }
+}
+
+// --- 11. END TO END: a `route_urls[0]=` body, as Meta sends it (#487). -------
+// The live shape: `POST /ajax/bulk-route-definitions/`, first name
+// `route_urls[0]`, the secret further along. Two variants, for the reason
+// section 0 gives. The hex32 sits inside a percent-encoded JSON value where
+// the escape before it (`%22`) extends the hex run on the wire, so a flat
+// shape scan over the encoded text cannot see it -- that is why the real
+// capture had ZERO raw matches and ONE decoded one. The `datr` variant has no
+// shape at all, so only the name control reached through the descent can
+// remove it.
+{
+    const lead = `route_urls[0]=${enc('/p/synthetic/')}&route_urls[1]=${enc('/explore/')}`;
+    const hex = scrubAndVerify('route-urls-hex32',
+        `${lead}&routing_namespace=${enc(JSON.stringify({ ns: HEX32 }))}&__a=1`,
+        'application/x-www-form-urlencoded');
+
+    assert.strictEqual(hex.scrubCode, 0, `11.a: sanitize-har failed: ${hex.report}`);
+    assert.ok(!survives(hex.text, HEX32),
+        '11.b: a hex32 survived in a form body whose FIRST parameter is bracketed. '
+        + 'The scrubber has the hex32 rule; the predicate never let it look (#487)');
+    assert.strictEqual(hex.verifyCode, 0,
+        `11.c: the gate refuses the scrubbed artifact -- the live Instagram refusal: ${hex.report}`);
+    assert.ok(hex.text.includes('route_urls[0]=') && hex.text.includes('__a=1'),
+        '11.d: the scrub rewrote untouched parameters, so 11.b could pass for a rule '
+        + 'that simply erases the body');
+    assertReportIsQuiet('11.e', hex.report);
+
+    const name = scrubAndVerify('route-urls-datr',
+        `${lead}&variables=${enc(JSON.stringify({ datr: DATR }))}`,
+        'application/x-www-form-urlencoded');
+
+    assert.strictEqual(name.scrubCode, 0, `11.f: sanitize-har failed: ${name.report}`);
+    assert.ok(!survives(name.text, DATR),
+        '11.g: a known-secret FIELD survived in a form body whose first parameter is '
+        + 'bracketed. Only the name control reached through the descent can remove it');
+    assert.strictEqual(name.verifyCode, 0,
+        `11.h: the gate refuses the scrubbed artifact: ${name.report}`);
+}
+
 console.log('har-nested-reach.test.js: all sections passed');
