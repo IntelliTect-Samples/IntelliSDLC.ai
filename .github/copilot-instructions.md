@@ -567,7 +567,8 @@ without the user, or state "None".
 | **Branch** | Linked code span: `` [`<branch-name>`](https://github.com/<owner>/<repo>/tree/<branch-name>) `` |
 | **Command to test** | Exact shell command(s) the user can run locally to verify, fenced as a code block |
 | **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
-| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. **Always present in every `task_complete` summary** -- state "None" when you made no autonomous assumptions (see **Surfacing Assumptions**). |
+| **Results** | The list of what was done or found, one item per outcome, numbered `R1`, `R2`, ... per **Numbering Report Items** below. This is not the **Result display**: that field is the single captured output and is not numbered. |
+| **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. **Always present in every `task_complete` summary** -- state "None" when you made no autonomous assumptions (see **Surfacing Assumptions**). Numbered per **Numbering Report Items** below. |
 | **Needs you** | Every decision, question, approval, or command the user must act on. Numbered per **Numbering Report Items** below. Omit when nothing needs the user. |
 | **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
 | **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
@@ -596,6 +597,9 @@ Example:
   > app auth --user alice
   Authenticated alice (token expires in 3600s)
   ```
+- **Results**:
+  - **R1.** Added `app auth`, which authenticates a user and reports the token lifetime.
+  - **R2.** Expired tokens are now refreshed once before a request fails.
 - **Assumptions**:
   - **A1.** Kept the token TTL at the existing 3600s default (the issue did not specify); no new option added.
 - **Needs you**:
@@ -615,20 +619,25 @@ multi-turn exchange. Each item gets its section's letter plus a number:
 - `N` -- **Needs you** (decisions, questions, approvals, or commands for the
   user): `N1`, `N2`, ...
 
+The **Result display** field is the single captured output, not a list, and it
+is not `R`-numbered.
+
 **`N` numbers are stable for the whole session.** A number is never reused.
-Every reply re-lists every open item under its same number -- including any
-the user's last reply left unanswered -- until it is answered. An answered item
-is marked **resolved** once in the next reply and never renumbered, so an
-earlier "re N3" still points at the right item.
+Every end-of-turn report re-lists every open item under its same number --
+including any the user's last reply left unanswered -- until it is answered.
+An answered item is marked **resolved** once in the following end-of-turn
+report and never renumbered, so an earlier "re N3" still points at the right
+item.
 
-**`R` and `A` numbers restart at 1 in each reply.** They describe that reply's
-work; an older one is referred to by when it was said ("yesterday's A2").
+**`R` and `A` numbers restart at 1 in each end-of-turn report.** They describe
+that report's work; an older one is referred to by when it was said
+("yesterday's A2").
 
-Use no `X.Y` (reply.item) numbering: a session cannot reliably count its own
-replies, especially after earlier context has been summarized, and a wrong
-reply number is worse than none. Other lists -- work orders, option lists,
-steps -- get plain numbers; the letter prefixes are for the summary sections
-only.
+Use no `X.Y` (report.item) numbering: a session cannot reliably count its own
+end-of-turn reports, especially after earlier context has been summarized, and
+a wrong report number is worse than none. Other lists -- work orders, option
+lists, steps -- get plain numbers; the letter prefixes are for the summary
+sections only.
 
 ##### PR Summary Formatting
 
