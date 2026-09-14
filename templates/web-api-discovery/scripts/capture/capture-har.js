@@ -1644,6 +1644,7 @@ function runNode(script, argv, cwd) {
  * @returns {{path: string, verified: boolean, advisory: boolean}} state.scrubbed
  */
 function askTheGate(candidate, state, run) {
+    log.info('capture-har: verifying the scrub ...');
     const verify = (run || runNode)(
         path.join(__dirname, '..', 'har', 'verify-scrub.js'), ['--in', candidate]);
     const advisory = !verify.ok && verify.status === VERIFY_ADVISORY_EXIT;
@@ -1674,6 +1675,7 @@ function askTheGate(candidate, state, run) {
  */
 function catalogueScrubbed(session, state) {
     try {
+        log.info('capture-har: building the digest ...');
         const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
         // capturedUtc is when the RECORDING happened, not when it was
         // processed. A catalogue row dated to the scrub would answer "how old
@@ -1845,6 +1847,10 @@ function postProcess(session, opts = {}) {
     // verified artifact a previous run left there.
     const candidate = path.join(session.sessionDir, SCRUBBED_HAR);
     fs.mkdirSync(session.sessionDir, { recursive: true });
+    // Each stage is named as it STARTS (#492). Every one of them is silent
+    // until it finishes, and after a recording stops they run for minutes --
+    // which an operator cannot tell apart from a hang.
+    log.info(`capture-har: scrubbing ${describeSize(session.harPath)} ...`);
     const sanitize = run(path.join(harDir, 'sanitize-har.js'),
         ['--in', session.harPath, '--out', candidate]);
     if (!sanitize.ok) {
@@ -2104,6 +2110,32 @@ function quarantineRejectedScrub(session, state) {
     }
 }
 
+/**
+ * How the AI catalogue child is launched: `claude -p <prompt>`, run UNDER
+ * run-with-heartbeat.js (#492).
+ *
+ * The child is ~95% of the wall time after a recording stops, and under `-p`
+ * it prints nothing at all -- measured at fifteen silent minutes on one real
+ * capture. postProcess is synchronous, so it cannot keep a timer of its own
+ * while `spawnSync` blocks; the wrapper is a second process that can. The argv
+ * after the wrapper is exactly what the child was always given.
+ */
+function catalogueChildCommand(prompt) {
+    return {
+        command: process.execPath,
+        args: [path.join(__dirname, 'run-with-heartbeat.js'), 'claude', '-p', prompt]
+    };
+}
+
+/** "67 MB" / "12.4 KB" -- the scale of what a stage is about to chew through. */
+function describeSize(filePath) {
+    let bytes;
+    try { bytes = fs.statSync(filePath).size; } catch { return 'the raw capture'; }
+    return bytes >= 1024 * 1024
+        ? `${Math.round(bytes / (1024 * 1024))} MB`
+        : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
 function runCatalogue(session, digestPath, cataloguePath, state) {
     const decision = decideCatalogueRunner({
         env: process.env,
@@ -2118,7 +2150,9 @@ function runCatalogue(session, digestPath, cataloguePath, state) {
             `Digest: ${digestPath}\nCatalogue: ${cataloguePath}\n` +
             `Raw capture: ${session.harPath}\nOutput path: ${session.outputPath}\n` +
             (session.describe ? `Operator intent: ${session.describe}\n` : '');
-        const run = spawnSync('claude', ['-p', prompt], {
+        log.info('capture-har: cataloguing (AI pass -- typically several minutes) ...');
+        const child = catalogueChildCommand(prompt);
+        const run = spawnSync(child.command, child.args, {
             encoding: 'utf8', cwd: session.outputPath, stdio: 'inherit', windowsHide: true
         });
         if (run.status !== 0) {
@@ -3299,6 +3333,7 @@ module.exports = {
     buildDigest,
     buildCatalogueScaffold,
     decideCatalogueRunner,
+    catalogueChildCommand,
     postProcess,
     catalogueCommand,
     postProcessExitCode,
