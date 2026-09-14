@@ -31,15 +31,24 @@ Arguments combine (`/next-issue 3 area:<label>`). When nobody is present to
 answer a prompt, the count means how many to claim instead -- see **When no
 user is present**.
 
-## Step 0 -- Resolve the repository
+## Step 0 -- Resolve the repository, and this session's identity
 
 ```powershell
 git remote get-url origin
+hostname
 ```
 
 Parse `owner/repo` from that URL (never from the directory name) and pass
 `--repo <owner>/<repo>` on **every** `gh` call below. A checkout can hold several
 remotes pointing at one repository, and `gh` guesses wrongly without it.
+
+**This session's ID, as the harness supplies it:** `${CLAUDE_SESSION_ID}`.
+Use that value wherever a step below says `<session id>`. If it is not a
+session ID -- empty, or still an unsubstituted placeholder because this harness
+does not fill it in -- write `session_id="unknown"` instead. Never guess or
+invent one. `<host>` is the `hostname` output above: a transcript lives only on
+the machine that ran the session, so the claim must say which machine that is.
+`<session name>` is the name this session was started with.
 
 ## Step 1 -- Select candidates
 
@@ -56,9 +65,10 @@ With an area argument, add `label:"<area-label>"` to the search string.
 Then, in order:
 
 1. **Rank.** An issue's rank is the lowest `N` among its `priority-0`,
-   `priority-1`, `priority-2` and `priority-3` labels; an issue with none ranks
-   after `priority-3` and is **unprioritized**. Sort by rank, then oldest
-   `createdAt` first.
+   `priority-1`, `priority-2` and `priority-3` labels; an issue with none is
+   **unprioritized** -- it goes to triage (Step 2) and is never offered for
+   claiming until it carries a priority. Sort by rank, then oldest `createdAt`
+   first.
 2. **Drop issues that are already being worked without a claim.** Work that
    predates the claim protocol carries no `in-progress` label. Fetch once:
 
@@ -106,15 +116,16 @@ For each, propose a priority and (when the repository uses area labels and the
 issue has none) an area, each with a one-line reason drawn from the issue.
 
 **Changed since prioritized** -- the issue body was edited, or a comment was
-added or edited, after its current priority label was applied:
+added or edited, after its current priority was last decided:
 
 ```powershell
-gh api graphql --paginate --slurp -f q="repo:<owner>/<repo> is:issue is:open label:priority-0,priority-1,priority-2,priority-3" -f query='
+$json = gh api graphql --paginate --slurp -f q="repo:<owner>/<repo> is:issue is:open label:priority-0,priority-1,priority-2,priority-3" -f query='
 query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on Issue {
       number title lastEditedAt
+      labels(first: 20) { nodes { name } }
       timelineItems(itemTypes: [LABELED_EVENT], last: 50) {
         nodes { ... on LabeledEvent { createdAt label { name } } } }
       comments(last: 50) { nodes { createdAt lastEditedAt body } }
@@ -123,13 +134,34 @@ query($q: String!, $endCursor: String) {
 }'
 ```
 
-*Prioritized at* is the `createdAt` of the latest `LabeledEvent` for the
-issue's current `priority-N` label. The issue has **changed** when its
-`lastEditedAt` is later, or when a comment was created or edited later --
-ignoring comments that carry only a `<!-- claim: ... -->` or
-`<!-- release: ... -->` marker, and the priority's own reason comment (anything
-within 10 minutes of the label event). Say what changed ("body edited", "3 new
-comments") -- never quote the content.
+The priority was last decided at the later of the latest `LabeledEvent` for the
+issue's current `priority-N` label and the latest comment carrying that
+decision's `<!-- priority: label="priority-N" -->` marker. A comment that
+**contains** a claim, release or priority marker is bookkeeping, not a change,
+however much prose surrounds the marker:
+
+```powershell
+$ignore = '<!-- (claim|release|priority):'
+$issues = @(($json | ConvertFrom-Json) | ForEach-Object { $_.data.search.nodes })
+foreach ($i in $issues) {
+    $label = @($i.labels.nodes.name | Where-Object { $_ -match '^priority-\d$' })[0]
+    $decided = @(
+        $i.timelineItems.nodes | Where-Object { $_.label.name -eq $label } | ForEach-Object { [datetime]$_.createdAt }
+        $i.comments.nodes | Where-Object { $_.body -match "<!-- priority: label=`"$label`"" } | ForEach-Object { [datetime]$_.createdAt }
+    ) | Sort-Object | Select-Object -Last 1
+    if (-not $decided) { continue }
+    $bodyEdited = $i.lastEditedAt -and [datetime]$i.lastEditedAt -gt $decided
+    $changes = @($i.comments.nodes | Where-Object {
+        $_.body -notmatch $ignore -and
+        ([datetime]$_.createdAt -gt $decided -or ($_.lastEditedAt -and [datetime]$_.lastEditedAt -gt $decided)) })
+    if ($bodyEdited -or $changes.Count) {
+        [pscustomobject]@{ Number = $i.number; Priority = $label; BodyEdited = [bool]$bodyEdited; NewOrEditedComments = $changes.Count }
+    }
+}
+```
+
+Report what changed ("body edited", "3 new comments") -- never quote the
+content.
 
 **Newly unblocked** -- for a candidate whose `total_blocked_by` is above `0` but
 whose open `blocked_by` is `0`:
@@ -145,20 +177,32 @@ decision -- closing a blocker changes no priority, it only lets the issue in.
 **Decide.** Ask the owner to confirm or change each proposed and each changed
 priority, through the harness's choice prompt: the proposal first, marked as
 recommended, then the other priorities and `hold`. Batch the questions; do not
-ask one issue at a time when several are waiting. Then write each decision:
+ask one issue at a time when several are waiting. Then write each decision --
+**add the new label first, remove the old one second**, so the issue is never
+without a priority, not even for a moment:
 
 ```powershell
-gh issue edit <n> --repo <owner>/<repo> --remove-label <old-priority> --add-label <new-priority>
+gh issue edit <n> --repo <owner>/<repo> --add-label <new-priority>
+gh issue edit <n> --repo <owner>/<repo> --remove-label <old-priority>
 gh issue comment <n> --repo <owner>/<repo> --body-file <reason.md>
 ```
 
-A **confirmed** priority is re-applied too (remove, then add the same label),
-so the label event records when the decision was made and the issue is not
-flagged again next time. The reason comment says what was decided and why.
+For a first-time priority there is no old label: the remove is a harmless
+no-op, and may be skipped. A **confirmation** changes no label at all. Every
+decision -- set, changed or confirmed -- is recorded by its reason comment,
+which says what was decided and why and ends with the marker
+`<!-- priority: label="priority-N" -->`. That marker is what makes the decision
+time visible to the next run, so a confirmed issue is not flagged again.
 
 ## Step 3 -- Show the pick list and who holds what
 
-Show the head of the ranked list, after triage: the top `N` candidates
+**Re-rank first.** Triage may have just set, changed or held priorities. Apply
+those decisions to the ranked list from Step 1 -- re-fetch the relabelled
+issues rather than trusting the labels read before triage -- so an issue just
+raised to `priority-0` is at the top, one just held drops out, and one just
+prioritized enters.
+
+Then show the head of the re-ranked list: the top `N` candidates
 (default **5**), one row each.
 
 | Issue | Priority | Area | Title | Why it is here |
@@ -178,15 +222,32 @@ git log -1 --format=%cI origin/<branch>
 ```
 
 For each `in-progress` issue, the live claim is the latest
-`<!-- claim: session="..." branch="..." -->` marker not followed by a matching
-release. Report:
+`<!-- claim: session="..." session_id="..." host="..." branch="..." -->` marker
+not followed by a matching release. Report:
 
-| Issue | Session | Branch | Claimed-at | Last activity | Stale |
-|---|---|---|---|---|---|
+| Issue | Session | Session ID | Host | Branch | Claimed-at | Last activity | Stale |
+|---|---|---|---|---|---|---|---|
 
 *Last activity* is the later of the issue's latest comment and the last commit
 on the branch; *stale* is more than 3 days of neither. An `in-progress` issue
-with no parseable claim marker is listed as "claimed, no marker".
+with no parseable claim marker is listed as "claimed, no marker". A claim made
+before session IDs were recorded, or recorded as `unknown`, shows its session
+ID as unknown.
+
+For a **quiet** claim -- no activity for more than a day, or stale -- print how
+to reach its session:
+
+```
+claude --resume <session_id>
+transcript: ~/.claude/projects/<encoded-working-directory>/<session_id>.jsonl   (on host <host>)
+```
+
+`--resume` finds the session from any directory, but **only on the machine that
+ran it**, and transcripts are removed after the retention period (30 days by
+default). When the claim's host is not this machine, say so plainly: the
+transcript is on another machine, and resuming or reading it has to happen
+there. With an unknown session ID there is nothing to resume; the issue's
+comments are the only record.
 
 **Ask the owner to pick** one or more, through the harness's multi-select choice
 prompt (in Claude Code: `AskUserQuestion` with `multiSelect: true`). It takes at
@@ -200,8 +261,11 @@ If the owner picks nothing, stop: claim nothing, dispatch nothing.
 
 Claim only the picked issues -- never the rest of the list -- and claim
 **before** dispatching, so no other dispatcher picks up work being done out of
-sight. The list may be minutes old: re-check each pick is still open, not
-`hold`, not claimed by someone else, and not blocked.
+sight. The list may be minutes old, and a pick typed under "Other" was never
+filtered at all: re-check each pick is still open, carries a priority label,
+is not `hold`, is not claimed by someone else, and is not blocked. A pick with
+no priority label is not claimed -- put it through Step 2's decision first, and
+claim it only once it carries a priority.
 
 1. **Name the branch** `<type>/<number>-<short-slug>`, taking `<type>` from the
    issue title's Conventional Commits prefix (`feat`, `fix`, `docs`, `test`,
@@ -226,19 +290,22 @@ sight. The list may be minutes old: re-check each pick is still open, not
    The claim comment is one human-readable line plus a machine-readable marker:
 
    ```markdown
-   Claimed by `<session name>` on branch `<branch>` at <UTC ISO-8601 time>.
-   <!-- claim: session="<session name>" branch="<branch>" -->
+   Claimed by `<session name>` (session ID `<session id>`, host `<host>`) on branch `<branch>` at <UTC ISO-8601 time>.
+   <!-- claim: session="<session name>" session_id="<session id>" host="<host>" branch="<branch>" -->
    ```
 
-   For a stale takeover, say so in the same comment: whose claim is being
-   taken over, and that it had been silent for 3+ days.
+   For a **stale takeover**, say so in the same comment and quote the previous
+   holder's session name, session ID and host from its claim marker, so the new
+   session can load that transcript before it starts rather than redoing or
+   contradicting the work. Pass the same three values to the dispatched session
+   (Step 6).
 4. **Resolve a race.** Re-read the comments. Among claim markers not followed
    by a matching `<!-- release: ... -->` marker, the **earliest** wins. If it is
    not yours, release: post a release comment
-   (`<!-- release: session="<you>" reason="lost claim race" -->`), delete the
-   branch you pushed **only if it still points at the commit you pushed**
-   (`git push origin --delete <branch>`), leave the label (the winner holds it),
-   and tell the owner that pick was lost to another session.
+   (`<!-- release: session="<you>" session_id="<session id>" reason="lost claim race" -->`),
+   delete the branch you pushed **only if it still points at the commit you
+   pushed** (`git push origin --delete <branch>`), leave the label (the winner
+   holds it), and tell the owner that pick was lost to another session.
 
 ## Step 5 -- Choose how to run each claimed issue
 
@@ -279,8 +346,11 @@ reviewer's model recorded. Smaller does not mean fewer gates.
 
   `<context>` tells the session what the dispatcher already did: *"Claimed by
   /next-issue. Branch `<branch>` is pushed; create your worktree from it rather
-  than a new branch. The claim comment is posted."* If `Start-IssueAgent.ps1` is
-  not present, print that command for the user instead of improvising a launcher.
+  than a new branch. The claim comment is posted."* For a stale takeover, add
+  the previous holder's session ID and host, and the transcript path when it is
+  on this machine, with the instruction to read it first. If
+  `Start-IssueAgent.ps1` is not present, print that command for the user
+  instead of improvising a launcher.
 - **Subagent** -- launch it in the background with its own worktree on the
   claimed branch, and give it the issue, the branch, and the gates above. Use an
   explicit model override for its reviewer so the review is not self-review.
@@ -296,7 +366,8 @@ reviewer's model recorded. Smaller does not mean fewer gates.
 One short table of what was dispatched: issue, title, mode and the one-line
 reason, branch. Then, if any: the triage decisions written (priorities set,
 changed or confirmed), issues skipped as "already in flight, no claim", stale
-claims taken over, picks lost to a race, and the live-claims table from Step 3.
+claims taken over (with the previous holder's session ID), picks lost to a
+race, and the live-claims table from Step 3.
 
 ## When no user is present
 
@@ -320,8 +391,11 @@ a new component, and not a controller. A loop runs unattended, so it follows
 ## Never
 
 - Dispatch an issue labelled `hold`, or one with an open blocker.
+- Claim or dispatch an unprioritized issue -- not even one typed under "Other".
+  It goes through triage first.
 - Claim an issue the owner did not pick, when the owner is present to pick.
 - Set, change or confirm a priority label without the owner's decision.
+- Guess a session ID. The harness's value, or `unknown`.
 - Read or update a tracking/controller issue to decide what is next.
 - Claim with the assignee field -- every session runs as the same account, so an
   assignee cannot tell sessions apart.
