@@ -314,6 +314,34 @@ account, so an assignee cannot tell sessions apart.
 - **Release** -- a merged PR closes the issue. An abandoned or parked attempt
   removes `in-progress` and posts
   `<!-- release: session="<name>" reason="<reason>" -->` with a one-line reason.
+- **Who holds what** -- `/next-issue` lists every live claim (session, branch,
+  claimed-at, last activity, stale) from these markers, beside the pick list.
+
+### Filing an issue
+
+Any session that files an issue sets these **at creation**, not later:
+
+- exactly one `priority-N` label, or `hold` when it must not start yet;
+- an `area:<name>` label, when the repository uses area labels;
+- a **blocked by** link to every open issue it depends on
+  (`gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<id>`,
+  where `<id>` is the blocker's numeric `id` from `gh api repos/<owner>/<repo>/issues/<blocker>`,
+  not its number);
+- a comment giving the reason for the priority.
+
+**When re-prioritization happens:**
+
+- **At filing** -- the rule above.
+- **Whenever `/next-issue` runs** -- it triages first: unprioritized issues, and
+  issues whose body or comments changed after their priority was set, and asks
+  the owner to confirm or change each before showing the list. Unattended, it
+  labels nothing and reports them instead.
+- **When a session changes an issue's scope** -- it re-evaluates the priority
+  then, and comments why.
+
+A blocker closing changes no priority; it only lets the issue into the list.
+Confirming a priority re-applies the same label (remove, then add), so the label
+event records when the decision was made.
 
 ## Plan Tracking
 

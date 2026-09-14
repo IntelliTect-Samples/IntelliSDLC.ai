@@ -341,7 +341,8 @@ structural fix is required that affects other tests, return to Phase 3.**
    not auto-apply it.
 5. **(Authoring model) Fix accepted Critical / Important findings using behavior-first
    testing.** Apply accepted low-effort suggestions; **file issues** for accepted
-   high-effort / high-impact work.
+   high-effort / high-impact work, labelled at creation per **Filing an issue**
+   in the shared instructions' Issue Queue section.
 6. (Authoring model) Run the full test suite after fixes. Run static analysis again.
 7. **(Authoring model) Re-submit the diff to the same panel and iterate until convergence**
    (every panelist surfaces no new accepted Critical / Important findings).
