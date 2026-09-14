@@ -40,7 +40,7 @@ You MUST complete these steps in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to complexity, get user approval after each section
 5. **Declare the Evidence Plan** — every plan must name the change type, the artifact format, the exact capture command, and the entry-point file the reviewer will open (see "Evidence Plan" below). The dev-loop's Phase 5b verifies the produced artifact matches this declaration.
-6. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output)
+6. **Create GitHub issue** — save the approved design as a GitHub issue (the primary output), labelled at creation per **Filing an issue** in the shared instructions' Issue Queue section: a priority (or `hold`), an area, blocked-by links, and the reason as a comment
 7. **Save the plan to `docs/designs/<issue#>-<slug>-plan.md`** — durable, in-repo artifact mirroring the issue body. Format defined in **Saving the Plan to `docs/designs/`** below. This is the single authoritative spec for the `docs/designs/<issue#>-<slug>-plan.md` file -- `@dev-loop` Phase 2 *resumes / expands* this file, it does not redefine the format.
 8. **Transition to implementation** — hand off to `@dev-loop` for the full quality cycle
 

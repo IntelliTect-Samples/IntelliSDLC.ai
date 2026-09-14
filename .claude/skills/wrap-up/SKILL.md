@@ -104,7 +104,9 @@ what lets a session on another machine continue.
 
 Open decisions, follow-ups, and defects found along the way go onto the issue
 that owns them, or into a new issue (`gh issue create --body-file`). A new issue
-gets exactly one `priority-N` label and a comment giving the reason for it.
+follows **Filing an issue** in the shared instructions' Issue Queue section:
+one `priority-N` label (or `hold`), an area label, blocked-by links, and a
+comment giving the reason.
 Nothing that matters may exist only in the conversation.
 
 ## Step 5 -- Report

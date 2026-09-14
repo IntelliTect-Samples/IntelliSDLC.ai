@@ -1,31 +1,35 @@
 ---
 name: next-issue
-description: Pick the highest-priority unblocked, unclaimed GitHub issue in this repository, claim it, and dispatch it to a dev-loop session (or to a background subagent when the work is small and settled). Use when asked to work on the next issue or the next priority issues, or when invoked as /next-issue [N] [area:<label>] [here].
+description: Triage the GitHub issue queue in this repository, show the next several highest-priority unblocked, unclaimed issues and who holds what, let the owner pick one or more, then claim and dispatch only those to dev-loop sessions (or to a background subagent when the work is small and settled). Use when asked what to work on next, to work on the next priority issues, or when invoked as /next-issue [N] [area:<label>] [here].
 argument-hint: "[N] [area:<label>] [here]"
 ---
 
-# /next-issue -- dispatch the next priority issue
+# /next-issue -- see what is next, pick, claim, dispatch
 
 A **stateless** dispatcher. GitHub is the queue: priority lives on each issue as
 a label, ordering is GitHub's native "blocked by", and a claim is written on the
-issue itself. This command reads GitHub, claims, dispatches, and exits. It never
-reads or writes a tracking/controller issue, and it keeps no state of its own --
-so two dispatchers running at once are safe, because the claim is on the issue.
+issue itself. This command reads GitHub, triages, shows the owner the head of
+the queue, claims what the owner picks, dispatches it, and exits. It never
+reads or writes a tracking/controller issue and keeps no state of its own -- so
+two dispatchers running at once are safe, because the claim is on the issue.
 
-The label contract and the claim protocol are defined in the shared instructions
-(**Issue Queue -- Priority Labels and Claims** in `.github/copilot-instructions.md`).
-This skill is the procedure that applies them.
+The label contract, the filing rule and the claim protocol are defined in the
+shared instructions (**Issue Queue -- Priority Labels and Claims** in
+`.github/copilot-instructions.md`). This skill is the procedure that applies
+them.
 
 ## Arguments
 
 | Invocation | Behaviour |
 |---|---|
-| `/next-issue` | Claim the top issue and dispatch it (fan-out **1**) |
-| `/next-issue 3` | Claim the top three and dispatch each |
-| `/next-issue area:<label>` | Restrict selection to issues carrying that area label |
-| `/next-issue here` | Claim the top issue and work it in **this** session |
+| `/next-issue` | Triage, then show the top **5** candidates and every live claim; the owner picks one or more, and only those are claimed and dispatched |
+| `/next-issue 3` | The same, showing the top three |
+| `/next-issue area:<label>` | Restrict triage and the list to issues carrying that area label |
+| `/next-issue here` | The same list; the one issue picked is worked in **this** session |
 
-Arguments combine (`/next-issue 2 area:<label>`). `here` implies a count of 1.
+Arguments combine (`/next-issue 3 area:<label>`). When nobody is present to
+answer a prompt, the count means how many to claim instead -- see **When no
+user is present**.
 
 ## Step 0 -- Resolve the repository
 
@@ -65,29 +69,139 @@ Then, in order:
 
    Skip an issue when an open PR's head branch, or any remote branch, matches
    `<type>/<number>-*` -- report it as "already in flight, no claim".
-3. **Re-check the blocker count** for each issue you are about to take. Search
-   semantics are GitHub's to change; the REST summary counts only **open**
-   blockers:
+3. **Re-check the blocker count** for each issue near the head of the list.
+   Search semantics are GitHub's to change; the REST summary counts only
+   **open** blockers:
 
    ```powershell
-   gh api repos/<owner>/<repo>/issues/<n> --jq .issue_dependencies_summary.blocked_by
+   gh api repos/<owner>/<repo>/issues/<n> --jq .issue_dependencies_summary
    ```
 
-   Anything other than `0` is blocked -- skip it.
+   A `blocked_by` other than `0` is blocked -- skip it. Keep `total_blocked_by`:
+   Step 2 uses it to spot newly unblocked issues.
 4. **Stale claims are candidates too.** List `in-progress` issues separately
    (`--search "label:in-progress"`). A claim is **stale** when there has been no
    comment on the issue *and* no commit on its claimed branch for **3 days**. A
    stale-claimed issue is ranked like any other; taking it over is part of
-   claiming (Step 2).
+   claiming (Step 4).
 
-Take the first `N`. If only unprioritized issues remain, you may still dispatch
-them, but say so -- an unprioritized issue reaching the top means the queue
-needs triage.
+Keep the whole ranked list; Step 3 shows its head.
 
-## Step 2 -- Claim (per issue, one at a time)
+## Step 2 -- Triage before listing
 
-Claim **before** dispatching, so no other dispatcher picks up work being done
-out of sight.
+**This is when re-prioritization happens.** A new issue, or one whose scope
+changed after it was prioritized, gets a decision the next time anyone asks
+what is next -- not whenever someone happens to notice. Triage runs before the
+list is shown, so the list reflects the decisions.
+
+**Unprioritized issues** -- open, no priority label, not held:
+
+```powershell
+gh issue list --repo <owner>/<repo> --state open --limit 300 `
+  --search "-label:priority-0 -label:priority-1 -label:priority-2 -label:priority-3 -label:hold" `
+  --json number,title,labels,body
+```
+
+For each, propose a priority and (when the repository uses area labels and the
+issue has none) an area, each with a one-line reason drawn from the issue.
+
+**Changed since prioritized** -- the issue body was edited, or a comment was
+added or edited, after its current priority label was applied:
+
+```powershell
+gh api graphql --paginate --slurp -f q="repo:<owner>/<repo> is:issue is:open label:priority-0,priority-1,priority-2,priority-3" -f query='
+query($q: String!, $endCursor: String) {
+  search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on Issue {
+      number title lastEditedAt
+      timelineItems(itemTypes: [LABELED_EVENT], last: 50) {
+        nodes { ... on LabeledEvent { createdAt label { name } } } }
+      comments(last: 50) { nodes { createdAt lastEditedAt body } }
+    } }
+  }
+}'
+```
+
+*Prioritized at* is the `createdAt` of the latest `LabeledEvent` for the
+issue's current `priority-N` label. The issue has **changed** when its
+`lastEditedAt` is later, or when a comment was created or edited later --
+ignoring comments that carry only a `<!-- claim: ... -->` or
+`<!-- release: ... -->` marker, and the priority's own reason comment (anything
+within 10 minutes of the label event). Say what changed ("body edited", "3 new
+comments") -- never quote the content.
+
+**Newly unblocked** -- for a candidate whose `total_blocked_by` is above `0` but
+whose open `blocked_by` is `0`:
+
+```powershell
+gh api repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by --jq '.[] | [.number, .state, .closed_at] | @tsv'
+```
+
+When its last blocker closed within the past 7 days, mark it
+**newly unblocked** in the list ("blocker #<m> closed <date>"). This needs no
+decision -- closing a blocker changes no priority, it only lets the issue in.
+
+**Decide.** Ask the owner to confirm or change each proposed and each changed
+priority, through the harness's choice prompt: the proposal first, marked as
+recommended, then the other priorities and `hold`. Batch the questions; do not
+ask one issue at a time when several are waiting. Then write each decision:
+
+```powershell
+gh issue edit <n> --repo <owner>/<repo> --remove-label <old-priority> --add-label <new-priority>
+gh issue comment <n> --repo <owner>/<repo> --body-file <reason.md>
+```
+
+A **confirmed** priority is re-applied too (remove, then add the same label),
+so the label event records when the decision was made and the issue is not
+flagged again next time. The reason comment says what was decided and why.
+
+## Step 3 -- Show the pick list and who holds what
+
+Show the head of the ranked list, after triage: the top `N` candidates
+(default **5**), one row each.
+
+| Issue | Priority | Area | Title | Why it is here |
+|---|---|---|---|---|
+| #<n> | priority-1 | area:<x> | <title> | oldest priority-1 |
+| #<m> | priority-1 | area:<y> | <title> | newly unblocked: blocker #<k> closed <date> |
+| #<j> | priority-2 | area:<x> | <title> | stale claim by `<session>`, silent 4 days -- picking it takes it over |
+
+Then **who holds what** -- every live claim, read from the claim markers the
+protocol already writes (no other state exists):
+
+```powershell
+gh issue list --repo <owner>/<repo> --state open --label in-progress --json number,title
+gh issue view <n> --repo <owner>/<repo> --json comments --jq '.comments[] | select(.body | test("<!-- (claim|release):")) | {createdAt, body}'
+git fetch origin --quiet
+git log -1 --format=%cI origin/<branch>
+```
+
+For each `in-progress` issue, the live claim is the latest
+`<!-- claim: session="..." branch="..." -->` marker not followed by a matching
+release. Report:
+
+| Issue | Session | Branch | Claimed-at | Last activity | Stale |
+|---|---|---|---|---|---|
+
+*Last activity* is the later of the issue's latest comment and the last commit
+on the branch; *stale* is more than 3 days of neither. An `in-progress` issue
+with no parseable claim marker is listed as "claimed, no marker".
+
+**Ask the owner to pick** one or more, through the harness's multi-select choice
+prompt (in Claude Code: `AskUserQuestion` with `multiSelect: true`). It takes at
+most four options, so offer the top four candidates -- label `#<n> <short
+title>`, description priority plus why -- and say that any other listed issue,
+or several, can be typed under "Other". With `here`, ask for exactly one.
+
+If the owner picks nothing, stop: claim nothing, dispatch nothing.
+
+## Step 4 -- Claim (per picked issue, one at a time)
+
+Claim only the picked issues -- never the rest of the list -- and claim
+**before** dispatching, so no other dispatcher picks up work being done out of
+sight. The list may be minutes old: re-check each pick is still open, not
+`hold`, not claimed by someone else, and not blocked.
 
 1. **Name the branch** `<type>/<number>-<short-slug>`, taking `<type>` from the
    issue title's Conventional Commits prefix (`feat`, `fix`, `docs`, `test`,
@@ -124,9 +238,9 @@ out of sight.
    (`<!-- release: session="<you>" reason="lost claim race" -->`), delete the
    branch you pushed **only if it still points at the commit you pushed**
    (`git push origin --delete <branch>`), leave the label (the winner holds it),
-   and move to the next candidate.
+   and tell the owner that pick was lost to another session.
 
-## Step 3 -- Choose how to run each claimed issue
+## Step 5 -- Choose how to run each claimed issue
 
 **Background subagent** (in its own worktree) only when **all** of these hold:
 
@@ -152,7 +266,7 @@ spot and redirect:
 the independent review by a model that did not author the change, with the
 reviewer's model recorded. Smaller does not mean fewer gates.
 
-## Step 4 -- Dispatch
+## Step 6 -- Dispatch
 
 - **New session** -- reuse the repository's launcher, which names the session
   `<number>: <title>`, starts it in the main worktree, and runs `@dev-loop` on
@@ -177,20 +291,37 @@ reviewer's model recorded. Smaller does not mean fewer gates.
   /rename <number>: <title>
   ```
 
-## Step 5 -- Report
+## Step 7 -- Report
 
-One short table: issue, title, mode and the one-line reason, branch. Then list,
-if any: issues skipped as "already in flight, no claim", stale claims taken
-over, and unprioritized issues seen near the top of the queue.
+One short table of what was dispatched: issue, title, mode and the one-line
+reason, branch. Then, if any: the triage decisions written (priorities set,
+changed or confirmed), issues skipped as "already in flight, no claim", stale
+claims taken over, picks lost to a race, and the live-claims table from Step 3.
+
+## When no user is present
+
+A background run, a `/loop` run, or any run where nobody can answer a prompt:
+do not show a pick list or ask. Claim the top `N` ranked candidates instead
+(the count; default **1**), dispatch them as in Steps 4-6, and say so in the
+report ("unattended: claimed the top N without a pick").
+
+Triage labels nothing when unattended. List the unprioritized and
+changed-since-prioritized issues under **Needs you**, each with a proposed
+priority and reason, and dispatch only from issues that already carry a
+priority label -- an unprioritized issue is never claimed without the owner.
+Newly unblocked issues are still marked.
 
 ## Continuous dispatch
 
 Keeping N issues in flight is `/loop /next-issue` on top of this command -- not
-a new component, and not a controller.
+a new component, and not a controller. A loop runs unattended, so it follows
+**When no user is present**.
 
 ## Never
 
 - Dispatch an issue labelled `hold`, or one with an open blocker.
+- Claim an issue the owner did not pick, when the owner is present to pick.
+- Set, change or confirm a priority label without the owner's decision.
 - Read or update a tracking/controller issue to decide what is next.
 - Claim with the assignee field -- every session runs as the same account, so an
   assignee cannot tell sessions apart.

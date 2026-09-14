@@ -127,7 +127,132 @@ Describe '/next-issue selection contract' {
     }
 
     It 'launches sessions through the existing launcher rather than a new script' {
-        Get-SkillSection -Body $script:body -Heading 'Step 4' | Should -Match 'Start-IssueAgent\.ps1'
+        Get-SkillSection -Body $script:body -Heading 'Step 6' | Should -Match 'Start-IssueAgent\.ps1'
+    }
+}
+
+# Issue #510: the owner picks from a list; triage happens before the list is
+# shown, so a new or changed issue gets a priority decision the next time
+# anyone asks what is next -- not whenever someone happens to notice.
+Describe '/next-issue triages before it lists' {
+    BeforeAll {
+        $script:body = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:step2 = [string](Get-SkillSection -Body $script:body -Heading 'Step 2')
+        $script:blocks = @(Get-FencedBlocks -Text $script:step2)
+        $script:unprioritized = @($script:blocks | Where-Object { $_ -match 'gh issue list' })[0]
+        $script:unprioritizedSearch = if ($script:unprioritized -match '--search\s+"([^"]*)"') { $Matches[1] }
+        $script:changedQuery = @($script:blocks | Where-Object { $_ -match 'graphql' })[0]
+    }
+
+    It 'is Step 2 -- triage comes before the pick list' {
+        $script:step2 | Should -Match '(?m)^## Step 2 -- Triage'
+    }
+
+    It 'finds unprioritized issues with a search excluding every priority label and hold' {
+        $script:unprioritizedSearch | Should -Not -BeNullOrEmpty
+        foreach ($p in 0..3) { $script:unprioritizedSearch | Should -Match "-label:priority-$p\b" }
+        $script:unprioritizedSearch | Should -Match '-label:hold\b'
+    }
+
+    It 'detects "changed since prioritized" from the label event against issue edits and comments' {
+        $script:changedQuery | Should -Match 'LABELED_EVENT'
+        $script:changedQuery | Should -Match 'lastEditedAt'
+        $script:changedQuery | Should -Match 'comments'
+    }
+
+    It 'marks newly unblocked issues from the closed time of their blockers' {
+        $script:step2 | Should -Match '(?i)newly unblocked'
+        @($script:blocks | Where-Object { $_ -match 'dependencies/blocked_by' }).Count | Should -BeGreaterThan 0
+    }
+
+    It 'asks the owner to confirm or change a priority, and writes the reason comment' {
+        $script:step2 | Should -Match '(?is)confirm.{0,40}or change'
+        $script:step2 | Should -Match '(?i)reason'
+    }
+}
+
+Describe '/next-issue lets the owner pick, and shows who holds what' {
+    BeforeAll {
+        $script:body = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:step3 = [string](Get-SkillSection -Body $script:body -Heading 'Step 3')
+        $script:step4 = [string](Get-SkillSection -Body $script:body -Heading 'Step 4')
+    }
+
+    It 'shows the top candidates, 5 by default' {
+        $script:step3 | Should -Match '(?i)default \*\*5\*\*'
+    }
+
+    It 'asks through a multi-select choice prompt' {
+        $script:step3 | Should -Match 'multiSelect'
+    }
+
+    It 'claims only the issues the owner picked' {
+        $script:step4 | Should -Match '(?i)only the picked'
+    }
+
+    It 'lists every live claim with session, branch, claimed-at, last activity, and stale state' {
+        foreach ($field in 'session', 'branch', 'claimed-at', 'last activity', 'stale') {
+            $script:step3 | Should -Match "(?i)$([regex]::Escape($field))"
+        }
+        $script:step3 | Should -Match '<!-- claim:' -Because 'the view is read from the claim markers the protocol already writes'
+    }
+}
+
+Describe '/next-issue when no user is present' {
+    BeforeAll {
+        $script:body = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:unattended = [string](Get-SkillSection -Body $script:body -Heading 'When no user is present')
+    }
+
+    It 'has its own section' {
+        $script:unattended | Should -Not -BeNullOrEmpty
+    }
+
+    It 'claims the top N instead of asking, and says so' {
+        $script:unattended | Should -Match '(?i)claim the top'
+        $script:unattended | Should -Match '(?i)say so'
+    }
+
+    It 'labels nothing, and lists triage findings under Needs you' {
+        $script:unattended | Should -Match '(?i)labels nothing'
+        $script:unattended | Should -Match '\*\*Needs you\*\*'
+    }
+}
+
+Describe 'Issues arrive prioritized -- the filing rule' {
+    BeforeAll {
+        $read = { param($rel) Get-Content -Raw -LiteralPath (Join-Path $script:repoRoot $rel) }
+        $script:queue = [string](Get-SkillSection -Body (& $read '.github/copilot-instructions.md') -Heading 'Issue Queue')
+        $m = [regex]::Match($script:queue, '(?ms)^### Filing an issue\b.*?(?=^### |\z)')
+        $script:filing = if ($m.Success) { $m.Value }
+        $script:planStep = ([regex]::Match((& $read '.github/agents/plan.agent.md'), '(?m)^6\. \*\*Create GitHub issue\*\*.*$')).Value
+        $script:devLoopFile = ([regex]::Match((& $read '.github/agents/dev-loop.agent.md'), '(?s)\*\*file issues\*\*.{0,200}')).Value
+        $wrapBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/wrap-up/SKILL.md')).Body
+        $script:wrapStep4 = [string](Get-SkillSection -Body $wrapBody -Heading 'Step 4')
+    }
+
+    It 'has a "Filing an issue" subsection in the Issue Queue section' {
+        $script:filing | Should -Not -BeNullOrEmpty
+    }
+
+    It 'requires a priority or hold, an area label, blocked-by links, and a reason comment at creation' {
+        $script:filing | Should -Match 'priority-N'
+        $script:filing | Should -Match '`hold`'
+        $script:filing | Should -Match 'area:'
+        $script:filing | Should -Match '(?i)blocked.by'
+        $script:filing | Should -Match '(?i)reason'
+    }
+
+    It '@plan applies it when it creates the issue' {
+        $script:planStep | Should -Match 'Filing an issue'
+    }
+
+    It 'the dev loop applies it to the follow-up issues it files' {
+        $script:devLoopFile | Should -Match 'Filing an issue'
+    }
+
+    It '/wrap-up applies it to loose ends' {
+        $script:wrapStep4 | Should -Match 'Filing an issue'
     }
 }
 
