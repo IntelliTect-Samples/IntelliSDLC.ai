@@ -326,11 +326,19 @@ autonomous assumptions.
   (autopilot / unattended), each with what you assumed and the decision it drove,
   so they can be reviewed and corrected. **Always present in every summary** --
   state "None" when you made no autonomous assumptions.
+- **Needs you** -- every decision, question, approval, or command the user must
+  act on. Omit when nothing needs the user.
 - **Evidence (local)** -- clickable `file:///` URL to
   `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
   Phase 5b ran.
 - **Evidence (PR)** -- PR-comment URL (or CI-artifact URL for files > 25 MB).
   Required when Phase 5b ran and the PR exists.
+
+**Number the items in the Results, Assumptions, and Needs you lists** with the
+section's letter plus a number -- `R1`, `A1`, `N1` -- so the user can answer
+one by name. `N` numbers are stable for the whole session: never reused, every
+open item re-listed under its same number until answered, then marked resolved.
+`R` and `A` numbers restart at 1 in each reply. See **Numbering Report Items**.
 
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
