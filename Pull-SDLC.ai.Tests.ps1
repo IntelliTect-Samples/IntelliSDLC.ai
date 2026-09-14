@@ -5269,6 +5269,99 @@ Describe 'Issue #324: retiring start-issue-agent.sh replays the delete into cons
     }
 }
 
+Describe 'Issue #498: the /next-issue and /wrap-up skills reach consumers, and nothing else under .claude/ does' {
+    # Claude Code only surfaces a skill as a slash command from .claude/skills/,
+    # which the sync never delivered. The two queue commands are shipped by
+    # naming EXACTLY their directories: the rest of .claude/ -- settings,
+    # hooks, and any skill the consumer wrote itself -- belongs to the consumer,
+    # so a '.claude/' or '.claude/skills/' prefix would overwrite (or delete)
+    # content nobody upstream owns.
+
+    BeforeEach {
+        $script:queueRoot = Join-Path $TestDrive ("queue-skills-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'treats <_> as upstream-managed' -ForEach @(
+        '.claude/skills/next-issue/SKILL.md',
+        '.claude/skills/wrap-up/SKILL.md'
+    ) {
+        Test-IsUpstreamManagedPath -Path $_ |
+            Should -BeTrue -Because 'the sync only replays paths on the managed list'
+    }
+
+    It 'leaves <_> to the consumer' -ForEach @(
+        '.claude/settings.json',
+        '.claude/settings.local.json',
+        '.claude/hooks/session-start.sh',
+        '.claude/commands/deploy.md',
+        '.claude/skills/deploy/SKILL.md',
+        # Prefix boundary: a sibling whose name merely STARTS with a managed
+        # skill's name is a different skill.
+        '.claude/skills/next-issue-extended/SKILL.md',
+        '.claude/skills/wrap-up2/SKILL.md'
+    ) {
+        Test-IsUpstreamManagedPath -Path $_ |
+            Should -BeFalse -Because 'only the two queue skills are upstream-owned; the rest of .claude/ is the consumer''s'
+    }
+
+    It 'emits an add op for both skills and none for the rest of .claude/' {
+        $fx = New-DiffReplayFixture -Root $script:queueRoot `
+            -Seed { 'baseline claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak {
+                foreach ($d in '.claude/skills/next-issue', '.claude/skills/wrap-up', '.claude/skills/deploy', '.claude/hooks') {
+                    New-Item -ItemType Directory -Path $d -Force | Out-Null
+                }
+                'next' | Out-File -Encoding utf8 .claude/skills/next-issue/SKILL.md -NoNewline
+                'wrap' | Out-File -Encoding utf8 .claude/skills/wrap-up/SKILL.md -NoNewline
+                'upstream-only skill' | Out-File -Encoding utf8 .claude/skills/deploy/SKILL.md -NoNewline
+                '{}' | Out-File -Encoding utf8 .claude/settings.json -NoNewline
+                'echo hi' | Out-File -Encoding utf8 .claude/hooks/session-start.sh -NoNewline
+            }
+
+        # The REAL manifest: fails the moment either entry leaves it, or the
+        # moment someone widens it to a '.claude/' prefix.
+        $ops = @(Get-UpstreamOps -Anchor $fx.AnchorSha -Ref 'sdlc.ai/main' `
+                -ManagedPaths $script:UpstreamManagedPaths -RepoRoot $fx.Consumer)
+        $paths = @($ops | Where-Object { $_.Op -eq 'A' } | ForEach-Object { $_.Path })
+
+        $paths | Should -Contain '.claude/skills/next-issue/SKILL.md'
+        $paths | Should -Contain '.claude/skills/wrap-up/SKILL.md'
+        @($paths | Where-Object { $_ -like '.claude/*' -and $_ -notlike '.claude/skills/next-issue/*' -and $_ -notlike '.claude/skills/wrap-up/*' }) |
+            Should -BeNullOrEmpty -Because 'settings, hooks and other skills under .claude/ must never be replayed into a consumer'
+    }
+
+    It 'delivers both skills into a consumer tree and leaves its own .claude/ content alone' {
+        $fx = New-DiffReplayFixture -Root $script:queueRoot `
+            -Seed { 'baseline claude' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
+            -Tweak {
+                foreach ($d in '.claude/skills/next-issue', '.claude/skills/wrap-up') {
+                    New-Item -ItemType Directory -Path $d -Force | Out-Null
+                }
+                'next' | Out-File -Encoding utf8 .claude/skills/next-issue/SKILL.md -NoNewline
+                'wrap' | Out-File -Encoding utf8 .claude/skills/wrap-up/SKILL.md -NoNewline
+                'upstream settings' | Out-File -Encoding utf8 .claude/settings.json -NoNewline
+            }
+
+        Push-Location $fx.Consumer
+        try {
+            New-Item -ItemType Directory -Path .claude -Force | Out-Null
+            'consumer settings' | Out-File -Encoding utf8 .claude/settings.json -NoNewline
+            Set-SdlcSyncState -RepoRoot $fx.Consumer -Remote 'sdlc.ai' -Ref 'main' -Commit $fx.AnchorSha
+            git add -A | Out-Null
+            git commit -q -m 'record anchor; consumer owns its settings'
+
+            $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -NoFetch -NoAutoPR
+            $rc | Should -Be 0
+
+            $tracked = @(git ls-files)
+            $tracked | Should -Contain '.claude/skills/next-issue/SKILL.md'
+            $tracked | Should -Contain '.claude/skills/wrap-up/SKILL.md'
+            Get-Content -Raw -LiteralPath .claude/settings.json |
+                Should -Be 'consumer settings' -Because 'the consumer''s own Claude Code settings are never overwritten'
+        } finally { Pop-Location }
+    }
+}
+
 Describe 'Line endings (issue #274)' {
 
     It 'stores every tracked file with LF in the object database' {
