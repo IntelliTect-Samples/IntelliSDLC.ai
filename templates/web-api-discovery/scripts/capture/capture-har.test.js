@@ -1029,7 +1029,46 @@ test('the AI catalogue child is run under the heartbeat wrapper, with its argv i
     assert.deepStrictEqual(args.slice(1), ['claude', '-p', 'the prompt']);
 });
 
+test('postProcess really launches the AI child through the wrapper, after announcing it (#492)', () => {
+    // The helper test above proves the argv; this proves the pipeline USES it.
+    // Reverting runCatalogue to a bare `spawnSync('claude', ...)` would leave
+    // the helper correct and unused, and only this test would notice.
+    withSandbox('pp-progress-child', [okEntry], (session, paths) => {
+        const spawned = [];
+        withRecordedStderr((said) => {
+            capture.postProcess(session, {
+                runnerContext: { env: {}, isTty: true, claudeOnPath: true },
+                spawn: (command, args, options) => {
+                    spawned.push({ command, args, options, saidBefore: said.join('') });
+                    return { status: 0 };
+                }
+            });
+        });
+        assert.strictEqual(spawned.length, 1, 'the claude-cli branch must spawn exactly one child');
+        const [child] = spawned;
+        assert.strictEqual(child.command, process.execPath);
+        assert.strictEqual(path.basename(child.args[0]), 'run-with-heartbeat.js');
+        assert.deepStrictEqual(child.args.slice(1, 3), ['claude', '-p']);
+        assert.strictEqual(child.options.stdio, 'inherit', 'the child keeps the terminal');
+        assert.strictEqual(child.options.cwd, session.outputPath);
+        assert.match(child.saidBefore, /capture-har: cataloguing \(AI pass -- typically several minutes\) \.\.\./,
+            'the AI pass must be announced before it starts');
+    });
+});
+
 const heartbeat = require(path.join(__dirname, 'run-with-heartbeat.js'));
+
+test('a child killed by a signal is not reported as an ordinary exit 1 (#492)', () => {
+    // capture-har records "catalogue: claude exited N" from this status, so a
+    // signalled death must stay distinguishable from the CLI exiting 1. The
+    // shell convention: 128 + the signal number.
+    const os = require('os');
+    assert.strictEqual(heartbeat.exitStatusFor(3, null), 3);
+    assert.strictEqual(heartbeat.exitStatusFor(0, null), 0);
+    assert.strictEqual(heartbeat.exitStatusFor(null, 'SIGTERM'), 128 + os.constants.signals.SIGTERM);
+    assert.strictEqual(heartbeat.exitStatusFor(null, 'SIGINT'), 128 + os.constants.signals.SIGINT);
+    assert.notStrictEqual(heartbeat.exitStatusFor(null, null), 0, 'no code and no signal is not success');
+});
 
 test('elapsed time reads the way the operator reads a clock (#492)', () => {
     assert.strictEqual(heartbeat.formatElapsed(5000), '5s');
