@@ -444,7 +444,8 @@ Brainstorm+Issue -> Worktree -> Plan -> [TDD -> Refactor -> Functional Test -> E
 #### CI Failure Restart Loop
 
 After pushing to a PR branch, if CI fails: investigate, fix locally, push again.
-A PR must **never** be merged while CI is red.
+A PR must **never** be merged while hosted CI is red. When hosted CI cannot run
+at all, see the Merge Step below.
 
 #### Merge Step
 
@@ -457,14 +458,30 @@ different model than the authoring one satisfies it equally. See the
 **Independent Code Review -- Reviewer != Author Model** section in `CLAUDE.md`
 for the canonical rule, the substitution trigger, and the detection call.
 
+**Merging is pre-authorized.** When those criteria hold, merge, close the issue,
+and clean up the worktree **without asking**, then report using the **Task
+Complete Summary Format** below -- the report replaces the permission prompt and
+is not optional. The independent review is mandatory; the permission is not. See
+**Merging a Finished PR Is Pre-Authorized** in `CLAUDE.md`.
+
 **This repo only allows rebase merges:**
 
 ```powershell
 gh pr merge <pr-number> --rebase --delete-branch
 ```
 
-Never merge while CI is red. Never merge with unresolved review threads. If any
-post-merge check fails, route back to Phase 3 (TDD) on a new branch.
+Never merge with unresolved review threads. **Hosted CI that cannot run is not
+"CI red"**: when hosted CI cannot run at all, a recorded local run of the same
+checks satisfies the gate, provided the switch to local CI is
+developer-confirmed and recorded and the PR carries the runner's output with
+real counts. If hosted CI ran and failed, that is a hard stop unless the
+identical failure is shown, with evidence in the PR, to be pre-existing on
+`main`. If any post-merge check fails, route back to Phase 3 (TDD) on a new
+branch.
+
+**Stop and ask only when** the PR or its issue carries the `hold` label; the
+reviewer's model is not recorded; the PR belongs to another session or another
+author; or the change is outside the approved design.
 
 Use `@plan` when exploring a new idea before committing to implementation.
 Use `@systematic-debugging` (or the `systematic-debugging` skill) for bugs.

@@ -147,6 +147,41 @@ An **empty** result means Copilot review is not enabled -- fall through to the
 different-model path immediately rather than polling for a review that will
 never arrive.
 
+## Merging a Finished PR Is Pre-Authorized
+
+**When the dev loop's exit criteria hold, merge the PR, close its issue, and
+clean up the worktree without asking -- then report.** This is the durable
+authorization: do not seek per-PR confirmation. A merge is outward-facing, and
+agent harnesses default to confirming such actions unless durably authorized;
+this section is that authorization.
+
+**The independent review is mandatory; the permission is not.** Merging without
+asking weakens no gate: the different-model review above, behavior-first tests,
+and evidence capture must all still hold. Being unsure whether the review gate
+held is a reason to finish the review, not to ask about the merge.
+
+**Then report**, using the Task Complete Summary Format (below): what was
+implemented, the PR and issue links, the result display, **Assumptions**, and
+anything that needs the user. The report replaces the permission prompt; it is
+not optional.
+
+**Hosted CI that cannot run is not "CI red".** When hosted CI cannot run at all
+(billing block, quota, outage), a recorded local run of the same checks
+satisfies the CI gate -- provided the repository's switch to local CI is
+developer-confirmed and recorded, and the PR carries the local runner's output
+with real counts pasted in. Whether hosted CI is unavailable is not a judgement a
+session makes on its own. If hosted CI ran and failed, that is still a hard stop
+-- unless the identical failure is shown, with evidence in the PR, to be
+pre-existing on `main`.
+
+**Stop and ask only when:**
+
+- the PR or its issue carries the `hold` label, or is otherwise explicitly held;
+- the independent-review evidence cannot be found -- the reviewer's model is not
+  recorded;
+- the PR belongs to another session or another author;
+- the change is outside the approved design and needs an owner decision.
+
 ## Key References
 
 - **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) -- code style, testing conventions, branching strategy, commit format, and workflow.
@@ -302,7 +337,8 @@ See the **Task Complete Summary Format** subsection of
 - Commit format: `type(scope): description` (Conventional Commits)
 - Merge to `main` only via pull request after the dev loop passes. **This repo
   only allows rebase merges** -- use `gh pr merge <pr-number> --rebase --delete-branch`.
-  Never merge while CI is red.
+  Merging is pre-authorized -- do not ask. Never merge while hosted CI is red; for
+  when hosted CI cannot run, see **Merging a Finished PR Is Pre-Authorized**.
 - **All commits must come from a worktree** — the pre-commit hook blocks commits from the repo root.
   See the "Concurrent Session Safety" section in `.github/copilot-instructions.md` for details.
 - **After a PR closes**, clean up the worktree and local branch. The recommended

@@ -500,6 +500,17 @@ exactly as a Copilot review does), all review threads resolved **when the review
 used the Copilot transport** (there are no GitHub review threads to resolve on
 the different-model path), dry run passes (if applicable).
 
+**Merging is pre-authorized.** When the preconditions hold, merge, close the
+issue, and run Phase 9 cleanup **without asking**, then report using the Task
+Complete Summary Format -- the report replaces the permission prompt. The
+independent review is mandatory; the permission is not: being unsure whether
+the review gate held means finish the review, not ask about the merge. See
+**Merging a Finished PR Is Pre-Authorized** in `CLAUDE.md`.
+
+**Stop and ask only when:** the PR or its issue carries the `hold` label; the
+reviewer's model is not recorded; the PR belongs to another session or another
+author; or the change is outside the approved design.
+
 This repo only allows **rebase merges**. Squash and merge-commit modes are
 disabled. Use:
 
@@ -507,8 +518,13 @@ disabled. Use:
 gh pr merge <pr-number> --rebase --delete-branch
 ```
 
-Never merge while CI is red. If a post-merge check fails, route back to
-Phase 3 (TDD) on a new branch.
+**Hosted CI that cannot run is not "CI red".** When hosted CI cannot run at all,
+a recorded local run of the same checks satisfies the gate, provided the switch
+to local CI is developer-confirmed and recorded and the PR carries the runner's
+output with real counts. If hosted CI ran and failed, that is a hard stop unless
+the identical failure is shown, with evidence in the PR, to be pre-existing on
+`main`. If a post-merge check fails, route back to Phase 3 (TDD) on a new
+branch.
 
 **Exit criteria:** PR merged, remote feature branch deleted, ``main`` contains
 the change.
@@ -586,6 +602,7 @@ Once Phase 7 passes with zero unresolved threads and a successful dry run:
    linked issue number, independent-review status (Copilot threads or the
    different-model reviewer that stood in for them).
 5. **Execute Phase 8 (Merge)** -- rebase-merge the PR with
-   ``gh pr merge <pr-number> --rebase --delete-branch``. Never merge while CI
-   is red or with unresolved review threads.
+   ``gh pr merge <pr-number> --rebase --delete-branch``, without asking. Never
+   merge while hosted CI is red (see Phase 8 for when hosted CI cannot run) or
+   with unresolved review threads.
 6. Execute Phase 9 (Cleanup) commands with actual values (no placeholders).
