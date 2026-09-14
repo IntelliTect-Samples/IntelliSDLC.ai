@@ -294,8 +294,8 @@ beside the label, not in a tracker.
 thing that consumes it" is a blocked-by link between the two issues.
 
 **Next** = open, lowest `priority-N`, not `hold`, not `in-progress`, no open
-blocker. Ties go to the oldest issue. An issue with no priority label ranks
-last and is reported as unprioritized.
+blocker. Ties go to the oldest issue. An issue with no priority label is
+triaged by `/next-issue` and never dispatched until it carries a priority.
 
 ### Claims
 
@@ -303,19 +303,28 @@ The assignee field cannot be the claim: every session runs as the same GitHub
 account, so an assignee cannot tell sessions apart.
 
 - **Claim** = push the feature branch (`<type>/<issue#>-<slug>`) at once, add
-  `in-progress`, and post a claim comment naming the session, the branch, and
-  the UTC time, with a marker:
-  `<!-- claim: session="<name>" branch="<branch>" -->`.
+  `in-progress`, and post a claim comment naming the session, its session ID,
+  the host, the branch, and the UTC time, with a marker:
+  `<!-- claim: session="<name>" session_id="<id>" host="<host>" branch="<branch>" -->`.
+  `<id>` is the session ID the harness provides (Claude Code substitutes it
+  into a skill as `${CLAUDE_SESSION_ID}`), or `unknown` when none is provided --
+  never guessed. `<host>` is the machine name, because a session's transcript
+  lives only on the machine that ran it; the ID is what lets a crashed or quiet
+  session be resumed (`claude --resume <id>`) or its transcript loaded.
   Claim **before** starting work or dispatching it.
 - **Race** -- after claiming, re-read the comments. Among claims not followed by
   a matching release, the earliest wins; the loser posts a release and moves on.
 - **Stale** -- a claim with no comment on the issue and no commit on its branch
-  for **3 days** may be taken over, with a comment saying whose claim and why.
+  for **3 days** may be taken over, with a comment saying whose claim and why,
+  quoting the previous holder's session ID and host so the new session can load
+  that transcript before it starts.
 - **Release** -- a merged PR closes the issue. An abandoned or parked attempt
   removes `in-progress` and posts
-  `<!-- release: session="<name>" reason="<reason>" -->` with a one-line reason.
-- **Who holds what** -- `/next-issue` lists every live claim (session, branch,
-  claimed-at, last activity, stale) from these markers, beside the pick list.
+  `<!-- release: session="<name>" session_id="<id>" reason="<reason>" -->` with
+  a one-line reason.
+- **Who holds what** -- `/next-issue` lists every live claim (session, session
+  ID, host, branch, claimed-at, last activity, stale) from these markers, beside
+  the pick list, with a ready-to-run `claude --resume <id>` for a quiet one.
 
 ### Filing an issue
 
@@ -327,7 +336,8 @@ Any session that files an issue sets these **at creation**, not later:
   (`gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<id>`,
   where `<id>` is the blocker's numeric `id` from `gh api repos/<owner>/<repo>/issues/<blocker>`,
   not its number);
-- a comment giving the reason for the priority.
+- a comment giving the reason for the priority, ending with the marker
+  `<!-- priority: label="priority-N" -->`.
 
 **When re-prioritization happens:**
 
@@ -340,8 +350,11 @@ Any session that files an issue sets these **at creation**, not later:
   then, and comments why.
 
 A blocker closing changes no priority; it only lets the issue into the list.
-Confirming a priority re-applies the same label (remove, then add), so the label
-event records when the decision was made.
+Every priority decision -- set, changed or confirmed -- is recorded by its
+reason comment and that marker, which is what tells the next triage when the
+priority was last decided. A change adds the new label **before** removing the
+old one, so an issue is never without a priority; a confirmation changes no
+label at all.
 
 ## Plan Tracking
 

@@ -169,6 +169,57 @@ Describe '/next-issue triages before it lists' {
         $script:step2 | Should -Match '(?is)confirm.{0,40}or change'
         $script:step2 | Should -Match '(?i)reason'
     }
+
+    # PR #513 review, finding 1 (Critical). Real claim and release comments are
+    # prose PLUS a marker, so a rule that ignored only marker-only comments
+    # flagged every claimed issue as "changed". The filter is executed here
+    # against the real comment shapes, not read as prose.
+    Context 'the changed-since filter, executed against real comment shapes' {
+        BeforeAll {
+            $filterBlock = @($script:blocks | Where-Object { $_ -match '\$ignore\s*=' })[0]
+            $script:ignore = if ($filterBlock -match "\`$ignore\s*=\s*'([^']+)'") { $Matches[1] }
+            $script:claimComment = "Claimed by ``some session`` on branch ``feat/1-x`` at 2026-01-01T00:00:00Z.`n`n" +
+                '<!-- claim: session="some session" session_id="0000" host="PC" branch="feat/1-x" -->'
+            $script:releaseComment = "Released by ``some session``: lost claim race.`n" +
+                '<!-- release: session="some session" session_id="0000" reason="lost claim race" -->'
+            $script:priorityComment = "Priority confirmed as priority-1: still blocks the release.`n" +
+                '<!-- priority: label="priority-1" -->'
+            $script:scopeComment = 'Scope change: this now also has to cover the second provider.'
+        }
+
+        It 'defines the ignore pattern in a Step 2 command block' {
+            $script:ignore | Should -Not -BeNullOrEmpty
+        }
+
+        It 'ignores a claim comment that is prose plus a marker' {
+            $script:claimComment | Should -Match $script:ignore
+        }
+
+        It 'ignores a release comment that is prose plus a marker' {
+            $script:releaseComment | Should -Match $script:ignore
+        }
+
+        It 'ignores the priority decision comment itself' {
+            $script:priorityComment | Should -Match $script:ignore
+        }
+
+        It 'does NOT ignore an ordinary comment that changes scope' {
+            $script:scopeComment | Should -Not -Match $script:ignore
+        }
+    }
+
+    It 'records each decision with a priority marker, adding the new label before removing the old one' {
+        $edit = @($script:blocks | Where-Object { $_ -match 'gh issue edit' })[0]
+        $edit | Should -Not -BeNullOrEmpty
+        $add = $edit.IndexOf('--add-label'); $remove = $edit.IndexOf('--remove-label')
+        $add | Should -BeGreaterOrEqual 0
+        $remove | Should -BeGreaterThan $add -Because 'the issue must never be left without a priority, even for a moment'
+        $script:step2 | Should -Match '<!-- priority: label='
+    }
+
+    It 'says removing an absent old priority label is a harmless no-op' {
+        $script:step2 | Should -Match '(?i)no-op'
+    }
 }
 
 Describe '/next-issue lets the owner pick, and shows who holds what' {
@@ -188,6 +239,23 @@ Describe '/next-issue lets the owner pick, and shows who holds what' {
 
     It 'claims only the issues the owner picked' {
         $script:step4 | Should -Match '(?i)only the picked'
+    }
+
+    It 're-ranks what triage relabelled before building the table' {
+        $script:step3 | Should -Match '(?i)re-rank'
+    }
+
+    It 're-checks that a pick still carries a priority label before claiming it' {
+        # Scoped to the re-check sentence itself: "priority label" also appears
+        # in the sentence after it, which a proximity match would accept.
+        $recheck = if ($script:step4 -match '(?s)re-check each pick is ([^.]*)\.') { $Matches[1] }
+        $recheck | Should -Not -BeNullOrEmpty
+        $recheck | Should -Match '(?i)carries a priority label'
+    }
+
+    It 'never claims or dispatches an unprioritized issue' {
+        Get-SkillSection -Body $script:body -Heading 'Never' |
+            Should -Match '(?i)claim or dispatch an unprioritized issue'
     }
 
     It 'lists every live claim with session, branch, claimed-at, last activity, and stale state' {
@@ -216,6 +284,69 @@ Describe '/next-issue when no user is present' {
     It 'labels nothing, and lists triage findings under Needs you' {
         $script:unattended | Should -Match '(?i)labels nothing'
         $script:unattended | Should -Match '\*\*Needs you\*\*'
+    }
+}
+
+# Owner requirement on #510: a claim carries the session ID, so a crashed or
+# quiet session can be resumed, or at least its transcript loaded. The ID comes
+# from the harness's own substitution; nothing may guess it.
+Describe 'Claims carry the session ID' {
+    BeforeAll {
+        $script:nextBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:wrapBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/wrap-up/SKILL.md')).Body
+        $script:step3 = [string](Get-SkillSection -Body $script:nextBody -Heading 'Step 3')
+        $script:step4 = [string](Get-SkillSection -Body $script:nextBody -Heading 'Step 4')
+        # Lazy to the first `-->` on the line: the placeholders themselves
+        # (`<session name>`) contain `>`, so a `[^>]*` class would never reach it.
+        $script:claimMarker = @([regex]::Matches($script:step4, '<!-- claim:.*?-->') | ForEach-Object Value)[0]
+        $ci = Get-Content -Raw -LiteralPath (Join-Path $script:repoRoot '.github/copilot-instructions.md')
+        $script:claimsRule = [string]([regex]::Match([string](Get-SkillSection -Body $ci -Heading 'Issue Queue'), '(?ms)^### Claims\b.*?(?=^### |\z)').Value)
+    }
+
+    # The harness replaces EVERY occurrence of the substitution token, so a
+    # second mention (say, in a sentence explaining the fallback) would be
+    # rewritten into nonsense. Exactly one per skill; everything else refers
+    # to it in words.
+    It '<_> reads the session ID from the harness substitution exactly once' -ForEach @('next-issue', 'wrap-up') {
+        $b = if ($_ -eq 'next-issue') { $script:nextBody } else { $script:wrapBody }
+        [regex]::Matches($b, '\$\{CLAUDE_SESSION_ID\}').Count | Should -Be 1
+        $b | Should -Match '(?i)session_id="unknown"' -Because 'when the harness supplies no ID the claim says so; it is never guessed'
+    }
+
+    It 'writes session_id and host into the claim marker' {
+        $script:claimMarker | Should -Match 'session_id="'
+        $script:claimMarker | Should -Match 'host="'
+    }
+
+    It 'shows the session ID, a ready-to-run resume command, and where the transcript lives' {
+        $script:step3 | Should -Match '(?i)session id'
+        $script:step3 | Should -Match 'claude --resume <'
+        $script:step3 | Should -Match '\.claude/projects/'
+        $script:step3 | Should -Match '(?i)another machine'
+    }
+
+    It 'a stale takeover quotes the previous holder''s session ID so its transcript can be loaded first' {
+        $script:step4 | Should -Match '(?is)stale takeover.{0,300}session ID'
+        $script:step4 | Should -Match '(?i)transcript'
+    }
+
+    It 'the shared claim protocol carries session_id and host in its marker' {
+        $script:claimsRule | Should -Match '<!-- claim: session="<name>" session_id="<id>" host="<host>" branch="<branch>" -->'
+    }
+
+    It '/wrap-up puts the session ID in its release marker and its hand-off' {
+        $step3 = [string](Get-SkillSection -Body $script:wrapBody -Heading 'Step 3')
+        $step3 | Should -Match '<!-- release: session="[^"]*" session_id="'
+        $step3 | Should -Match '(?i)\*\*Session:\*\*.{0,120}session ID'
+    }
+}
+
+Describe 'The shared "Next" rule never dispatches an unprioritized issue' {
+    It 'says unprioritized issues are triaged and never dispatched until they carry a priority' {
+        $ci = Get-Content -Raw -LiteralPath (Join-Path $script:repoRoot '.github/copilot-instructions.md')
+        $next = [regex]::Match([string](Get-SkillSection -Body $ci -Heading 'Issue Queue'), '(?ms)^\*\*Next\*\*.*?(?=\r?\n\r?\n)').Value
+        $next | Should -Match '(?i)never dispatched until'
+        $next | Should -Not -Match '(?i)ranks\s+last' -Because 'that reads as though an unprioritized issue is eventually dispatched'
     }
 }
 

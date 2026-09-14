@@ -16,6 +16,12 @@ created, and the claims it posted (claim comments naming this session; see
 When ownership is unclear, leave the item alone and list it under **Needs you**.
 Never merge, park, release or clean up another session's work.
 
+**This session's ID, as the harness supplies it:** `${CLAUDE_SESSION_ID}`.
+Use it wherever a step below says `<session id>`, and use it to recognise this
+session's claims. If it is not a session ID -- empty, or still an unsubstituted
+placeholder -- write `session_id="unknown"` and recognise claims by session name
+only. Never guess one.
+
 ## Step 0 -- Resolve the repository
 
 ```powershell
@@ -82,6 +88,9 @@ it -- whether it is granted varies by repository and by instruction version.
 
    ```markdown
    ## Hand-off -- <date>
+   **Session:** `<session name>`, session ID `<session id>`, host `<host>` --
+   resume with `claude --resume <session id>` on that host, or read its
+   transcript there (`~/.claude/projects/<encoded-working-directory>/<session id>.jsonl`)
    **State:** <what exists: branch, PR, what passes, what does not>
    **Tried:** <approaches taken, and what each showed>
    **Next step:** <the exact next action -- a command or an edit, not a theme>
@@ -94,7 +103,7 @@ it -- whether it is granted varies by repository and by instruction version.
 
    ```markdown
    Released by `<session name>`: <one-line reason>.
-   <!-- release: session="<session name>" reason="<reason>" -->
+   <!-- release: session="<session name>" session_id="<session id>" reason="<reason>" -->
    ```
 
 Leave the worktree in place -- it holds unmerged work. The pushed branch is
