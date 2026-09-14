@@ -144,8 +144,8 @@ Say which was chosen and why, in one line per issue, so a wrong call is easy to
 spot and redirect:
 
 ```
-#117 -> subagent: settled scope, two one-line changes
-#212 -> new session: open design decision in the issue
+#<n> -> subagent: settled scope, two one-line changes
+#<m> -> new session: open design decision in the issue
 ```
 
 **Either way the full dev loop applies** -- behavior-first tests, evidence, and

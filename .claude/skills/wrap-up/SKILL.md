@@ -56,12 +56,20 @@ For each PR this session owns, merge **only if every exit criterion holds**:
 - no unresolved review threads;
 - neither the PR nor its issue is labelled `hold`.
 
-When they all hold, **merge without asking** -- merging a finished PR is
-pre-authorized by the Merge Step in the shared instructions -- using the merge
-method those instructions specify. Then confirm the issue closed (close it with
-a one-line comment if the PR did not), and clean up the worktree and branch
-(`Cleanup-Worktree.ps1` when present, otherwise the manual steps in the
-instructions).
+When they all hold, **check whether this repository's shared instructions
+pre-authorize merging** a finished PR: read the Merge Step of the development
+workflow in the shared instructions, and `CLAUDE.md`, for an explicit statement
+that a PR whose exit criteria hold is merged **without asking**. Do not assume
+it -- whether it is granted varies by repository and by instruction version.
+
+- **Pre-authorized** -> merge, using the merge method those instructions
+  specify. Then confirm the issue closed (close it with a one-line comment if
+  the PR did not), and clean up the worktree and branch (`Cleanup-Worktree.ps1`
+  when present, otherwise the manual steps in the instructions).
+- **Not pre-authorized, or you cannot tell** -> do not merge. List the PR under
+  **Needs you** as ready to merge, with its evidence: the reviewer's model, the
+  triage outcome, the CI or recorded local-CI result with real counts, and the
+  exact merge command to run. Leave its worktree in place.
 
 **Any criterion fails -> park it (Step 3). Never merge a PR that fails one.**
 
