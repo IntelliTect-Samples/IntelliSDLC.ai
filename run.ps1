@@ -17,11 +17,13 @@
 
     Supports launchSettings.json profiles and pass-through args.
 
-    To avoid needless recompilation, run mode skips the build step (passing
-    `--no-build` to `dotnet run`) whenever no source file is newer than the
-    project's last build output. The first run - or any run after a source
-    file changes - compiles as usual; subsequent unchanged runs start without
-    rebuilding.
+    To avoid needless recompilation, run mode skips the build step whenever
+    no source file is newer than the project's last build output. The first
+    run - or any run after a source file changes - compiles as a separate
+    `dotnet build` whose output is shown live and erased once it succeeds (a
+    failed build keeps it). The restore step inside that build is skipped too
+    while no project or package file has changed since the last restore. The
+    application itself always starts via `dotnet run --no-build`.
 
     Use `./run.ps1 test` to run `dotnet test` across the entire solution.
     Use `./run.ps1 help` to show the application's own help text.
@@ -119,14 +121,65 @@ function Get-PropertyValue {
     return $prop.Value
 }
 
-function Find-RunnableProjects {
-    $csprojFiles = Get-ChildItem -Path $SearchRoot -Filter '*.csproj' -Recurse -File |
-        Where-Object {
-            $full = $_.FullName
-            ($full -notlike "$SearchRoot\.worktrees\*") -and
-            ($full -notmatch '[\\/]bin[\\/]') -and
-            ($full -notmatch '[\\/]obj[\\/]')
+# Directory names never searched for projects or sources: build output,
+# version-control metadata, other checkouts, and package trees.
+$script:PrunedDirectoryNames = @('bin', 'obj', '.git', '.worktrees', '.vs', 'node_modules')
+
+function Get-TreeFile {
+    <#
+    .SYNOPSIS
+        Enumerates files under $Root whose extension is in $Extension or whose
+        name is in $FileName, never descending into a pruned directory
+        (bin, obj, .git, .worktrees, .vs, node_modules).
+    .DESCRIPTION
+        Pruning happens DURING the walk (issue #519). Filtering the output of
+        Get-ChildItem -Recurse still enumerates every excluded file first: in a
+        consumer whose .worktrees/ held 270k of its 278k files, project
+        discovery plus the build check took ~65s that way, and ~0.2s pruned.
+
+        Only directories BELOW $Root are matched against the pruned names, never
+        $Root itself, so a checkout that lives under .worktrees/ is still
+        searched (issue #233).
+
+        Directory reparse points (symlinks, junctions) are not followed --
+        Get-ChildItem -Recurse does not follow them either -- so a link cycle
+        cannot hang the walk. Unreadable directories are skipped.
+    #>
+    [OutputType([System.IO.FileInfo])]
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [string[]]$Extension = @(),
+        [string[]]$FileName = @()
+    )
+
+    $ignoreCase = [System.StringComparer]::OrdinalIgnoreCase
+    $pruned = [System.Collections.Generic.HashSet[string]]::new([string[]]$script:PrunedDirectoryNames, $ignoreCase)
+    $extensions = [System.Collections.Generic.HashSet[string]]::new([string[]]$Extension, $ignoreCase)
+    $names = [System.Collections.Generic.HashSet[string]]::new([string[]]$FileName, $ignoreCase)
+
+    $pending = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
+    $pending.Push([System.IO.DirectoryInfo]::new($Root))
+    while ($pending.Count -gt 0) {
+        $directory = $pending.Pop()
+        try {
+            foreach ($entry in $directory.EnumerateFileSystemInfos()) {
+                if ($entry -is [System.IO.DirectoryInfo]) {
+                    $isLink = ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                    if (-not $isLink -and -not $pruned.Contains($entry.Name)) { $pending.Push($entry) }
+                }
+                elseif ($extensions.Contains($entry.Extension) -or $names.Contains($entry.Name)) {
+                    $entry
+                }
+            }
         }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException], [System.Security.SecurityException] {
+            continue
+        }
+    }
+}
+
+function Find-RunnableProjects {
+    $csprojFiles = Get-TreeFile -Root $SearchRoot -Extension '.csproj'
     $runnable = @()
     foreach ($csproj in $csprojFiles) {
         $content = Get-Content $csproj.FullName -Raw
@@ -341,15 +394,9 @@ function Get-NewestSourceWriteTime {
         under $Root, or $null when no such files exist.
     .DESCRIPTION
         Considers common .NET source and build files (.cs, .csproj, MSBuild
-        props/targets, solution files, Razor, resources, etc.) and ignores
-        generated output (bin, obj) and non-source trees (.git, .worktrees, .vs,
-        node_modules) so that build artifacts never make a project look stale.
-
-        Exclusions are evaluated against each file's path *relative to $Root*,
-        so a checkout that itself lives under one of those names -- notably a
-        git worktree under .worktrees/ -- is not excluded wholesale. Matching on
-        the absolute path would find zero sources there and silently skip every
-        rebuild.
+        props/targets, solution files, Razor, resources, etc.) and skips the
+        pruned trees (see Get-TreeFile) so that build artifacts never make a
+        project look stale.
     #>
     param([string]$Root)
 
@@ -357,36 +404,129 @@ function Get-NewestSourceWriteTime {
         '.cs', '.csproj', '.props', '.targets', '.sln', '.slnx',
         '.razor', '.cshtml', '.resx', '.vb', '.vbproj', '.fs', '.fsproj'
     )
+    return Get-NewestWriteTime -File (Get-TreeFile -Root $Root -Extension $sourceExtensions)
+}
 
-    $sep = [System.IO.Path]::DirectorySeparatorChar
-    $rootFull = [System.IO.Path]::GetFullPath($Root)
-    if (-not $rootFull.EndsWith($sep)) { $rootFull += $sep }
+function Get-NewestWriteTime {
+    <#
+    .SYNOPSIS
+        Returns the newest LastWriteTimeUtc among $File, or $null when empty.
+    #>
+    param([AllowNull()][System.IO.FileInfo[]]$File)
 
-    $sourceFiles = @(
-        Get-ChildItem -Path $Root -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object {
-                $full = $_.FullName
-                $rel = if ($full.StartsWith($rootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    $full.Substring($rootFull.Length)
-                }
-                else { $full }
-                # Leading separator so the [\\/]name[\\/] patterns also match a
-                # directory sitting directly at the root.
-                $rel = $sep + $rel
-                ($rel -notmatch '[\\/]bin[\\/]') -and
-                ($rel -notmatch '[\\/]obj[\\/]') -and
-                ($rel -notmatch '[\\/]\.git[\\/]') -and
-                ($rel -notmatch '[\\/]\.worktrees[\\/]') -and
-                ($rel -notmatch '[\\/]\.vs[\\/]') -and
-                ($rel -notmatch '[\\/]node_modules[\\/]') -and
-                ($sourceExtensions -contains $_.Extension)
-            }
+    $newest = $null
+    foreach ($item in @($File)) {
+        if ($null -ne $item -and ($null -eq $newest -or $item.LastWriteTimeUtc -gt $newest)) {
+            $newest = $item.LastWriteTimeUtc
+        }
+    }
+    return $newest
+}
+
+# Written into the project's obj/ after a build that included restore. A
+# no-op restore rewrites nothing -- not even project.assets.json -- so without
+# a marker of our own a touched-but-unchanged project file would look newer
+# than the last restore forever, and restore would never be skipped again.
+$script:RestoreStampName = 'run.ps1.restored'
+
+function Get-RestoreStampPath {
+    param([System.IO.FileInfo]$ProjectFile)
+    return Join-Path $ProjectFile.DirectoryName 'obj' $script:RestoreStampName
+}
+
+function Test-RestoreRequired {
+    <#
+    .SYNOPSIS
+        Returns $true unless the project's last restore (as recorded by
+        run.ps1) is newer than every restore input under $Root.
+    .DESCRIPTION
+        A restore costs ~1.5s even when it has nothing to do (issue #519), so
+        the build passes --no-restore when this returns $false. Restore inputs
+        are project files, MSBuild props/targets (which include
+        Directory.Packages.props), nuget.config, global.json and
+        packages.lock.json.
+
+        Conservative by default: no stamp, or no project.assets.json, means a
+        restore is required. A --no-restore build that still fails on missing
+        restore output is retried with restore (see Test-RestoreFailure).
+    #>
+    param(
+        [System.IO.FileInfo]$ProjectFile,
+        [string]$Root
     )
-    if ($sourceFiles.Count -eq 0) { return $null }
 
-    return $sourceFiles |
-        Sort-Object -Property LastWriteTimeUtc -Descending |
-        Select-Object -First 1 -ExpandProperty LastWriteTimeUtc
+    $stamp = Get-RestoreStampPath -ProjectFile $ProjectFile
+    $assets = Join-Path $ProjectFile.DirectoryName 'obj' 'project.assets.json'
+    if (-not (Test-Path -LiteralPath $stamp) -or -not (Test-Path -LiteralPath $assets)) { return $true }
+
+    $inputs = Get-TreeFile -Root $Root `
+        -Extension @('.csproj', '.fsproj', '.vbproj', '.props', '.targets') `
+        -FileName @('nuget.config', 'global.json', 'packages.lock.json')
+    $newestInput = Get-NewestWriteTime -File $inputs
+    if ($null -eq $newestInput) { return $false }
+
+    return $newestInput -gt (Get-Item -LiteralPath $stamp).LastWriteTimeUtc
+}
+
+function Save-RestoreStamp {
+    <#
+    .SYNOPSIS
+        Records that the project was just restored. Only when obj/ already
+        exists: a project whose output lives elsewhere (e.g. an artifacts
+        layout) gets no stamp, and so simply keeps restoring every build.
+    #>
+    param([System.IO.FileInfo]$ProjectFile)
+
+    $stamp = Get-RestoreStampPath -ProjectFile $ProjectFile
+    if (-not (Test-Path -LiteralPath (Split-Path $stamp -Parent))) { return }
+    Set-Content -LiteralPath $stamp -Value 'Restore output is current as of this file''s timestamp.' -Encoding utf8NoBOM
+}
+
+function Test-RestoreFailure {
+    <#
+    .SYNOPSIS
+        Returns $true when build output shows a failure caused by missing or
+        stale restore output, which a build WITH restore would fix.
+    .DESCRIPTION
+        NETSDK1004 assets file not found; NETSDK1005 / NETSDK1047 assets file
+        lacks a target; NETSDK1064 a restored package has since been deleted.
+    #>
+    param([AllowNull()][string[]]$Output)
+
+    return [bool](@($Output) -match 'NETSDK10(04|05|47|64)\b')
+}
+
+function Get-BuildAffectingArgument {
+    <#
+    .SYNOPSIS
+        Picks the options out of a `dotnet run` command line that change WHAT
+        gets built, so the separate `dotnet build` step builds the same output
+        the `dotnet run --no-build` that follows will look for.
+    .DESCRIPTION
+        Matters when an Invoke-ProjectPreRun hook adds, say, `-c Release`: the
+        run looks for a Release build, so the build must produce one. Only
+        tokens before a `--` separator are considered; after it they belong to
+        the application.
+    #>
+    [OutputType([string[]])]
+    param([AllowNull()][string[]]$DotnetArgument)
+
+    $valued = @('-c', '--configuration', '-f', '--framework', '-r', '--runtime', '-a', '--arch', '--os')
+    $tokens = @($DotnetArgument)
+    $picked = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $tokens.Count; $i++) {
+        $token = $tokens[$i]
+        if ($token -eq '--') { break }
+        if ($token -in $valued -and $i + 1 -lt $tokens.Count) {
+            $picked.Add($token)
+            $picked.Add($tokens[++$i])
+        }
+        elseif ($token -match '^(-p|--property|/p|-property):' -or
+            $token -match '^--(configuration|framework|runtime|arch|os)=') {
+            $picked.Add($token)
+        }
+    }
+    return , $picked.ToArray()
 }
 
 function Test-BuildRequired {
@@ -526,7 +666,32 @@ $script:TransientStatusLength = 0
 # line, because Write-Host still writes to stdout. Detect that once and
 # degrade to silence: the transient messages are progress, and progress is
 # exactly what a log does not need.
-$script:TransientStatusEnabled = -not [Console]::IsOutputRedirected
+#
+# A host can also leave output un-redirected yet have no console window to
+# measure (issue #519): [Console]::WindowWidth then throws "The handle is
+# invalid", and under $ErrorActionPreference = 'Stop' that would kill the run
+# mid-build. Treat that host as a log too.
+function Get-ConsoleWindowSize {
+    <#
+    .SYNOPSIS
+        Returns @{ Width; Height } of the console window, or $null when the
+        host has no window to measure.
+    #>
+    try { return @{ Width = [Console]::WindowWidth; Height = [Console]::WindowHeight } }
+    catch { return $null }
+}
+
+function Test-TransientConsole {
+    <#
+    .SYNOPSIS
+        Returns $true when in-place status can be drawn: output reaches a live
+        console whose window can be measured.
+    #>
+    if ([Console]::IsOutputRedirected) { return $false }
+    return $null -ne (Get-ConsoleWindowSize)
+}
+
+$script:TransientStatusEnabled = Test-TransientConsole
 
 function Write-TransientStatus {
     <#
@@ -559,6 +724,145 @@ function Clear-TransientStatus {
     if ($script:TransientStatusLength -gt 0) {
         Write-Host -NoNewline ("`r" + ''.PadRight($script:TransientStatusLength) + "`r")
         $script:TransientStatusLength = 0
+    }
+}
+
+# Rows currently drawn by Write-TransientWindow, so the next redraw or
+# Clear-TransientWindow knows how far up to move.
+$script:TransientWindowHeight = 0
+
+# Most build-output lines the transient window shows at once. The window must
+# stay inside the visible console: cursor-up movement cannot reach a row that
+# has scrolled into history, so a taller window could not be erased.
+$script:TransientWindowMaxLines = 10
+
+function Format-TransientWindow {
+    <#
+    .SYNOPSIS
+        Returns the rows the transient build window draws: the title, then the
+        tail of the non-blank output lines, each cut to fit on one row.
+    .DESCRIPTION
+        Pure, so it can be tested without a console. Every row must fit in
+        $Width: a row that wrapped would occupy two console lines while being
+        counted as one, and the erase would leave its tail behind.
+    .OUTPUTS
+        [string[]]
+    #>
+    [OutputType([string[]])]
+    param(
+        [string]$Title,
+        [AllowNull()][string[]]$Line,
+        [int]$Width,
+        [int]$Height
+    )
+
+    $width = [Math]::Max(10, $Width - 1)
+    $tailSize = [Math]::Max(1, [Math]::Min($script:TransientWindowMaxLines, $Height - 3))
+    $body = @(@($Line) | Where-Object { $_ -and $_.Trim() } | Select-Object -Last $tailSize)
+
+    $rows = @($Title) + @($body | ForEach-Object { '  ' + $_.Trim() })
+    return , @(foreach ($row in $rows) {
+            $flat = $row -replace '\t', '    '
+            if ($flat.Length -gt $width) { $flat.Substring(0, $width - 3) + '...' } else { $flat }
+        })
+}
+
+function Write-TransientWindow {
+    <#
+    .SYNOPSIS
+        Redraws a small in-place window: a title plus the latest build output
+        lines. Clear-TransientWindow erases it without a trace.
+    .DESCRIPTION
+        While a build runs its output is what the caller wants to watch; once it
+        has succeeded it is noise (issue #519). The window gives the first
+        without leaving the second behind.
+
+        Needs virtual-terminal support to move the cursor up. Without it the
+        window degrades to the single-line Write-TransientStatus, showing only
+        the latest line. A no-op when output is redirected.
+    #>
+    param([string]$Title, [AllowNull()][string[]]$Line)
+
+    if (-not $script:TransientStatusEnabled) { return }
+    $size = Get-ConsoleWindowSize
+    if (-not $size) { return }
+    if (-not $Host.UI.SupportsVirtualTerminal) {
+        $latest = @(@($Line) | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1)
+        $text = if ($latest.Count) { "$Title $($latest[0].Trim())" } else { $Title }
+        $width = [Math]::Max(10, $size.Width - 1)
+        if ($text.Length -gt $width) { $text = $text.Substring(0, $width) }
+        Write-TransientStatus $text
+        return
+    }
+
+    $esc = [char]27
+    $rows = Format-TransientWindow -Title $Title -Line $Line -Width $size.Width -Height $size.Height
+    $frame = [System.Text.StringBuilder]::new()
+    if ($script:TransientWindowHeight -gt 0) { [void]$frame.Append("$esc[$($script:TransientWindowHeight)F") }
+    [void]$frame.Append("`r$esc[0J")
+    foreach ($row in $rows) {
+        $color = if ($row -match ': error ') { 91 } elseif ($row -match ': warning ') { 93 } else { 90 }
+        [void]$frame.Append("$esc[${color}m$row$esc[0m`n")
+    }
+    Write-Host -NoNewline $frame.ToString()
+    $script:TransientWindowHeight = $rows.Count
+}
+
+function Clear-TransientWindow {
+    <#
+    .SYNOPSIS
+        Erases the window drawn by Write-TransientWindow (or its single-line
+        fallback). A no-op when output is redirected, or when nothing is drawn.
+    #>
+    if (-not $script:TransientStatusEnabled) { return }
+    if ($script:TransientWindowHeight -gt 0) {
+        $esc = [char]27
+        Write-Host -NoNewline "$esc[$($script:TransientWindowHeight)F$esc[0J"
+        $script:TransientWindowHeight = 0
+    }
+    Clear-TransientStatus
+}
+
+function Invoke-TransientBuild {
+    <#
+    .SYNOPSIS
+        Runs `dotnet` with $Argument, showing its output live in the transient
+        window and erasing it when the command finishes.
+    .DESCRIPTION
+        The caller decides what survives: on failure it reprints the captured
+        output with Write-BuildLog. When output is redirected the lines are
+        passed straight through instead, because a log wants all of them.
+    .OUTPUTS
+        [pscustomobject] with ExitCode and Output (every captured line).
+    #>
+    param([string[]]$Argument, [string]$Title)
+
+    $captured = [System.Collections.Generic.List[string]]::new()
+    Write-TransientWindow -Title $Title -Line @()
+    & dotnet @Argument 2>&1 | ForEach-Object {
+        $text = "$_"
+        $captured.Add($text)
+        if ($script:TransientStatusEnabled) { Write-TransientWindow -Title $Title -Line $captured.ToArray() }
+        else { Write-Host $text }
+    }
+    $exitCode = $LASTEXITCODE
+    Clear-TransientWindow
+
+    return [pscustomobject]@{ ExitCode = $exitCode; Output = $captured.ToArray() }
+}
+
+function Write-BuildLog {
+    <#
+    .SYNOPSIS
+        Prints captured build output permanently, errors in red and warnings
+        in yellow -- what a failed build leaves on screen.
+    #>
+    param([AllowNull()][string[]]$Line)
+
+    foreach ($text in @($Line)) {
+        if ($text -match ': error ') { Write-Host $text -ForegroundColor Red }
+        elseif ($text -match ': warning ') { Write-Host $text -ForegroundColor Yellow }
+        else { Write-Host $text }
     }
 }
 
@@ -754,52 +1058,33 @@ else {
 $projectDir = $selectedProject.DirectoryName
 $projectPath = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.FullName)
 
-# Build the dotnet run command
-$dotnetArgs = @('run', '--project', $selectedProject.FullName)
-
-# Skip compilation when no source file is newer than the last build output.
-#
-# The whole preamble collapses to ONE grey line here (issue #469). Everything
-# before it -- which project was auto-selected, and whether a build was needed
-# -- is progress: true while it is on screen, worthless afterwards, and paid
-# for on every single run. It flashes and is erased. What survives is one line
-# naming what is about to run, in DarkGray, because it is context for the
-# application's output rather than a result of its own.
+# The whole preamble collapses to ONE grey line (issues #469, #519). Everything
+# before the application starts -- which project was auto-selected, whether a
+# build was needed, and the build's own output -- is progress: true while it is
+# on screen, worthless afterwards, and paid for on every single run. It is shown
+# while it matters and then erased. What survives is one line naming what is
+# about to run, in DarkGray, because it is context for the application's output
+# rather than a result of its own.
 Write-TransientStatus 'Checking whether a build is required...'
-if (Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot) {
-    # Say "Building" up front so the compiler output that follows is explained
-    # rather than appearing unannounced.
-    $runStatus = "Building and running $projectPath"
-}
-else {
-    $dotnetArgs += '--no-build'
-
-    # `dotnet run` announces "Using launch settings from <abs path>..." on
-    # every single run. --verbosity quiet silences that and MSBuild's own
-    # chatter, while still printing compiler ERRORS -- verified against a
-    # deliberate syntax error, where quiet and the default emit identical CS
-    # diagnostics.
-    #
-    # ONLY on the --no-build path, and the boundary is load-bearing: quiet also
-    # hides build WARNINGS. A consumer that has not set TreatWarningsAsErrors
-    # must still see them, and this script is generic across many projects, so
-    # it cannot assume that setting. Nothing is compiling on this path, so
-    # there are no warnings to lose here -- and when a build IS running, its
-    # output is exactly what the caller wants.
-    #
-    # The cost, accepted: `dotnet run`'s launch-settings line survives on the
-    # build path. It is the only path where it still appears, so it is no
-    # longer paid on every run.
-    #
-    # --no-launch-profile would silence the line everywhere, but by DROPPING
-    # the profile and its environment variables with it -- a behaviour change,
-    # not a cosmetic one, and not acceptable in a generic launcher.
-    $dotnetArgs += @('--verbosity', 'quiet')
-
-    $runStatus = "Running $projectPath"
-}
+$buildRequired = Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot
+$restoreRequired = $buildRequired -and (Test-RestoreRequired -ProjectFile $selectedProject -Root $SearchRoot)
 Clear-TransientStatus
-Write-Host $runStatus -ForegroundColor DarkGray
+
+# The application always starts with --no-build: when a build is needed it runs
+# first, as its own `dotnet build`, because that is the only way to know where
+# the build output ends and the application's begins -- which is what lets the
+# build output be erased once it succeeds. Piping `dotnet run` itself instead
+# would take the console away from the application.
+#
+# `dotnet run` announces "Using launch settings from <abs path>..." on every
+# run. --verbosity quiet silences that and MSBuild's own chatter. It also hides
+# build WARNINGS, which is safe only because nothing compiles inside this
+# invocation any more: the build step above it runs at normal verbosity.
+#
+# --no-launch-profile would silence the line too, but by DROPPING the profile
+# and its environment variables with it -- a behaviour change, not a cosmetic
+# one, and not acceptable in a generic launcher.
+$dotnetArgs = @('run', '--project', $selectedProject.FullName, '--no-build', '--verbosity', 'quiet')
 
 # Add launch profile if applicable
 $profileArgs = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile
@@ -814,11 +1099,10 @@ if ($Args -and $Args.Count -gt 0) {
 # Last-chance mutation of the command line, and a seam after the process
 # exits (issue #462). Both optional: a hook implements only what it needs.
 #
-# There is deliberately NO seam between compilation and execution. `dotnet run`
-# compiles and launches in one invocation, so creating one would mean splitting
-# into `dotnet build` + `dotnet run --no-build` -- two invocations with
-# different error surfaces and slower startup. No known scenario needs it; it
-# should be its own issue if one appears.
+# The pre-run hook sees the `dotnet run` command line and runs BEFORE the build
+# step, so options it adds that change what gets built (-c, -f, -p:...) reach
+# the build too (see Get-BuildAffectingArgument). There is still no hook seam
+# between the build and the run; it should be its own issue if one is needed.
 if (Get-Command Invoke-ProjectPreRun -ErrorAction SilentlyContinue) {
     # Assign the call's result to a variable FIRST, then wrap that variable in
     # @(). Wrapping the CALL -- `@(Invoke-ProjectPreRun ...)` -- re-nests a
@@ -834,8 +1118,37 @@ if (Get-Command Invoke-ProjectPreRun -ErrorAction SilentlyContinue) {
     $dotnetArgs = @($hookResult)
 }
 
-& dotnet @dotnetArgs
-$exitCode = $LASTEXITCODE
+$exitCode = $null
+if ($buildRequired) {
+    $buildArgs = @('build', $selectedProject.FullName, '-nologo') + (Get-BuildAffectingArgument -DotnetArgument $dotnetArgs)
+    $buildTitle = "Building $projectPath..."
+    $build = Invoke-TransientBuild -Argument ($buildArgs + @(if (-not $restoreRequired) { '--no-restore' })) -Title $buildTitle
+
+    # The restore check reads timestamps under the search root only; a restore
+    # that went stale some other way (a deleted package cache, an SDK change)
+    # shows up as one of these errors, and a build WITH restore fixes it.
+    if ($build.ExitCode -ne 0 -and -not $restoreRequired -and (Test-RestoreFailure -Output $build.Output)) {
+        $restoreRequired = $true
+        $build = Invoke-TransientBuild -Argument $buildArgs -Title $buildTitle
+    }
+
+    if ($build.ExitCode -ne 0) {
+        # A failed build keeps its output: the errors are the result now. When
+        # output is redirected it was already passed through line by line.
+        if ($script:TransientStatusEnabled) { Write-BuildLog -Line $build.Output }
+        Write-Host "Build failed: $projectPath" -ForegroundColor Red
+        $exitCode = $build.ExitCode
+    }
+    elseif ($restoreRequired) {
+        Save-RestoreStamp -ProjectFile $selectedProject
+    }
+}
+
+if ($null -eq $exitCode) {
+    Write-Host "Running $projectPath" -ForegroundColor DarkGray
+    & dotnet @dotnetArgs
+    $exitCode = $LASTEXITCODE
+}
 
 if (Get-Command Invoke-ProjectPostRun -ErrorAction SilentlyContinue) {
     Invoke-ProjectPostRun -ExitCode $exitCode -Project $selectedProject.FullName

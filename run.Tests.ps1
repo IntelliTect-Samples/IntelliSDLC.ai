@@ -674,13 +674,23 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         $escapedCapture = $script:capturePath -replace "'", "''"
         $script:UseDotnetShim = [scriptblock]::Create(@"
             `$__capture = '$escapedCapture'
+            `$__log = '$escapedCapture.log'
             if (Test-Path -LiteralPath `$__capture) { Remove-Item -LiteralPath `$__capture -Force }
+            if (Test-Path -LiteralPath `$__log) { Remove-Item -LiteralPath `$__log -Force }
 
             function dotnet {
                 # Capture to a file, not a variable: no scope rule then decides
                 # whether the assertion can see what the shim recorded.
+                # `$__capture holds the LAST invocation; `$__log every one, in order.
                 Set-Content -LiteralPath `$__capture -Value (@(`$args) -join "``n") -NoNewline
+                Add-Content -LiteralPath `$__log -Value (@(`$args) -join ' ')
                 `$global:LASTEXITCODE = 0
+            }
+
+            # Every dotnet invocation, one space-joined line each, in order.
+            function Get-DotnetInvocation {
+                if (-not (Test-Path -LiteralPath `$__log)) { return @() }
+                return @(Get-Content -LiteralPath `$__log)
             }
 
             # These two return PLAIN arrays, never a comma-wrapped one. Their
@@ -794,17 +804,101 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         $joined | Should -Match '--verbosity quiet'
     }
 
-    It 'does NOT silence dotnet when a build is required (issue #469)' {
+    It 'builds as its own step, then runs quietly with --no-build, when a build is required (issue #519)' {
         . $script:UseDotnetShim
-        # The boundary is load-bearing: quiet hides build WARNINGS, and a
-        # consumer that has not set TreatWarningsAsErrors must still see them.
-        # This script is generic across many projects, so it cannot assume that
-        # setting -- which is why quiet is confined to the path where nothing
-        # is compiling and there are no warnings to lose.
+        # A separate build is what lets its output be erased once it succeeds.
+        # quiet still must not reach the BUILD: it hides warnings, and a
+        # consumer that has not set TreatWarningsAsErrors must see them while
+        # the build runs. The run compiles nothing, so quiet is safe there and
+        # silences `dotnet run`'s launch-settings line.
         & $script:runScript -- auth | Out-Null
+        $calls = @(Get-DotnetInvocation)
+        $calls.Count | Should -Be 2 -Because 'the stub project has never been built'
+        $calls[0] | Should -Match '^build '
+        $calls[0] | Should -Not -Match '--verbosity quiet' -Because 'build warnings must reach a consumer that has not set TreatWarningsAsErrors'
+        $calls[0] | Should -Not -Match '--no-restore' -Because 'the stub project has never been restored'
         $captured = @(Get-CapturedDotnetArg)
-        $captured | Should -Not -Contain '--no-build' -Because 'the stub project has never been built'
-        ($captured -join ' ') | Should -Not -Match '--verbosity quiet' -Because 'build warnings must reach a consumer that has not set TreatWarningsAsErrors'
+        $captured[0] | Should -Be 'run'
+        $captured | Should -Contain '--no-build'
+        ($captured -join ' ') | Should -Match '--verbosity quiet'
+    }
+
+    It 'does not run the application when the build fails, and exits with the build''s code (issue #519)' {
+        . $script:UseDotnetShim
+        # A later definition wins: this dotnet fails the build step only.
+        function dotnet {
+            Add-Content -LiteralPath $__log -Value (@($args) -join ' ')
+            if ($args[0] -eq 'build') {
+                'Program.cs(1,1): error CS1002: ; expected'
+                $global:LASTEXITCODE = 1
+                return
+            }
+            $global:LASTEXITCODE = 0
+        }
+        $out = & $script:runScript -- auth 6>&1 | Out-String
+        $LASTEXITCODE | Should -Be 1
+        @(Get-DotnetInvocation).Count | Should -Be 1 -Because 'a failed build must not be followed by a run'
+        $out | Should -Match 'error CS1002' -Because 'a failed build keeps its output on screen'
+    }
+
+    It 'skips restore while the recorded restore is newer than every project file (issue #519)' {
+        . $script:UseDotnetShim
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        $obj = Join-Path $root 'src/App/obj'
+        New-Item -ItemType Directory -Path $obj -Force | Out-Null
+        foreach ($name in 'project.assets.json', 'run.ps1.restored') {
+            $file = Join-Path $obj $name
+            Set-Content -LiteralPath $file -Value '{}'
+            (Get-Item -LiteralPath $file).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+        }
+
+        & (Join-Path $root 'run.ps1') -- auth | Out-Null
+        @(Get-DotnetInvocation)[0] | Should -Match '^build .* --no-restore$'
+    }
+
+    It 'retries the build with restore when --no-restore fails on missing restore output (issue #519)' {
+        . $script:UseDotnetShim
+        function dotnet {
+            Add-Content -LiteralPath $__log -Value (@($args) -join ' ')
+            if ($args[0] -eq 'build' -and $args -contains '--no-restore') {
+                'error NETSDK1004: Assets file ''obj\project.assets.json'' not found.'
+                $global:LASTEXITCODE = 1
+                return
+            }
+            $global:LASTEXITCODE = 0
+        }
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        $obj = Join-Path $root 'src/App/obj'
+        New-Item -ItemType Directory -Path $obj -Force | Out-Null
+        foreach ($name in 'project.assets.json', 'run.ps1.restored') {
+            $file = Join-Path $obj $name
+            Set-Content -LiteralPath $file -Value '{}'
+            (Get-Item -LiteralPath $file).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+        }
+
+        & (Join-Path $root 'run.ps1') -- auth 6>$null | Out-Null
+        $LASTEXITCODE | Should -Be 0
+        $calls = @(Get-DotnetInvocation)
+        $calls.Count | Should -Be 3
+        $calls[0] | Should -Match '--no-restore'
+        $calls[1] | Should -Match '^build '
+        $calls[1] | Should -Not -Match '--no-restore'
+        $calls[2] | Should -Match '^run '
+    }
+
+    It 'records the restore after a successful build that restored (issue #519)' {
+        . $script:UseDotnetShim
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        New-Item -ItemType Directory -Path (Join-Path $root 'src/App/obj') -Force | Out-Null
+
+        & (Join-Path $root 'run.ps1') -- auth | Out-Null
+        Join-Path $root 'src/App/obj/run.ps1.restored' | Should -Exist
     }
 
     It 'never injects --verbose into a dotnet test command line' {
@@ -837,11 +931,19 @@ Describe 'run.project.ps1 consumer hook (issue #462)' {
         $escapedHookCapture = $script:hookCapture -replace "'", "''"
         $script:UseHookShim = [scriptblock]::Create(@"
             `$__capture = '$escapedHookCapture'
+            `$__log = '$escapedHookCapture.log'
             if (Test-Path -LiteralPath `$__capture) { Remove-Item -LiteralPath `$__capture -Force }
+            if (Test-Path -LiteralPath `$__log) { Remove-Item -LiteralPath `$__log -Force }
 
             function dotnet {
                 Set-Content -LiteralPath `$__capture -Value (@(`$args) -join "``n") -NoNewline
+                Add-Content -LiteralPath `$__log -Value (@(`$args) -join ' ')
                 `$global:LASTEXITCODE = 0
+            }
+
+            function Get-DotnetInvocation {
+                if (-not (Test-Path -LiteralPath `$__log)) { return @() }
+                return @(Get-Content -LiteralPath `$__log)
             }
 
             function Get-CapturedDotnetArg {
@@ -1019,6 +1121,27 @@ function Invoke-ProjectPreRun {
         Get-ForwardedToken | Should -Contain 'hello' -Because 'the rest of the command line must survive the hook'
     }
 
+    It 'builds the configuration a pre-run hook asks the run for (issue #519)' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # The run looks for a Release build, so the separate build step has to
+        # produce one -- or `--no-build` would run stale or missing output.
+        $body = @'
+function Invoke-ProjectPreRun {
+    param([string[]]$DotnetArgument, [string]$Project)
+    # Before the `--` separator: after it, the tokens belong to the app.
+    $sep = [array]::IndexOf($DotnetArgument, '--')
+    if ($sep -lt 0) { return , (@($DotnetArgument) + @('-c', 'Release')) }
+    return , (@($DotnetArgument[0..($sep - 1)]) + @('-c', 'Release') + @($DotnetArgument[$sep..($DotnetArgument.Count - 1)]))
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        & (Join-Path $root 'run.ps1') -- hello | Out-Null
+        $calls = @(Get-DotnetInvocation)
+        $calls[0] | Should -Match '^build .* -c Release'
+        $calls[-1] | Should -Match '^run .* -c Release'
+    }
+
     It 'calls the post-run seam with the exit code' {
         . $script:UseHookShim
         . $script:NewHookFixture
@@ -1053,7 +1176,7 @@ Describe 'Transient build status (issue #249)' {
     }
 
     AfterEach {
-        $script:TransientStatusEnabled = -not [Console]::IsOutputRedirected
+        $script:TransientStatusEnabled = Test-TransientConsole
         $script:TransientStatusLength = 0
     }
 
@@ -1098,5 +1221,178 @@ Describe 'Transient build status (issue #249)' {
         $script:TransientStatusEnabled = $false
         Clear-TransientStatus 6>$null
         $script:TransientStatusLength | Should -Be 4
+    }
+}
+
+Describe 'Get-TreeFile (issue #519)' {
+    It 'never descends into a pruned directory' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        $wanted = Join-Path $root 'src/App/Program.cs'
+        New-Item -ItemType Directory -Path (Split-Path $wanted -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $wanted -Value 'class P {}'
+        foreach ($dir in 'bin', 'obj', '.git', '.worktrees/other', '.vs', 'node_modules/pkg', 'src/App/bin/Debug', 'src/App/obj') {
+            $path = Join-Path $root $dir
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $path 'Hidden.cs') -Value 'class H {}'
+        }
+
+        $found = @(Get-TreeFile -Root $root -Extension '.cs')
+        $found.Count | Should -Be 1
+        $found[0].FullName | Should -Be ([System.IO.Path]::GetFullPath($wanted))
+    }
+
+    It 'matches by file name as well as by extension, ignoring case' {
+        $root = Join-Path $TestDrive ([guid]::NewGuid())
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'NuGet.Config') -Value '<configuration />'
+        Set-Content -LiteralPath (Join-Path $root 'readme.md') -Value 'x'
+
+        $found = @(Get-TreeFile -Root $root -FileName 'nuget.config')
+        $found.Name | Should -Be @('NuGet.Config')
+    }
+
+    It 'returns nothing, without throwing, for a root that does not exist' {
+        $missing = Join-Path $TestDrive ([guid]::NewGuid())
+        @(Get-TreeFile -Root $missing -Extension '.cs').Count | Should -Be 0
+    }
+}
+
+Describe 'Test-RestoreRequired (issue #519)' {
+    BeforeEach {
+        $script:rrRoot = Join-Path $TestDrive ([guid]::NewGuid())
+        $script:rrProj = Join-Path $script:rrRoot 'src/App/App.csproj'
+        New-CsprojStub -Path $script:rrProj
+        (Get-Item -LiteralPath $script:rrProj).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        $script:rrObj = Join-Path $script:rrRoot 'src/App/obj'
+        New-Item -ItemType Directory -Path $script:rrObj -Force | Out-Null
+        $script:rrStamp = [datetime]::new(2020, 6, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        foreach ($name in 'project.assets.json', 'run.ps1.restored') {
+            $file = Join-Path $script:rrObj $name
+            Set-Content -LiteralPath $file -Value '{}'
+            (Get-Item -LiteralPath $file).LastWriteTimeUtc = $script:rrStamp
+        }
+    }
+
+    It 'does not require a restore when the recorded restore is newer than every input' {
+        Test-RestoreRequired -ProjectFile (Get-Item $script:rrProj) -Root $script:rrRoot | Should -BeFalse
+    }
+
+    It 'requires a restore when run.ps1 has never recorded one' {
+        Remove-Item -LiteralPath (Join-Path $script:rrObj 'run.ps1.restored')
+        Test-RestoreRequired -ProjectFile (Get-Item $script:rrProj) -Root $script:rrRoot | Should -BeTrue
+    }
+
+    It 'requires a restore when the restore output itself is missing' {
+        Remove-Item -LiteralPath (Join-Path $script:rrObj 'project.assets.json')
+        Test-RestoreRequired -ProjectFile (Get-Item $script:rrProj) -Root $script:rrRoot | Should -BeTrue
+    }
+
+    It 'requires a restore when a package file changed after the recorded restore' {
+        $props = Join-Path $script:rrRoot 'Directory.Packages.props'
+        Set-Content -LiteralPath $props -Value '<Project />'
+        (Get-Item -LiteralPath $props).LastWriteTimeUtc = $script:rrStamp.AddDays(1)
+        Test-RestoreRequired -ProjectFile (Get-Item $script:rrProj) -Root $script:rrRoot | Should -BeTrue
+    }
+
+    It 'ignores source-code changes, which a restore does not depend on' {
+        $src = Join-Path $script:rrRoot 'src/App/Program.cs'
+        Set-Content -LiteralPath $src -Value 'class P {}'
+        (Get-Item -LiteralPath $src).LastWriteTimeUtc = $script:rrStamp.AddDays(1)
+        Test-RestoreRequired -ProjectFile (Get-Item $script:rrProj) -Root $script:rrRoot | Should -BeFalse
+    }
+}
+
+Describe 'Test-RestoreFailure (issue #519)' {
+    It 'recognizes build errors that a restore fixes' {
+        Test-RestoreFailure -Output @('x', 'error NETSDK1004: Assets file not found.') | Should -BeTrue
+        Test-RestoreFailure -Output @('error NETSDK1064: Package Foo was not found.') | Should -BeTrue
+    }
+
+    It 'does not mistake an ordinary compile error for one' {
+        Test-RestoreFailure -Output @('Program.cs(1,1): error CS1002: ; expected') | Should -BeFalse
+        Test-RestoreFailure -Output $null | Should -BeFalse
+    }
+}
+
+Describe 'Get-BuildAffectingArgument (issue #519)' {
+    It 'keeps the options that change what gets built, with their values' {
+        $result = Get-BuildAffectingArgument -DotnetArgument @(
+            'run', '--project', 'App.csproj', '--no-build', '-c', 'Release',
+            '--framework=net10.0', '-p:Foo=1', '--launch-profile', 'Default')
+        $result | Should -Be @('-c', 'Release', '--framework=net10.0', '-p:Foo=1')
+    }
+
+    It 'ignores everything after the -- separator, which belongs to the application' {
+        $result = Get-BuildAffectingArgument -DotnetArgument @('run', '--', '-c', 'Release')
+        $result.Count | Should -Be 0
+    }
+}
+
+Describe 'Format-TransientWindow (issue #519)' {
+    It 'shows the title and only the latest lines, capped' {
+        $lines = 1..30 | ForEach-Object { "line $_" }
+        $rows = Format-TransientWindow -Title 'Building' -Line $lines -Width 120 -Height 50
+        $rows.Count | Should -Be ($script:TransientWindowMaxLines + 1)
+        $rows[0] | Should -Be 'Building'
+        $rows[-1] | Should -Be '  line 30'
+    }
+
+    It 'stays shorter than the console so it can always be erased' {
+        $lines = 1..30 | ForEach-Object { "line $_" }
+        $rows = Format-TransientWindow -Title 'Building' -Line $lines -Width 120 -Height 6
+        $rows.Count | Should -BeLessThan 6
+    }
+
+    It 'cuts every row to fit on one console line, so none wraps' {
+        $rows = Format-TransientWindow -Title ('T' * 200) -Line @("`tindented", ('x' * 200)) -Width 40 -Height 50
+        foreach ($row in $rows) { $row.Length | Should -BeLessThan 40 }
+    }
+
+    It 'skips blank output lines' {
+        $rows = Format-TransientWindow -Title 'Building' -Line @('', '   ', 'real') -Width 80 -Height 50
+        $rows | Should -Be @('Building', '  real')
+    }
+}
+
+Describe 'Transient build window (issue #519)' {
+    BeforeEach {
+        $script:TransientStatusEnabled = $true
+        $script:TransientWindowHeight = 0
+        $script:TransientStatusLength = 0
+    }
+
+    AfterEach {
+        $script:TransientStatusEnabled = Test-TransientConsole
+        $script:TransientWindowHeight = 0
+        $script:TransientStatusLength = 0
+    }
+
+    It 'erases every row it drew once the build finishes' -Skip:(-not $Host.UI.SupportsVirtualTerminal) {
+        Mock Get-ConsoleWindowSize { @{ Width = 80; Height = 40 } }
+        function dotnet { 'Determining projects to restore...'; ''; '  App -> bin/App.dll'; $global:LASTEXITCODE = 0 }
+
+        $drawn = (Invoke-TransientBuild -Argument @('build') -Title 'Building App...' 6>&1 |
+                Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
+                ForEach-Object { "$($_.MessageData)" }) -join ''
+
+        $esc = [char]27
+        # The last frame held the title plus two non-blank lines.
+        $drawn | Should -Match ([regex]::Escape("$esc[3F$esc[0J") + '$') -Because 'the final write must move up over all 3 rows and clear them'
+        $script:TransientWindowHeight | Should -Be 0
+    }
+
+    It 'returns the exit code and every captured line' {
+        Mock Get-ConsoleWindowSize { @{ Width = 80; Height = 40 } }
+        function dotnet { 'one'; 'two'; $global:LASTEXITCODE = 7 }
+        $result = Invoke-TransientBuild -Argument @('build') -Title 'Building' 6>$null
+        $result.ExitCode | Should -Be 7
+        $result.Output | Should -Be @('one', 'two')
+    }
+
+    It 'draws nothing, and does not throw, when the host has no console window to measure' {
+        # [Console]::WindowWidth throws "The handle is invalid" in such a host.
+        Mock Get-ConsoleWindowSize { $null }
+        { Write-TransientWindow -Title 'Building' -Line @('x') 6>$null } | Should -Not -Throw
+        $script:TransientWindowHeight | Should -Be 0
     }
 }
