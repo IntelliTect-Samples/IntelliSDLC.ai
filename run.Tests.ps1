@@ -1367,9 +1367,14 @@ Describe 'Transient build window (issue #519)' {
         $script:TransientStatusLength = 0
     }
 
-    It 'erases every row it drew once the build finishes' -Skip:(-not $Host.UI.SupportsVirtualTerminal) {
+    It 'erases every row it drew once the build finishes' {
         Mock Get-ConsoleWindowSize { @{ Width = 80; Height = 40 } }
-        function dotnet { 'Determining projects to restore...'; ''; '  App -> bin/App.dll'; $global:LASTEXITCODE = 0 }
+        Mock Test-VirtualTerminal { $true }
+        # Each line sleeps past the redraw throttle, so every line is drawn.
+        function dotnet {
+            foreach ($l in 'Determining projects to restore...', '', '  App -> bin/App.dll') { Start-Sleep -Milliseconds 60; $l }
+            $global:LASTEXITCODE = 0
+        }
 
         $drawn = (Invoke-TransientBuild -Argument @('build') -Title 'Building App...' 6>&1 |
                 Where-Object { $_ -is [System.Management.Automation.InformationRecord] } |
@@ -1379,6 +1384,16 @@ Describe 'Transient build window (issue #519)' {
         # The last frame held the title plus two non-blank lines.
         $drawn | Should -Match ([regex]::Escape("$esc[3F$esc[0J") + '$') -Because 'the final write must move up over all 3 rows and clear them'
         $script:TransientWindowHeight | Should -Be 0
+    }
+
+    It 'erases the window even when the build is interrupted' {
+        Mock Get-ConsoleWindowSize { @{ Width = 80; Height = 40 } }
+        Mock Test-VirtualTerminal { $true }
+        # Ctrl+C tears the pipeline down with a stop exception; a throw takes
+        # the same exit path out of Invoke-TransientBuild.
+        function dotnet { Start-Sleep -Milliseconds 60; 'compiling...'; throw 'interrupted' }
+        { Invoke-TransientBuild -Argument @('build') -Title 'Building' 6>$null } | Should -Throw '*interrupted*'
+        $script:TransientWindowHeight | Should -Be 0 -Because 'nothing may stay drawn after an interrupt'
     }
 
     It 'returns the exit code and every captured line' {
