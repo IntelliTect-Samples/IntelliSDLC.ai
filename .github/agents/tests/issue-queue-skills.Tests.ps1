@@ -108,8 +108,9 @@ Describe '/next-issue selection contract' {
 
     # The labels are the only shared contract between the skill, the claim
     # protocol in the instructions, and /wrap-up. A query that excluded
-    # `blocked` instead of `hold`, or `claimed` instead of `in-progress`,
-    # would silently dispatch held or already-claimed work.
+    # `blocked` instead of `hold`, or the wrong claim label, would silently
+    # dispatch held or already-claimed work. The legacy claim label stays
+    # excluded too, so a repository mid-migration never dispatches claimed work.
     It 'has a Step 1 fenced command block that runs gh issue list' {
         $script:query | Should -Not -BeNullOrEmpty
     }
@@ -118,17 +119,65 @@ Describe '/next-issue selection contract' {
         $script:query | Should -Match '--state open'
     }
 
-    It 'passes exactly the operative search: not held, not claimed, not blocked, oldest first' {
-        $script:search | Should -BeExactly '-label:hold -label:in-progress -is:blocked sort:created-asc'
-    }
-
-    It 'ranks by the priority-0..priority-3 labels in Step 1' {
-        foreach ($p in 0..3) { $script:step1 | Should -Match "priority-$p" }
+    It 'passes exactly the operative search: not held, not claimed (current or legacy label), not blocked, oldest first' {
+        $script:search | Should -BeExactly '-label:hold -label:lifecycle/active -label:in-progress -is:blocked sort:created-asc'
     }
 
     It 'launches sessions through the existing launcher rather than a new script' {
         Get-SkillSection -Body $script:body -Heading 'Step 6' | Should -Match 'Start-IssueAgent\.ps1'
     }
+}
+
+# Issue #517: the queue uses the Kubernetes label convention, ranked in a fixed
+# order (not alphabetically), and still reads the legacy names so no queue is
+# empty while a repository migrates. The rank map is EXECUTED, not grepped.
+Describe '/next-issue ranks by the Kubernetes priority labels, in fixed order' {
+    BeforeAll {
+        $script:body = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:step1 = [string](Get-SkillSection -Body $script:body -Heading 'Step 1')
+        $script:rankBlock = @(Get-FencedBlocks -Text $script:step1 | Where-Object { $_ -match '\$rank\s*=' })[0]
+        if ($script:rankBlock) { . ([scriptblock]::Create($script:rankBlock)) }
+    }
+
+    It 'defines the rank map in a Step 1 command block' {
+        $script:rankBlock | Should -Not -BeNullOrEmpty
+    }
+
+    It 'ranks <label> as P<n>' -ForEach @(
+        @{ label = 'priority/critical-urgent'; n = 0 }
+        @{ label = 'priority/important-soon'; n = 1 }
+        @{ label = 'priority/important-longterm'; n = 2 }
+        @{ label = 'priority/backlog'; n = 3 }
+        @{ label = 'priority/awaiting-more-evidence'; n = 4 }
+    ) {
+        $rank[$label] | Should -Be $n
+        $canonical[$n] | Should -BeExactly $label
+    }
+
+    It 'still reads the legacy form <label> as P<n>' -ForEach @(
+        @{ label = 'priority-0'; n = 0 }; @{ label = 'priority-1'; n = 1 }
+        @{ label = 'priority-2'; n = 2 }; @{ label = 'priority-3'; n = 3 }
+        @{ label = 'priority: 0'; n = 0 }; @{ label = 'priority: 1'; n = 1 }
+        @{ label = 'priority: 2'; n = 2 }; @{ label = 'priority: 3'; n = 3 }
+    ) {
+        $rank[$label] | Should -Be $n
+    }
+
+    It 'does not treat a non-priority label as a priority' {
+        foreach ($l in 'hold', 'lifecycle/active', 'area/har', 'bug', 'priority') { $rank.ContainsKey($l) | Should -BeFalse }
+    }
+}
+
+Describe '/next-issue selection contract (continued)' {
+    BeforeAll {
+        $script:body = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:step1 = Get-SkillSection -Body $script:body -Heading 'Step 1'
+    }
+
+    It 'names the canonical claim label lifecycle/active in Step 1' {
+        $script:step1 | Should -Match 'lifecycle/active'
+    }
+
 }
 
 # Issue #510: the owner picks from a list; triage happens before the list is
@@ -142,16 +191,63 @@ Describe '/next-issue triages before it lists' {
         $script:unprioritized = @($script:blocks | Where-Object { $_ -match 'gh issue list' })[0]
         $script:unprioritizedSearch = if ($script:unprioritized -match '--search\s+"([^"]*)"') { $Matches[1] }
         $script:changedQuery = @($script:blocks | Where-Object { $_ -match 'graphql' })[0]
+        # Step 1's rank map, which every Step 2 filter below depends on.
+        $step1 = [string](Get-SkillSection -Body $script:body -Heading 'Step 1')
+        $rankBlock = @(Get-FencedBlocks -Text $step1 | Where-Object { $_ -match '\$rank\s*=' })[0]
+        if ($rankBlock) { . ([scriptblock]::Create($rankBlock)) }
+        $script:unprioritizedFilter = @($script:blocks | Where-Object { $_ -match '\$unprioritized\s*=' })[0]
+        $script:legacyFilter = @($script:blocks | Where-Object { $_ -match '\$toMigrate\s*=' })[0]
+        $script:open = @(
+            [pscustomobject]@{ number = 1; labels = @([pscustomobject]@{ name = 'priority/important-soon' }) }
+            [pscustomobject]@{ number = 2; labels = @([pscustomobject]@{ name = 'bug' }) }
+            [pscustomobject]@{ number = 3; labels = @([pscustomobject]@{ name = 'priority: 2' }, [pscustomobject]@{ name = 'area:har' }) }
+            [pscustomobject]@{ number = 4; labels = @([pscustomobject]@{ name = 'priority-1' }) }
+            [pscustomobject]@{ number = 5; labels = @([pscustomobject]@{ name = 'priority/backlog' }, [pscustomobject]@{ name = 'area/har' }) }
+            [pscustomobject]@{ number = 6; labels = @([pscustomobject]@{ name = 'in-progress' }, [pscustomobject]@{ name = 'priority/backlog' }) }
+        )
     }
 
     It 'is Step 2 -- triage comes before the pick list' {
         $script:step2 | Should -Match '(?m)^## Step 2 -- Triage'
     }
 
-    It 'finds unprioritized issues with a search excluding every priority label and hold' {
+    It 'fetches open issues that are not held' {
         $script:unprioritizedSearch | Should -Not -BeNullOrEmpty
-        foreach ($p in 0..3) { $script:unprioritizedSearch | Should -Match "-label:priority-$p\b" }
         $script:unprioritizedSearch | Should -Match '-label:hold\b'
+    }
+
+    # Executed against fixtures: only an issue with no priority label in ANY
+    # form -- canonical or legacy -- is unprioritized. A legacy-labelled issue
+    # is prioritized (and reported "to migrate"), never re-triaged from scratch.
+    It 'treats only an issue with no priority label, in any form, as unprioritized' {
+        $script:unprioritizedFilter | Should -Not -BeNullOrEmpty
+        $open = $script:open
+        . ([scriptblock]::Create($script:unprioritizedFilter))
+        @($unprioritized.number) | Should -Be @(2)
+    }
+
+    It 'reports every issue carrying a legacy label as "to migrate"' {
+        $script:legacyFilter | Should -Not -BeNullOrEmpty
+        $open = $script:open
+        . ([scriptblock]::Create($script:legacyFilter))
+        @($toMigrate.number | Sort-Object) | Should -Be @(3, 4, 6)
+        $script:step2 | Should -Match '(?i)to migrate'
+    }
+
+    It 'migrates legacy labels only with the owner''s confirmation, renaming a label in place when it can' {
+        $script:step2 | Should -Match '(?is)only (after|with) the owner.{0,20}confirm'
+        @($script:blocks | Where-Object { $_ -match 'gh label edit\s' -and $_ -match '--name' }).Count | Should -BeGreaterThan 0
+    }
+
+    It 'maps each legacy label to its canonical name' {
+        $mapBlock = @($script:blocks | Where-Object { $_ -match 'function Get-CanonicalLabel' })[0]
+        $mapBlock | Should -Not -BeNullOrEmpty
+        . ([scriptblock]::Create($mapBlock))
+        Get-CanonicalLabel 'priority-0' | Should -BeExactly 'priority/critical-urgent'
+        Get-CanonicalLabel 'priority: 3' | Should -BeExactly 'priority/backlog'
+        Get-CanonicalLabel 'in-progress' | Should -BeExactly 'lifecycle/active'
+        Get-CanonicalLabel 'area:har' | Should -BeExactly 'area/har'
+        Get-CanonicalLabel 'area: some thing' | Should -BeExactly 'area/some thing'
     }
 
     It 'detects "changed since prioritized" from the label event against issue edits and comments' {
@@ -182,9 +278,54 @@ Describe '/next-issue triages before it lists' {
                 '<!-- claim: session="some session" session_id="0000" host="PC" branch="feat/1-x" -->'
             $script:releaseComment = "Released by ``some session``: lost claim race.`n" +
                 '<!-- release: session="some session" session_id="0000" reason="lost claim race" -->'
-            $script:priorityComment = "Priority confirmed as priority-1: still blocks the release.`n" +
-                '<!-- priority: label="priority-1" -->'
+            $script:priorityComment = "Priority confirmed as P1 (priority/important-soon): still blocks the release.`n" +
+                '<!-- priority: label="priority/important-soon" -->'
             $script:scopeComment = 'Scope change: this now also has to cover the second provider.'
+            $script:changedFilter = @($script:blocks | Where-Object { $_ -match '\$ignore\s*=' })[0]
+
+            # One page of the graphql search, shaped as `--paginate --slurp` returns it.
+            function New-ChangedFixture {
+                param([string]$Label, [object[]]$Comments, [string]$LabeledAt = '2026-01-01T00:00:00Z')
+                $issue = @{
+                    number = 7; title = 't'; lastEditedAt = $null
+                    labels = @{ nodes = @(@{ name = $Label }) }
+                    timelineItems = @{ nodes = @(@{ createdAt = $LabeledAt; label = @{ name = $Label } }) }
+                    comments = @{ nodes = @($Comments) }
+                }
+                return (ConvertTo-Json -Depth 10 -InputObject @(@{ data = @{ search = @{ nodes = @($issue) } } }))
+            }
+        }
+
+        # #517: repositories were relabelled in place, but the priority markers
+        # already written in comments still name the OLD label. The latest
+        # decision is a legacy-named marker, after the label event; mapping it
+        # through the rank map is what keeps the issue from being re-flagged.
+        It 'maps a legacy-named priority marker to the current label: a confirmed issue is not flagged' {
+            $json = New-ChangedFixture -Label 'priority/important-soon' -Comments @(
+                @{ createdAt = '2026-01-02T00:00:00Z'; lastEditedAt = $null; body = 'note, before the confirmation' }
+                @{ createdAt = '2026-01-03T00:00:00Z'; lastEditedAt = $null; body = "Confirmed.`n<!-- priority: label=`"priority-1`" -->" }
+            )
+            $out = @(. ([scriptblock]::Create($script:changedFilter)))
+            $out.Count | Should -Be 0 -Because 'the legacy marker is the latest decision for the same priority'
+        }
+
+        It 'still flags a scope comment made after the latest decision' {
+            $json = New-ChangedFixture -Label 'priority/important-soon' -Comments @(
+                @{ createdAt = '2026-01-03T00:00:00Z'; lastEditedAt = $null; body = "Confirmed.`n<!-- priority: label=`"priority-1`" -->" }
+                @{ createdAt = '2026-01-04T00:00:00Z'; lastEditedAt = $null; body = 'Scope change.' }
+            )
+            $out = @(. ([scriptblock]::Create($script:changedFilter)))
+            $out.Count | Should -Be 1
+            $out[0].Priority | Should -BeExactly 'priority/important-soon'
+        }
+
+        It 'does not take a marker for a DIFFERENT priority as this priority''s decision' {
+            $json = New-ChangedFixture -Label 'priority/important-soon' -Comments @(
+                @{ createdAt = '2026-01-02T00:00:00Z'; lastEditedAt = $null; body = 'Scope change.' }
+                @{ createdAt = '2026-01-03T00:00:00Z'; lastEditedAt = $null; body = "Old decision.`n<!-- priority: label=`"priority-3`" -->" }
+            )
+            $out = @(. ([scriptblock]::Create($script:changedFilter)))
+            $out.Count | Should -Be 1 -Because 'a P3 marker says nothing about when P1 was decided'
         }
 
         It 'defines the ignore pattern in a Step 2 command block' {
@@ -367,11 +508,12 @@ Describe 'Issues arrive prioritized -- the filing rule' {
     }
 
     It 'requires a priority or hold, an area label, blocked-by links, and a reason comment at creation' {
-        $script:filing | Should -Match 'priority-N'
+        $script:filing | Should -Match '`priority/'
         $script:filing | Should -Match '`hold`'
-        $script:filing | Should -Match 'area:'
+        $script:filing | Should -Match '`area/<name>`'
         $script:filing | Should -Match '(?i)blocked.by'
         $script:filing | Should -Match '(?i)reason'
+        $script:filing | Should -Match '<!-- priority: label="priority/' -Because 'the marker names the canonical label'
     }
 
     It '@plan applies it when it creates the issue' {
@@ -384,6 +526,85 @@ Describe 'Issues arrive prioritized -- the filing rule' {
 
     It '/wrap-up applies it to loose ends' {
         $script:wrapStep4 | Should -Match 'Filing an issue'
+    }
+}
+
+# Issue #517: the shared contract names the Kubernetes labels, carries the
+# spoken P0-P4 aliases the owner uses, and the claim label is lifecycle/active
+# everywhere a claim is made, listed, or released.
+Describe 'The shared label contract is the Kubernetes convention, with P0-P4 aliases' {
+    BeforeAll {
+        $ci = Get-Content -Raw -LiteralPath (Join-Path $script:repoRoot '.github/copilot-instructions.md')
+        $script:queue = [string](Get-SkillSection -Body $ci -Heading 'Issue Queue')
+        $script:labels = [regex]::Match($script:queue, '(?ms)^### Labels\b.*?(?=^### |\z)').Value
+        $script:claims = [regex]::Match($script:queue, '(?ms)^### Claims\b.*?(?=^### |\z)').Value
+        $script:next = [regex]::Match($script:queue, '(?ms)^\*\*Next\*\*.*?(?=\r?\n\r?\n)').Value
+        $script:legacy = [regex]::Match($script:queue, '(?ms)^### Legacy label names\b.*?(?=^### |\z)').Value
+    }
+
+    It 'maps P<n> to <label> in the label table' -ForEach @(
+        @{ n = 0; label = 'priority/critical-urgent' }
+        @{ n = 1; label = 'priority/important-soon' }
+        @{ n = 2; label = 'priority/important-longterm' }
+        @{ n = 3; label = 'priority/backlog' }
+        @{ n = 4; label = 'priority/awaiting-more-evidence' }
+    ) {
+        # One table row names both the label and its spoken alias.
+        $script:labels | Should -Match "(?m)^\|[^\n]*``$([regex]::Escape($label))``[^\n]*\*\*P$n\*\*"
+    }
+
+    It 'tells agents to translate the spoken aliases both ways' {
+        $script:labels | Should -Match '(?i)translate'
+        $script:labels | Should -Match 'P1 \(priority/important-soon\)'
+    }
+
+    It 'names lifecycle/active and the area/ labels, and keeps hold' {
+        $script:labels | Should -Match '`lifecycle/active`'
+        $script:labels | Should -Match '`area/<name>`'
+        $script:labels | Should -Match '`hold`'
+    }
+
+    It 'orders Next by the fixed P0-P4 order, not alphabetically' {
+        $script:next | Should -Match '(?i)P0.{0,40}P4'
+        $script:next | Should -Match '`lifecycle/active`'
+    }
+
+    It 'claims and releases with lifecycle/active' {
+        $script:claims | Should -Match '(?s)\*\*Claim\*\*.{0,200}`lifecycle/active`'
+        $script:claims | Should -Match '(?s)\*\*Release\*\*.{0,200}`lifecycle/active`'
+        $script:claims | Should -Not -Match '`in-progress`' -Because 'the legacy name belongs only in the legacy section'
+    }
+
+    It 'has a legacy-names section that reads old names and migrates only with the owner''s confirmation' {
+        $script:legacy | Should -Not -BeNullOrEmpty
+        foreach ($old in 'priority-N', 'priority: N', 'in-progress', 'area:<name>') { $script:legacy | Should -Match ([regex]::Escape($old)) }
+        $script:legacy | Should -Match '(?i)confirm'
+    }
+}
+
+Describe 'The skills claim and release with lifecycle/active' {
+    BeforeAll {
+        $script:nextBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:wrapBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/wrap-up/SKILL.md')).Body
+    }
+
+    It '/next-issue adds lifecycle/active when it claims' {
+        $claimEdit = @(Get-FencedBlocks -Text ([string](Get-SkillSection -Body $script:nextBody -Heading 'Step 4')) |
+                Where-Object { $_ -match 'gh issue edit' })[0]
+        $claimEdit | Should -Match '--add-label lifecycle/active'
+    }
+
+    It '/wrap-up releases by removing lifecycle/active' {
+        Get-SkillSection -Body $script:wrapBody -Heading 'Step 3' | Should -Match '(?s)remove.{0,40}`lifecycle/active`'
+    }
+
+    It '/wrap-up inventories claims under lifecycle/active' {
+        @(Get-FencedBlocks -Text ([string](Get-SkillSection -Body $script:wrapBody -Heading 'Step 1')) |
+                Where-Object { $_ -match 'gh issue list' -and $_ -match 'lifecycle/active' }).Count | Should -BeGreaterThan 0
+    }
+
+    It 'unattended, /next-issue migrates no labels' {
+        Get-SkillSection -Body $script:nextBody -Heading 'When no user is present' | Should -Match '(?i)migrates nothing'
     }
 }
 

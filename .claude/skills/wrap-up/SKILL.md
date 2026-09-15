@@ -41,8 +41,11 @@ git -C <worktree> status --short          # uncommitted work, per owned worktree
 git -C <worktree> log '@{u}..' --oneline  # unpushed commits
 git stash list
 gh pr list --repo <owner>/<repo> --state open --json number,headRefName,title
-gh issue list --repo <owner>/<repo> --label in-progress --json number,title
+gh issue list --repo <owner>/<repo> --state open --search "label:lifecycle/active,in-progress" --json number,title
 ```
+
+`lifecycle/active` is the claim label; `in-progress` is its legacy name, still
+read in a repository that has not migrated.
 
 Also check the primary checkout: if `.githooks/check-dirty-primary-checkout`
 exists, run it; a dirty primary checkout on the protected branch is a loose end
@@ -97,7 +100,8 @@ it -- whether it is granted varies by repository and by instruction version.
    **Verified vs assumed:** <which claims were checked, and which were not>
    ```
 
-3. **Release the claim**: remove the `in-progress` label and post a release
+3. **Release the claim**: remove the `lifecycle/active` label (or its legacy
+   name `in-progress`, if that is what the issue carries) and post a release
    marker so the next dispatcher can take the issue at once rather than waiting
    out the stale-claim window:
 
@@ -114,8 +118,8 @@ what lets a session on another machine continue.
 Open decisions, follow-ups, and defects found along the way go onto the issue
 that owns them, or into a new issue (`gh issue create --body-file`). A new issue
 follows **Filing an issue** in the shared instructions' Issue Queue section:
-one `priority-N` label (or `hold`), an area label, blocked-by links, and a
-comment giving the reason.
+one `priority/*` label (P0-P4, or `hold`), an `area/<name>` label, blocked-by
+links, and a comment giving the reason.
 Nothing that matters may exist only in the conversation.
 
 ## Step 5 -- Report
