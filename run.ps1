@@ -681,6 +681,15 @@ function Get-ConsoleWindowSize {
     catch { return $null }
 }
 
+function Test-VirtualTerminal {
+    <#
+    .SYNOPSIS
+        Returns $true when the host understands VT escape sequences (cursor
+        movement), which the multi-row transient window needs.
+    #>
+    return [bool]$Host.UI.SupportsVirtualTerminal
+}
+
 function Test-TransientConsole {
     <#
     .SYNOPSIS
@@ -786,7 +795,7 @@ function Write-TransientWindow {
     if (-not $script:TransientStatusEnabled) { return }
     $size = Get-ConsoleWindowSize
     if (-not $size) { return }
-    if (-not $Host.UI.SupportsVirtualTerminal) {
+    if (-not (Test-VirtualTerminal)) {
         $latest = @(@($Line) | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1)
         $text = if ($latest.Count) { "$Title $($latest[0].Trim())" } else { $Title }
         $width = [Math]::Max(10, $size.Width - 1)
@@ -838,15 +847,37 @@ function Invoke-TransientBuild {
     param([string[]]$Argument, [string]$Title)
 
     $captured = [System.Collections.Generic.List[string]]::new()
-    Write-TransientWindow -Title $Title -Line @()
-    & dotnet @Argument 2>&1 | ForEach-Object {
-        $text = "$_"
-        $captured.Add($text)
-        if ($script:TransientStatusEnabled) { Write-TransientWindow -Title $Title -Line $captured.ToArray() }
-        else { Write-Host $text }
+    # Only the latest lines can ever be shown, so only they are kept for the
+    # window -- a redraw costs the same on line 5 as on line 5000.
+    $tail = [System.Collections.Generic.Queue[string]]::new()
+    # Redraw at most every $redrawMs: a multi-project build can emit hundreds of
+    # lines in a burst, and one console redraw per line would slow the very
+    # build this window is reporting on. Nothing is lost -- the window is
+    # erased at the end anyway, and the full output stays in $captured.
+    $redrawMs = 50
+    $sinceRedraw = [System.Diagnostics.Stopwatch]::StartNew()
+
+    try {
+        Write-TransientWindow -Title $Title -Line @()
+        & dotnet @Argument 2>&1 | ForEach-Object {
+            $text = "$_"
+            $captured.Add($text)
+            if (-not $script:TransientStatusEnabled) { Write-Host $text; return }
+            if (-not $text.Trim()) { return }
+            $tail.Enqueue($text)
+            if ($tail.Count -gt $script:TransientWindowMaxLines) { [void]$tail.Dequeue() }
+            if ($sinceRedraw.ElapsedMilliseconds -ge $redrawMs) {
+                Write-TransientWindow -Title $Title -Line $tail.ToArray()
+                $sinceRedraw.Restart()
+            }
+        }
+        $exitCode = $LASTEXITCODE
     }
-    $exitCode = $LASTEXITCODE
-    Clear-TransientWindow
+    finally {
+        # Also on Ctrl+C: an interrupted build must not leave a half-drawn
+        # window of stale output behind.
+        Clear-TransientWindow
+    }
 
     return [pscustomobject]@{ ExitCode = $exitCode; Output = $captured.ToArray() }
 }
