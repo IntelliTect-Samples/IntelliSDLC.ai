@@ -280,12 +280,25 @@ and dispatches from this queue; `/wrap-up` ends a session against it.
 
 ### Labels -- the shared contract
 
-| Label | Meaning |
-|---|---|
-| `priority-0` .. `priority-3` | Exactly one per open issue. `0` is most urgent. |
-| `hold` | Do not start (awaiting discussion or an owner decision). Never dispatched; a held PR is never merged. |
-| `in-progress` | Claimed by a session. Never dispatched while the claim is live. |
-| `area:<name>` | Optional family label, so a session can be pointed at -- or kept away from -- one area. |
+The queue uses the **Kubernetes label convention** (the label set maintained in
+`kubernetes/test-infra`, the most widely adopted set on GitHub), so the names
+say what they mean without a legend.
+
+| Label | Spoken alias | Meaning |
+|---|---|---|
+| `priority/critical-urgent` | **P0** / "Priority 0" | Emergency -- someone's top priority **right now** (e.g. an account must be disabled, a live safety incident). Handled before anything else. |
+| `priority/important-soon` | **P1** / "Priority 1" | Worked on now or very soon. |
+| `priority/important-longterm` | **P2** / "Priority 2" | Important, but may not be staffed yet or may take several releases. |
+| `priority/backlog` | **P3** / "Priority 3" | Lower priority. |
+| `priority/awaiting-more-evidence` | **P4** / "Priority 4" | Lowest -- possibly useful, not yet enough support. |
+| `hold` | | Do not start (awaiting discussion or an owner decision). Never dispatched; a held PR is never merged. Kept as is: Kubernetes' own hold label is for pull requests only. |
+| `lifecycle/active` | | Claimed by a session. Never dispatched while the claim is live. |
+| `area/<name>` | | Optional family label, so a session can be pointed at -- or kept away from -- one area. |
+
+Exactly one `priority/*` label per open issue. **The spoken aliases are part of
+the contract**: people say "P0" or "Priority 3", so translate them both ways --
+read "P2" as `priority/important-longterm`, and report a priority as the alias
+plus the label, e.g. `P1 (priority/important-soon)`.
 
 **When you set a priority, comment the reason on that issue.** The reason lives
 beside the label, not in a tracker.
@@ -293,9 +306,10 @@ beside the label, not in a tracker.
 **Ordering is GitHub's native "blocked by".** "A prerequisite lands before the
 thing that consumes it" is a blocked-by link between the two issues.
 
-**Next** = open, lowest `priority-N`, not `hold`, not `in-progress`, no open
-blocker. Ties go to the oldest issue. An issue with no priority label is
-triaged by `/next-issue` and never dispatched until it carries a priority.
+**Next** = open, highest priority in the fixed order P0 > P1 > P2 > P3 > P4
+(never alphabetical), not `hold`, not `lifecycle/active`, no open blocker. Ties
+go to the oldest issue. An issue with no priority label is triaged by
+`/next-issue` and never dispatched until it carries a priority.
 
 ### Claims
 
@@ -303,7 +317,7 @@ The assignee field cannot be the claim: every session runs as the same GitHub
 account, so an assignee cannot tell sessions apart.
 
 - **Claim** = push the feature branch (`<type>/<issue#>-<slug>`) at once, add
-  `in-progress`, and post a claim comment naming the session, its session ID,
+  `lifecycle/active`, and post a claim comment naming the session, its session ID,
   the host, the branch, and the UTC time, with a marker:
   `<!-- claim: session="<name>" session_id="<id>" host="<host>" branch="<branch>" -->`.
   `<id>` is the session ID the harness provides (Claude Code substitutes it
@@ -319,7 +333,7 @@ account, so an assignee cannot tell sessions apart.
   quoting the previous holder's session ID and host so the new session can load
   that transcript before it starts.
 - **Release** -- a merged PR closes the issue. An abandoned or parked attempt
-  removes `in-progress` and posts
+  removes `lifecycle/active` and posts
   `<!-- release: session="<name>" session_id="<id>" reason="<reason>" -->` with
   a one-line reason.
 - **Who holds what** -- `/next-issue` lists every live claim (session, session
@@ -330,14 +344,16 @@ account, so an assignee cannot tell sessions apart.
 
 Any session that files an issue sets these **at creation**, not later:
 
-- exactly one `priority-N` label, or `hold` when it must not start yet;
-- an `area:<name>` label, when the repository uses area labels;
+- exactly one `priority/*` label (P0-P4, per the table above), or `hold` when
+  it must not start yet;
+- an `area/<name>` label, when the repository uses area labels;
 - a **blocked by** link to every open issue it depends on
   (`gh api -X POST repos/<owner>/<repo>/issues/<n>/dependencies/blocked_by -F issue_id=<id>`,
   where `<id>` is the blocker's numeric `id` from `gh api repos/<owner>/<repo>/issues/<blocker>`,
   not its number);
 - a comment giving the reason for the priority, ending with the marker
-  `<!-- priority: label="priority-N" -->`.
+  `<!-- priority: label="priority/<level>" -->` (e.g.
+  `<!-- priority: label="priority/important-soon" -->`).
 
 **When re-prioritization happens:**
 
@@ -355,6 +371,25 @@ reason comment and that marker, which is what tells the next triage when the
 priority was last decided. A change adds the new label **before** removing the
 old one, so an issue is never without a priority; a confirmation changes no
 label at all.
+
+### Legacy label names
+
+Earlier versions of this contract used other names, and some repositories
+already used their own. `/next-issue` still **reads** them, so no queue is empty
+while a repository migrates, and reports each one as "to migrate":
+
+| Legacy name | Current name |
+|---|---|
+| `priority-N`, `priority: N` (N = 0..3) | the P`N` label above (`priority-0` is `priority/critical-urgent`, ...) |
+| `in-progress` | `lifecycle/active` |
+| `area:<name>` | `area/<name>` |
+
+Migration happens only after the owner confirms it -- never unattended, and
+never by the sync, which does not write to GitHub. The preferred move is to
+**rename the label in place** (`gh label edit "<old>" --name "<new>"`), which
+moves every issue carrying it, open or closed, and keeps its history. Priority
+marker comments already written keep the old name; they are read through the
+same mapping, so they never need rewriting.
 
 ## Plan Tracking
 

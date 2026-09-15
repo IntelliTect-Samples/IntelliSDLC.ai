@@ -1,7 +1,7 @@
 ---
 name: next-issue
-description: Triage the GitHub issue queue in this repository, show the next several highest-priority unblocked, unclaimed issues and who holds what, let the owner pick one or more, then claim and dispatch only those to dev-loop sessions (or to a background subagent when the work is small and settled). Use when asked what to work on next, to work on the next priority issues, or when invoked as /next-issue [N] [area:<label>] [here].
-argument-hint: "[N] [area:<label>] [here]"
+description: Triage the GitHub issue queue in this repository, show the next several highest-priority unblocked, unclaimed issues and who holds what, let the owner pick one or more, then claim and dispatch only those to dev-loop sessions (or to a background subagent when the work is small and settled). Use when asked what to work on next, to work on the next priority issues, or when invoked as /next-issue [N] [area/<name>] [here].
+argument-hint: "[N] [area/<name>] [here]"
 ---
 
 # /next-issue -- see what is next, pick, claim, dispatch
@@ -13,10 +13,12 @@ the queue, claims what the owner picks, dispatches it, and exits. It never
 reads or writes a tracking/controller issue and keeps no state of its own -- so
 two dispatchers running at once are safe, because the claim is on the issue.
 
-The label contract, the filing rule and the claim protocol are defined in the
-shared instructions (**Issue Queue -- Priority Labels and Claims** in
+The label contract (the Kubernetes convention, with the spoken aliases P0-P4),
+the filing rule and the claim protocol are defined in the shared instructions
+(**Issue Queue -- Priority Labels and Claims** in
 `.github/copilot-instructions.md`). This skill is the procedure that applies
-them.
+them. When the owner says "P0" or "Priority 3", that is the label the alias
+table names; report priorities the same way, e.g. `P1 (priority/important-soon)`.
 
 ## Arguments
 
@@ -24,10 +26,10 @@ them.
 |---|---|
 | `/next-issue` | Triage, then show the top **5** candidates and every live claim; the owner picks one or more, and only those are claimed and dispatched |
 | `/next-issue 3` | The same, showing the top three |
-| `/next-issue area:<label>` | Restrict triage and the list to issues carrying that area label |
+| `/next-issue area/<name>` | Restrict triage and the list to issues carrying that area label (the legacy spelling `area:<name>` is accepted too) |
 | `/next-issue here` | The same list; the one issue picked is worked in **this** session |
 
-Arguments combine (`/next-issue 3 area:<label>`). When nobody is present to
+Arguments combine (`/next-issue 3 area/<name>`). When nobody is present to
 answer a prompt, the count means how many to claim instead -- see **When no
 user is present**.
 
@@ -52,25 +54,38 @@ the machine that ran the session, so the claim must say which machine that is.
 
 ## Step 1 -- Select candidates
 
-One query does most of the filtering:
+One query does most of the filtering. It excludes the legacy claim label as
+well as the current one, so a repository that has not migrated yet never has
+claimed work dispatched:
 
 ```powershell
 gh issue list --repo <owner>/<repo> --state open --limit 300 `
-  --search "-label:hold -label:in-progress -is:blocked sort:created-asc" `
+  --search "-label:hold -label:lifecycle/active -label:in-progress -is:blocked sort:created-asc" `
   --json number,title,labels,createdAt,body
 ```
 
-With an area argument, add `label:"<area-label>"` to the search string.
+With an area argument, add `label:<area-label>` to the search string (quote it,
+`label:"area: x"`, only for a legacy name containing a space).
+
+**The rank of every priority label** -- the fixed order P0 > P1 > P2 > P3 > P4,
+never alphabetical -- plus the legacy names this command still reads, so no
+queue is empty while a repository migrates:
+
+```powershell
+$canonical = @('priority/critical-urgent', 'priority/important-soon', 'priority/important-longterm', 'priority/backlog', 'priority/awaiting-more-evidence')
+$rank = @{}
+foreach ($n in 0..4) { $rank[$canonical[$n]] = $n }
+foreach ($n in 0..3) { $rank["priority-$n"] = $n; $rank["priority: $n"] = $n }   # legacy names
+```
 
 Then, in order:
 
-1. **Rank.** An issue's rank is the lowest `N` among its `priority-0`,
-   `priority-1`, `priority-2` and `priority-3` labels; an issue with none is
-   **unprioritized** -- it goes to triage (Step 2) and is never offered for
-   claiming until it carries a priority. Sort by rank, then oldest `createdAt`
-   first.
+1. **Rank.** An issue's rank is the lowest `$rank` among its labels (so `0` is
+   P0); an issue with no label in `$rank` is **unprioritized** -- it goes to
+   triage (Step 2) and is never offered for claiming until it carries a
+   priority. Sort by rank, then oldest `createdAt` first.
 2. **Drop issues that are already being worked without a claim.** Work that
-   predates the claim protocol carries no `in-progress` label. Fetch once:
+   predates the claim protocol carries no claim label. Fetch once:
 
    ```powershell
    gh pr list --repo <owner>/<repo> --state open --json number,headRefName
@@ -89,11 +104,11 @@ Then, in order:
 
    A `blocked_by` other than `0` is blocked -- skip it. Keep `total_blocked_by`:
    Step 2 uses it to spot newly unblocked issues.
-4. **Stale claims are candidates too.** List `in-progress` issues separately
-   (`--search "label:in-progress"`). A claim is **stale** when there has been no
-   comment on the issue *and* no commit on its claimed branch for **3 days**. A
-   stale-claimed issue is ranked like any other; taking it over is part of
-   claiming (Step 4).
+4. **Stale claims are candidates too.** List claimed issues separately
+   (`--search "label:lifecycle/active"`, and `label:in-progress` for the legacy
+   name). A claim is **stale** when there has been no comment on the issue *and*
+   no commit on its claimed branch for **3 days**. A stale-claimed issue is
+   ranked like any other; taking it over is part of claiming (Step 4).
 
 Keep the whole ranked list; Step 3 shows its head.
 
@@ -104,22 +119,62 @@ changed after it was prioritized, gets a decision the next time anyone asks
 what is next -- not whenever someone happens to notice. Triage runs before the
 list is shown, so the list reflects the decisions.
 
-**Unprioritized issues** -- open, no priority label, not held:
+**Unprioritized issues** -- open, not held, with no priority label in any form,
+canonical or legacy:
 
 ```powershell
-gh issue list --repo <owner>/<repo> --state open --limit 300 `
-  --search "-label:priority-0 -label:priority-1 -label:priority-2 -label:priority-3 -label:hold" `
-  --json number,title,labels,body
+$open = gh issue list --repo <owner>/<repo> --state open --limit 300 `
+  --search "-label:hold" `
+  --json number,title,labels,body | ConvertFrom-Json
+```
+
+```powershell
+$unprioritized = @($open | Where-Object { -not @($_.labels.name | Where-Object { $rank.ContainsKey($_) }).Count })
 ```
 
 For each, propose a priority and (when the repository uses area labels and the
 issue has none) an area, each with a one-line reason drawn from the issue.
 
-**Changed since prioritized** -- the issue body was edited, or a comment was
-added or edited, after its current priority was last decided:
+**Legacy labels -- to migrate.** Issues carrying an old name (`priority-N`,
+`priority: N`, `in-progress`, `area:<name>`) are read correctly -- they are
+prioritized, not re-triaged -- and reported as **to migrate**:
 
 ```powershell
-$json = gh api graphql --paginate --slurp -f q="repo:<owner>/<repo> is:issue is:open label:priority-0,priority-1,priority-2,priority-3" -f query='
+$legacy = '^(priority-\d|priority: \d|in-progress|area:.+)$'
+$toMigrate = @($open | Where-Object { @($_.labels.name | Where-Object { $_ -match $legacy }).Count })
+```
+
+Each old name has exactly one new name:
+
+```powershell
+function Get-CanonicalLabel([string]$old) {
+    if ($rank.ContainsKey($old)) { return $canonical[$rank[$old]] }
+    if ($old -eq 'in-progress') { return 'lifecycle/active' }
+    if ($old -match '^area:\s*(.+)$') { return "area/$($Matches[1].Trim())" }
+}
+```
+
+Offer the migration, and carry it out **only after the owner confirms** it.
+Per old label: when its new name does not exist yet, **rename the label in
+place** -- every issue carrying it, open or closed, moves at once and keeps its
+history:
+
+```powershell
+gh label edit "<old>" --repo <owner>/<repo> --name "<new>"
+```
+
+When the new name already exists, relabel each carrying issue instead -- add
+the new label, then remove the old one -- and delete the old label only once no
+issue carries it. Priority marker comments already written keep the old name;
+`$rank` reads them, so nothing needs rewriting.
+
+**Changed since prioritized** -- the issue body was edited, or a comment was
+added or edited, after its current priority was last decided. The search is
+not narrowed by label, because a legacy name with a space cannot be listed
+safely there; `$rank` decides which issues are prioritized:
+
+```powershell
+$json = gh api graphql --paginate --slurp -f q="repo:<owner>/<repo> is:issue is:open -label:hold" -f query='
 query($q: String!, $endCursor: String) {
   search(query: $q, type: ISSUE, first: 50, after: $endCursor) {
     pageInfo { hasNextPage endCursor }
@@ -134,20 +189,27 @@ query($q: String!, $endCursor: String) {
 }'
 ```
 
-The priority was last decided at the later of the latest `LabeledEvent` for the
-issue's current `priority-N` label and the latest comment carrying that
-decision's `<!-- priority: label="priority-N" -->` marker. A comment that
-**contains** a claim, release or priority marker is bookkeeping, not a change,
-however much prose surrounds the marker:
+The priority was last decided at the later of the latest `LabeledEvent` for a
+label of the issue's current rank and the latest comment carrying a
+`<!-- priority: label="..." -->` marker for that rank. Both are compared
+**through `$rank`**, so a marker that still names a legacy label
+(`priority-1`) counts as the decision for `priority/important-soon`, and a
+marker for a different priority does not. A comment that **contains** a claim,
+release or priority marker is bookkeeping, not a change, however much prose
+surrounds the marker:
 
 ```powershell
 $ignore = '<!-- (claim|release|priority):'
 $issues = @(($json | ConvertFrom-Json) | ForEach-Object { $_.data.search.nodes })
 foreach ($i in $issues) {
-    $label = @($i.labels.nodes.name | Where-Object { $_ -match '^priority-\d$' })[0]
+    $ranks = @($i.labels.nodes.name | Where-Object { $rank.ContainsKey($_) } | ForEach-Object { $rank[$_] })
+    if (-not $ranks.Count) { continue }   # unprioritized -- handled above
+    $r = ($ranks | Measure-Object -Minimum).Minimum
     $decided = @(
-        $i.timelineItems.nodes | Where-Object { $_.label.name -eq $label } | ForEach-Object { [datetime]$_.createdAt }
-        $i.comments.nodes | Where-Object { $_.body -match "<!-- priority: label=`"$label`"" } | ForEach-Object { [datetime]$_.createdAt }
+        $i.timelineItems.nodes | Where-Object { $_.label -and $rank.ContainsKey($_.label.name) -and $rank[$_.label.name] -eq $r } |
+            ForEach-Object { [datetime]$_.createdAt }
+        $i.comments.nodes | Where-Object { $_.body -match '<!-- priority: label="([^"]+)"' -and $rank.ContainsKey($Matches[1]) -and $rank[$Matches[1]] -eq $r } |
+            ForEach-Object { [datetime]$_.createdAt }
     ) | Sort-Object | Select-Object -Last 1
     if (-not $decided) { continue }
     $bodyEdited = $i.lastEditedAt -and [datetime]$i.lastEditedAt -gt $decided
@@ -155,7 +217,7 @@ foreach ($i in $issues) {
         $_.body -notmatch $ignore -and
         ([datetime]$_.createdAt -gt $decided -or ($_.lastEditedAt -and [datetime]$_.lastEditedAt -gt $decided)) })
     if ($bodyEdited -or $changes.Count) {
-        [pscustomobject]@{ Number = $i.number; Priority = $label; BodyEdited = [bool]$bodyEdited; NewOrEditedComments = $changes.Count }
+        [pscustomobject]@{ Number = $i.number; Priority = $canonical[$r]; BodyEdited = [bool]$bodyEdited; NewOrEditedComments = $changes.Count }
     }
 }
 ```
@@ -176,10 +238,11 @@ decision -- closing a blocker changes no priority, it only lets the issue in.
 
 **Decide.** Ask the owner to confirm or change each proposed and each changed
 priority, through the harness's choice prompt: the proposal first, marked as
-recommended, then the other priorities and `hold`. Batch the questions; do not
-ask one issue at a time when several are waiting. Then write each decision --
-**add the new label first, remove the old one second**, so the issue is never
-without a priority, not even for a moment:
+recommended, then the other priorities (as `P<n> (<label>)`) and `hold`. Batch
+the questions; do not ask one issue at a time when several are waiting. Put the
+legacy-label migration in the same batch. Then write each decision -- **add the
+new label first, remove the old one second**, so the issue is never without a
+priority, not even for a moment:
 
 ```powershell
 gh issue edit <n> --repo <owner>/<repo> --add-label <new-priority>
@@ -191,37 +254,38 @@ For a first-time priority there is no old label: the remove is a harmless
 no-op, and may be skipped. A **confirmation** changes no label at all. Every
 decision -- set, changed or confirmed -- is recorded by its reason comment,
 which says what was decided and why and ends with the marker
-`<!-- priority: label="priority-N" -->`. That marker is what makes the decision
-time visible to the next run, so a confirmed issue is not flagged again.
+`<!-- priority: label="<canonical label>" -->`. That marker is what makes the
+decision time visible to the next run, so a confirmed issue is not flagged
+again.
 
 ## Step 3 -- Show the pick list and who holds what
 
 **Re-rank first.** Triage may have just set, changed or held priorities. Apply
 those decisions to the ranked list from Step 1 -- re-fetch the relabelled
 issues rather than trusting the labels read before triage -- so an issue just
-raised to `priority-0` is at the top, one just held drops out, and one just
-prioritized enters.
+raised to P0 is at the top, one just held drops out, and one just prioritized
+enters.
 
 Then show the head of the re-ranked list: the top `N` candidates
 (default **5**), one row each.
 
 | Issue | Priority | Area | Title | Why it is here |
 |---|---|---|---|---|
-| #<n> | priority-1 | area:<x> | <title> | oldest priority-1 |
-| #<m> | priority-1 | area:<y> | <title> | newly unblocked: blocker #<k> closed <date> |
-| #<j> | priority-2 | area:<x> | <title> | stale claim by `<session>`, silent 4 days -- picking it takes it over |
+| #<n> | P1 (priority/important-soon) | area/<x> | <title> | oldest P1 |
+| #<m> | P1 (priority/important-soon) | area/<y> | <title> | newly unblocked: blocker #<k> closed <date> |
+| #<j> | P2 (priority/important-longterm) | area/<x> | <title> | stale claim by `<session>`, silent 4 days -- picking it takes it over |
 
 Then **who holds what** -- every live claim, read from the claim markers the
 protocol already writes (no other state exists):
 
 ```powershell
-gh issue list --repo <owner>/<repo> --state open --label in-progress --json number,title
+gh issue list --repo <owner>/<repo> --state open --search "label:lifecycle/active,in-progress" --json number,title
 gh issue view <n> --repo <owner>/<repo> --json comments --jq '.comments[] | select(.body | test("<!-- (claim|release):")) | {createdAt, body}'
 git fetch origin --quiet
 git log -1 --format=%cI origin/<branch>
 ```
 
-For each `in-progress` issue, the live claim is the latest
+For each claimed issue, the live claim is the latest
 `<!-- claim: session="..." session_id="..." host="..." branch="..." -->` marker
 not followed by a matching release. Report:
 
@@ -229,10 +293,10 @@ not followed by a matching release. Report:
 |---|---|---|---|---|---|---|---|
 
 *Last activity* is the later of the issue's latest comment and the last commit
-on the branch; *stale* is more than 3 days of neither. An `in-progress` issue
-with no parseable claim marker is listed as "claimed, no marker". A claim made
-before session IDs were recorded, or recorded as `unknown`, shows its session
-ID as unknown.
+on the branch; *stale* is more than 3 days of neither. A claimed issue with no
+parseable claim marker is listed as "claimed, no marker". A claim made before
+session IDs were recorded, or recorded as `unknown`, shows its session ID as
+unknown.
 
 For a **quiet** claim -- no activity for more than a day, or stale -- print how
 to reach its session:
@@ -283,7 +347,7 @@ claim it only once it carries a priority.
 3. **Label and comment:**
 
    ```powershell
-   gh issue edit <n> --repo <owner>/<repo> --add-label in-progress
+   gh issue edit <n> --repo <owner>/<repo> --add-label lifecycle/active
    gh issue comment <n> --repo <owner>/<repo> --body-file <claim.md>
    ```
 
@@ -363,11 +427,12 @@ reviewer's model recorded. Smaller does not mean fewer gates.
 
 ## Step 7 -- Report
 
-One short table of what was dispatched: issue, title, mode and the one-line
-reason, branch. Then, if any: the triage decisions written (priorities set,
-changed or confirmed), issues skipped as "already in flight, no claim", stale
-claims taken over (with the previous holder's session ID), picks lost to a
-race, and the live-claims table from Step 3.
+One short table of what was dispatched: issue, title, priority as
+`P<n> (<label>)`, mode and the one-line reason, branch. Then, if any: the
+triage decisions written (priorities set, changed or confirmed), labels
+migrated, issues skipped as "already in flight, no claim", stale claims taken
+over (with the previous holder's session ID), picks lost to a race, and the
+live-claims table from Step 3.
 
 ## When no user is present
 
@@ -376,10 +441,11 @@ do not show a pick list or ask. Claim the top `N` ranked candidates instead
 (the count; default **1**), dispatch them as in Steps 4-6, and say so in the
 report ("unattended: claimed the top N without a pick").
 
-Triage labels nothing when unattended. List the unprioritized and
-changed-since-prioritized issues under **Needs you**, each with a proposed
-priority and reason, and dispatch only from issues that already carry a
-priority label -- an unprioritized issue is never claimed without the owner.
+Triage labels nothing when unattended, and migrates nothing: legacy labels are
+read through `$rank` and listed as "to migrate". List the unprioritized,
+changed-since-prioritized and to-migrate issues under **Needs you**, each with a
+proposed decision and reason, and dispatch only from issues that already carry
+a priority label -- an unprioritized issue is never claimed without the owner.
 Newly unblocked issues are still marked.
 
 ## Continuous dispatch
@@ -394,7 +460,9 @@ a new component, and not a controller. A loop runs unattended, so it follows
 - Claim or dispatch an unprioritized issue -- not even one typed under "Other".
   It goes through triage first.
 - Claim an issue the owner did not pick, when the owner is present to pick.
-- Set, change or confirm a priority label without the owner's decision.
+- Set, change or confirm a priority label, or migrate a label, without the
+  owner's decision.
+- Rank priorities alphabetically -- the order is P0 > P1 > P2 > P3 > P4.
 - Guess a session ID. The harness's value, or `unknown`.
 - Read or update a tracking/controller issue to decide what is next.
 - Claim with the assignee field -- every session runs as the same account, so an
