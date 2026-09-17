@@ -510,17 +510,59 @@ for (const script of SCRIPTS) {
 // learning that deciding that is lexing JavaScript, that a regex over lines is
 // not a lexer, and that every failure landed in the SILENT direction.
 //
-// So this is deliberately shallow, and wrong only in the loud direction. It
-// over-reports a script whose call is guarded by something other than
-// `require.main`, and it says nothing about a script with no top-level call at
-// all. It is a tripwire for the ordinary case -- someone adding a sixth CLI
-// with `main();` at the bottom -- and should not be read as a proof that none
-// exists.
+// So this is deliberately shallow, and wrong only in the loud direction.
+//
+// THE FIRST VERSION OF THIS SECTION WAS WRONG IN THE OTHER ONE, and independent
+// review found it. It matched a call named `main` or `run`, then exempted any
+// file whose raw text contained `require.main` ANYWHERE:
+//
+//     if (!BARE_ENTRY_CALL.test(src)) continue;
+//     if (src.includes('require.main')) continue;   // <- whole file
+//
+// so a sixth script with a real unguarded `main();` and an unrelated mention of
+// `require.main` elsewhere -- a comment, a see-also, a TODO -- passed silently.
+// That is the same defect as PR #455's commented-out `require()`: a substring
+// test that is not tied to the thing it is meant to be about.
+//
+// The exemption is gone rather than narrowed, because it was never needed. A
+// GUARDED call cannot match this pattern in the first place: `if (require.main
+// === module) main();` begins with `if`, and the multi-line spelling indents
+// the call. There is nothing for an exemption to rescue, so there is nothing
+// for one to leak through. The rule is now a single question of raw text -- is
+// there a call at column zero -- and the name half was widened at the same
+// time, since restricting it to `main` and `run` silently missed `execute()`
+// or `cli()` and no production script in this tree has any column-zero call at
+// all.
+//
+// WHAT IT STILL MISSES, stated rather than implied: a top-level `await`, and
+// an entry point reached some way other than a call at column zero. It says
+// nothing about a script with no top-level call. It is a tripwire for the
+// ordinary case -- someone adding a sixth CLI with `main();` at the bottom --
+// and should not be read as a proof that none exists.
 {
-    // A bare call to a top-level entry point at column 0: `main();`,
-    // `main().catch(...)`, `run();`. An indented call is inside something else
-    // and is not the pattern this is about.
-    const BARE_ENTRY_CALL = /^(?:main|run)\s*\(\s*\)/m;
+    // A call at column zero: `main();`, `main().catch(...)`, `execute(argv)`,
+    // or an immediately-invoked function expression. An indented call is inside
+    // something else and is not the pattern this is about.
+    const TOP_LEVEL_CALL = /^([A-Za-z_$][\w$]*)\s*\(/gm;
+    const TOP_LEVEL_IIFE = /^[(!+~-]\s*(?:async\s+)?(?:function\b|\()/m;
+
+    // Statements that begin a line with a name followed by `(` and are not
+    // calls. Keeping this list is the price of not writing a parser, and it
+    // errs loud: a keyword left off it reports a compliant file.
+    const NOT_A_CALL = new Set(['if', 'for', 'while', 'switch', 'catch', 'do',
+        'else', 'return', 'typeof', 'void', 'delete', 'new', 'function',
+        'class', 'await', 'yield', 'throw', 'import', 'export', 'with']);
+
+    function unguardedEntryCalls(src) {
+        const names = [];
+        if (TOP_LEVEL_IIFE.test(src)) names.push('(IIFE)');
+        TOP_LEVEL_CALL.lastIndex = 0;
+        let m;
+        while ((m = TOP_LEVEL_CALL.exec(src)) !== null) {
+            if (!NOT_A_CALL.has(m[1])) names.push(m[1]);
+        }
+        return names;
+    }
 
     function walkJs(dir, found) {
         for (const name of fs.readdirSync(dir)) {
@@ -542,26 +584,65 @@ for (const script of SCRIPTS) {
 
     // Both directions on the predicate itself, driven by synthetic sources, so
     // the rule is pinned rather than whatever the tree happens to contain today.
-    assert.ok(BARE_ENTRY_CALL.test('function main() {}\nmain();\n'),
+    assert.deepStrictEqual(unguardedEntryCalls('function main() {}\nmain();\n'), ['main'],
         '8.b: an unguarded top-level main() is not recognised, so this section is inert.');
-    assert.ok(BARE_ENTRY_CALL.test('main().catch((e) => { process.exit(1); });\n'),
+    assert.deepStrictEqual(
+        unguardedEntryCalls('main().catch((e) => { process.exit(1); });\n'), ['main'],
         '8.c: an unguarded top-level main().catch(...) is not recognised -- the async ' +
         'spelling, which is what capture-cdp.js and capture-har.js use.');
-    assert.ok(!BARE_ENTRY_CALL.test('if (require.main === module) main();\n'),
+    assert.deepStrictEqual(unguardedEntryCalls('if (require.main === module) main();\n'), [],
         '8.d: a guarded call is reported, so every compliant script fails this section.');
-    assert.ok(!BARE_ENTRY_CALL.test('    main();\n'),
-        '8.e: an indented call is treated as a top-level entry point.');
+    assert.deepStrictEqual(
+        unguardedEntryCalls('if (require.main === module) {\n    main().catch(() => {});\n}\n'),
+        [],
+        '8.e: the multi-line guarded spelling is reported. capture-cdp.js and capture-har.js ' +
+        'both use it, so this section would fail the very files it is meant to bless.');
+    assert.deepStrictEqual(unguardedEntryCalls('    main();\n'), [],
+        '8.f: an indented call is treated as a top-level entry point.');
+
+    // The reviewer's reproduction of the FIRST version of this rule, which
+    // exempted any file whose text contained `require.main` anywhere. It is
+    // pinned because the failure was silent, and a silent failure that is
+    // fixed but not pinned is a silent failure waiting to be reintroduced.
+    assert.deepStrictEqual(
+        unguardedEntryCalls(
+            '// TODO: revisit per the require.main pattern used elsewhere\n' +
+            'function main() {}\nmain();\n'),
+        ['main'],
+        '8.g: an unrelated mention of require.main elsewhere in the file silences the check ' +
+        'for a real unguarded call. That is the whole-file substring test this rule was ' +
+        'rewritten to stop needing.');
+
+    // The name half, widened: an entry point called something else is still an
+    // entry point, and so is one that takes arguments.
+    assert.deepStrictEqual(unguardedEntryCalls('execute();\n'), ['execute'],
+        '8.h: an entry point not named main or run is missed.');
+    assert.deepStrictEqual(
+        unguardedEntryCalls('cli(process.argv.slice(2));\n'), ['cli'],
+        '8.i: an entry point taking arguments is missed.');
+    assert.deepStrictEqual(
+        unguardedEntryCalls('(async () => { await main(); })();\n'), ['(IIFE)'],
+        '8.j: a top-level immediately-invoked function expression is missed -- the other ' +
+        'ordinary way to run async work at load time.');
+
+    // The loud direction, pinned so the keyword list is not quietly emptied.
+    for (const kw of ['if (x) {', 'for (const a of b) {', 'while (n) {',
+        'switch (v) {', 'catch (e) {', 'return (1);', 'throw (e);']) {
+        assert.deepStrictEqual(unguardedEntryCalls(kw + '\n'), [],
+            `8.k: the statement \`${kw}\` is read as a call, so this section reports every ` +
+            'file that opens a block at column zero.');
+    }
 
     const offenders = [];
     for (const file of scanned) {
-        const src = fs.readFileSync(file, 'utf8');
-        if (!BARE_ENTRY_CALL.test(src)) continue;
-        if (src.includes('require.main')) continue;
-        offenders.push(path.relative(scriptsDir, file).split(path.sep).join('/'));
+        const calls = unguardedEntryCalls(fs.readFileSync(file, 'utf8'));
+        if (calls.length === 0) continue;
+        offenders.push(path.relative(scriptsDir, file).split(path.sep).join('/') +
+            ' -> ' + calls.join(', '));
     }
 
     assert.deepStrictEqual(offenders, [],
-        '8.f: a production script calls its entry point unconditionally at the top level, so ' +
+        '8.l: a production script calls its entry point unconditionally at the top level, so ' +
         'requiring it runs the work and exits the requiring process. That is #446 and #456 ' +
         'again: an unimportable module cannot be the single definition of anything, and ' +
         'every caller that needs something it knows will copy instead. Wrap the call in ' +
