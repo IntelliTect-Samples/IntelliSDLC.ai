@@ -1108,8 +1108,15 @@ async function preflightDependencies(opts = {}) {
                         ? `  ${neverStarted} could not be started at all -- it is not on PATH, ` +
                           'or this\n  shell cannot launch it. Run the command above yourself. ' +
                           'Nothing was recorded.'
-                        : '  The install ran, but it is still not resolvable. ' +
-                          'Nothing was recorded.')
+                        // On Windows `started` only tells us the INTERPRETER
+                        // started. If npm itself is absent from PATH, cmd.exe
+                        // runs, prints "not recognized" and exits 1 -- a
+                        // normal exit, indistinguishable here from an install
+                        // that ran and did not work. So this wording covers
+                        // both rather than asserting the one it cannot know.
+                        : '  The install did not produce a usable module -- npm may not be ' +
+                          'on PATH, or\n  it did not do what it reported. Run the command ' +
+                          'above yourself. Nothing was recorded.')
             };
         }
     }

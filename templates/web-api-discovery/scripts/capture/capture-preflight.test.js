@@ -392,7 +392,7 @@ test('an installer that never started is not described as having run', async () 
         'and does not claim it ran\n' + r.message);
 });
 
-test('an installer that ran and failed is described as having run', async () => {
+test('an installer that ran without producing a module does not blame the install', async () => {
     // The other side of the same distinction -- otherwise the new wording
     // could be produced by always saying "never started", which would be just
     // as misleading in the opposite direction.
@@ -408,8 +408,13 @@ test('an installer that ran and failed is described as having run', async () => 
         }
     });
     assert.strictEqual(r.ok, false);
-    assert.ok(/The install ran/.test(r.message), r.message);
+    assert.ok(/did not produce a usable module/.test(r.message), r.message);
     assert.ok(!/could not be started at all/.test(r.message), r.message);
+    // On Windows `started` only reports that the INTERPRETER started: npm
+    // missing from PATH still exits normally through cmd.exe. So this branch
+    // must not claim the install ran -- it cannot know that.
+    assert.ok(/not be on PATH/.test(r.message),
+        'names the possibility it cannot rule out\n' + r.message);
 });
 
 test('accepting also fetches the browser when the browser is what is missing', async () => {
