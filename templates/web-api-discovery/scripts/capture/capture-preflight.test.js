@@ -161,6 +161,19 @@ function git(cwd, args) {
     return execFileSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
 }
 
+// Every in-process preflight case below pins the platform to Windows.
+//
+// Not because the behaviour is Windows-specific, but because npm's default
+// global root is derived DIFFERENTLY per platform -- `%APPDATA%\npm\node_modules`
+// on Windows, `<prefix>/lib/node_modules` elsewhere. A fixture that sets
+// APPDATA and lets the host platform decide controls the machine default on a
+// Windows runner and not on a Linux one, where the REAL global root would be
+// searched instead: the assertions would then depend on what the runner
+// happens to have installed. Pinning makes one fixture mean the same thing
+// everywhere. The per-platform derivation itself is pinned separately, on both
+// branches, in node-dependency.test.js.
+const WIN = 'win32';
+
 // The suite's preconditions, asserted rather than assumed. Every "the module
 // is absent" case below depends on nothing above the fixtures -- or above the
 // recorder itself -- holding a playwright install. On a machine where one
@@ -173,6 +186,19 @@ test('PRECONDITION: no playwright install sits above the fixtures', () => {
     assert.ok(!ancestorHasPlaywright(tmpRoot), 'fixture root is clean: ' + tmpRoot);
     assert.ok(!ancestorHasPlaywright(__dirname),
         "the recorder's own directory is clean, so the tool location cannot answer either");
+
+    // And the machine's REAL global root, which the subprocess cases cannot
+    // point elsewhere: they spawn the recorder, so they get the host platform's
+    // derivation whatever APPDATA says. A globally installed playwright would
+    // make "nothing is scaffolded when the dependency is missing" pass by
+    // never reaching the branch it names.
+    const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
+    const globalRoot = nodeDep.defaultGlobalRoot({});
+    if (globalRoot) {
+        assert.ok(!fs.existsSync(path.join(globalRoot, 'playwright')),
+            'this machine has no global playwright install (' + globalRoot + '), so the ' +
+            'subprocess absence cases reach the branch they name');
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -182,6 +208,7 @@ test('PRECONDITION: no playwright install sits above the fixtures', () => {
 test('the preflight passes when the module and the browser are both there', async () => {
     const cwd = plantPlaywright(dir('pf-ok'));
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd, toolDir: dir('pf-ok-tool'), isTty: false,
         env: { APPDATA: dir('pf-ok-appdata'), PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-ok-browsers')) }
     });
@@ -191,6 +218,7 @@ test('the preflight passes when the module and the browser are both there', asyn
 test('a missing module is refused without prompting when there is no terminal', async () => {
     let asked = 0;
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd: dir('pf-nomod'), toolDir: dir('pf-nomod-tool'), isTty: false,
         ask: () => { asked++; return Promise.resolve('y'); },
         env: { APPDATA: dir('pf-nomod-appdata'), PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-nomod-browsers')) }
@@ -206,6 +234,7 @@ test('the refusal names every folder it searched', async () => {
     const appdata = dir('pf-named-appdata');
     const nodePathDir = dir('pf-named-nodepath');
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd, toolDir, isTty: false,
         // npm silenced, so the location named is the one this test set up.
         // The refinement has its own case below.
@@ -247,6 +276,7 @@ test('a present module with a missing browser asks for the browser, not the modu
     // again on the same line.
     const cwd = plantPlaywright(dir('pf-nobrowser'));
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd, toolDir: dir('pf-nobrowser-tool'), isTty: false,
         env: {
             APPDATA: dir('pf-nobrowser-appdata'),
@@ -263,6 +293,7 @@ test('with a terminal it offers to install, and declining prints the commands', 
     const asked = [];
     let installs = 0;
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd: dir('pf-decline'), toolDir: dir('pf-decline-tool'), isTty: true,
         ask: (q) => { asked.push(q); return Promise.resolve('n'); },
         install: () => { installs++; return { ok: true }; },
@@ -285,6 +316,7 @@ test('accepting runs the install into the machine default, then re-checks', asyn
     const appdata = dir('pf-accept-appdata');
     const commands = [];
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd: dir('pf-accept'), toolDir: dir('pf-accept-tool'), isTty: true,
         ask: () => Promise.resolve('y'),
         install: (cmd, args) => {
@@ -309,6 +341,7 @@ test('the re-check is a real re-resolution, not a trust of the exit code', async
     // catching: believing it hands the operator a browser launch failure
     // several steps later, with no mention of the install that did not work.
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd: dir('pf-liar'), toolDir: dir('pf-liar-tool'), isTty: true,
         ask: () => Promise.resolve('y'),
         install: () => ({ ok: true }),
@@ -324,6 +357,7 @@ test('accepting also fetches the browser when the browser is what is missing', a
     const browsers = dir('pf-browser-accept-browsers');
     const commands = [];
     const r = await capture.preflightDependencies({
+        platform: WIN,
         cwd: plantPlaywright(dir('pf-browser-accept')), toolDir: dir('pf-browser-accept-tool'),
         isTty: true,
         ask: () => Promise.resolve('y'),
