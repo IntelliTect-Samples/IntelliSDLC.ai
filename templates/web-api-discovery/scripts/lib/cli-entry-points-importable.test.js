@@ -534,17 +534,50 @@ for (const script of SCRIPTS) {
 // or `cli()` and no production script in this tree has any column-zero call at
 // all.
 //
-// WHAT IT STILL MISSES, stated rather than implied: a top-level `await`, and
-// an entry point reached some way other than a call at column zero. It says
-// nothing about a script with no top-level call. It is a tripwire for the
-// ordinary case -- someone adding a sixth CLI with `main();` at the bottom --
-// and should not be read as a proof that none exists.
+// THE IIFE HALF WAS WRONG TOO, and the same review found that on the next
+// round. Its prefix class was `( ! + ~ -`, which misses two textbook spellings
+// of exactly the thing it is for:
+//
+//     ;(function () { main(); })();     the semicolon-guard form, written to
+//                                       survive concatenation
+//     void function () { main(); }();   the void-prefixed form
+//
+// Neither is contrived, both run main() unconditionally at load, and both were
+// passing silently. `;` joins the prefix class and `void` is handled as a
+// prefix keyword below. The lesson is the one PR #455 already paid for: a
+// character class is a guess about spellings, and a guess that is wrong is
+// wrong silently.
+//
+// WHAT IT STILL MISSES, stated rather than implied, each one found by trying:
+//
+//   * A top-level `await`.
+//   * Work scheduled rather than called -- `Promise.resolve().then(() =>
+//     main());` at column zero. The identifier `Promise` is not followed by
+//     `(`, and the call to main is indented inside the callback.
+//   * An entry point reached some way other than a call at column zero. It
+//     says nothing about a script with no top-level call.
+//
+// AND WHERE IT IS WRONG LOUDLY, which is the acceptable direction: the
+// brace-less guard spelling
+//
+//     if (require.main === module)
+//     main();
+//
+// is valid JavaScript and IS reported, because the call reaches column zero on
+// its own line. Nothing in this tree writes it that way -- every guard here is
+// single-line or braced -- but a file that did would fail this section while
+// being perfectly correct. One line to fix by adding the braces.
+//
+// It is a tripwire for the ordinary case -- someone adding a sixth CLI with
+// `main();` at the bottom -- and should not be read as a proof that none
+// exists.
 {
     // A call at column zero: `main();`, `main().catch(...)`, `execute(argv)`,
-    // or an immediately-invoked function expression. An indented call is inside
-    // something else and is not the pattern this is about.
+    // or an immediately-invoked function expression in any of its prefixed
+    // spellings. An indented call is inside something else and is not the
+    // pattern this is about.
     const TOP_LEVEL_CALL = /^([A-Za-z_$][\w$]*)\s*\(/gm;
-    const TOP_LEVEL_IIFE = /^[(!+~-]\s*(?:async\s+)?(?:function\b|\()/m;
+    const TOP_LEVEL_IIFE = /^(?:void\s+|[;(!+~-]\s*)(?:async\s+)?(?:function\b|\()/m;
 
     // Statements that begin a line with a name followed by `(` and are not
     // calls. Keeping this list is the price of not writing a parser, and it
@@ -620,10 +653,37 @@ for (const script of SCRIPTS) {
     assert.deepStrictEqual(
         unguardedEntryCalls('cli(process.argv.slice(2));\n'), ['cli'],
         '8.i: an entry point taking arguments is missed.');
-    assert.deepStrictEqual(
-        unguardedEntryCalls('(async () => { await main(); })();\n'), ['(IIFE)'],
-        '8.j: a top-level immediately-invoked function expression is missed -- the other ' +
-        'ordinary way to run async work at load time.');
+    // Every top-level IIFE spelling, because the prefix class was a guess and
+    // the first guess missed two of them silently. Each entry is a real idiom,
+    // not a contrivance: the bare-paren forms, the semicolon guard written to
+    // survive concatenation, the void form, and the operator-prefixed ones.
+    const IIFE_SPELLINGS = [
+        '(function () { main(); })();\n',
+        '(() => { main(); })();\n',
+        '(async () => { await main(); })();\n',
+        '(async function () { await main(); })();\n',
+        ';(function () { main(); })();\n',
+        ';(async () => { await main(); })();\n',
+        'void function () { main(); }();\n',
+        'void (function () { main(); })();\n',
+        '!function () { main(); }();\n',
+        '+function () { main(); }();\n',
+        '~function () { main(); }();\n',
+        '-function () { main(); }();\n',
+    ];
+    for (const src of IIFE_SPELLINGS) {
+        assert.deepStrictEqual(unguardedEntryCalls(src), ['(IIFE)'],
+            `8.j: the top-level IIFE spelling \`${src.trim()}\` is missed. Independent ` +
+            'review falsified the first prefix class with the `;` and `void` forms, both ' +
+            'of which run main() at load and both of which passed silently.');
+    }
+
+    // The loud direction on the IIFE half too: `void` that is not an IIFE, and
+    // a prefix character that opens nothing, must not be reported.
+    for (const benign of ['void 0;\n', 'const x = (1 + 2);\n', '// (function) in prose\n']) {
+        assert.deepStrictEqual(unguardedEntryCalls(benign), [],
+            `8.k: \`${benign.trim()}\` is read as a top-level IIFE.`);
+    }
 
     // The loud direction, pinned so the keyword list is not quietly emptied.
     for (const kw of ['if (x) {', 'for (const a of b) {', 'while (n) {',
@@ -642,7 +702,7 @@ for (const script of SCRIPTS) {
     }
 
     assert.deepStrictEqual(offenders, [],
-        '8.l: a production script calls its entry point unconditionally at the top level, so ' +
+        '8.m: a production script calls its entry point unconditionally at the top level, so ' +
         'requiring it runs the work and exits the requiring process. That is #446 and #456 ' +
         'again: an unimportable module cannot be the single definition of anything, and ' +
         'every caller that needs something it knows will copy instead. Wrap the call in ' +
