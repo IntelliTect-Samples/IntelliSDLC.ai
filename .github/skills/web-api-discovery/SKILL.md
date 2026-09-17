@@ -411,11 +411,50 @@ not valid UTF-8. `recordHar` is preferred where both exist only because it
 knows things a client-side recorder cannot observe (`serverIPAddress`,
 `connection`, real header sizes, `cache`, page timings).
 
-**Preflight.** `.har-profile.json` is resolved before the browser launches. On
-a TTY the recorder offers to scaffold one; without a TTY it fails with the
+**Preflight.** The browser driver is resolved **first**, ahead of every prompt
+and every file the recorder would otherwise write. A missing dependency is the
+first line, not the last, so a run that cannot finish leaves the folder
+untouched. `playwright` is looked for in four places, in this order:
+
+1. **the folder you are in**, searched upward -- a project with its own copy wins
+2. **the recorder's own install**, searched upward -- a repo that synced this skill
+3. **this machine's global npm modules** -- one `npm install -g playwright` serves
+   every folder afterwards
+4. **`NODE_PATH`** -- Node's own way of pointing at an install somewhere else
+
+If none of them has it, the failure names all four by absolute path and offers
+to install into the machine default; the Chromium binary is reported separately,
+because `npm install` does not fetch one. There is no option or environment
+variable to configure any of this -- every location above is a mechanism Node or
+npm already provides. `--validate-only` skips the whole check: it resolves paths
+and opens nothing.
+
+Then `.har-profile.json` is resolved, still before the browser launches. On a
+TTY the recorder offers to scaffold one; without a TTY it fails with the
 `HOWTO`. Discovering an absent profile after a browsing session is spent costs
 the session; here it costs seconds. A `.har-storage-state.json` at or above the
 working directory is discovered the same way, and its absence is not an error.
+
+**Is a git repository required to record?** **No.** Nothing in the recorder
+needs one, and a capture is gitignored state rather than something to commit.
+Point it at an empty folder and record.
+
+A repository still matters *later* -- it is where the scrubbed reference gets
+committed in Phase 3.5, and Phase 10.5 initializes one in this very folder. So
+"not a repository" is usually "not a repository **yet**", and the recorder
+protects both cases:
+
+- **Inside a work tree**, the capture store must be gitignored before anything
+  is recorded. The recorder asks git, and refuses (or offers to append the
+  rules) when it is not.
+- **Outside one**, there is no git to ask, so the recorder writes the same
+  rules into a `.gitignore` beside the capture store and says so. A later
+  `git init && git add -A` then cannot commit `.har-captures/` or
+  `.har-profile.json`. An existing `.gitignore` is appended to, never rewritten.
+
+That second case is not cosmetic: `.har-profile.json` holds the operator's salt
+and identifiers, and `.har-captures/` holds unscrubbed raw captures with live
+session cookies. The sweep that would commit them happens with nobody watching.
 
 **Driving the browser as an AI.** `Invoke-HarCapture` prints a CDP endpoint,
 and writes it to `session.json` -- read it there rather than assuming 9333,
@@ -1930,6 +1969,13 @@ The initial commit is what `Pull-SDLC.ai.ps1` merges into during Phase 11,
 so this step is mandatory whether or not the developer opts into the SDLC
 pull. Skipping `git init` leaves the project in a fragile, unversioned
 state and forces a manual remediation step on the developer.
+
+> **This is the `git add -A` Phase 2 protects against.** If a capture was
+> recorded in this folder before it was a repository, the recorder already
+> wrote a `.gitignore` covering `.har-captures/` and `.har-profile.json`, so
+> the salt and the unscrubbed raws stay out of that first commit. Do not
+> remove or overwrite it. See **Is a git repository required to record?** in
+> Phase 2.
 
 ### Phase 11 -- IntelliSDLC.ai Seed (required prompt; user may decline)
 
