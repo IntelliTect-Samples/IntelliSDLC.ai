@@ -53,6 +53,8 @@ const NODE_PATH = 'node-path';
 const UPWARD = 'upward';
 const CONTAINER = 'container';
 
+const PLAYWRIGHT = 'playwright';
+
 // The command that fetches the browser BINARY, which no `npm install` does.
 const BROWSER_INSTALL_COMMAND = 'npx playwright install chromium';
 
@@ -121,16 +123,27 @@ function searchLocations(opts) {
  * and then fail at `require` time with a different message.
  */
 function resolveAt(name, location, resolve) {
-    if (!location.dir) return null;
+    if (!location.dir) return { path: null };
     try {
-        if (location.kind === UPWARD) {
-            return resolve(name, { paths: [location.dir] });
-        }
-        // CONTAINER: the package sits directly inside, addressed by path.
-        return resolve(path.join(location.dir, name), { paths: [location.dir] });
+        const request = location.kind === UPWARD
+            ? name
+            // CONTAINER: the package sits directly inside, addressed by path.
+            : path.join(location.dir, name);
+        return { path: resolve(request, { paths: [location.dir] }) };
     } catch (e) {
-        void e;
-        return null;
+        // "NOT THERE" AND "THERE BUT UNREADABLE" ARE DIFFERENT FACTS.
+        //
+        // A blanket catch reports a corrupt `package.json`, a permission-denied
+        // global install and a broken symlink in the same words as an absent
+        // module -- and the remedy printed for an absent module is "go install
+        // it", which for a permissions problem installs a second copy somewhere
+        // else and still does not work. That is the same shape of unusable
+        // advice this whole issue exists to remove.
+        //
+        // MODULE_NOT_FOUND stays silent, because that is the ordinary answer.
+        // Anything else is carried up and said.
+        if (e && e.code === 'MODULE_NOT_FOUND') return { path: null };
+        return { path: null, problem: (e && (e.code || e.message)) || String(e) };
     }
 }
 
@@ -149,25 +162,66 @@ function resolveDependency(name, opts) {
     const searched = searchLocations(o).map((l) => Object.assign({ found: false }, l));
 
     for (const location of searched) {
-        const resolved = resolveAt(name, location, resolve);
-        if (resolved) {
+        const attempt = resolveAt(name, location, resolve);
+        if (attempt.problem) { location.problem = attempt.problem; }
+        if (attempt.path) {
             location.found = true;
-            return { found: true, path: resolved, location: location.key, searched };
+            return { found: true, path: attempt.path, location: location.key, searched };
         }
     }
     return { found: false, path: null, location: null, searched };
 }
 
+// A command this module is willing to build a Windows command line out of.
+// Deliberately narrow: letters, digits, dot, dash, underscore, @ and /. Every
+// argument this module actually passes is a literal written here in the source
+// -- `root -g`, `install -g playwright` -- so nothing outside this set is a
+// case that exists today, and refusing loudly is how it stays that way.
+const SAFE_ARGUMENT = /^[A-Za-z0-9@._/-]+$/;
+
 /**
- * The executable name for a Node CLI shim on this platform.
+ * Run a Node CLI shim and wait for it.
  *
- * `npm` and `npx` are batch shims on Windows, which is why spawning them there
- * is usually written with `shell: true`. Naming the `.cmd` directly does the
- * same job without handing the arguments to a command interpreter -- Node
- * deprecated that combination for exactly the injection reason.
+ * WHY THIS IS NOT `spawnSync('npm.cmd', args)`. On Windows `npm` and `npx` are
+ * batch shims, and since the CVE-2024-27980 fix Node REFUSES to spawn a `.cmd`
+ * or `.bat` without a shell: the call fails with EINVAL and never starts a
+ * process. `spawnSync` reports that in `result.error` rather than throwing, so
+ * the failure is easy to swallow and then describe as "the install ran and did
+ * not work" -- which sends the operator to debug an install that never began.
+ *
+ * `shell: true` works but hands the arguments to a command interpreter as one
+ * concatenated string, which Node now warns about (DEP0190). So on Windows the
+ * interpreter is invoked EXPLICITLY, with `/d /s /c` and a command line built
+ * from arguments this module validates first. Everywhere else the executable is
+ * spawned directly with its argument vector, which needs no interpreter at all.
  */
-function commandFor(name, platform) {
-    return (platform || process.platform) === 'win32' ? name + '.cmd' : name;
+function runCommand(name, args, opts) {
+    const o = opts || {};
+    const spawn = o.spawn || require('child_process').spawnSync;
+    const platform = o.platform || process.platform;
+    const parts = [name].concat(args || []);
+    for (const part of parts) {
+        if (!SAFE_ARGUMENT.test(part)) {
+            throw new Error(`refusing to run a command with an unsafe argument: ${part}`);
+        }
+    }
+    const settings = {
+        encoding: 'utf8',
+        stdio: o.stdio || 'pipe',
+        timeout: o.timeout
+    };
+    const result = platform === 'win32'
+        ? spawn(o.comspec || process.env.ComSpec || 'cmd.exe',
+            ['/d', '/s', '/c', parts.join(' ')], settings)
+        : spawn(name, args || [], settings);
+    return {
+        ok: result.status === 0,
+        status: result.status,
+        // Named so a caller can tell "started and failed" from "never started".
+        started: !result.error,
+        error: result.error,
+        stdout: result.stdout
+    };
 }
 
 /**
@@ -212,14 +266,12 @@ function defaultGlobalRoot(opts) {
  */
 function npmGlobalRoot(opts) {
     const o = opts || {};
-    const exec = o.exec || require('child_process').execFileSync;
+    const run = o.run || runCommand;
     try {
-        const out = exec(commandFor('npm', o.platform || process.platform), ['root', '-g'], {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: 5000
-        });
-        const line = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0];
+        const r = run('npm', ['root', '-g'], Object.assign({ timeout: 5000 }, o));
+        if (!r.ok) return null;
+        const line = String(r.stdout || '').split(/\r?\n/)
+            .map((l) => l.trim()).filter(Boolean)[0];
         return line ? path.resolve(line) : null;
     } catch (e) {
         void e;
@@ -295,7 +347,10 @@ function describeMissing(name, result, opts) {
     const searched = (result && result.searched) || [];
     const lines = [`the ${name} module was not found. Searched, in order:`];
     for (const s of searched) {
-        lines.push(s.dir ? `  ${s.label}: ${s.dir}` : `  ${s.label}`);
+        const where = s.dir ? `  ${s.label}: ${s.dir}` : `  ${s.label}`;
+        // A location that could not be READ is not a location that did not
+        // have it, and the difference decides what the operator should do.
+        lines.push(s.problem ? `${where}  (could not be read: ${s.problem})` : where);
     }
     lines.push('');
     lines.push('  Install it once for this machine:');
@@ -314,9 +369,48 @@ function describeMissing(name, result, opts) {
     return lines.join('\n');
 }
 
+/**
+ * The browser driver, found the way every entry point in this subsystem must
+ * find it.
+ *
+ * ONE implementation, not one per caller. `capture-har.js` and `capture-cdp.js`
+ * both had their own bare `require('playwright')` with their own wrong advice,
+ * which is exactly the duplication the four-location search exists to end --
+ * two copies would drift on the day the second one was written.
+ *
+ * `npm root -g` is consulted ONLY when the cheap answer came back empty. It
+ * costs the better part of a second and this sits on the way in to every
+ * capture, so the happy path uses npm's documented default location and the
+ * subprocess is spent where a second is already going on printing an error.
+ * A refined root that still does not have it changes nothing but the accuracy
+ * of the folder named in the message -- which is the point.
+ */
+function resolvePlaywright(opts) {
+    const o = opts || {};
+    const env = o.env || process.env;
+    const platform = o.platform || process.platform;
+    const base = {
+        cwd: o.cwd || process.cwd(),
+        toolDir: o.toolDir,
+        nodePath: env.NODE_PATH,
+        resolve: o.resolve
+    };
+    const cheap = defaultGlobalRoot({ env, platform, execPath: o.execPath });
+    let result = resolveDependency(PLAYWRIGHT, Object.assign({ globalRoot: cheap }, base));
+    if (result.found) return result;
+
+    const refined = (o.npmGlobalRoot || npmGlobalRoot)({ platform });
+    if (refined && refined !== cheap) {
+        result = resolveDependency(PLAYWRIGHT, Object.assign({ globalRoot: refined }, base));
+    }
+    return result;
+}
+
 module.exports = {
     BROWSER_INSTALL_COMMAND,
-    commandFor,
+    PLAYWRIGHT,
+    runCommand,
+    resolvePlaywright,
     CWD,
     TOOL,
     GLOBAL,
