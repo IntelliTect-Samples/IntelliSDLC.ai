@@ -225,4 +225,10 @@ function main() {
     process.stdout.write(`==> Done. Wrapper project written to ${outDir}\n`);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing the
+// pipeline driver ran every stage against the requiring process's tree. It is
+// also why PR #455 had to verify this file's consolidation onto
+// subs-destination.js by READING it rather than by requiring it.
+if (require.main === module) main();
+
+module.exports = { main, parseArgs };

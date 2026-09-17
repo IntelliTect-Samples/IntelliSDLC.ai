@@ -127,7 +127,14 @@ async function main() {
     process.exit(0);
 }
 
-main().catch((err) => {
-    console.error('capture-cdp: ' + (err && err.stack ? err.stack : err));
-    process.exit(1);
-});
+// A CLI, and a module (issue #456). The rejection handler stays with the call
+// it handles, inside the guard: `main` is async, so without it the promise --
+// and the browser launch behind it -- started during the require.
+if (require.main === module) {
+    main().catch((err) => {
+        console.error('capture-cdp: ' + (err && err.stack ? err.stack : err));
+        process.exit(1);
+    });
+}
+
+module.exports = { main, parseArgs };

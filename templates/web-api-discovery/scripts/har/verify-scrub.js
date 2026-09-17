@@ -312,4 +312,32 @@ function main() {
     process.exit(EXIT_GATING);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing the leak
+// gate ran the whole gate against the REQUIRING process's tree -- reading
+// `process.argv`, which belongs to the importer -- and exited that process
+// with its own verdict before `require` returned. That is #446's defect in the
+// script that decides whether live credentials reach version control, and it
+// is why #395's test compares this gate's shape rules against the scrubber's
+// by matching SOURCE TEXT: it could not import either one.
+//
+// The exit codes stay exactly where they were, inside main(). They are
+// load-bearing for capture-har.js -- 3 quarantines the capture, 4 keeps it
+// with a warning -- so nothing here touches how a command-line run ends.
+if (require.main === module) main();
+
+// The reusable surface. `main` is here so the CLI path is a callable rather
+// than a side effect of loading the file; the rest are the pure pieces a
+// caller would otherwise re-derive. The two exit codes in particular are what
+// a caller must know to read this gate's verdict, and capture-har.js currently
+// spells both of them itself.
+module.exports = {
+    main,
+    parseArgs,
+    isAdvisory,
+    reportableFinding,
+    waiverFragment,
+    writeFindingsReport,
+    EXIT_GATING,
+    EXIT_ADVISORY,
+    FINDINGS_FILENAME,
+};
