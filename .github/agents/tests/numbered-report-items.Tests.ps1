@@ -142,7 +142,10 @@ Describe 'Numbering survives an imposed report layout (issue #523)' {
         # Presence of the words is not the rule: they must appear in the clause
         # that says such a layout SUPPLIES a layout the letters go into. Text
         # that named the same sources to EXEMPT them would not match.
-        $script:Numbering | Should -Match '(?is)When an output style,[^.]*persona,[^.]*harness-level instruction\s+supplies its own report layout'
+        # Anchored on the obligation itself, so a negation placed in front of
+        # "When an output style ..." falls outside the span and fails here
+        # rather than relying on a sibling assertion to catch it.
+        $script:Numbering | Should -Match '(?is)carries the numbers into it\.\*\*\s+When an output style,[^.]*persona,[^.]*harness-level instruction\s+supplies its own report layout'
     }
 
     It 'requires the letters to be carried into the imposed layout rather than dropped' {
