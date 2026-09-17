@@ -587,6 +587,11 @@ and branch names -- never plain-text references like `#131`.
 
 ##### Task Complete Summary Format
 
+**Numbering Report Items** below is deliberately scoped wider than this
+section: it binds every end-of-turn report, whatever the harness calls it and
+whatever layout the harness imposes. Everything else here describes the
+`task_complete` summary specifically.
+
 Every `task_complete` summary must include the following fields whenever the
 underlying data exists. Omit a field only when it does not apply to the work
 just performed (e.g., a Q&A turn with no PR). **Exception:** on every dev-loop
@@ -694,7 +699,10 @@ from here -- which is precisely why the rule binds the report itself.
 **If the active layout genuinely cannot carry the numbers, say so in the
 report** -- one line naming what was dropped and why -- rather than silently
 omitting them, so the operator can repair the layout instead of discovering the
-loss later.
+loss later. Reaching for this should be near-never: `**R1.**` fits wherever the
+item's own text fits, so reformat the item -- into a bullet, a line, a
+sentence -- before concluding that the layout cannot carry it. A layout that
+merely makes the numbers inconvenient is not a layout that cannot carry them.
 
 ##### PR Summary Formatting
 

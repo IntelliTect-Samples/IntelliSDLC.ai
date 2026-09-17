@@ -305,6 +305,10 @@ What You Decided Without Me** section in
 
 ## Task Complete Summaries
 
+The numbering rule at the end of this section is scoped wider than the section
+itself: it binds every end-of-turn report, whatever layout the harness imposes.
+Everything else here describes the `task_complete` summary specifically.
+
 When calling `task_complete`, include the following fields whenever the data
 exists (omit any that don't apply, e.g., a Q&A turn with no PR). The **Result
 display** is the exception: it is mandatory on every dev-loop run and must not be
@@ -348,7 +352,8 @@ summary. When an output style, a persona, or any other harness-level
 instruction imposes its own report layout, carry the letters into that layout's
 equivalent sections -- a layout that asks for a bullet list is not an
 exemption. If the active layout genuinely cannot carry them, say so in the
-report rather than dropping them silently.
+report rather than dropping them silently -- and reach for that near-never,
+since `**R1.**` fits wherever the item's own text fits.
 
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
