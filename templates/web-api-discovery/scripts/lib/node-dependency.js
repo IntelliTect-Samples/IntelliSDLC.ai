@@ -202,6 +202,13 @@ function defaultGlobalRoot(opts) {
  *
  * Returns null on any failure, including npm not being installed. This refines
  * an error message; it can never be the reason a run stops.
+ *
+ * The timeout is SHORT for that reason. This runs on the way out of a failed
+ * run, so every second it waits is a second added to a message the operator is
+ * already waiting for -- and the thing it is waiting on is npm, which behind a
+ * misconfigured proxy or registry can hang for a long time. Five seconds is
+ * generous for a local prefix lookup, and giving up early costs only the
+ * precision of one printed path.
  */
 function npmGlobalRoot(opts) {
     const o = opts || {};
@@ -210,7 +217,7 @@ function npmGlobalRoot(opts) {
         const out = exec(commandFor('npm', o.platform || process.platform), ['root', '-g'], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: 15000
+            timeout: 5000
         });
         const line = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0];
         return line ? path.resolve(line) : null;
@@ -252,6 +259,14 @@ function browsersPath(opts) {
  *
  * Chromium specifically: another browser being present says nothing about the
  * one this recorder launches.
+ *
+ * DELIBERATELY NOT A REVISION MATCH. This answers "has a browser ever been
+ * installed here", which is the question an operator setting up a machine is
+ * actually failing at. Whether the build is the revision this Playwright wants
+ * is Playwright's own question, and it already answers it at launch with a
+ * message naming the exact executable and the exact command. Duplicating that
+ * check here would mean tracking Playwright's revision pinning, and getting it
+ * wrong would refuse a working install.
  */
 function chromiumPresent(opts) {
     const dir = browsersPath(opts);
