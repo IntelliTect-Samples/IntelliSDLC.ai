@@ -159,6 +159,18 @@ function resolveDependency(name, opts) {
 }
 
 /**
+ * The executable name for a Node CLI shim on this platform.
+ *
+ * `npm` and `npx` are batch shims on Windows, which is why spawning them there
+ * is usually written with `shell: true`. Naming the `.cmd` directly does the
+ * same job without handing the arguments to a command interpreter -- Node
+ * deprecated that combination for exactly the injection reason.
+ */
+function commandFor(name, platform) {
+    return (platform || process.platform) === 'win32' ? name + '.cmd' : name;
+}
+
+/**
  * npm's global module root, WITHOUT a subprocess.
  *
  * `npm root -g` is authoritative and costs most of a second; this runs on the
@@ -195,11 +207,9 @@ function npmGlobalRoot(opts) {
     const o = opts || {};
     const exec = o.exec || require('child_process').execFileSync;
     try {
-        const out = exec('npm', ['root', '-g'], {
+        const out = exec(commandFor('npm', o.platform || process.platform), ['root', '-g'], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
-            // npm is a shell shim on Windows.
-            shell: (o.platform || process.platform) === 'win32',
             timeout: 15000
         });
         const line = String(out).split(/\r?\n/).map((l) => l.trim()).filter(Boolean)[0];
@@ -283,7 +293,7 @@ function describeMissing(name, result, opts) {
         // line that does not exist for any other package.
         lines.push(`    ${BROWSER_INSTALL_COMMAND}`);
     }
-    lines.push(`  Or just for this folder (it is searched first now):`);
+    lines.push('  Or just for this folder, which is now the first place searched:');
     lines.push(`    npm install ${name}`);
     lines.push('  Or point NODE_PATH at an install that has it.');
     return lines.join('\n');
@@ -291,6 +301,7 @@ function describeMissing(name, result, opts) {
 
 module.exports = {
     BROWSER_INSTALL_COMMAND,
+    commandFor,
     CWD,
     TOOL,
     GLOBAL,

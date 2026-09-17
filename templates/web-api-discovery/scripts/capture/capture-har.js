@@ -175,6 +175,11 @@ const subsDestination = require(path.join(__dirname, '..', 'har', 'subs-destinat
 // idempotent append both already exist for the scaffolder (#119).
 const { ensureRepoRootGitignoreHasScaffoldEntries } =
     require(path.join(__dirname, '..', 'codegen', 'generate-wrapper.js'));
+// Where a module is looked for, and what to say when it is not there (#512).
+// A bare `require('playwright')` searches upward from THIS file's directory, so
+// the recorder run out of the upstream checkout could not see an install in the
+// folder the operator was standing in -- and told them to make one there.
+const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
 
 const DEFAULT_PORT = 9333;
 const DEFAULT_MIN_BYTES = 1024;
@@ -717,9 +722,32 @@ async function ensureCapturesRootIgnored(placement, opts = {}) {
     if (!capturesRoot) { return { ok: true, status: null }; }
     const probe = capturesRootProbe(capturesRoot);
     const status = subsDestination.classifyDestination(probe);
-    if (status === subsDestination.IGNORED
-        || status === subsDestination.OUTSIDE_WORK_TREE) {
-        return { ok: true, status };
+    if (status === subsDestination.IGNORED) { return { ok: true, status }; }
+
+    // OUTSIDE A WORK TREE: leave the rule behind for the repository that does
+    // not exist yet (#512).
+    //
+    // "Not a repository" is usually "not a repository YET". The skill's own
+    // generation pipeline runs `git init && git add -A && git commit` in this
+    // same folder a few phases later, and an operator starting a new site does
+    // it by hand for the same reason. At that moment the salt and a directory
+    // of unscrubbed raw captures are both untracked files in the folder being
+    // swept, and nobody is watching.
+    //
+    // WRITTEN, NOT PROMPTED. There is no repository, so no tracked file is
+    // being changed and there is nothing to ask permission about; a prompt
+    // here would also make every agent-driven capture in a fresh folder
+    // refuse. The append is the scaffolder's own idempotent one, so a folder
+    // that already has a `.gitignore` keeps every line of it.
+    //
+    // The file goes beside the store rather than inside it: a rule inside
+    // `.har-captures/` cannot exclude `.har-captures/` itself, and the profile
+    // it also covers is the store's sibling.
+    if (status === subsDestination.OUTSIDE_WORK_TREE) {
+        const beside = path.dirname(capturesRoot);
+        const added = ensureRepoRootGitignoreHasScaffoldEntries(
+            beside, CAPTURE_GITIGNORE_ENTRIES, CAPTURE_GITIGNORE_HEADER);
+        return { ok: true, status, ignoreFile: path.join(beside, '.gitignore'), added };
     }
 
     const anchor = placement.mainWorkingTree || placement.currentWorkingTree;
@@ -965,16 +993,144 @@ function discoverStorageState(startDir, stopAt) {
     return harProfile.findUpward(STORAGE_STATE_FILENAME, startDir, stopAt);
 }
 
+const PLAYWRIGHT_MODULE = 'playwright';
+
+/**
+ * Ask the four locations for the browser driver (#512).
+ *
+ * `npm root -g` is consulted ONLY when the cheap answer came back empty. It
+ * costs the better part of a second and this sits on the way in to every
+ * capture, so the happy path uses npm's documented default location and the
+ * subprocess is spent where a second is already going on printing an error.
+ * A refined root that still does not have it changes nothing but the accuracy
+ * of the folder named in the message -- which is the point.
+ */
+function resolvePlaywright(opts) {
+    const o = opts || {};
+    const env = o.env || process.env;
+    const base = {
+        cwd: o.cwd || process.cwd(),
+        toolDir: o.toolDir || __dirname,
+        nodePath: env.NODE_PATH,
+        resolve: o.resolve
+    };
+    const platform = o.platform || process.platform;
+    const cheap = nodeDep.defaultGlobalRoot({ env, platform, execPath: o.execPath });
+    let result = nodeDep.resolveDependency(PLAYWRIGHT_MODULE,
+        Object.assign({ globalRoot: cheap }, base));
+    if (result.found) return result;
+
+    const refined = (o.npmGlobalRoot || nodeDep.npmGlobalRoot)({ platform });
+    if (refined && refined !== cheap) {
+        result = nodeDep.resolveDependency(PLAYWRIGHT_MODULE,
+            Object.assign({ globalRoot: refined }, base));
+    }
+    return result;
+}
+
+/**
+ * The remedies for whatever is actually missing, as commands.
+ *
+ * The module and the browser are SEPARATE facts and get separate commands.
+ * `npm install` does not fetch a browser binary, so a message that offered one
+ * command for both would be followed, appear to succeed, and fail again on the
+ * same line.
+ */
+function dependencyInstallCommands(moduleMissing, browserMissing) {
+    const commands = [];
+    if (moduleMissing) commands.push(['npm', ['install', '-g', PLAYWRIGHT_MODULE]]);
+    if (browserMissing) commands.push(['npx', [PLAYWRIGHT_MODULE, 'install', 'chromium']]);
+    return commands;
+}
+
+function dependencyMessage(resolved, browserPresent, env) {
+    if (!resolved.found) {
+        return 'capture-har: ' +
+            nodeDep.describeMissing(PLAYWRIGHT_MODULE, resolved, { browser: browserPresent });
+    }
+    // Named, not merely described. "Playwright's default location" is a phrase
+    // the operator then has to go and look up; the path is the answer.
+    const where = nodeDep.browsersPath({ env: env || process.env });
+    return 'capture-har: the playwright module is installed, but its Chromium build is not.\n' +
+        `  ${nodeDep.BROWSER_INSTALL_COMMAND}\n` +
+        '  It installs once per machine' + (where ? `, at ${where}` : '') + '.';
+}
+
+/**
+ * Run an install the operator agreed to. Inherits stdio so they watch it
+ * happen: an install that takes a minute behind a silent spinner is
+ * indistinguishable from a hang.
+ */
+function runInstall(command, args) {
+    const r = require('child_process').spawnSync(nodeDep.commandFor(command), args, {
+        stdio: 'inherit'
+    });
+    return { ok: r.status === 0 };
+}
+
+/**
+ * IS THE BROWSER DRIVER HERE -- asked before anything else happens (#512).
+ *
+ * The owner's transcript is the specification. A run scaffolded a profile,
+ * announced a capture root, and THEN reported the missing module, with a
+ * remedy that could not work. Everything before the failure was work to undo.
+ *
+ * So this is the first gate in `start`, ahead of the placement guard, the
+ * profile prompt, the port scan and the browser. Nothing is written and
+ * nothing is asked until the run is known to be able to finish.
+ *
+ * INTERACTIVE: offer to install into the machine default, so one install
+ * serves every folder afterwards. NON-INTERACTIVE: print the same locations
+ * and the same commands and refuse -- an agent has nowhere to answer, which is
+ * how every other guard in this file behaves.
+ */
+async function preflightDependencies(opts = {}) {
+    const isTty = !!opts.isTty;
+    const ask = opts.ask || askLine;
+    const install = opts.install || runInstall;
+    const env = opts.env || process.env;
+    // Both facts, re-read together. Called again after an install, because the
+    // only honest way to know whether an install worked is to ask the same
+    // question a second time.
+    const check = () => ({
+        resolved: resolvePlaywright(Object.assign({}, opts, { env })),
+        browser: nodeDep.chromiumPresent({ env, platform: opts.platform, homedir: opts.homedir })
+    });
+
+    let state = check();
+    if (state.resolved.found && state.browser) return { ok: true };
+
+    const message = dependencyMessage(state.resolved, state.browser, env);
+    const commands = dependencyInstallCommands(!state.resolved.found, !state.browser);
+
+    if (isTty && commands.length > 0) {
+        const answer = await ask(`${message}\n  Install it now? [y/N] `);
+        if (/^y/i.test((answer || '').trim())) {
+            for (const [command, args] of commands) { install(command, args); }
+            // ASK AGAIN rather than trusting the exit code. An install that
+            // reports success and produces nothing is the case worth catching:
+            // believing it hands the operator a browser launch failure several
+            // steps later, with no mention of the install that did not work.
+            state = check();
+            if (state.resolved.found && state.browser) return { ok: true };
+            return {
+                ok: false,
+                message: dependencyMessage(state.resolved, state.browser, env) +
+                    '\n  The install ran, but it is still not resolvable. Nothing was recorded.'
+            };
+        }
+    }
+    return { ok: false, message };
+}
+
 function requirePlaywright() {
-    try {
-        return require('playwright');
-    } catch (e) {
+    const resolved = resolvePlaywright();
+    if (!resolved.found) {
         process.stderr.write(
-            'capture-har: the playwright module was not found.\n' +
-            '  npm install playwright && npx playwright install chromium\n' +
-            '  (or set NODE_PATH to an install that has it)\n');
+            dependencyMessage(resolved, nodeDep.chromiumPresent({})) + '\n');
         process.exit(1);
     }
+    return require(resolved.path);
 }
 
 function stamp(d) {
@@ -2497,6 +2653,26 @@ async function start(args) {
 
     const isTty = !!process.stdin.isTTY;
 
+    // CAN THIS RUN FINISH AT ALL -- asked before anything else (#512).
+    //
+    // Above even the placement guard, because this is the only gate whose
+    // answer makes every later one pointless. The owner's report is the shape
+    // being prevented: a profile scaffolded, a capture root announced, and
+    // then a missing module -- everything before the failure being work to
+    // undo, and the printed remedy being one that could not work.
+    //
+    // NOT under --validate-only. That flag resolves paths and opens nothing,
+    // and several suites use it to ask the recorder questions on machines
+    // where no browser is installed; gating it on a browser would break the
+    // one command that exists to have no side effects.
+    if (!args['validate-only']) {
+        const deps = await preflightDependencies({ isTty });
+        if (!deps.ok) {
+            process.stderr.write(deps.message + '\n');
+            return 1;
+        }
+    }
+
     // WHERE THE OUTPUT WILL LAND, checked here and nowhere later (#300, #471).
     //
     // This sits at the very top of `start`, ahead of the profile preflight, the
@@ -2625,6 +2801,16 @@ async function start(args) {
     if (!ignoreGuard.ok) {
         process.stderr.write(ignoreGuard.message + '\n');
         return 1;
+    }
+    // Said out loud when it happened. A file this tool wrote into a folder the
+    // operator owns is theirs to know about -- and the line is also the answer
+    // to "do I need a repository for this?", delivered where the question
+    // actually comes up.
+    if (ignoreGuard.added && ignoreGuard.added.length > 0) {
+        log.info('capture-har: this folder is not a git repository. Wrote ' +
+            `${ignoreGuard.ignoreFile}\n` +
+            '  so a later `git init` cannot commit the capture store or your ' +
+            'operator profile.');
     }
 
     // And the other half: an EXPLICIT --output-path into a committable
@@ -3360,6 +3546,10 @@ module.exports = {
     outputDestinationWarning,
     placementForOutput,
     ensureCapturesRootIgnored,
+    START_OPTIONS,
+    preflightDependencies,
+    resolvePlaywright,
+    dependencyInstallCommands,
     capturesRootProbe,
     CAPTURE_GITIGNORE_ENTRIES,
     REFERENCE_DIR,
