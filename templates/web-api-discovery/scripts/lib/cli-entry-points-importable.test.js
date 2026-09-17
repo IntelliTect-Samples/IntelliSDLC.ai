@@ -543,17 +543,34 @@ for (const script of SCRIPTS) {
 //     void function () { main(); }();   the void-prefixed form
 //
 // Neither is contrived, both run main() unconditionally at load, and both were
-// passing silently. `;` joins the prefix class and `void` is handled as a
-// prefix keyword below. The lesson is the one PR #455 already paid for: a
-// character class is a guess about spellings, and a guess that is wrong is
-// wrong silently.
+// passing silently.
 //
-// WHAT IT STILL MISSES, stated rather than implied, each one found by trying:
+// AND THE FIX FOR THAT WAS INCOMPLETE, which the next round found. Handling
+// `void` as a prefix to a function EXPRESSION missed `void` as a prefix to an
+// ordinary call:
+//
+//     void main();
+//
+// which is not an IIFE at all -- it is the standard way to silence a linter's
+// floating-promise warning on a fire-and-forget async call, and `main` is
+// async in two of the five scripts this suite is about. So `void` is now an
+// optional prefix on the CALL half as well.
+//
+// Three rounds, three silent misses, each one a guess about spellings. The
+// lesson is the one PR #455 already paid for, and the reason every spelling
+// below is pinned individually rather than by one example: the next guess that
+// is wrong should be wrong visibly.
+//
+// WHAT IT STILL MISSES, each one found by trying, none of them closed:
 //
 //   * A top-level `await`.
 //   * Work scheduled rather than called -- `Promise.resolve().then(() =>
 //     main());` at column zero. The identifier `Promise` is not followed by
 //     `(`, and the call to main is indented inside the callback.
+//   * `new function () { main(); }();`, the comma-operator indirection
+//     `(0, main)();`, a tagged template, and `[main][0]();`. All real
+//     JavaScript, all contrived: nobody reaches for one of these by accident,
+//     which is the line between a tripwire and a lock.
 //   * An entry point reached some way other than a call at column zero. It
 //     says nothing about a script with no top-level call.
 //
@@ -573,11 +590,20 @@ for (const script of SCRIPTS) {
 // exists.
 {
     // A call at column zero: `main();`, `main().catch(...)`, `execute(argv)`,
-    // or an immediately-invoked function expression in any of its prefixed
-    // spellings. An indented call is inside something else and is not the
-    // pattern this is about.
-    const TOP_LEVEL_CALL = /^([A-Za-z_$][\w$]*)\s*\(/gm;
-    const TOP_LEVEL_IIFE = /^(?:void\s+|[;(!+~-]\s*)(?:async\s+)?(?:function\b|\()/m;
+    // `void main();`, or an immediately-invoked function expression in any of
+    // its prefixed spellings. An indented call is inside something else and is
+    // not the pattern this is about.
+    const TOP_LEVEL_CALL = /^(?:void\s+)?([A-Za-z_$][\w$]*)\s*\(/gm;
+
+    // Two branches, because `void` and the punctuation prefixes are not
+    // interchangeable. `;` is an optional prefix ON the punctuation class
+    // rather than a member of it: as a member it needed only a `(` after it,
+    // so every `;(expr).method()` -- the same ASI guard applied to something
+    // that is not an IIFE at all -- was reported. As a prefix it inherits the
+    // class's requirement that a function expression or a second paren follow,
+    // which is what makes `;(function ...` match and `;(x).foo()` not.
+    const TOP_LEVEL_IIFE =
+        /^(?:void\s+(?:async\s+)?(?:function\b|\()|;?[(!+~-]\s*(?:async\s+)?(?:function\b|\())/m;
 
     // Statements that begin a line with a name followed by `(` and are not
     // calls. Keeping this list is the price of not writing a parser, and it
@@ -678,11 +704,28 @@ for (const script of SCRIPTS) {
             'of which run main() at load and both of which passed silently.');
     }
 
-    // The loud direction on the IIFE half too: `void` that is not an IIFE, and
-    // a prefix character that opens nothing, must not be reported.
-    for (const benign of ['void 0;\n', 'const x = (1 + 2);\n', '// (function) in prose\n']) {
+    // `void` in front of an ordinary call: not an IIFE, and the standard way
+    // to silence a floating-promise warning on a fire-and-forget async call.
+    // `main` is async in two of the five scripts this suite is about, so this
+    // is the spelling a linter would talk the author of a sixth one into.
+    assert.deepStrictEqual(unguardedEntryCalls('void main();\n'), ['main'],
+        '8.k: `void main();` is missed. It is not an IIFE, so the IIFE half does not see ' +
+        'it, and `void` is blocklisted as a statement keyword, so the call half stops at ' +
+        'the prefix instead of looking past it.');
+    assert.deepStrictEqual(unguardedEntryCalls('void startPipeline(argv);\n'), ['startPipeline'],
+        '8.k: the same with a name and arguments.');
+
+    // The loud direction on both halves: `void` that is not a call, a prefix
+    // character that opens nothing, and -- the one that made `;` an optional
+    // prefix rather than a class member -- an ASI guard in front of an
+    // ordinary parenthesised expression.
+    for (const benign of ['void 0;\n', 'const x = (1 + 2);\n', '// (function) in prose\n',
+        '(x).foo();\n', ';(x).foo();\n', ';(this.emitter || fallback).emit("done");\n']) {
         assert.deepStrictEqual(unguardedEntryCalls(benign), [],
-            `8.k: \`${benign.trim()}\` is read as a top-level IIFE.`);
+            `8.l: \`${benign.trim()}\` is reported. The ASI-guard convention is not ` +
+            'IIFE-specific -- style guides apply it to any line opening with a paren -- so ' +
+            'reading every guarded parenthesis as an entry point would fail ordinary ' +
+            'compliant code.');
     }
 
     // The loud direction, pinned so the keyword list is not quietly emptied.
@@ -702,7 +745,7 @@ for (const script of SCRIPTS) {
     }
 
     assert.deepStrictEqual(offenders, [],
-        '8.m: a production script calls its entry point unconditionally at the top level, so ' +
+        '8.n: a production script calls its entry point unconditionally at the top level, so ' +
         'requiring it runs the work and exits the requiring process. That is #446 and #456 ' +
         'again: an unimportable module cannot be the single definition of anything, and ' +
         'every caller that needs something it knows will copy instead. Wrap the call in ' +
