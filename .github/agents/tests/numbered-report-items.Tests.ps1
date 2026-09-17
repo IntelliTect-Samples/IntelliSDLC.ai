@@ -1,7 +1,8 @@
 #Requires -Version 7.0
 #Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
 
-# Structural tests for numbering the items in an end-of-turn report (issue #509).
+# Structural tests for numbering the items in an end-of-turn report
+# (issues #509, #523).
 #
 # A user answering a report could not point at one item ("re 3"), and open
 # questions were lost across a multi-turn iteration because they were
@@ -12,6 +13,13 @@
 # lists get plain numbers. The Results list is distinct from the single-item
 # Result display, which is not R-numbered. These tests pin each clause, scoped
 # to the section that states it, so a revert of either file fails here.
+#
+# #523: the rule was attached to the task-complete summary format, so it was
+# silently dropped when a harness-level output style imposed its own report
+# layout -- a layout that lives in personal machine configuration and cannot be
+# reached from any repository. The rule now binds the report itself, names the
+# imposed-layout case, and requires an honest note when a layout cannot carry
+# the numbers.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
@@ -123,6 +131,39 @@ Describe 'Task Complete Summary Format -- numbered report items (issue #509)' {
     }
 }
 
+Describe 'Numbering survives an imposed report layout (issue #523)' {
+
+    It 'binds the numbering to every end-of-turn report, not only a task-complete summary' {
+        $script:Numbering | Should -Match '(?i)every end-of-turn report, not only'
+        $script:Numbering | Should -Match '(?i)whatever[^.]*layout'
+    }
+
+    It 'names the harness-level sources of an imposed layout' {
+        $script:Numbering | Should -Match '(?i)output style'
+        $script:Numbering | Should -Match '(?i)persona'
+        $script:Numbering | Should -Match '(?i)harness-level instruction'
+    }
+
+    It 'requires the letters to be carried into the imposed layout rather than dropped' {
+        $script:Numbering | Should -Match '(?i)carries the numbers into it|carry the letters into'
+    }
+
+    It 'denies a bullet-list layout as an exemption' {
+        $script:Numbering | Should -Match '(?i)bullet list is not an exemption'
+    }
+
+    It 'requires saying so in the report when a layout cannot carry the numbers' {
+        $script:Numbering | Should -Match '(?i)cannot carry the numbers, say so in the\s+report'
+        $script:Numbering | Should -Match '(?i)rather than silently\s+omitting'
+    }
+
+    It 'keeps the settled rules from issue #509 intact' {
+        $script:Numbering | Should -Match '(?i)stable for the whole session'
+        $script:Numbering | Should -Match '(?i)`R` and `A` numbers restart at 1 in each end-of-turn report'
+        $script:Numbering | Should -Match '(?i)no `X\.Y`'
+    }
+}
+
 Describe 'CLAUDE.md mirrors the numbering rule (issue #509)' {
 
     It 'the Task Complete Summaries section exists' {
@@ -149,5 +190,16 @@ Describe 'CLAUDE.md mirrors the numbering rule (issue #509)' {
 
     It 'points at the canonical Numbering Report Items rule' {
         $script:ClaudeSec | Should -Match '\*\*Numbering Report Items\*\*'
+    }
+
+    It 'states that the numbering applies to every end-of-turn report (issue #523)' {
+        $script:ClaudeSec | Should -Match '(?i)every end-of-turn report\*\*, not only'
+    }
+
+    It 'covers an imposed report layout and forbids dropping the numbers silently (issue #523)' {
+        $script:ClaudeSec | Should -Match '(?i)output style'
+        $script:ClaudeSec | Should -Match '(?i)carry the letters into that layout'
+        $script:ClaudeSec | Should -Match '(?i)bullet list is not an\s+exemption'
+        $script:ClaudeSec | Should -Match '(?i)say so in the\s+report rather than dropping them silently'
     }
 }

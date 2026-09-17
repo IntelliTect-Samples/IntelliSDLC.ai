@@ -645,7 +645,13 @@ Example:
 
 ###### Numbering Report Items
 
-Number every item in a summary's list sections, so the user can answer one
+**The numbering binds every end-of-turn report, not only a `task_complete`
+summary.** Whatever the report is called, and whatever layout it uses, if it
+lists what was done those items are `R`-numbered, assumptions are
+`A`-numbered, and anything the user must act on is `N`-numbered. The rule is
+attached to the report, not to one format that happens to describe it.
+
+Number every item in a report's list sections, so the user can answer one
 item by name ("A2 is wrong, N3 yes") and nothing open is lost across a
 multi-turn exchange. Each item gets its section's letter plus a number:
 
@@ -673,6 +679,22 @@ end-of-turn reports, especially after earlier context has been summarized, and
 a wrong report number is worse than none. Other lists -- work orders, option
 lists, steps -- get plain numbers; the letter prefixes are for the summary
 sections only.
+
+**An imposed report layout carries the numbers into it.** When an output style,
+a persona, a custom agent prompt, or any other harness-level instruction
+supplies its own report layout -- its own section names, its own ordering, its
+own bullet formatting -- carry the letters into that layout's equivalent
+sections: what was done is `R`-numbered, assumptions `A`-numbered, whatever the
+user must act on `N`-numbered, under whatever headings the layout uses. A
+layout that asks for a bullet list is not an exemption; a numbered item is
+still a bullet, with `**R1.**` at its front. Such a layout typically lives in
+personal machine configuration outside any repository, so it cannot be fixed
+from here -- which is precisely why the rule binds the report itself.
+
+**If the active layout genuinely cannot carry the numbers, say so in the
+report** -- one line naming what was dropped and why -- rather than silently
+omitting them, so the operator can repair the layout instead of discovering the
+loss later.
 
 ##### PR Summary Formatting
 

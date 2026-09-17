@@ -343,6 +343,13 @@ open item re-listed under its same number until answered, then marked resolved.
 `R` and `A` numbers restart at 1 in each end-of-turn report.
 The **Result display** is not numbered. See **Numbering Report Items**.
 
+The numbering binds **every end-of-turn report**, not only a `task_complete`
+summary. When an output style, a persona, or any other harness-level
+instruction imposes its own report layout, carry the letters into that layout's
+equivalent sections -- a layout that asks for a bullet list is not an
+exemption. If the active layout genuinely cannot carry them, say so in the
+report rather than dropping them silently.
+
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
 
