@@ -138,10 +138,11 @@ Describe 'Numbering survives an imposed report layout (issue #523)' {
         $script:Numbering | Should -Match '(?i)whatever[^.]*layout'
     }
 
-    It 'names the harness-level sources of an imposed layout' {
-        $script:Numbering | Should -Match '(?i)output style'
-        $script:Numbering | Should -Match '(?i)persona'
-        $script:Numbering | Should -Match '(?i)harness-level instruction'
+    It 'names the harness-level sources inside the sentence that imposes the obligation' {
+        # Presence of the words is not the rule: they must appear in the clause
+        # that says such a layout SUPPLIES a layout the letters go into. Text
+        # that named the same sources to EXEMPT them would not match.
+        $script:Numbering | Should -Match '(?is)When an output style,[^.]*persona,[^.]*harness-level instruction\s+supplies its own report layout'
     }
 
     It 'requires the letters to be carried into the imposed layout rather than dropped' {
@@ -161,6 +162,29 @@ Describe 'Numbering survives an imposed report layout (issue #523)' {
         $script:Numbering | Should -Match '(?i)stable for the whole session'
         $script:Numbering | Should -Match '(?i)`R` and `A` numbers restart at 1 in each end-of-turn report'
         $script:Numbering | Should -Match '(?i)no `X\.Y`'
+    }
+}
+
+Describe 'The containing section does not re-narrow the scope (issue #523)' {
+
+    It 'the task-complete format section says the numbering rule is scoped wider than itself' {
+        $script:Format | Should -Match '(?is)scoped wider than this\s+section'
+        $script:Format | Should -Match '(?is)binds every end-of-turn report, whatever the harness calls it'
+    }
+
+    It 'CLAUDE.md''s summaries section says the same before listing task_complete fields' {
+        $script:ClaudeSec | Should -Match '(?is)scoped wider than the section\s+itself'
+        $script:ClaudeSec | Should -Match '(?is)binds every end-of-turn report, whatever layout the harness imposes'
+    }
+
+    It 'bounds the cannot-carry escape hatch so it is not a routine exit' {
+        $script:Numbering | Should -Match '(?is)near-never'
+        $script:Numbering | Should -Match '(?is)reformat the item'
+        $script:Numbering | Should -Match '(?is)merely makes the numbers inconvenient is not a layout that cannot\s+carry them'
+    }
+
+    It 'CLAUDE.md bounds the escape hatch too' {
+        $script:ClaudeSec | Should -Match '(?is)near-never'
     }
 }
 
@@ -193,7 +217,7 @@ Describe 'CLAUDE.md mirrors the numbering rule (issue #509)' {
     }
 
     It 'states that the numbering applies to every end-of-turn report (issue #523)' {
-        $script:ClaudeSec | Should -Match '(?i)every end-of-turn report\*\*, not only'
+        $script:ClaudeSec | Should -Match '(?i)binds[\s*]*every end-of-turn report[\s*]*,?\s*not only'
     }
 
     It 'covers an imposed report layout and forbids dropping the numbers silently (issue #523)' {
