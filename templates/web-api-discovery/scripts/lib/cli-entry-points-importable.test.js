@@ -595,15 +595,25 @@ for (const script of SCRIPTS) {
     // not the pattern this is about.
     const TOP_LEVEL_CALL = /^(?:void\s+)?([A-Za-z_$][\w$]*)\s*\(/gm;
 
-    // Two branches, because `void` and the punctuation prefixes are not
-    // interchangeable. `;` is an optional prefix ON the punctuation class
-    // rather than a member of it: as a member it needed only a `(` after it,
-    // so every `;(expr).method()` -- the same ASI guard applied to something
-    // that is not an IIFE at all -- was reported. As a prefix it inherits the
-    // class's requirement that a function expression or a second paren follow,
-    // which is what makes `;(function ...` match and `;(x).foo()` not.
-    const TOP_LEVEL_IIFE =
-        /^(?:void\s+(?:async\s+)?(?:function\b|\()|;?[(!+~-]\s*(?:async\s+)?(?:function\b|\())/m;
+    // Three branches, because `void` and the punctuation prefixes are not
+    // interchangeable, and a bare `function` at column zero is a DECLARATION --
+    // every file here has those, so the `function` alternative is only ever
+    // reachable behind a prefix.
+    //
+    // The discipline every branch shares: after an opening paren, what follows
+    // must be a function expression or a second paren. Dropping it is how two
+    // loud false positives got in, one per round. `;` as a MEMBER of the
+    // punctuation class needed only a `(` after it, so every `;(expr).method()`
+    // -- the same ASI guard applied to something that is not an IIFE at all --
+    // was reported; and `void\s+\(` alone read `void (x + 1);` as an IIFE. Both
+    // are now spelled so the discipline applies.
+    const TOP_LEVEL_IIFE = new RegExp([
+        '^(?:',
+        'void\\s+(?:async\\s+)?function\\b',            // void function () {}()
+        '|void\\s+\\(\\s*(?:async\\s+)?(?:function\\b|\\()',  // void (function () {})()
+        '|;?[(!+~-]\\s*(?:async\\s+)?(?:function\\b|\\()',    // (...)(), ;(...)(), !..., +..., ~..., -...
+        ')',
+    ].join(''), 'm');
 
     // Statements that begin a line with a name followed by `(` and are not
     // calls. Keeping this list is the price of not writing a parser, and it
@@ -720,7 +730,9 @@ for (const script of SCRIPTS) {
     // prefix rather than a class member -- an ASI guard in front of an
     // ordinary parenthesised expression.
     for (const benign of ['void 0;\n', 'const x = (1 + 2);\n', '// (function) in prose\n',
-        '(x).foo();\n', ';(x).foo();\n', ';(this.emitter || fallback).emit("done");\n']) {
+        '(x).foo();\n', ';(x).foo();\n', ';(this.emitter || fallback).emit("done");\n',
+        'void (x + 1);\n', 'void new Foo();\n', 'void typeof x;\n',
+        'function main() {}\n', 'async function main() {}\n']) {
         assert.deepStrictEqual(unguardedEntryCalls(benign), [],
             `8.l: \`${benign.trim()}\` is reported. The ASI-guard convention is not ` +
             'IIFE-specific -- style guides apply it to any line opening with a paren -- so ' +
