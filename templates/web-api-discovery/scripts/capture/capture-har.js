@@ -993,39 +993,16 @@ function discoverStorageState(startDir, stopAt) {
     return harProfile.findUpward(STORAGE_STATE_FILENAME, startDir, stopAt);
 }
 
-const PLAYWRIGHT_MODULE = 'playwright';
+const PLAYWRIGHT_MODULE = nodeDep.PLAYWRIGHT;
 
 /**
  * Ask the four locations for the browser driver (#512).
  *
- * `npm root -g` is consulted ONLY when the cheap answer came back empty. It
- * costs the better part of a second and this sits on the way in to every
- * capture, so the happy path uses npm's documented default location and the
- * subprocess is spent where a second is already going on printing an error.
- * A refined root that still does not have it changes nothing but the accuracy
- * of the folder named in the message -- which is the point.
+ * The search itself lives in node-dependency.js so this file and capture-cdp.js
+ * cannot drift apart; all this adds is THIS file's location as the tool one.
  */
 function resolvePlaywright(opts) {
-    const o = opts || {};
-    const env = o.env || process.env;
-    const base = {
-        cwd: o.cwd || process.cwd(),
-        toolDir: o.toolDir || __dirname,
-        nodePath: env.NODE_PATH,
-        resolve: o.resolve
-    };
-    const platform = o.platform || process.platform;
-    const cheap = nodeDep.defaultGlobalRoot({ env, platform, execPath: o.execPath });
-    let result = nodeDep.resolveDependency(PLAYWRIGHT_MODULE,
-        Object.assign({ globalRoot: cheap }, base));
-    if (result.found) return result;
-
-    const refined = (o.npmGlobalRoot || nodeDep.npmGlobalRoot)({ platform });
-    if (refined && refined !== cheap) {
-        result = nodeDep.resolveDependency(PLAYWRIGHT_MODULE,
-            Object.assign({ globalRoot: refined }, base));
-    }
-    return result;
+    return nodeDep.resolvePlaywright(Object.assign({ toolDir: __dirname }, opts || {}));
 }
 
 /**
@@ -1043,6 +1020,21 @@ function dependencyInstallCommands(moduleMissing, browserMissing) {
     return commands;
 }
 
+/**
+ * Run an install the operator agreed to. Inherits stdio so they watch it
+ * happen: an install that takes a minute behind a silent spinner is
+ * indistinguishable from a hang.
+ *
+ * `started` is carried back because "never launched" and "launched and failed"
+ * need different words, and on Windows the first is a real possibility -- Node
+ * refuses to spawn npm's batch shim without a shell. Telling an operator their
+ * install "ran" when no process ever started sends them to debug the wrong
+ * thing entirely.
+ */
+function runInstall(command, args) {
+    return nodeDep.runCommand(command, args, { stdio: 'inherit' });
+}
+
 function dependencyMessage(resolved, browserPresent, env) {
     if (!resolved.found) {
         return 'capture-har: ' +
@@ -1054,18 +1046,6 @@ function dependencyMessage(resolved, browserPresent, env) {
     return 'capture-har: the playwright module is installed, but its Chromium build is not.\n' +
         `  ${nodeDep.BROWSER_INSTALL_COMMAND}\n` +
         '  It installs once per machine' + (where ? `, at ${where}` : '') + '.';
-}
-
-/**
- * Run an install the operator agreed to. Inherits stdio so they watch it
- * happen: an install that takes a minute behind a silent spinner is
- * indistinguishable from a hang.
- */
-function runInstall(command, args) {
-    const r = require('child_process').spawnSync(nodeDep.commandFor(command), args, {
-        stdio: 'inherit'
-    });
-    return { ok: r.status === 0 };
 }
 
 /**
@@ -1106,7 +1086,15 @@ async function preflightDependencies(opts = {}) {
     if (isTty && commands.length > 0) {
         const answer = await ask(`${message}\n  Install it now? [y/N] `);
         if (/^y/i.test((answer || '').trim())) {
-            for (const [command, args] of commands) { install(command, args); }
+            let neverStarted = null;
+            for (const [command, args] of commands) {
+                const r = install(command, args) || {};
+                // `started === false` means no process was created at all --
+                // on Windows, Node refuses to spawn npm's batch shim without a
+                // shell. Reporting that as a failed install sends the operator
+                // to debug an install that never began.
+                if (r.started === false && !neverStarted) { neverStarted = command; }
+            }
             // ASK AGAIN rather than trusting the exit code. An install that
             // reports success and produces nothing is the case worth catching:
             // believing it hands the operator a browser launch failure several
@@ -1115,8 +1103,13 @@ async function preflightDependencies(opts = {}) {
             if (state.resolved.found && state.browser) return { ok: true };
             return {
                 ok: false,
-                message: dependencyMessage(state.resolved, state.browser, env) +
-                    '\n  The install ran, but it is still not resolvable. Nothing was recorded.'
+                message: dependencyMessage(state.resolved, state.browser, env) + '\n' +
+                    (neverStarted
+                        ? `  ${neverStarted} could not be started at all -- it is not on PATH, ` +
+                          'or this\n  shell cannot launch it. Run the command above yourself. ' +
+                          'Nothing was recorded.'
+                        : '  The install ran, but it is still not resolvable. ' +
+                          'Nothing was recorded.')
             };
         }
     }

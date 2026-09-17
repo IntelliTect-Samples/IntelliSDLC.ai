@@ -401,6 +401,124 @@ test('the machine default is null when it cannot be worked out', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Spawning npm -- the one part of this module that leaves the process
+// ---------------------------------------------------------------------------
+//
+// THESE RUN REAL SUBPROCESSES, and that is the whole point. The first version
+// of this module named `npm.cmd` and spawned it with no shell, on the strength
+// of a comment asserting that this avoids handing arguments to an interpreter.
+// It does not: since the CVE-2024-27980 fix Node REFUSES to spawn a `.cmd` or
+// `.bat` without a shell, and fails with EINVAL before any process exists.
+//
+// Nothing caught it, because every test injected a fake runner. Faking the one
+// call that leaves the process leaves the one thing that can be wrong about it
+// untested -- and the symptom was silent: `npmGlobalRoot` returned null and the
+// install offer reported "the install ran" about a process that never started.
+
+test('PRECONDITION: npm is on PATH', () => {
+    // The install offer's whole premise. A machine without npm cannot check the
+    // cases below, and skipping quietly is how this bug survived the first time.
+    const probe = process.platform === 'win32'
+        ? require('child_process').spawnSync(process.env.ComSpec || 'cmd.exe',
+            ['/d', '/s', '/c', 'npm --version'], { encoding: 'utf8' })
+        : require('child_process').spawnSync('npm', ['--version'], { encoding: 'utf8' });
+    assert.strictEqual(probe.status, 0,
+        'npm must be available to verify the commands this module offers to run');
+});
+
+test('a Node CLI shim actually STARTS -- the EINVAL case', () => {
+    // THE FALSIFIER. `npm` is a batch shim on Windows, so this is the exact
+    // call that failed. `started` distinguishes "no process was created" from
+    // "a process ran and returned non-zero", which is the distinction the
+    // operator-facing message depends on.
+    const r = dep.runCommand('npm', ['--version']);
+    assert.strictEqual(r.started, true,
+        'a process was created (EINVAL here means it never launched)');
+    assert.strictEqual(r.ok, true, 'and it succeeded');
+    assert.ok(/^\d+\./.test(String(r.stdout).trim()), 'and it produced npm output: ' + r.stdout);
+});
+
+test('npm reports a real global root', () => {
+    // The refinement the failure message depends on. It returned null on every
+    // Windows machine while the spawn was broken, silently, so the message
+    // always named the GUESSED location and never npm's own.
+    const root = dep.npmGlobalRoot({});
+    assert.ok(root, 'npm answered');
+    assert.ok(path.isAbsolute(root), 'with an absolute path: ' + root);
+    assert.ok(/node_modules$/.test(root), 'that looks like a module root: ' + root);
+});
+
+test('a command that cannot start is reported as not started, not as failed', () => {
+    const r = dep.runCommand('definitely-not-a-real-command-512', ['--version']);
+    assert.strictEqual(r.ok, false);
+    // On Windows the interpreter itself starts and returns non-zero; elsewhere
+    // the spawn fails outright. Either way the caller must not be told it
+    // succeeded, and npmGlobalRoot must not invent a path from the noise.
+    assert.strictEqual(dep.npmGlobalRoot({ run: () => r }), null);
+});
+
+test('an argument it cannot safely put on a command line is refused, not quoted', () => {
+    // Windows needs a command STRING, and building one by concatenation is how
+    // an argument with a space or a `&` becomes something else. Every argument
+    // this module passes is a literal in its own source, so anything outside
+    // that shape is a case that does not exist yet -- and refusing loudly is
+    // how it stays that way rather than becoming a quoting bug later.
+    assert.throws(() => dep.runCommand('npm', ['install', '-g', 'x && calc.exe']),
+        /unsafe argument/);
+    assert.throws(() => dep.runCommand('npm & calc.exe', ['root']), /unsafe argument/);
+});
+
+test('the platform decides how the command is launched', () => {
+    // Windows: the interpreter is named EXPLICITLY, with the command line as
+    // one argument. Elsewhere: the executable itself, with an argument vector
+    // and no interpreter at all.
+    const calls = [];
+    const spy = (file, args) => { calls.push({ file, args }); return { status: 0, stdout: '' }; };
+
+    dep.runCommand('npm', ['root', '-g'], { spawn: spy, platform: 'win32', comspec: 'cmd.exe' });
+    assert.strictEqual(calls[0].file, 'cmd.exe');
+    assert.deepStrictEqual(calls[0].args, ['/d', '/s', '/c', 'npm root -g']);
+
+    dep.runCommand('npm', ['root', '-g'], { spawn: spy, platform: 'linux' });
+    assert.strictEqual(calls[1].file, 'npm');
+    assert.deepStrictEqual(calls[1].args, ['root', '-g'],
+        'an argument vector, never a concatenated string');
+});
+
+// ---------------------------------------------------------------------------
+// A location that cannot be READ is not a location that did not have it
+// ---------------------------------------------------------------------------
+
+test('an unreadable location is reported as unreadable, not as absent', () => {
+    // A corrupt package.json, a permission-denied global install, a broken
+    // symlink. Collapsing these into "not installed" prints "go install it",
+    // which for a permissions problem installs a second copy somewhere else
+    // and still does not work -- the same unusable advice this issue exists
+    // to remove.
+    const broken = (request, options) => {
+        void request; void options;
+        const e = new Error('permission denied');
+        e.code = 'EACCES';
+        throw e;
+    };
+    const r = dep.resolveDependency(PKG, opts({ resolve: broken }));
+    assert.strictEqual(r.found, false);
+    assert.strictEqual(r.searched[0].problem, 'EACCES', 'the real reason is carried up');
+    assert.ok(/EACCES/.test(dep.describeMissing(PKG, r, { browser: true })), 'and said');
+});
+
+test('an ordinary absence says nothing extra', () => {
+    // MODULE_NOT_FOUND is the expected answer, so it must not decorate the
+    // message -- a "could not be read" note on every empty folder would train
+    // the operator to ignore the one that matters.
+    const r = dep.resolveDependency(PKG, opts());
+    for (const s of r.searched) {
+        assert.strictEqual(s.problem, undefined, s.key + ' is quiet about a plain miss');
+    }
+    assert.ok(!/could not be read/.test(dep.describeMissing(PKG, r, { browser: true })));
+});
+
+// ---------------------------------------------------------------------------
 
 if (failures) {
     process.stderr.write('\n' + failures + ' of ' + ran + ' node-dependency tests FAILED\n');

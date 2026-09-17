@@ -69,15 +69,19 @@ async function main() {
     // install in the folder the operator was standing in was invisible, and
     // the advice to make one there could not work.
     const nodeDep = require(path.join(__dirname, '..', 'lib', 'node-dependency.js'));
-    const resolved = nodeDep.resolveDependency('playwright', {
-        cwd: process.cwd(),
-        toolDir: __dirname,
-        globalRoot: nodeDep.defaultGlobalRoot({}) || nodeDep.npmGlobalRoot({}),
-        nodePath: process.env.NODE_PATH
-    });
+    const resolved = nodeDep.resolvePlaywright({ toolDir: __dirname });
     if (!resolved.found) {
-        console.error('capture-cdp: ' + nodeDep.describeMissing('playwright', resolved,
+        console.error('capture-cdp: ' + nodeDep.describeMissing(nodeDep.PLAYWRIGHT, resolved,
             { browser: nodeDep.chromiumPresent({}) }));
+        process.exit(1);
+    }
+    // The browser binary is its own fact here too. Without this the run reaches
+    // launchPersistentContext and fails with Playwright's raw error, which is
+    // the pre-fix experience the recorder no longer has -- and the two entry
+    // points refusing on different terms is what #512 set out to end.
+    if (!nodeDep.chromiumPresent({})) {
+        console.error('capture-cdp: the playwright module is installed, but its Chromium ' +
+            'build is not.\n  ' + nodeDep.BROWSER_INSTALL_COMMAND);
         process.exit(1);
     }
     const playwright = require(resolved.path);

@@ -174,6 +174,14 @@ function git(cwd, args) {
 // branches, in node-dependency.test.js.
 const WIN = 'win32';
 
+// npm is silenced in every in-process case. The refinement spawns a REAL
+// `npm root -g` against the machine running the test, and a box that has ever
+// run `npm install -g playwright` would then supply the module to cases whose
+// whole point is that nothing supplies it. The refinement has its own case,
+// with an injected answer, in this file; the real subprocess is exercised in
+// node-dependency.test.js where it is the subject rather than a dependency.
+const NO_NPM = () => null;
+
 // The suite's preconditions, asserted rather than assumed. Every "the module
 // is absent" case below depends on nothing above the fixtures -- or above the
 // recorder itself -- holding a playwright install. On a machine where one
@@ -209,6 +217,7 @@ test('the preflight passes when the module and the browser are both there', asyn
     const cwd = plantPlaywright(dir('pf-ok'));
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd, toolDir: dir('pf-ok-tool'), isTty: false,
         env: { APPDATA: dir('pf-ok-appdata'), PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-ok-browsers')) }
     });
@@ -219,6 +228,7 @@ test('a missing module is refused without prompting when there is no terminal', 
     let asked = 0;
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd: dir('pf-nomod'), toolDir: dir('pf-nomod-tool'), isTty: false,
         ask: () => { asked++; return Promise.resolve('y'); },
         env: { APPDATA: dir('pf-nomod-appdata'), PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-nomod-browsers')) }
@@ -235,6 +245,7 @@ test('the refusal names every folder it searched', async () => {
     const nodePathDir = dir('pf-named-nodepath');
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd, toolDir, isTty: false,
         // npm silenced, so the location named is the one this test set up.
         // The refinement has its own case below.
@@ -277,6 +288,7 @@ test('a present module with a missing browser asks for the browser, not the modu
     const cwd = plantPlaywright(dir('pf-nobrowser'));
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd, toolDir: dir('pf-nobrowser-tool'), isTty: false,
         env: {
             APPDATA: dir('pf-nobrowser-appdata'),
@@ -294,6 +306,7 @@ test('with a terminal it offers to install, and declining prints the commands', 
     let installs = 0;
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd: dir('pf-decline'), toolDir: dir('pf-decline-tool'), isTty: true,
         ask: (q) => { asked.push(q); return Promise.resolve('n'); },
         install: () => { installs++; return { ok: true }; },
@@ -317,6 +330,7 @@ test('accepting runs the install into the machine default, then re-checks', asyn
     const commands = [];
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd: dir('pf-accept'), toolDir: dir('pf-accept-tool'), isTty: true,
         ask: () => Promise.resolve('y'),
         install: (cmd, args) => {
@@ -342,6 +356,7 @@ test('the re-check is a real re-resolution, not a trust of the exit code', async
     // several steps later, with no mention of the install that did not work.
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd: dir('pf-liar'), toolDir: dir('pf-liar-tool'), isTty: true,
         ask: () => Promise.resolve('y'),
         install: () => ({ ok: true }),
@@ -353,11 +368,56 @@ test('the re-check is a real re-resolution, not a trust of the exit code', async
     assert.strictEqual(r.ok, false, 'still missing, so still refused');
 });
 
+test('an installer that never started is not described as having run', async () => {
+    // On Windows, Node refuses to spawn npm's batch shim without a shell and
+    // fails before any process exists -- spawnSync reports that in `error`
+    // rather than throwing, so it is easy to swallow. "The install ran and it
+    // still is not resolvable" then sends the operator to debug an install
+    // that never began, which is this issue's own defect in a new place.
+    const r = await capture.preflightDependencies({
+        platform: WIN,
+        npmGlobalRoot: NO_NPM,
+        cwd: dir('pf-nostart'), toolDir: dir('pf-nostart-tool'), isTty: true,
+        ask: () => Promise.resolve('y'),
+        install: () => ({ ok: false, started: false }),
+        env: {
+            APPDATA: dir('pf-nostart-appdata'),
+            PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-nostart-browsers'))
+        }
+    });
+    assert.strictEqual(r.ok, false);
+    assert.ok(/could not be started at all/.test(r.message),
+        'says no process was created\n' + r.message);
+    assert.ok(!/The install ran/.test(r.message),
+        'and does not claim it ran\n' + r.message);
+});
+
+test('an installer that ran and failed is described as having run', async () => {
+    // The other side of the same distinction -- otherwise the new wording
+    // could be produced by always saying "never started", which would be just
+    // as misleading in the opposite direction.
+    const r = await capture.preflightDependencies({
+        platform: WIN,
+        npmGlobalRoot: NO_NPM,
+        cwd: dir('pf-ranfailed'), toolDir: dir('pf-ranfailed-tool'), isTty: true,
+        ask: () => Promise.resolve('y'),
+        install: () => ({ ok: false, started: true }),
+        env: {
+            APPDATA: dir('pf-ranfailed-appdata'),
+            PLAYWRIGHT_BROWSERS_PATH: plantChromium(dir('pf-ranfailed-browsers'))
+        }
+    });
+    assert.strictEqual(r.ok, false);
+    assert.ok(/The install ran/.test(r.message), r.message);
+    assert.ok(!/could not be started at all/.test(r.message), r.message);
+});
+
 test('accepting also fetches the browser when the browser is what is missing', async () => {
     const browsers = dir('pf-browser-accept-browsers');
     const commands = [];
     const r = await capture.preflightDependencies({
         platform: WIN,
+        npmGlobalRoot: NO_NPM,
         cwd: plantPlaywright(dir('pf-browser-accept')), toolDir: dir('pf-browser-accept-tool'),
         isTty: true,
         ask: () => Promise.resolve('y'),
