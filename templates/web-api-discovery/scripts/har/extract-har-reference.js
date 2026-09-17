@@ -447,4 +447,18 @@ function main() {
     process.exit(0);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing this file
+// ran a full reference extraction against the requiring process's tree and
+// exited it.
+if (require.main === module) main();
+
+module.exports = {
+    main,
+    parseArgs,
+    slug,
+    today,
+    entryText,
+    capResponses,
+    addDecodedParams,
+    REFERENCE_ROOT,
+};

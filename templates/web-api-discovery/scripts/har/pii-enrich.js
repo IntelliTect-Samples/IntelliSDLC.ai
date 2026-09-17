@@ -58,4 +58,9 @@ function main() {
     process.exit(0);
 }
 
-main();
+// A CLI, and a module (issue #456). Without the guard, `require`ing this file
+// ran the enrichment -- including the stub provider's copy -- and exited the
+// requiring process.
+if (require.main === module) main();
+
+module.exports = { main, parseArgs };
