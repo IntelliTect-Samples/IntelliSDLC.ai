@@ -1400,10 +1400,17 @@ class IncrementalRecorder {
         // the moment the recorder's output is piped into something that stops
         // reading. Losing an unrepeatable live session to a broken warning
         // channel would be a far worse defect than the one the warning is for.
+        // SILENT, AND THAT IS THE POINT. Reporting the failure would mean
+        // writing to stderr -- the channel that just failed, through the very
+        // call that failed, with no containment of its own. Under
+        // `--log-level verbose` the recovery line would throw the same EPIPE
+        // straight back out of `flush`, into the timer callback, and take the
+        // capture down: the identical crash, reached by way of the apology for
+        // it. There is nowhere safe to say this, so it is not said.
         try {
             this.announceSizeOnce();
         } catch (e) {
-            log.verbose(`capture-har: size warning failed: ${e.message}`);
+            void e;
         }
     }
 
