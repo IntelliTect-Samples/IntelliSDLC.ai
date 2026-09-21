@@ -153,7 +153,13 @@ function describeShape(value) {
     if (typeof value !== 'object') return typeof value;
     const keys = Object.keys(value);
     if (keys.length === 0) return 'an object with no keys';
-    const shown = keys.slice(0, 8);
+    // Capped on BOTH axes. Eight keys was the obvious limit and it is only half
+    // of it: a document keyed by base64 blobs -- which is a shape an operator
+    // hands this precisely because they do not know what the file is -- has few
+    // enough keys to print them all and still fills a terminal with one of
+    // them. Truncating a key changes nothing about the leak rule either way,
+    // since these are names and never values.
+    const shown = keys.slice(0, 8).map((k) => (k.length > 40 ? `${k.slice(0, 40)}...` : k));
     return `an object with keys: ${shown.join(', ')}${keys.length > shown.length ? ', ...' : ''}`;
 }
 
