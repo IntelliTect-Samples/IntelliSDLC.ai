@@ -284,6 +284,12 @@ function walkForUnredactedSecrets(root, report, options) {
     // in the document, and a capture is tens of megabytes of them -- a label
     // and a location object assembled per leaf would be pure garbage on the
     // overwhelmingly common path where nothing is reported.
+    //
+    // The path SEGMENTS are still built during the descent, because there is
+    // no parent chain to walk back up: deferring them would mean allocating a
+    // link object per node instead of a string, which is the same order of
+    // garbage for a worse read. The cost is bounded by the number of
+    // structural nodes, not by the bytes of text they hold.
     function emit(name, keyPath, entryIndex, suffix, enclosing) {
         const where = describe(keyPath, entryIndex) + (suffix || '');
         const at = { keyPath, entryIndex };
@@ -315,7 +321,15 @@ function walkForUnredactedSecrets(root, report, options) {
                 // Keyed on the NAME rather than on `log.entries` specifically,
                 // because this walk is also handed entry-shaped fragments that
                 // have no `log` above them.
-                if (key === 'entries' && Array.isArray(value)) {
+                //
+                // ONLY ABOVE THE FIRST ENTRY, though. Matching the name at any
+                // depth would let a captured payload that happens to carry its
+                // own `entries` key restart the numbering, and a finding inside
+                // it would then be reported under a confidently WRONG entry and
+                // path -- the same defect this reports exist to fix, arrived at
+                // from the other side. `entryIndex === undefined` is true
+                // exactly while nothing has claimed an entry yet.
+                if (key === 'entries' && Array.isArray(value) && entryIndex === undefined) {
                     value.forEach((item, i) => walk(item, '', i));
                     continue;
                 }
