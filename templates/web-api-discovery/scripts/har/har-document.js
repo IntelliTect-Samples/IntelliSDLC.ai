@@ -160,9 +160,29 @@ function fromEngineError(error, label) {
     //               error whose own message is empty stringifies to `Error`,
     //               which a file named `E` is a prefix of
     //
-    // Requiring a separator after the label costs nothing -- every error that
-    // reaches here writes the path as its first token, followed by a space or
-    // a colon, engine and fs alike -- and it cannot be satisfied by accident.
+    // Requiring a separator after the label costs nothing -- every READ error
+    // that reaches here writes the path as its first token, followed by a
+    // space or a colon, engine and fs alike -- and it cannot be satisfied by
+    // accident.
+    //
+    // A position-INDEPENDENT rule was tried and rejected. It would also dedup
+    // the engine's write-side messages, which lead with `cannot write` and
+    // carry the path second -- but matching a whole token anywhere in the
+    // sentence brings the coincidence straight back one size up: a capture
+    // named `is` is a token of `this file is broken`, and the name vanishes
+    // again. Losing the name is the failure this function exists to prevent;
+    // printing it twice is untidy. Those are not the same cost, so the rule
+    // that can never lose it wins.
+    //
+    // FOR READ FAILURES ONLY, and that is what makes the trade safe. The
+    // sentence built here says a capture could not be READ, so a write
+    // failure routed through it would be wrong about what happened rather
+    // than merely repetitive -- and no dedup rule fixes a wrong verb. The
+    // trim command's write path deliberately does not come through this
+    // function. A future tidy-up that makes the two sides symmetric must give
+    // the write side its own sentence rather than borrow this one; making the
+    // engine's write messages lead with the path would remove the doubling
+    // but not the wrong verb, so it is not on its own a fix.
     const named = label ? String(label) : 'the capture';
     const deduped = detail.startsWith(`${named} `) || detail.startsWith(`${named}:`);
     const message = deduped
