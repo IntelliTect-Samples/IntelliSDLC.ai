@@ -241,7 +241,10 @@ function isUnredactedSecret(name, value, policy) {
  * carrying `variables=<encoded JSON>` hides tokens whose keys never appear in
  * the outer parameter list.
  *
- * `report(name, where)` receives the offending NAME and a location label.
+ * `report(name, where, at)` receives the offending NAME, a human-readable
+ * location label, and `{ keyPath, entryIndex, enclosing }` -- the same
+ * structured location every other finding kind in the gate carries, so a
+ * report can say which entry and which field rather than only which name.
  * It never receives the value: the value is what we are trying not to spread,
  * and a failure message that quotes it relocates the leak into the log.
  *
@@ -257,34 +260,75 @@ function walkForUnredactedSecrets(root, report, options) {
     const policy = options && options.policy;
     const visited = new Set();
 
-    function walk(node, location) {
+    // WHERE, not just WHAT (issue #529). The walk always knew the position it
+    // was standing at; it just had no way to say so, because the only thing it
+    // carried was the word `entry`. Every other finding kind in the gate
+    // reports an `entryIndex` and a `keyPath`, so a known-secret finding that
+    // reported neither left the operator to locate it by hand -- on the
+    // capture that raised this, 75 findings in a 57 MB document.
+    //
+    // The key path is ENTRY-RELATIVE and the entry index separate, matching
+    // what `har-shapes.js` already emits, so the two kinds read alike in one
+    // report rather than each in its own dialect.
+    //
+    // `report(name, where, at)` keeps `where` a human-readable string in the
+    // position it has always occupied, so the existing two-argument callers
+    // are untouched. The structured pair arrives as a third argument a caller
+    // may ignore.
+    function describe(keyPath, entryIndex) {
+        if (entryIndex === undefined) return keyPath || 'entry';
+        return keyPath ? `entry ${entryIndex} ${keyPath}` : `entry ${entryIndex}`;
+    }
+
+    // Built only when a finding actually fires. This walk visits every string
+    // in the document, and a capture is tens of megabytes of them -- a label
+    // and a location object assembled per leaf would be pure garbage on the
+    // overwhelmingly common path where nothing is reported.
+    function emit(name, keyPath, entryIndex, suffix, enclosing) {
+        const where = describe(keyPath, entryIndex) + (suffix || '');
+        const at = { keyPath, entryIndex };
+        if (enclosing) at.enclosing = enclosing;
+        report(name, where, at);
+    }
+
+    function walk(node, keyPath, entryIndex) {
         if (node === null || typeof node !== 'object') return;
         if (visited.has(node)) return;
         visited.add(node);
 
         if (Array.isArray(node)) {
-            for (const item of node) walk(item, location);
+            node.forEach((item, i) => walk(item, `${keyPath}[${i}]`, entryIndex));
             return;
         }
 
         // HAR name/value pairs: headers, cookies, queryString, postData.params.
         if (typeof node.name === 'string' && typeof node.value === 'string'
             && isUnredactedSecret(node.name, node.value, policy)) {
-            report(node.name, location);
+            emit(node.name, keyPath, entryIndex);
         }
 
         for (const key of Object.keys(node)) {
             const value = node[key];
             if (typeof value !== 'string') {
-                walk(value, location);
+                // Crossing into `entries` restarts the path: from here down it
+                // is relative to the entry, and the index is carried beside it.
+                // Keyed on the NAME rather than on `log.entries` specifically,
+                // because this walk is also handed entry-shaped fragments that
+                // have no `log` above them.
+                if (key === 'entries' && Array.isArray(value)) {
+                    value.forEach((item, i) => walk(item, '', i));
+                    continue;
+                }
+                walk(value, keyPath ? `${keyPath}.${key}` : key, entryIndex);
                 continue;
             }
-            if (isUnredactedSecret(key, value, policy)) report(key, location);
+            const valuePath = keyPath ? `${keyPath}.${key}` : key;
+            if (isUnredactedSecret(key, value, policy)) emit(key, valuePath, entryIndex);
             // A multipart body is one opaque string, so there is no structured
             // pair to walk -- detect the field in the text itself. The replacer
             // returns null, so this reports without mutating.
             replaceMultipartSecretFields(value, (name) => {
-                report(name, `${location} (multipart field)`);
+                emit(name, valuePath, entryIndex, ' (multipart field)');
                 return null;
             }, policy);
             // Descend through every encoding layer inside this string.
@@ -308,7 +352,8 @@ function walkForUnredactedSecrets(root, report, options) {
             // anything even though the traversal it shares is able to.
             transformNested(value, (node) => {
                 if (node.name && isUnredactedSecret(node.name, node.value, policy)) {
-                    report(node.name, `${location} (inside encoded '${node.name}')`);
+                    emit(node.name, valuePath, entryIndex,
+                        ` (inside encoded '${node.name}')`, node.name);
                 }
                 // AT EVERY DEPTH, not just the top-level string. The walk this
                 // replaced called the multipart detector at every level it
@@ -322,7 +367,8 @@ function walkForUnredactedSecrets(root, report, options) {
                 // `verify-har-reference.js` runs this same gate over files
                 // this scrubber did not produce.
                 replaceMultipartSecretFields(node.value, (name) => {
-                    report(name, `${location} (multipart field, nested)`);
+                    emit(name, valuePath, entryIndex,
+                        ' (multipart field, nested)', node.name);
                     return null;
                 }, policy);
                 return node.value;
@@ -330,15 +376,15 @@ function walkForUnredactedSecrets(root, report, options) {
                 // A traversal that stopped early has not looked everywhere.
                 // Staying silent about it is how a capped gate fails OPEN --
                 // the D3 half of this issue, one layer further down.
-                onDepthLimit: () => report(
-                    '<nesting deeper than MAX_DEPTH>',
-                    `${location} (traversal stopped at the depth limit)`,
+                onDepthLimit: () => emit(
+                    '<nesting deeper than MAX_DEPTH>', valuePath, entryIndex,
+                    ' (traversal stopped at the depth limit)',
                 ),
             });
         }
     }
 
-    walk(root, 'entry');
+    walk(root, '', undefined);
 }
 
 module.exports = {
