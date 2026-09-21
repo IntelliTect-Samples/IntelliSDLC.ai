@@ -511,6 +511,23 @@ function writeHarDocument(outPath, envelope, entriesIterable, options) {
             `cannot write ${outPath}: the envelope has no log.entries to write entries into`,
             ENTRIES_NOT_FOUND);
     }
+    // The marker must be unique, and this is checked rather than argued for.
+    //
+    // It is NUL-delimited precisely so that no real envelope can contain it, and
+    // that reasoning is sound: a capture would have to carry the two-character
+    // escape for NUL in a string value on purpose. But the failure mode if the
+    // reasoning is ever wrong is the worst kind available here -- the write
+    // would splice at the wrong occurrence and produce a WRONG document
+    // silently, with no error and a plausible-looking file. A second
+    // `indexOf` is the entire cost of turning that into a refusal, and this
+    // module's whole argument is that a loud failure beats a quiet wrong answer.
+    if (text.indexOf(needle, at + needle.length) !== -1) {
+        throw new HarStreamError(
+            `cannot write ${outPath}: the envelope's own content collides with the marker`
+            + ' this writer uses to find log.entries, so the entries cannot be placed'
+            + ' unambiguously. Nothing was written.',
+            ENVELOPE_UNPARSEABLE);
+    }
 
     const lineStart = text.lastIndexOf('\n', at) + 1;
     const keyIndent = /^[ ]*/.exec(text.slice(lineStart, at))[0];

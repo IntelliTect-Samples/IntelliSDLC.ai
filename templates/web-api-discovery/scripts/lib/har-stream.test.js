@@ -447,6 +447,29 @@ test('the writer refuses an envelope with no log.entries to fill', () => {
         (e) => e.code === hs.codes.ENTRIES_NOT_FOUND);
 });
 
+test('an envelope colliding with the writer marker is refused, not spliced wrongly', () => {
+    // Found by independent review as a theoretical hole, and closed because of
+    // what it would do rather than how likely it is: splicing at the wrong
+    // occurrence produces a WRONG document with no error and a plausible file.
+    // Reaching it needs an envelope that deliberately carries the writer's own
+    // NUL-delimited marker, which no recorder writes -- so the test constructs
+    // one, which is the only way to prove the refusal exists at all.
+    const marker = '\u0000__HAR_STREAM_ENTRIES__\u0000';
+    const out = path.join(tmpRoot, 'collide.har');
+    const env = { log: { version: marker, entries: [], comment: 'collides above' } };
+    let caught = null;
+    try { hs.writeHarDocument(out, env, [{ a: 1 }]); } catch (e) { caught = e; }
+    assert.ok(caught, 'a colliding envelope must be refused');
+    assert.strictEqual(caught.name, 'HarStreamError');
+    assert.ok(/collides/.test(caught.message), 'and told why: ' + caught.message);
+
+    // The ablation: the SAME envelope without the collision writes fine, so the
+    // refusal is about the collision and not about the envelope's shape.
+    const ok = path.join(tmpRoot, 'no-collide.har');
+    hs.writeHarDocument(ok, { log: { version: '1.2', entries: [], comment: 'collides above' } }, [{ a: 1 }]);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(ok, 'utf8')).log.entries, [{ a: 1 }]);
+});
+
 test('the writer honours an exclusive-create flag', () => {
     const out = path.join(tmpRoot, 'exclusive.har');
     const env = { log: { version: '1.2', entries: [] } };
