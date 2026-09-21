@@ -182,6 +182,40 @@ test('a broken warning channel cannot take the recording down with it', () => {
         'and every entry was still written');
 });
 
+test('containment holds when the output channel itself is the thing that is broken', () => {
+    // THE APOLOGY MUST NOT REPRODUCE THE CRASH. An earlier fix reported the
+    // failed warning through `log.verbose` -- which writes to stderr, the
+    // channel that had just failed, with no containment of its own. Under
+    // `--log-level verbose` that line throws the same error straight back out
+    // of `flush`, into the unguarded timer callback, and ends the capture.
+    //
+    // A persistently broken stderr is how EPIPE behaves once the reader is
+    // gone, so every write throws, not just the first.
+    const logPath = path.join(tmp, `broken-stderr-${seq++}.ndjson`);
+    const realWrite = process.stderr.write;
+    const realLevel = 'normal';
+    try {
+        captureHar.setLogLevel('verbose');
+        const recorder = new captureHar.IncrementalRecorder(logPath, 60000, {
+            warnAtBytes: 8 * 1024,
+            onSizeWarning: () => { throw new Error('write EPIPE'); },
+        });
+        for (let i = 0; i < 10; i++) recorder.add(bulkyEntry());
+        process.stderr.write = () => { throw new Error('write EPIPE'); };
+        try {
+            assert.doesNotThrow(() => recorder.flush(),
+                'a recovery message written to the broken channel re-raises the failure');
+        } finally {
+            process.stderr.write = realWrite;
+        }
+    } finally {
+        process.stderr.write = realWrite;
+        captureHar.setLogLevel(realLevel);
+    }
+    assert.strictEqual(fs.readFileSync(logPath, 'utf8').trim().split('\n').length, 10,
+        'and the entries were written regardless');
+});
+
 test('the process survives it when the real interval fires, not just a direct flush', () => {
     // A SEPARATE PROCESS, BECAUSE THE HARM IS TO THE PROCESS. The assertion
     // above holds `flush` to its contract, which is a claim about a function. It
