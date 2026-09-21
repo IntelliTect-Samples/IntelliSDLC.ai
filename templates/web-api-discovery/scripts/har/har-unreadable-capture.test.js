@@ -182,6 +182,36 @@ test('an unreadable capture yields NOTHING rather than a partial walk', () => {
     assert.strictEqual(yielded, 0);
 });
 
+test('an engine error becomes the ONE canonical type, and keeps its code', () => {
+    // #450's streaming engine cannot import this module to throw its error --
+    // this module requires the engine, and an import cycle is the price of
+    // both directions. So the engine raises its own error with a stable code
+    // and the boundary translates. Two error classes for one condition is how
+    // a caller ends up catching half of them.
+    for (const code of harDocument.HAR_FORMAT_CODES) {
+        const translated = harDocument.fromEngineError({ code, message: 'from the engine' }, 'big.har');
+        assert.ok(translated instanceof HarFormatError, `${code} did not become a HarFormatError`);
+        assert.strictEqual(translated.code, code);
+        assert.ok(translated.message.includes('big.har'));
+    }
+});
+
+test('a code the boundary does not know degrades rather than escaping as a foreign type', () => {
+    const translated = harDocument.fromEngineError({ code: 'invented-later', message: 'x' }, 'big.har');
+    assert.ok(translated instanceof HarFormatError);
+    assert.strictEqual(translated.code, 'unreadable');
+});
+
+test('the codes an operator is told apart stay told apart', () => {
+    // Each of these is a different sentence to a human and a different repair.
+    // Collapsing any pair of them would be the same mistake as the `[]` this
+    // whole issue is about, one level down.
+    for (const code of ['not-json', 'not-a-har', 'envelope-not-json', 'truncated',
+        'entry-not-json', 'entry-too-large']) {
+        assert.ok(harDocument.HAR_FORMAT_CODES.includes(code), `${code} is no longer promised`);
+    }
+});
+
 // ---------------------------------------------------------------------------
 // The stages, as an operator runs them
 // ---------------------------------------------------------------------------
