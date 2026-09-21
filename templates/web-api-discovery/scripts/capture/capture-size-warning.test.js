@@ -30,6 +30,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const captureHar = require(path.join(__dirname, 'capture-har.js'));
 const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
@@ -160,9 +161,14 @@ test('a recorder attached to an existing log counts what is already there', () =
         'so a small further append crosses the threshold, as it should');
 });
 
-test('a warning that throws is not reported as a failed flush', () => {
-    // The two are different facts about a recording in progress, and confusing
-    // them sends anyone debugging a capture to the wrong place entirely.
+test('a broken warning channel cannot take the recording down with it', () => {
+    // THE FAILURE THIS FORBIDS IS THE ONE THE WHOLE FEATURE EXISTS TO PREVENT.
+    // Flushes run from a `setInterval` callback and nothing in the recorder's
+    // process handles an uncaught exception, so a throw that escapes `flush`
+    // does not fail a flush -- it kills the recorder, orphans the browser and
+    // discards an unrepeatable live session. And `log.warn` writes to stderr,
+    // which throws EPIPE as soon as the recorder's output is piped into
+    // something that stops reading. A size warning is not worth a capture.
     const logPath = path.join(tmp, `throwing-${seq++}.ndjson`);
     const recorder = new captureHar.IncrementalRecorder(logPath, 60000, {
         warnAtBytes: 8 * 1024,
@@ -170,10 +176,40 @@ test('a warning that throws is not reported as a failed flush', () => {
     });
     for (let i = 0; i < 10; i++) recorder.add(bulkyEntry());
 
-    assert.throws(() => recorder.flush(), /warning channel is broken/,
-        'the warning failure surfaces as itself');
+    assert.doesNotThrow(() => recorder.flush(),
+        'the throw must not escape the flush that a timer callback invokes');
     assert.strictEqual(fs.readFileSync(logPath, 'utf8').trim().split('\n').length, 10,
-        'and the entries were written before it');
+        'and every entry was still written');
+});
+
+test('the process survives it when the real interval fires, not just a direct flush', () => {
+    // A SEPARATE PROCESS, BECAUSE THE HARM IS TO THE PROCESS. The assertion
+    // above holds `flush` to its contract, which is a claim about a function. It
+    // cannot see the thing that actually goes wrong: an exception thrown inside
+    // a `setInterval` callback is uncaught, and Node ends the process. In here
+    // that would take the test runner with it, so the only oracle that can
+    // distinguish "contained" from "fatal" is a child that is asked to survive
+    // its own timer and report back.
+    const child = path.join(tmp, `timer-child-${seq++}.js`);
+    const logPath = path.join(tmp, `timer-${seq++}.ndjson`).replace(/\\/g, '\\\\');
+    fs.writeFileSync(child, `
+        const captureHar = require(${JSON.stringify(path.join(__dirname, 'capture-har.js'))});
+        const r = new captureHar.IncrementalRecorder('${logPath}', 5, {
+            warnAtBytes: 8 * 1024,
+            onSizeWarning: () => { throw new Error('warning channel is broken'); },
+        });
+        r.start();
+        for (let i = 0; i < 10; i++) r.add({ request: { url: 'u', padding: 'x'.repeat(4096) } });
+        // Long enough for the interval to fire repeatedly on its own.
+        setTimeout(() => { r.stop(); process.stdout.write('survived'); }, 200);
+    `, 'utf8');
+
+    const out = execFileSync(process.execPath, [child], { encoding: 'utf8', timeout: 20000 });
+
+    assert.strictEqual(out.trim(), 'survived',
+        'a throw escaping the interval callback ends the recorder and orphans the browser');
+    assert.strictEqual(fs.readFileSync(logPath.replace(/\\\\/g, '\\'), 'utf8').trim().split('\n').length, 10,
+        'and the entries were recorded throughout');
 });
 
 test('warning does not disturb the recording itself', () => {

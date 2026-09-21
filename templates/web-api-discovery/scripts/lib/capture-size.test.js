@@ -154,6 +154,13 @@ test('sizes are rendered in units a human reads, with the exact bytes kept', () 
 //
 // So each case below makes the RUNTIME raise the real thing. Neither costs
 // memory: V8 rejects an impossible length before allocating anything.
+//
+// AND THERE IS DELIBERATELY NO FULL END-TO-END VERSION -- no scrub run over a
+// document that reads and then overflows when it is written. That needs around
+// half a gigabyte of real data and minutes of walking, for a call site that is
+// a single `if (isStringTooLongError(e))` with no scale-dependent logic. If you
+// come to add one, do not "simplify" it by constructing the error instead:
+// that is precisely the trap these two cases exist to have escaped.
 
 function errorFromOverlongRepeat() {
     try {

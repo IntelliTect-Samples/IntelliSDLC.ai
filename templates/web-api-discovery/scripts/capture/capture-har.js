@@ -1385,10 +1385,26 @@ class IncrementalRecorder {
             // A failed flush must never take the recording down with it.
             log.verbose(`capture-har: incremental flush failed: ${e.message}`);
         }
-        // Outside that catch deliberately: a warning that threw would otherwise
-        // be reported as a failed flush, which is a lie about the recording and
-        // sends anyone debugging it to the wrong place.
-        this.announceSizeOnce();
+        // CONTAINED, AND SEPARATELY. Two things are true at once and an earlier
+        // version of this sacrificed the second for the first.
+        //
+        // Separately, because a warning that threw must not be reported as a
+        // failed flush: those are different facts about a recording in progress
+        // and confusing them sends anyone debugging one to the wrong place.
+        //
+        // Contained, because `flush` runs from an unguarded `setInterval`
+        // callback and nothing in this process handles an uncaught exception.
+        // An exception escaping here does not fail a flush -- it kills the
+        // recorder, orphans the browser and discards everything buffered since
+        // the last write. And `log.warn` writes to stderr, which throws EPIPE
+        // the moment the recorder's output is piped into something that stops
+        // reading. Losing an unrepeatable live session to a broken warning
+        // channel would be a far worse defect than the one the warning is for.
+        try {
+            this.announceSizeOnce();
+        } catch (e) {
+            log.verbose(`capture-har: size warning failed: ${e.message}`);
+        }
     }
 
     /**
