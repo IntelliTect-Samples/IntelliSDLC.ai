@@ -129,17 +129,31 @@ function assessCaptureSize(bytes, filePath) {
 /**
  * Is this the string-length ceiling, however it arrived?
  *
- * Two spellings, because there are two. `readFileSync` raises it with
- * `code: 'ERR_STRING_TOO_LONG'`; `JSON.stringify` raises the identical
- * condition as a bare `RangeError` carrying only the message. Recognising just
- * the coded form would leave the serialization path -- the one a document
- * inflated past its input size takes -- printing the unreadable text.
+ * THREE SPELLINGS, BECAUSE THE RUNTIME HAS THREE, and they are not
+ * interchangeable. Which one arrives depends on which layer noticed:
+ *
+ *   ERR_STRING_TOO_LONG          Node's own, from `readFileSync(..., 'utf8')`
+ *                                decoding a buffer that is already in hand.
+ *   "Cannot create a string      the message that coded error carries. Matched
+ *    longer than ..."            separately so a path that loses the `code`
+ *                                while wrapping the error is still recognised.
+ *   "Invalid string length"      V8's, raised by `JSON.stringify` and by string
+ *                                concatenation. NOT the Node message, and the
+ *                                one this module originally missed -- which
+ *                                made the serialization branch of the scrub
+ *                                dead code that re-threw a raw RangeError after
+ *                                the whole scrub had run.
+ *
+ * The third is a generic V8 message rather than a dedicated code, so matching
+ * it is deliberately narrowed to a RangeError. That is the only error class V8
+ * raises it as, and the alternative -- not recognising it -- is the defect.
  */
 function isStringTooLongError(err) {
     if (!err) return false;
     if (err.code === 'ERR_STRING_TOO_LONG') return true;
-    return typeof err.message === 'string' &&
-        /Cannot create a string longer than/i.test(err.message);
+    if (typeof err.message !== 'string') return false;
+    if (/Cannot create a string longer than/i.test(err.message)) return true;
+    return err instanceof RangeError && /^Invalid string length$/i.test(err.message);
 }
 
 /**

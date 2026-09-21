@@ -174,7 +174,31 @@ test('the raw capture is left exactly as it was', () => {
     assert.strictEqual(after.mtimeMs, before.mtimeMs, 'the raw was not rewritten');
 });
 
-// --- 4. An ordinary capture is unaffected. ---
+// --- 4. The band between the threshold and the ceiling is not silent. ---
+
+test('a capture in the warn band still runs, and is told it may still fail', () => {
+    // It reads. It may still not survive being written: the scrubbed form is
+    // pretty-printed, so it is larger than the capture it came from, and that
+    // failure lands minutes later with the whole walk already done. An operator
+    // who was told beforehand can trim first; one who was not sees an
+    // arbitrary-looking failure at the end of a long run.
+    //
+    // The file is sparse and never read past the stat -- what is asserted is
+    // the notice, which is decided on the size alone.
+    const dir = project('warn-band');
+    const raw = sparseFile(path.join(dir, '.har-captures', 'session', 'raw.har'),
+        require(path.join(__dirname, '..', 'lib', 'capture-size.js')).WARN_BYTES + 1024);
+
+    const r = runScrub(['--in', raw], dir);
+
+    assert.ok(/approaching/.test(r.stderr), 'the band is named: ' + r.stderr);
+    assert.ok(/may still fail/.test(r.stderr),
+        'and what may still go wrong is named: ' + r.stderr);
+    assert.ok(!/nothing was written/.test(r.stderr),
+        'but it is a notice, not a refusal: ' + r.stderr);
+});
+
+// --- 5. An ordinary capture is unaffected. ---
 
 test('a capture below the ceiling is not refused', () => {
     const dir = project('ordinary');

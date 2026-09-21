@@ -1350,8 +1350,12 @@ class IncrementalRecorder {
         this.timer = null;
         // Counted as it is appended rather than stat-ed per flush: the flush
         // interval is short by design and the log is the largest file the
-        // session writes.
+        // session writes. Seeded from what is already there, because the log is
+        // append-only and a recorder attached to an existing one inherits its
+        // size -- starting the count at zero would put the warning hundreds of
+        // megabytes late, which for this warning is the same as never.
         this.bytes = 0;
+        try { this.bytes = fs.statSync(logPath).size; } catch { /* a fresh log */ }
         this.warnAtBytes = options.warnAtBytes === undefined
             ? captureSize.WARN_BYTES
             : options.warnAtBytes;
@@ -1377,11 +1381,14 @@ class IncrementalRecorder {
             fs.appendFileSync(this.logPath, text, 'utf8');
             this.written += batch.length;
             this.bytes += Buffer.byteLength(text, 'utf8');
-            this.announceSizeOnce();
         } catch (e) {
             // A failed flush must never take the recording down with it.
             log.verbose(`capture-har: incremental flush failed: ${e.message}`);
         }
+        // Outside that catch deliberately: a warning that threw would otherwise
+        // be reported as a failed flush, which is a lie about the recording and
+        // sends anyone debugging it to the wrong place.
+        this.announceSizeOnce();
     }
 
     /**
