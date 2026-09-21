@@ -160,6 +160,7 @@ const { spawnSync } = require('child_process');
 const harProfile = require(path.join(__dirname, '..', 'har', 'har-profile.js'));
 const harCatalogue = require(path.join(__dirname, '..', 'har', 'har-catalogue.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
 // The ONE walk over a capture store (#386/#387). It USED to be the body of
 // `listSessionDirs` right here; it moved out so the batch drivers could reuse
 // this exact enumeration -- with its classification of legacy and foreign
@@ -1331,12 +1332,31 @@ function buildEntry(observed) {
  * interval does not grow with the size of the capture.
  */
 class IncrementalRecorder {
-    constructor(logPath, intervalMs) {
+    /**
+     * @param {string} logPath append-only NDJSON log
+     * @param {number} intervalMs flush interval
+     * @param {{warnAtBytes?: number, onSizeWarning?: (text: string) => void}} [options]
+     *   seams for the size warning (issue #528). Not operator-facing: there is
+     *   no flag and no environment variable behind them. The threshold has one
+     *   correct value, which is computed from the runtime's own string ceiling;
+     *   the parameters exist so a test can cross it without producing hundreds
+     *   of megabytes, and so the warning's destination is injectable.
+     */
+    constructor(logPath, intervalMs, options = {}) {
         this.logPath = logPath;
         this.intervalMs = intervalMs;
         this.pending = [];
         this.written = 0;
         this.timer = null;
+        // Counted as it is appended rather than stat-ed per flush: the flush
+        // interval is short by design and the log is the largest file the
+        // session writes.
+        this.bytes = 0;
+        this.warnAtBytes = options.warnAtBytes === undefined
+            ? captureSize.WARN_BYTES
+            : options.warnAtBytes;
+        this.onSizeWarning = options.onSizeWarning || ((text) => log.warn(text));
+        this.sizeWarned = false;
     }
 
     start() {
@@ -1353,12 +1373,49 @@ class IncrementalRecorder {
         const batch = this.pending;
         this.pending = [];
         try {
-            fs.appendFileSync(this.logPath, batch.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+            const text = batch.map((e) => JSON.stringify(e)).join('\n') + '\n';
+            fs.appendFileSync(this.logPath, text, 'utf8');
             this.written += batch.length;
+            this.bytes += Buffer.byteLength(text, 'utf8');
+            this.announceSizeOnce();
         } catch (e) {
             // A failed flush must never take the recording down with it.
             log.verbose(`capture-har: incremental flush failed: ${e.message}`);
         }
+    }
+
+    /**
+     * Say so, once, while the operator can still do something about it.
+     *
+     * THE ONLY MOMENT THIS CAN BE SAID USEFULLY. Everything that consumes a
+     * capture -- scrub, verify, digest, catalogue -- runs after the browser
+     * exits, which is why this command is `Invoke-` rather than `Start-`. So an
+     * operator recording past the size the scrub can read finds out when the
+     * session is over and the account writes behind it are spent, and the only
+     * artifact they still hold is the credential-bearing raw that must not be
+     * shared. The recorder is the one component that knows the size while
+     * stopping, splitting the session or narrowing the filter is still
+     * possible (issue #528).
+     *
+     * THE NDJSON LOG IS A FAIR PROXY for the HAR assembled from it -- in the
+     * session that prompted this, 811 MB of log against an 816 MB HAR -- and it
+     * is a slight UNDER-count, which is the safe direction for a warning: it
+     * fires marginally early rather than marginally late.
+     *
+     * Once. The flush interval is short and a session runs for many minutes, so
+     * a per-flush warning would scroll away the browsing output it shares a
+     * console with, and teach the operator to skip warnings generally.
+     */
+    announceSizeOnce() {
+        if (this.sizeWarned || this.bytes <= this.warnAtBytes) return;
+        this.sizeWarned = true;
+        const limit = captureSize.formatSize(captureSize.MAX_STRING_LENGTH);
+        this.onSizeWarning(
+            `capture-har: this recording is already ${captureSize.formatSize(this.bytes)} and ` +
+            `is approaching the ${limit} ceiling on a single string. A capture past that size ` +
+            'cannot be scrubbed, and the scrub runs only after the browser exits -- so stop ' +
+            'now and record the rest as a second session, or narrow what is being captured, ' +
+            'rather than finding out when this one is over.');
     }
 
     stop() {
