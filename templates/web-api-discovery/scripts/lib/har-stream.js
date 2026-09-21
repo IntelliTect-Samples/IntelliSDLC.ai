@@ -82,11 +82,21 @@ const DEFAULT_CHUNK_SIZE = 1024 * 1024;
 // multi-megabyte string VALUE from being buffered on the chance it is a key.
 const MAX_KEY_BYTES = 256;
 
-const ENTRIES_NOT_FOUND = 'ENTRIES_NOT_FOUND';
-const TRUNCATED = 'TRUNCATED';
-const ENVELOPE_UNPARSEABLE = 'ENVELOPE_UNPARSEABLE';
-const ENTRY_UNPARSEABLE = 'ENTRY_UNPARSEABLE';
-const ENTRY_TOO_LARGE = 'ENTRY_TOO_LARGE';
+// THE CODE STRINGS ARE THE BOUNDARY'S VOCABULARY, not this module's.
+//
+// har-document.js owns the one error type callers catch, and exports these
+// spellings frozen as HAR_FORMAT_CODES. Raising the same literals here makes its
+// translation a pass-through rather than a lookup table that can be written
+// wrong, and it means a code added on one side and forgotten on the other fails
+// an assertion instead of quietly degrading to "unreadable". This module still
+// does not IMPORT that one -- the boundary requires this engine, so a require
+// back would be a cycle. Matching strings, not a shared constant, is what keeps
+// that true.
+const ENTRIES_NOT_FOUND = 'not-a-har';
+const TRUNCATED = 'truncated';
+const ENVELOPE_UNPARSEABLE = 'envelope-not-json';
+const ENTRY_UNPARSEABLE = 'entry-not-json';
+const ENTRY_TOO_LARGE = 'entry-too-large';
 
 /**
  * Carries a `code` so a caller maps a cause to an exit status without matching
