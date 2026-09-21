@@ -456,4 +456,56 @@ function countOf(haystack, needle) {
     ok('deterministic across kinds');
 }
 
+// --- 15. A value carrying whitespace is never swept ----------------------
+// The rest of the prose axis, and the half a length floor cannot reach. The
+// secret field list carries `confirm_password`, `new_password`,
+// `security_code` -- exactly the names an i18n bundle reuses as translation
+// KEYS -- so a locale string like "Confirm your password" (22 characters) is
+// captured by name, clears any sane length floor, and would be swept into
+// every other place that sentence appears in the capture.
+//
+// Whitespace is the discriminator, not length. A credential that travels as a
+// bare form or JSON value does not contain a space: cookie values cannot,
+// URL-borne tokens cannot, and hex/JWT/UUID shapes cannot. A sentence almost
+// always does. The value is still redacted at its own site by the name
+// control; it is only the GLOBAL edit that is declined.
+{
+    const phrase = 'Confirm your password';
+    const entry = {
+        key: `field:confirm_password:${phrase}`, kind: 'field', name: 'confirm_password',
+        original: phrase, replacement: 'redacted-aaaabbbbccccdddd',
+    };
+    assert.ok(phrase.length > survivors.MIN_SWEEPABLE_LENGTH,
+        '15.a: the fixture phrase is below the floor, so this section would pass on the ' +
+        'length rule and the whitespace rule would be untested');
+    assert.deepStrictEqual(survivors.sweepableEntries([entry]), [],
+        '15.b: a name-captured phrase entered the sweep, so every other occurrence of ' +
+        'that sentence in the capture becomes a redaction sentinel');
+
+    const har = { log: { entries: [{ response: { content: { text: `Please ${phrase} again` } } }] } };
+    const before = JSON.stringify(har);
+    survivors.applySweep(har, [entry]);
+    assert.strictEqual(JSON.stringify(har), before,
+        '15.c: the sweep rewrote a sentence elsewhere in the capture');
+    assert.deepStrictEqual(survivors.findSurvivors(har, [entry]), [],
+        '15.d: the check reports a survivor the sweep is not allowed to remove, which ' +
+        'would refuse every capture carrying the phrase');
+    ok('whitespace is never swept');
+}
+
+// --- 16. Both measured survivors still pass every sweep rule -------------
+// The guard on the two rules above together. #475's survivors are a 24-
+// character alphanumeric cookie value and a 17-character punctuated field
+// value; neither carries whitespace, so neither rule excludes them.
+{
+    for (const original of ['Sy7nQkTv2Xb9RmLp4Wz0Hc6A', 'a.b-c_d:e/f+g=h%i']) {
+        const entry = { key: `cookie:datr:${original}`, kind: 'cookie', name: 'datr',
+            original, replacement: 'redacted-1234567890abcdef' };
+        assert.strictEqual(survivors.sweepableEntries([entry]).length, 1,
+            `16.a: a ${original.length}-character survivor of the shape #475 measured is ` +
+            'no longer swept, so the issue is no longer fixed');
+    }
+    ok('measured survivors still swept');
+}
+
 console.log(`All subs-survivors tests passed (${passed} sections)`);

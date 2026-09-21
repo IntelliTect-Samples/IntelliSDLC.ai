@@ -53,11 +53,14 @@
  *     base64 blob is not matched here. That axis belongs to the gate's shape
  *     checks and to the nested-reach work; claiming it here would be a reach
  *     fix wearing a post-condition's clothes.
- *   * Originals shorter than `MIN_SWEEPABLE_LENGTH`. A short value captured by
- *     its field NAME is routinely an ordinary word -- #529's locale bundle
- *     holds the label `"Password"` under the key `"Password"` -- and sweeping
- *     one rewrites the whole capture to fix one site. Those stay name- and
- *     shape-scrubbed only.
+ *   * Originals carrying WHITESPACE, and originals shorter than
+ *     `MIN_SWEEPABLE_LENGTH`. Both are the same axis: a value captured by
+ *     its field NAME is routinely prose -- #529's locale bundle holds the
+ *     label `"Password"` under the key `"Password"`, and the same list carries
+ *     `confirm_password`, which an i18n bundle keys a whole sentence on.
+ *     Sweeping one rewrites the whole capture to fix one site. Those stay
+ *     name- and shape-scrubbed only. See `PROSE_RE` and
+ *     `MIN_SWEEPABLE_LENGTH`.
  *   * The TYPED-PII table. `pii.js` returns hash prefixes rather than
  *     originals, by design, so its substitutions cannot feed this check and
  *     are not covered by it. The same class of survivor is therefore still
@@ -109,6 +112,29 @@ const MIN_SWEEPABLE_LENGTH = 16;
 // input and merged afterwards is equivalent and bounded -- see `replaceAll`.
 const MATCHER_CHUNK_SIZE = 2000;
 
+/**
+ * An original this sweep declines to act on globally, whatever its length.
+ *
+ * The length floor closes the single-word case and not the rest of it. The
+ * secret field list carries `confirm_password`, `new_password`,
+ * `security_code` -- precisely the names an i18n bundle reuses as translation
+ * KEYS -- so a locale string like "Confirm your password" is captured by name,
+ * clears any sane floor, and would be swept into every other place that
+ * sentence appears. Length cannot tell a 22-character token from a
+ * 22-character sentence; whitespace can.
+ *
+ * A credential travelling as a bare form or JSON value does not contain a
+ * space. A cookie value cannot carry one, a URL-borne token cannot, and the
+ * hex, JWT and UUID shapes cannot. Neither survivor #475 measured does. A
+ * sentence almost always does.
+ *
+ * Only the GLOBAL edit is declined. The value is still replaced at its own
+ * site by the control that captured it, and it is excluded from the check as
+ * well as the sweep, so the two cannot disagree and refuse the capture over a
+ * value the sweep is not allowed to remove.
+ */
+const PROSE_RE = /\s/;
+
 const MAX_DEPTH = 60;
 
 function escapeRegExp(s) {
@@ -148,6 +174,7 @@ function sweepableEntries(entries, produced) {
     for (const e of sorted) {
         if (typeof e.original !== 'string' || typeof e.replacement !== 'string') continue;
         if (e.original.length < MIN_SWEEPABLE_LENGTH) continue;
+        if (PROSE_RE.test(e.original)) continue;
         if (e.original === e.replacement) continue;
         if (replacements.has(e.original)) continue;
         if (produced && produced.has(e.original)) continue;
