@@ -89,6 +89,9 @@ const REGIONS = ['ZZ','XA','XB','XC','XD','XE','XF','XG','XH','XI'];
 // carries `exact` (whole-key names), `tail` (trailing words that denote the
 // type) and `qualifiers` -- the words allowed to precede an ambiguous tail, or
 // the string `any` where the tail speaks for itself. See `fieldTypeFor`.
+// One place recognises a value as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require('./har-document.js');
 const harPolicy = require('./har-policy.js');
 // ONE definition of "credit card", consumed rather than copied (issue #334).
 // `har-shapes.js` is the gate; it requires an assigned issuer identifier at a
@@ -759,7 +762,11 @@ function walkJsonForDetect(node, key, entryIndex, jsonPath, out, policy) {
  */
 function detectPii(har, policy) {
     const out = [];
-    const entries = (har && har.log && har.log.entries) || [];
+    // Recognised, not folded (issue #423). Every path here comes through
+    // sanitize-har's guarded read, so this cannot fire in practice -- which is
+    // the point: the day a new caller forgets the read, the scrub says so
+    // instead of reporting a document it never walked as carrying no PII.
+    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
     entries.forEach((entry, entryIndex) => {
         // headers
         const allHeaders = [
@@ -1121,7 +1128,7 @@ function scrubPii(har, policy) {
         return String(b.value).length - String(a.value).length;
     });
 
-    const entries = (har && har.log && har.log.entries) || [];
+    const entries = harDocument.entriesOf(har, 'the capture being scrubbed');
     for (const entry of entries) {
         applyReplacementsToEntry(entry, replacements, policy);
     }

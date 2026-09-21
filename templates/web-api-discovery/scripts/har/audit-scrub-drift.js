@@ -437,7 +437,11 @@ function emitBody(text, base, emit) {
 }
 
 function forEachHarString(har, emit) {
-    const entries = (har && har.log && har.log.entries) || [];
+    // Recognised, not folded (issue #423). Callers reach this only through
+    // `readHar`, which has already refused anything that is not a capture; the
+    // strictness is here so a future caller that forgets cannot turn "I could
+    // not read it" into "there was nothing in it".
+    const entries = harDocument.entriesOf(har, 'the capture being audited');
     entries.forEach((entry, entryIndex) => {
         emitEntryStrings(entry, (keyPath, text, field) => emit(entryIndex, keyPath, text, field));
     });
