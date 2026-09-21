@@ -196,6 +196,35 @@ test('an engine error becomes the ONE canonical type, and keeps its code', () =>
     }
 });
 
+test('a translated refusal always names the file, even when the label collides by accident', () => {
+    // The finding that justified the whole dedup being re-examined. The label
+    // is skipped only when the detail ALREADY starts with it -- a containment
+    // test was satisfied by coincidence, so a label of `a` counted as "already
+    // named" inside `cannot read data` and the message came out naming no file
+    // at all. That is the single outcome this boundary exists to prevent, so
+    // it is pinned against the accidents rather than the happy path.
+    const collisions = [
+        ['a', 'cannot read data: file corrupt'],
+        ['is', 'this file is broken'],
+        ['or', 'the entry index is out of order'],
+        ['captures', 'something went wrong in captures somewhere'],
+    ];
+    for (const [label, detail] of collisions) {
+        const e = harDocument.fromEngineError({ code: 'not-a-har', message: detail }, label);
+        assert.ok(e.message.startsWith(`${label} `),
+            `label '${label}' was wrongly treated as already named: ${e.message}`);
+    }
+
+    // And the real case still dedups: the engine puts the path first, so the
+    // path appears once.
+    const real = harDocument.fromEngineError(
+        { code: 'truncated', message: 'raw.har ends inside log.entries -- the capture is truncated' },
+        'raw.har');
+    assert.strictEqual(real.message.split('raw.har').length - 1, 1,
+        `the file is named more than once: ${real.message}`);
+    assert.ok(real.message.includes('cannot be read as a HAR'));
+});
+
 test('a code the boundary does not know degrades rather than escaping as a foreign type', () => {
     const translated = harDocument.fromEngineError({ code: 'invented-later', message: 'x' }, 'big.har');
     assert.ok(translated instanceof HarFormatError);
