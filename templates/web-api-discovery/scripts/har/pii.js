@@ -1452,6 +1452,39 @@ function indexFor(replacements) {
         if (!byTypeValue.has(typeKey)) byTypeValue.set(typeKey, r);
         if (v.length === 0) continue;
 
+        // ONLY A STRING GETS A NEEDLE (issue #529).
+        //
+        // `replaceInJson` already states the rule for the other direction: a
+        // coordinate "is the one type replaced by FIELD NAME alone, without
+        // consulting the replacement set -- a number has no string form to
+        // enrol". Enrolling one here contradicted that, and the contradiction
+        // was not academic. A detected coordinate is a NUMBER, so `String(5)`
+        // became the needle `5`, matched EVERY `5` in EVERY string in the
+        // document, and replaced it with the coordinate fake `0`. The
+        // `boundary` guard below cannot catch this: it only fires for a purely
+        // alphabetic value.
+        //
+        // The observed cost on one capture: `/v4/` became `/v0/`, content
+        // hashes and image dimensions were rewritten into fiction, and -- the
+        // reason it surfaced at all -- the `-1` needle ate the hyphen out of
+        // the scrubber's OWN `redacted-1...` sentinel, so the gate read the
+        // redaction as a live credential and quarantined a clean capture.
+        //
+        // NOT scoped to `geo-coordinates`, because the type is not what makes
+        // it wrong: a float coordinate corrupts text the same way (`34.05`
+        // inside a price or a version string), just less visibly. The
+        // discriminating fact is that the detected value has no text spelling
+        // to look for.
+        //
+        // This costs no reach. A non-string value is replaced by the number
+        // branch of `replaceInJson`, never by a text match, and a coordinate
+        // spelled as a STRING is not detected as one at all -- the geo branch
+        // of `detectInValue` requires `typeof value === 'number'`. What is lost
+        // is an accident: a numeric `47.6205` in one body also scrubbed the
+        // text `?lat=47.6205` in an unrelated URL, which was the wrong engine
+        // papering over a detection gap.
+        if (typeof r.value !== 'string') continue;
+
         // Context-typed values (person-name etc.) may have very short literals
         // (e.g. "Alice") that risk false-positive matches inside unrelated
         // text, so a purely alphabetic value only matches on word boundaries.

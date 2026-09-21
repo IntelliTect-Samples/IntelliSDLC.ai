@@ -203,8 +203,15 @@ function main() {
 
     if (parsed) {
         leaks = harShapes.findLeaksInHar(parsed, policy);
-        harSecrets.walkForUnredactedSecrets(parsed, (name) => {
-            leaks.push({ kind: 'known-secret', sample: name, gating: true });
+        // The location travels with the finding (issue #529). Dropping it made
+        // this the one finding kind an operator could not act on: the report
+        // named a field and left the entry to be found by hand, which on a
+        // real capture meant walking tens of megabytes of JSON.
+        harSecrets.walkForUnredactedSecrets(parsed, (name, where, at) => {
+            leaks.push(Object.assign({ kind: 'known-secret', sample: name, gating: true },
+                at && at.entryIndex !== undefined ? { entryIndex: at.entryIndex } : null,
+                at && at.keyPath ? { keyPath: at.keyPath } : null,
+                at && at.enclosing ? { enclosing: at.enclosing } : null));
         }, { policy });
     } else {
         leaks = harShapes.findLeaksDeep(raw, policy);
