@@ -136,6 +136,9 @@ const path = require('path');
 
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 const pii = require(path.join(__dirname, 'pii.js'));
 // The canonical substitution-table filenames, imported rather than re-spelled
 // (issue #446): this audit recovers originals FROM those tables, so a name it
@@ -184,6 +187,24 @@ const MAX_DIRS = 200000;
 function readJson(p) {
     try {
         return { ok: true, value: JSON.parse(fs.readFileSync(p, 'utf8')) };
+    } catch (e) {
+        return { ok: false, error: (e && e.message) || 'unreadable' };
+    }
+}
+
+/**
+ * The same, for a file that must be a CAPTURE.
+ *
+ * Parsing is not the test (issue #423). A reference or raw that is valid JSON
+ * and not a HAR used to walk to zero strings, and the audit then reported
+ * `original-not-in-linked-raw` -- a confident adjudication of a file it could
+ * not read, and the most misleading answer available, because it points a
+ * reviewer at the substitution table instead of the file. It is now
+ * unadjudicable, which is what "I could not read it" means here.
+ */
+function readHar(p) {
+    try {
+        return { ok: true, value: harDocument.readHarDocument(p).document };
     } catch (e) {
         return { ok: false, error: (e && e.message) || 'unreadable' };
     }
@@ -599,9 +620,9 @@ function auditReference(referencePath, captures, policy) {
     if (capture.tableReadable === false) return asUnadjudicable('substitution-table-unreadable');
     if (!capture.rawPresent) return asUnadjudicable('raw-missing');
 
-    const reference = readJson(referencePath);
+    const reference = readHar(referencePath);
     if (!reference.ok) return asUnadjudicable('reference-unreadable');
-    const raw = readJson(capture.rawPath);
+    const raw = readHar(capture.rawPath);
     if (!raw.ok) return asUnadjudicable('raw-unreadable');
 
     // One candidate per distinct substitution. The same original scrubbed twice

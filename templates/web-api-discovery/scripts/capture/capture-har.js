@@ -165,6 +165,9 @@ const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard
 // this exact enumeration -- with its classification of legacy and foreign
 // captures intact -- instead of growing a second notion of what a capture is.
 const captureStore = require(path.join(__dirname, 'capture-store.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, '..', 'har', 'har-document.js'));
 const bodyDescriptor = require(path.join(__dirname, 'request-body-descriptor.js'));
 // The ONE gitignore check in this subsystem (#318). It wraps `git check-ignore`
 // and already defends against a forged `.gitignore` containing `*` and against
@@ -1504,8 +1507,9 @@ function annotateUnretainedBodies(harPath, logPath) {
     if (!logged.length) return null;
     const staged = `${harPath}.annotating`;
     try {
-        const har = JSON.parse(fs.readFileSync(harPath, 'utf8'));
-        const entries = (har && har.log && har.log.entries) || [];
+        const read = harDocument.readHarDocument(harPath);
+        const har = read.document;
+        const entries = read.entries;
         const annotated = bodyDescriptor.attachDescriptors(entries, logged);
         if (!annotated) return { annotated: 0 };
         // WRITE BESIDE IT, THEN RENAME. This is the only place in this file
@@ -1586,7 +1590,13 @@ function originOf(uri) {
  * re-parsing a multi-hundred-megabyte HAR.
  */
 function buildDigest(har, meta = {}) {
-    const entries = (har && har.log && har.log.entries) || [];
+    // Recognised, not folded (issue #423). `|| []` here was the named symptom:
+    // a capture nothing could read produced a digest with no groups, the
+    // scaffold produced no rows, and the catalogue guard then blamed the
+    // catalogue for a file the READER had failed on. A digest is a claim about
+    // traffic, so it refuses to be built from something it cannot identify as
+    // a recording.
+    const entries = harDocument.entriesOf(har, 'the capture being digested');
     const groups = new Map();
     const gaps = [];
 
@@ -1832,7 +1842,7 @@ function askTheGate(candidate, state, run) {
 function catalogueScrubbed(session, state, opts = {}) {
     try {
         log.info('capture-har: building the digest ...');
-        const har = JSON.parse(fs.readFileSync(state.scrubbed.path, 'utf8'));
+        const har = harDocument.readHarDocument(state.scrubbed.path).document;
         // capturedUtc is when the RECORDING happened, not when it was
         // processed. A catalogue row dated to the scrub would answer "how old
         // is this evidence of their API" with the wrong number -- and that
@@ -2342,7 +2352,10 @@ function summarize(harPath) {
     const bytes = fs.statSync(harPath).size;
     const summary = { exists: true, bytes, path: harPath };
     try {
-        const entries = JSON.parse(fs.readFileSync(harPath, 'utf8')).log.entries || [];
+        // A file that is not a capture lands in `parseError` below with a
+        // message saying so, rather than being summarised as a capture that
+        // recorded nothing (issue #423).
+        const entries = harDocument.readHarDocument(harPath).entries;
         summary.entries = entries.length;
         summary.hosts = [...new Set(entries.map((e) => {
             try { return new URL(e.request.url).host; } catch (x) { return '?'; }

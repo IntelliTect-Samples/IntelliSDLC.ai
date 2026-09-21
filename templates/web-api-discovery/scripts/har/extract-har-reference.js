@@ -95,6 +95,9 @@ const { spawnSync } = require('child_process');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
 // The reference root is the CURRENT DIRECTORY. The cataloguer runs with its cwd
 // set to the capture's output path, which is already the host-named folder, so
@@ -256,11 +259,17 @@ function main() {
                 .split('\n').join('\n  ') + '\n');
     }
 
+    // One reader recognises a capture, and refuses a file that is not one
+    // (issue #423). A raw that folded to zero entries used to produce a
+    // reference describing no traffic -- committed, catalogued and believed.
     let har;
+    let all;
     try {
-        har = JSON.parse(fs.readFileSync(args.in, 'utf8'));
+        const read = harDocument.readHarDocument(args.in);
+        har = read.document;
+        all = read.entries;
     } catch (e) {
-        fail(`cannot read ${args.in}: ${e.message}`);
+        fail(e.message);
     }
 
     let selectors;
@@ -270,7 +279,6 @@ function main() {
         usage(`invalid --match pattern: ${e.message}`);
     }
 
-    const all = (har.log && har.log.entries) || [];
 
     // The classification runs FIRST and always. `--match` then narrows within
     // what it kept -- it does not replace it.
@@ -402,14 +410,18 @@ function main() {
         failAndDiscard('sanitize-har failed; no reference written');
     }
 
+    // The scrubber's own output gets recognised too. A scrub that emitted
+    // something other than a HAR would otherwise produce a reference with no
+    // entries in it, which is precisely the silent zero this guards (#423).
     let scrubbed;
+    let scrubbedEntries;
     try {
-        scrubbed = JSON.parse(fs.readFileSync(stagedOut, 'utf8'));
+        const read = harDocument.readHarDocument(stagedOut);
+        scrubbed = read.document;
+        scrubbedEntries = read.entries;
     } catch (e) {
         failAndDiscard(`cannot read the scrubbed intermediate: ${e.message}`);
     }
-
-    const scrubbedEntries = (scrubbed.log && scrubbed.log.entries) || [];
     capResponses(scrubbedEntries, maxResponseBytes);
     addDecodedParams(scrubbedEntries);
 

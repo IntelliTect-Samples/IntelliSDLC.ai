@@ -90,6 +90,9 @@ const path = require('path');
 
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const repoGuard = require(path.join(__dirname, '..', 'lib', 'repo-workflow-guard.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 // The SAME path templating the digest and the catalogue guard use. `api.json`
 // is the aggregate of what `digest.json` already computes per session, so a
 // second, subtly different notion of "the same endpoint" here would make the
@@ -233,17 +236,21 @@ function readReferences(dir) {
     if (names.length === 0) fail(`no *.har reference in '${dir}'`);
 
     return names.map((harFile) => {
-        let har;
-        try {
-            har = JSON.parse(fs.readFileSync(path.join(dir, harFile), 'utf8'));
-        } catch (e) {
-            fail(`cannot parse '${harFile}': ${e.message}`);
-        }
         // Parsing is not enough: a file can be valid JSON and still not be a
-        // HAR. Left to the fold, a non-array `entries` threw a raw stack trace
-        // -- the right exit code wearing somebody else's error message.
-        const entries = (har && har.log && har.log.entries) || [];
-        if (!Array.isArray(entries)) fail(`'${harFile}' has a log.entries that is not a list`);
+        // HAR. That used to be guarded here -- and the guard did not work,
+        // because `(har && har.log && har.log.entries) || []` had already
+        // turned a missing `entries` into an empty list before `Array.isArray`
+        // ever saw it. A reference nothing could read became a reference with
+        // no traffic in it, and the api.json described a provider as though
+        // those calls never happened. The recognition now lives in one place
+        // (issue #423) where it cannot be undone by the expression in front of
+        // it.
+        let entries;
+        try {
+            entries = harDocument.readHarDocument(path.join(dir, harFile)).entries;
+        } catch (e) {
+            fail(e.message);
+        }
         return { harFile, entries };
     });
 }

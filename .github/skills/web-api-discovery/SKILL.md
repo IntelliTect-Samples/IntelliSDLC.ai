@@ -2022,6 +2022,15 @@ The skill's final user-visible output is:
   is.
 - **Do not** give the literal map or the salt a default value so the tooling
   "just runs". An absent profile must fail loudly and name the file.
+- **Do not** let a capture the tooling cannot read report as a capture
+  containing nothing. Every stage reads through one reader that recognises a
+  file as a HAR or refuses it by name, exiting non-zero; `(har.log.entries) ||
+  []` is the shape that must never come back. A capture that really is empty
+  still reads as zero entries -- "I read it and it held nothing" and "I could
+  not read it" are different sentences and the operator acts on them
+  differently. Recognition is `log.entries` being a list and nothing more: a
+  reader that also insisted on a recorder name or a version would reject a
+  perfectly readable capture made by some other tool.
 - **Do not** trust a generation step's report of what it wrote. Verify a
   committed reference by parsing it and asserting on its content.
 - **Do not** hardcode the user's real cookies / tokens / OAuth secrets

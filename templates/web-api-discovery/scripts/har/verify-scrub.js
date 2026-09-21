@@ -60,6 +60,9 @@ const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 // that actually ships.
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+// Recognising a file as a capture happens in ONE place (issue #423), so this
+// gate and every stage it guards cannot drift apart over what a HAR is.
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
 // Does a finding fail the run? One definition, in har-shapes.js, so the gate
 // on the committed reference cannot drift away from the gate on the
@@ -184,11 +187,23 @@ function main() {
     // not scanned as if they were wire data. A HAR that will not parse still
     // gets the flat text sweep: a gate that skips a malformed file entirely
     // would be a gate anyone could bypass by malforming the file.
+    //
+    // Both halves of that matter, and issue #423 is the second one. A file
+    // that parses as JSON but is not a HAR used to take the `parsed` branch,
+    // find no entries, and be reported as `0 blocking leaks` with exit 0 --
+    // a scrub gate issuing a clean bill of health on a document it never
+    // understood. So the sweep still runs on anything, and the refusal is
+    // ADDITIONAL to it: `unreadable` is remembered here and denies the success
+    // path below, whatever the sweep found.
     let leaks;
     let parsed = null;
+    let unreadable = null;
     try {
-        parsed = JSON.parse(raw);
-    } catch {
+        // `raw` is already in hand, so parse THAT rather than opening the file
+        // a second time -- these captures are measured in hundreds of megabytes.
+        parsed = harDocument.parseHarDocument(raw, args.in).document;
+    } catch (e) {
+        unreadable = e;
         parsed = null;
     }
     // The merged policy is discovered from the file being verified, so a
@@ -255,6 +270,16 @@ function main() {
             `upstream secret name(s) from detection: ${policy.loosenedSecretNames.join(', ')}`);
     }
     for (const l of reported) console.error(`  ~ reported, not blocking: ${describe(l)}`);
+
+    // A capture that could not be read never reaches the clean verdict, even
+    // with an empty sweep -- especially with an empty sweep, since a document
+    // nothing could walk is exactly the one that looks cleanest.
+    if (unreadable && gating.length === 0 && advising.length === 0) {
+        console.error(`verify-scrub: ${unreadable.message}`);
+        console.error('verify-scrub: REFUSING to report this file as scrubbed -- it was swept as flat ' +
+            'text, but nothing here read it as a capture.');
+        process.exit(1);
+    }
 
     if (gating.length === 0 && advising.length === 0) {
         console.log(
