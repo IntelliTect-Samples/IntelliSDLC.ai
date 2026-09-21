@@ -173,11 +173,19 @@ function main() {
     try {
         for (const entry of doc.entries()) accumulator.add(entry);
     } catch (e) {
-        // A capture that ends mid-entries reaches here rather than the open
-        // above, because the engine cannot know the document is truncated until
-        // it walks off the end of it. Same translation, same exit code: the
-        // operator is told the recording was cut off, not that the file is not
-        // a HAR, because those are different repairs.
+        // What reaches HERE rather than the open is the per-entry pair --
+        // `entry-not-json` and `entry-too-large` -- because those are the only
+        // conditions the engine cannot know until it decodes and parses an
+        // individual entry. Truncation is NOT one of them: the open locates the
+        // entries array by scanning for its closing bracket, so a document that
+        // ends mid-entries is refused before a single entry is yielded.
+        // (Verified against the engine rather than assumed: a truncated capture
+        // fails at the open with `truncated`, a corrupt entry fails here with
+        // `entry-not-json`.)
+        //
+        // Same translation and same exit code either way, so the operator is
+        // told which of the two happened in the same words every other stage
+        // uses.
         if (e instanceof harStream.HarStreamError) {
             fail(harDocument.fromEngineError(e, args.in).message, EXIT_UNREADABLE);
         }

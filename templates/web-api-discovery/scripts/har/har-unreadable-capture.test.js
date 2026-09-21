@@ -218,6 +218,69 @@ test('every code the streaming engine raises is one the boundary promises', () =
     }
 });
 
+test('truncation is refused at the OPEN, a corrupt entry at the WALK', () => {
+    // Pinned because I had this backwards in a comment and a reviewer caught
+    // it. A wrong belief about which stage raises what is exactly the kind that
+    // survives as a test asserting the opposite of what happens, so the fact is
+    // measured here rather than described anywhere.
+    //
+    // The open locates the entries array by scanning for its closing bracket,
+    // so a document that ends mid-entries cannot yield even one entry. Only the
+    // per-entry conditions -- a corrupt entry, an entry too large to hold --
+    // are unknowable until an individual entry is decoded.
+    const engine = require(path.join(__dirname, '..', 'lib', 'har-stream.js'));
+    const full = fs.readFileSync(path.join(FIXTURES, 'mitmproxy-pretty.har'), 'utf8');
+
+    const stageOf = (name, text) => {
+        const p = write(name, text);
+        try {
+            const doc = engine.openHarDocument(p);
+            try {
+                for (const entry of doc.entries()) { void entry; }
+            } catch (e) { return { stage: 'walk', code: e.code }; }
+        } catch (e) { return { stage: 'open', code: e.code }; }
+        return { stage: 'none', code: null };
+    };
+
+    assert.deepStrictEqual(
+        stageOf('cut-short.har', full.slice(0, Math.floor(full.length * 0.6))),
+        { stage: 'open', code: 'truncated' });
+
+    assert.deepStrictEqual(
+        stageOf('bad-entry.har', full.replace('"startedDateTime"', 'startedDateTime')),
+        { stage: 'walk', code: 'entry-not-json' });
+});
+
+test('both stages refuse in the same words, because both go through the boundary', () => {
+    // The gap this closes: the engine relays its own message at the walk, so
+    // without translation an entry-level failure came out phrased differently
+    // from an open-level one -- two voices for one condition, in the command
+    // whose whole job is the largest captures.
+    const full = fs.readFileSync(path.join(FIXTURES, 'mitmproxy-pretty.har'), 'utf8');
+    const out = path.join(tmp, 'never-written.har');
+
+    for (const [name, text] of [
+        ['trim-cut-short.har', full.slice(0, Math.floor(full.length * 0.6))],
+        ['trim-bad-entry.har', full.replace('"startedDateTime"', 'startedDateTime')],
+    ]) {
+        const p = write(name, text);
+        const r = run('trim-har-capture.js', ['--in', p, '--out', out]);
+        assert.strictEqual(r.code, 1, `${name} did not exit 1: ${r.all}`);
+        assert.ok(r.all.includes(p), `${name}: the refusal does not name the file: ${r.all}`);
+        // The discriminator. Without translation the engine's own message is
+        // relayed verbatim at the walk and this phrase is absent -- so an exit
+        // code and a filename alone would have passed either way, which is the
+        // vacuous assertion this suite exists to avoid making.
+        assert.ok(r.all.includes('cannot be read as a HAR'),
+            `${name}: the refusal did not come through the boundary: ${r.all}`);
+        // And the file is named ONCE. Printing the path twice in one sentence
+        // reads as a bug in the tool reporting the bug.
+        assert.strictEqual(r.all.split(p).length - 1, 1,
+            `${name}: the file is named more than once: ${r.all}`);
+        assert.ok(!fs.existsSync(out), `${name}: wrote an output for a capture it refused`);
+    }
+});
+
 test('the codes an operator is told apart stay told apart', () => {
     // Each of these is a different sentence to a human and a different repair.
     // Collapsing any pair of them would be the same mistake as the `[]` this
