@@ -85,7 +85,14 @@ const path = require('path');
  *   not-json        the bytes are not JSON
  *   not-a-har       it is JSON, but there is no `log.entries` array in it.
  *                   THE condition this issue is about: the one that used to
- *                   be an empty list
+ *                   be an empty list. A capture cut off BEFORE `log.entries`
+ *                   begins also lands here rather than in `truncated`: a
+ *                   single forward scan that never reaches the key cannot
+ *                   tell "this document has no entries" from "this document
+ *                   stopped before it got to them", and telling those apart
+ *                   costs a second pass for a narrow case. Both still fail
+ *                   loudly, which is the invariant; only the suggested repair
+ *                   is less precise
  *   envelope-not-json  the JSON is broken OUTSIDE the entries array -- the
  *                   entries themselves may be perfectly good. Distinct from
  *                   `not-json` because it tells the operator something
@@ -140,7 +147,15 @@ function fromEngineError(error, label) {
     // phrase is what has to be there -- it is what makes an open-level and an
     // entry-level refusal read as the same kind of event -- so it is added and
     // the second copy of the label is not.
-    const message = detail.includes(label)
+    //
+    // STARTS WITH, not contains, and the difference is the whole function's
+    // reason for existing. A containment test is satisfied by coincidence: a
+    // label of `a` is "contained" in `cannot read data`, so the prefix is
+    // suppressed and the message ends up naming no file at all -- the one
+    // outcome this boundary exists to prevent. Every error that reaches here
+    // puts the path at the very start, engine and fs alike, so the stricter
+    // test dedups every real case and cannot be fooled by an accident.
+    const message = detail.startsWith(label)
         ? `cannot be read as a HAR: ${detail}`
         : `${label} cannot be read as a HAR: ${detail}`;
     return new HarFormatError(message, code);
