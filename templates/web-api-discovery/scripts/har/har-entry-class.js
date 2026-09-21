@@ -175,37 +175,71 @@ function classifyEntry(entry) {
 }
 
 /**
- * Classify every entry and return `{ classified, counts, kinds, bases }`.
- * Throws if the categories do not partition the input -- the "kept + dropped
- * equals total" invariant, checked rather than assumed.
+ * An accumulator that classifies entries ONE AT A TIME and never retains them.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `classifyEntries`. The array form below holds
+ * every entry it was given, in `classified`, so that callers can filter it
+ * afterwards. On a capture measured in gigabytes that array IS the whole
+ * document, and a caller that streamed the file entry by entry only to build it
+ * has moved the memory problem rather than removed it (issue #450). A caller
+ * that needs the counts but not the entries uses this and keeps its memory flat.
+ *
+ * ONE DEFINITION, NOT TWO. `classifyEntries` is implemented on top of this, so
+ * the streaming and whole-array paths cannot drift about what a beacon is --
+ * the same reason the classifier is shared between the trim and the reference
+ * extraction in the first place.
  */
-function classifyEntries(entries) {
+function createClassificationAccumulator() {
     const counts = {};
     const kinds = {};
     const bases = {};
     for (const c of KEPT_CATEGORIES.concat(DROPPED_CATEGORIES)) { counts[c] = 0; kinds[c] = {}; }
+    let scanned = 0;
 
-    const classified = entries.map((entry) => {
-        const c = classifyEntry(entry);
-        if (counts[c.category] === undefined) {
-            throw new Error(`classifier produced an unknown category '${c.category}'`);
-        }
-        counts[c.category] += 1;
-        kinds[c.category][c.kind] = (kinds[c.category][c.kind] || 0) + 1;
-        bases[c.basis] = (bases[c.basis] || 0) + 1;
-        return Object.assign({ entry }, c);
-    });
+    return {
+        /** Classifies one entry, records it, and returns its classification. */
+        add(entry) {
+            const c = classifyEntry(entry);
+            if (counts[c.category] === undefined) {
+                throw new Error(`classifier produced an unknown category '${c.category}'`);
+            }
+            counts[c.category] += 1;
+            kinds[c.category][c.kind] = (kinds[c.category][c.kind] || 0) + 1;
+            bases[c.basis] = (bases[c.basis] || 0) + 1;
+            scanned += 1;
+            return c;
+        },
+        /**
+         * The totals, with the partition invariant checked rather than assumed:
+         * every entry scanned landed in exactly one category.
+         */
+        report() {
+            const kept = KEPT_CATEGORIES.reduce((n, c) => n + counts[c], 0);
+            const dropped = DROPPED_CATEGORIES.reduce((n, c) => n + counts[c], 0);
+            if (kept + dropped !== scanned) {
+                // Not reachable through the classifier above -- which is the
+                // point. If it ever becomes reachable, the run must stop, not
+                // quietly write a reference that lost entries nobody counted.
+                throw new Error(
+                    `classification lost entries: kept ${kept} + dropped ${dropped} != ${scanned} scanned`);
+            }
+            return { counts, kinds, bases, kept, dropped, scanned };
+        },
+    };
+}
 
-    const kept = KEPT_CATEGORIES.reduce((n, c) => n + counts[c], 0);
-    const dropped = DROPPED_CATEGORIES.reduce((n, c) => n + counts[c], 0);
-    if (kept + dropped !== entries.length) {
-        // Not reachable through the classifier above -- which is the point.
-        // If it ever becomes reachable, the run must stop, not quietly write a
-        // reference that lost entries nobody counted.
-        throw new Error(
-            `classification lost entries: kept ${kept} + dropped ${dropped} != ${entries.length} scanned`);
-    }
-    return { classified, counts, kinds, bases, kept, dropped };
+/**
+ * Classify every entry and return `{ classified, counts, kinds, bases }`.
+ * Throws if the categories do not partition the input -- the "kept + dropped
+ * equals total" invariant, checked rather than assumed.
+ *
+ * RETAINS EVERY ENTRY it is given. For a capture that does not fit in memory,
+ * use `createClassificationAccumulator` and keep only what you need.
+ */
+function classifyEntries(entries) {
+    const acc = createClassificationAccumulator();
+    const classified = entries.map((entry) => Object.assign({ entry }, acc.add(entry)));
+    return Object.assign({ classified }, acc.report());
 }
 
 function renderKinds(kindCounts) {
@@ -256,6 +290,7 @@ module.exports = {
     isDocumentMimeType,
     classifyEntry,
     classifyEntries,
+    createClassificationAccumulator,
     renderKinds,
     reportLines,
 };
