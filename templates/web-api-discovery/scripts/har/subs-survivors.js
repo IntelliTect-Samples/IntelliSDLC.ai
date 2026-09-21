@@ -132,6 +132,18 @@ const MATCHER_CHUNK_SIZE = 2000;
  * site by the control that captured it, and it is excluded from the check as
  * well as the sweep, so the two cannot disagree and refuse the capture over a
  * value the sweep is not allowed to remove.
+ *
+ * THE RESIDUAL, and it is an assumption rather than a guarantee for exactly
+ * one kind. "A credential does not contain a space" is structurally true for
+ * the shape-matched kinds, forced by the `\S+` capture for `bearer`, and true
+ * of cookie-octet syntax for `cookie`. It is NOT true for `field`: a
+ * passphrase-style password legitimately contains spaces, and the
+ * password-family names are the same ones the i18n collision lives on. So a
+ * passphrase echoed back elsewhere in the capture -- a validation error
+ * quoting it, say -- is exempted from both the sweep and the check by this
+ * rule. That is the cost of not corrupting every locale string keyed on those
+ * same names, and it is recorded here rather than argued away, because the
+ * class it exempts is the one this module exists to catch.
  */
 const PROSE_RE = /\s/;
 
