@@ -1396,10 +1396,13 @@ class IncrementalRecorder {
         // callback and nothing in this process handles an uncaught exception.
         // An exception escaping here does not fail a flush -- it kills the
         // recorder, orphans the browser and discards everything buffered since
-        // the last write. And `log.warn` writes to stderr, which throws EPIPE
-        // the moment the recorder's output is piped into something that stops
-        // reading. Losing an unrepeatable live session to a broken warning
-        // channel would be a far worse defect than the one the warning is for.
+        // the last write. `log.warn` writes to stderr, and a stderr write can
+        // throw: on POSIX a pipe whose reader has gone away raises EPIPE
+        // synchronously, right here. On Windows those writes are asynchronous,
+        // so the same condition arrives as a stream error event that no
+        // synchronous catch anywhere can reach -- a property of every log call
+        // in this file, not of this one. What is claimed is therefore narrow:
+        // a synchronous throw out of the warning cannot cost a capture.
         // SILENT, AND THAT IS THE POINT. Reporting the failure would mean
         // writing to stderr -- the channel that just failed, through the very
         // call that failed, with no containment of its own. Under
