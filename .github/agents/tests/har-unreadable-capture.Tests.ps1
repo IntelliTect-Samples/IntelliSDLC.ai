@@ -61,13 +61,18 @@ Describe 'a capture the tooling cannot read' {
     It 'leaves no stage folding a missing entries list into an empty one' {
         # The exact expression this issue exists to remove. One survivor is
         # enough to put the silent zero back, in the stage nobody re-read.
+        # Comment lines are skipped: the fix's own commentary quotes the
+        # expression to explain why it is gone, and a scan that could not tell
+        # a warning from the thing it warns about would make the warning
+        # unwritable.
         $offenders = @()
         foreach ($file in Get-ChildItem -LiteralPath $script:HarDir -Filter '*.js' -File) {
             if ($file.Name -like '*.test.js') { continue }
-            if ($file.Name -eq 'har-document.js') { continue }
-            $text = Get-Content -LiteralPath $file.FullName -Raw
-            if ($text -match 'log\s*&&\s*[\w.]*log\.entries\s*\)\s*\|\|\s*\[\]') {
-                $offenders += $file.Name
+            foreach ($line in (Get-Content -LiteralPath $file.FullName)) {
+                if ($line -match '^\s*(//|\*|/\*)') { continue }
+                if ($line -match 'log\s*&&\s*[\w.]*log\.entries\s*\)\s*\|\|\s*\[\]') {
+                    $offenders += "$($file.Name): $($line.Trim())"
+                }
             }
         }
         $offenders | Should -BeNullOrEmpty
