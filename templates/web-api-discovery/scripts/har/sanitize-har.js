@@ -579,6 +579,7 @@ function scrubHeaders(headers, ctx) {
                 if (!ctx.subs[key]) ctx.subs[key] = `Bearer ${fakeFor('hex64', tok, ctx.salt).slice(0, 40)}`;
                 // The token's stand-in is the fake WITHOUT the scheme -- see
                 // recordOriginal. The table keeps the full header spelling.
+                ctx.produced.add(ctx.subs[key]);
                 recordOriginal(ctx, key, 'bearer', null, tok,
                     ctx.subs[key].replace(/^Bearer\s+/i, ''));
                 return ctx.subs[key];
@@ -707,6 +708,12 @@ function main() {
     // THIS RUN's substitutions, never the merged historical table: the merged
     // table holds other captures' credentials, which is a different question
     // with a different false-positive profile.
+    //
+    // LEGACY table only. `pii.scrubPii` returns hash prefixes rather than
+    // originals -- deliberately, so its table is safe to commit -- so its
+    // substitutions cannot feed either half of this. Typed PII is therefore
+    // still unguarded against the same class of survivor; saying so here is
+    // the difference between a known gap and an unnoticed one.
     const runEntries = [...ctx.originals.values()];
     const sweep = subsSurvivors.applySweep(har, runEntries, ctx.produced);
 

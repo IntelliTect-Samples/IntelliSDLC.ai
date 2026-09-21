@@ -53,9 +53,17 @@
  *     base64 blob is not matched here. That axis belongs to the gate's shape
  *     checks and to the nested-reach work; claiming it here would be a reach
  *     fix wearing a post-condition's clothes.
- *   * Originals shorter than `MIN_SWEEPABLE_LENGTH`. A four-character value is
- *     a substring of ordinary prose, and sweeping it would corrupt the capture
- *     the way #529 describes. Those stay name- and shape-scrubbed only.
+ *   * Originals shorter than `MIN_SWEEPABLE_LENGTH`. A short value captured by
+ *     its field NAME is routinely an ordinary word -- #529's locale bundle
+ *     holds the label `"Password"` under the key `"Password"` -- and sweeping
+ *     one rewrites the whole capture to fix one site. Those stay name- and
+ *     shape-scrubbed only.
+ *   * The TYPED-PII table. `pii.js` returns hash prefixes rather than
+ *     originals, by design, so its substitutions cannot feed this check and
+ *     are not covered by it. The same class of survivor is therefore still
+ *     unguarded for typed PII; closing it means changing what `pii.js` hands
+ *     back, which is a larger change than this one and belongs to its own
+ *     issue. Stated here so the coverage is not mistaken for total.
  *   * Object KEYS. Only string VALUES are swept and checked; a JSON key that
  *     is itself a credential is not a shape this scrub has ever produced.
  *
@@ -70,11 +78,30 @@
 
 'use strict';
 
-// The floor, shared by the sweep and the check so they can never disagree
-// about which originals are in play. Eight characters is #475's own threshold:
-// long enough that a collision with ordinary text is not the common case,
-// short enough to cover every session cookie the corpus carries.
-const MIN_SWEEPABLE_LENGTH = 8;
+/**
+ * The floor, shared by the sweep and the check so they can never disagree
+ * about which originals are in play.
+ *
+ * Sixteen, not #475's suggested eight, and the difference is a measured
+ * regression rather than caution. The scrub captures a value by its field
+ * NAME, and a name can over-capture: #529 records a locale bundle whose
+ * `"Password"` key holds the UI label `"Password"`. Redacting that at its own
+ * site damages one string. Sweeping it globally rewrites every `Password` in
+ * the capture -- "Forgot Password?" becomes a redaction sentinel -- which is
+ * this issue's own fix re-creating #529's defect on the axis it did not
+ * consider.
+ *
+ * Sixteen is not arbitrary either: it is `COOKIE_TOKEN_MIN_LENGTH` in
+ * `sanitize-har.js`, this tree's existing answer to "is this value token-ish
+ * or is it prose". Both survivors #475 measured are longer -- 17 and 24
+ * characters -- so nothing the issue is about is given away.
+ *
+ * The residual, stated rather than hidden: a 16-character-or-longer value that
+ * is prose, under a secret field name, is still swept globally. It is also
+ * still redacted at its own site by the name control, so the two at least
+ * agree; the name list is where that class is decided, not here.
+ */
+const MIN_SWEEPABLE_LENGTH = 16;
 
 // Alternatives per compiled matcher. A single pattern over a 13,000-entry
 // table is hundreds of kilobytes of source, which is where a regex engine
@@ -112,10 +139,17 @@ function escapeRegExp(s) {
 function sweepableEntries(entries, produced) {
     const byOriginal = new Map();
     const sorted = entries.slice().sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    // Every replacement this run recorded, as a second identity guard beside
+    // `produced`. `produced` is populated at one call site and not at the
+    // others, so a fake could otherwise be recorded as some entry's original
+    // and swept -- rewriting a replacement this run had just inserted, which
+    // is exactly how a scrub corrupts its own sentinels (#529).
+    const replacements = new Set(entries.map((e) => e.replacement));
     for (const e of sorted) {
         if (typeof e.original !== 'string' || typeof e.replacement !== 'string') continue;
         if (e.original.length < MIN_SWEEPABLE_LENGTH) continue;
         if (e.original === e.replacement) continue;
+        if (replacements.has(e.original)) continue;
         if (produced && produced.has(e.original)) continue;
         if (!byOriginal.has(e.original)) byOriginal.set(e.original, e);
     }
@@ -145,7 +179,14 @@ function compileMatcher(entries) {
  * rather than running each scanner over the output of the last. Sequential
  * passes would let a later chunk match inside a replacement an earlier chunk
  * had just inserted, which is how a scrub corrupts its own sentinels (#529).
- * Earliest wins, and at one index the longest wins.
+ * Earliest wins, and at one index the longest wins. A later hit STARTING
+ * inside an accepted one is dropped whole, including when it would have
+ * extended past it -- two overlapping replacements have no well-defined
+ * result, and the alternative (splitting one) would leave the fragment this
+ * function exists to prevent. Reaching that case needs two independently
+ * salted high-entropy values to share a straddling substring, which the corpus
+ * has never produced; it is recorded as an accepted limitation rather than
+ * handled.
  */
 function findMatches(text, matcher) {
     const hits = [];
@@ -178,6 +219,16 @@ function findMatches(text, matcher) {
 function replaceAll(text, matcher) {
     const hits = findMatches(text, matcher);
     if (hits.length === 0) return text;
+    return spliceMatches(text, hits, matcher);
+}
+
+/**
+ * `text` with each already-found match replaced. One definition, shared by
+ * `replaceAll` and by the sweep's per-leaf callback -- which needs the hit
+ * count as well as the new text, and would otherwise carry a second copy of
+ * this loop to get it.
+ */
+function spliceMatches(text, hits, matcher) {
     let out = '';
     let pos = 0;
     for (const h of hits) {
@@ -265,13 +316,7 @@ function applySweep(har, entries, produced) {
         if (hits.length === 0) return undefined;
         occurrences += hits.length;
         leaves++;
-        let out = '';
-        let pos = 0;
-        for (const h of hits) {
-            out += text.slice(pos, h.index) + matcher.map.get(h.original).replacement;
-            pos = h.index + h.original.length;
-        }
-        return out + text.slice(pos);
+        return spliceMatches(text, hits, matcher);
     });
     return { entries: sweepable.length, occurrences, leaves };
 }
