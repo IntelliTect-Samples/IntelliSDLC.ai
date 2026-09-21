@@ -54,9 +54,25 @@ distinct originals collapsing onto one replacement.
 
 ## Tasks
 
-- [ ] `har/subs-survivors.js` -- record/sweep/check/collision, pure, importable.
-- [ ] `sanitize-har.js` -- record originals at each substitution site; run the
+- [x] `har/subs-survivors.js` -- record/sweep/check/collision, pure, importable.
+- [x] `sanitize-har.js` -- record originals at each substitution site; run the
       sweep after the typed-PII pass; run the check before any write; refuse.
-- [ ] `har/subs-survivors.test.js` -- behavior-first, zero-dep.
-- [ ] `.github/agents/tests/subs-survivors.Tests.ps1` -- Pester wrapper.
-- [ ] Evidence: before/after on a fixture reproducing the datr survivor.
+- [x] `har/subs-survivors.test.js` -- behavior-first, zero-dep.
+- [x] `.github/agents/tests/subs-survivors.Tests.ps1` -- Pester wrapper.
+- [x] Evidence: before/after on a fixture reproducing the datr survivor.
+
+## Changed during implementation
+
+The floor is **16**, not the issue's suggested 8. An independent review of the
+first cut found the sweep rewriting ordinary prose: the scrub captures a value
+by its field NAME, and #529 records a locale bundle whose `"Password"` key
+holds the UI label `"Password"`. Sweeping an eight-character English word
+globally turns `Forgot Password?` into a redaction sentinel -- this issue's own
+fix re-creating #529's defect on the axis it did not consider. Sixteen is
+`COOKIE_TOKEN_MIN_LENGTH`, this tree's existing "token-ish or prose" answer,
+and both survivors #475 measured are longer (17 and 24).
+
+The **typed-PII table is out of scope** and now says so in both files. `pii.js`
+returns hash prefixes rather than originals -- deliberately, so its table is
+safe to commit -- so its substitutions cannot feed either half of this check.
+The same class of survivor remains unguarded for typed PII.

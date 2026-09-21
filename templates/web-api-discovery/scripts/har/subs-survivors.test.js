@@ -298,12 +298,12 @@ function countOf(haystack, needle) {
 // prose and sweeping it would corrupt the capture -- #529's defect, in the
 // pass this issue adds.
 {
-    const short = 'ab1';
+    const short = 'ShortValue12345';
     const entry = {
         key: `field:x:${short}`, kind: 'field', name: 'x', original: short,
         replacement: 'redacted-1111',
     };
-    const har = { log: { entries: [{ response: { content: { text: 'ab1cdefab1' } } }] } };
+    const har = { log: { entries: [{ response: { content: { text: 'ShortValue12345 x ShortValue12345' } } }] } };
     assert.deepStrictEqual(survivors.sweepableEntries([entry]), [],
         '8.a: an original below the shared floor entered the sweep');
     assert.deepStrictEqual(survivors.findSurvivors(har, [entry]), [],
@@ -321,7 +321,7 @@ function countOf(haystack, needle) {
 // recognise as anything.
 {
     const long = 'PrefixAndSuffixValue1234';
-    const short = 'SuffixValue1234';
+    const short = 'AndSuffixValue1234';
     const entries = [
         { key: `field:a:${short}`, kind: 'field', name: 'a', original: short, replacement: 'FAKE-SHORT' },
         { key: `field:b:${long}`, kind: 'field', name: 'b', original: long, replacement: 'FAKE-LONG' },
@@ -366,6 +366,94 @@ function countOf(haystack, needle) {
         survivors.findCollisions([mk('a', 'OneValue12345678', 'F1'), mk('b', 'TwoValue12345678', 'F2')]),
         [], '10.e: two distinct replacements were reported as a collision');
     ok('collision detector');
+}
+
+// --- 11. A short value under a secret NAME does not become a global edit ---
+// The regression this floor exists to prevent, and it is not hypothetical:
+// #529 measured a locale bundle whose `"Password"` key holds the UI label
+// `"Password"`. The name control redacts that value at its own site, which is
+// correct-ish and already argued elsewhere. Sweeping it is not: an eight-
+// character English word appears all over a capture, and replacing every
+// occurrence turns "Forgot Password?" into a redaction sentinel and corrupts
+// the reference document.
+//
+// One name-captured value damaged one site before this change. Globalizing it
+// would damage the whole capture -- a reach fix re-creating the same defect on
+// the axis it did not consider.
+{
+    const body = JSON.stringify({
+        Password: 'Password',
+        hint: 'Forgot Password?',
+        other: 'Confirm Password now',
+    });
+    const r = scrub('locale-bundle', body);
+    assert.strictEqual(r.run.code, 0,
+        `11.a: sanitize-har failed: ${r.run.stderr || r.run.stdout}`);
+    const out = JSON.parse(JSON.parse(r.text).log.entries[0].response.content.text);
+    assert.strictEqual(out.hint, 'Forgot Password?',
+        '11.b: the sweep rewrote ordinary prose on behalf of a short value captured ' +
+        'by a secret field NAME -- the whole capture is now damaged where one site was');
+    assert.strictEqual(out.other, 'Confirm Password now',
+        '11.c: the sweep rewrote ordinary prose at a second site');
+    ok('short name-captured values are not swept');
+}
+
+// --- 12. Both observed survivors are still long enough to be swept ---------
+// The floor is a trade, and this is the half that must not be given away:
+// #475's two measured survivors are 17 and 24 characters. A floor that
+// excluded either would have fixed nothing the issue is about.
+{
+    assert.ok(survivors.MIN_SWEEPABLE_LENGTH <= 17,
+        `12.a: the floor is ${survivors.MIN_SWEEPABLE_LENGTH}, which excludes the ` +
+        '17-character field value #475 measured surviving 127 of 128 times');
+    assert.ok(survivors.MIN_SWEEPABLE_LENGTH > 8,
+        '12.b: the floor admits eight-character values again, which is how an ordinary ' +
+        'English word under a secret field name becomes a global edit (section 11)');
+    ok('the floor still covers both measured survivors');
+}
+
+// --- 13. A fake this run emitted is never swept as if it were an original --
+// An identity test, the same discipline as `alreadySubstituted` in the
+// scrubber. Two ways a fake could be mistaken for an original: the run
+// recorded it in `produced`, or another entry's replacement happens to equal
+// it. Both are closed, because the consequence -- rewriting a replacement this
+// run just inserted -- is how a scrub corrupts its own sentinels (#529).
+{
+    const fake = 'redacted-0123456789abcdef';
+    const entries = [
+        { key: 'field:a:x', kind: 'field', name: 'a', original: fake, replacement: 'SECOND-FAKE' },
+        { key: 'field:b:y', kind: 'field', name: 'b', original: 'RealOriginalValue123', replacement: fake },
+    ];
+    const sweepable = survivors.sweepableEntries(entries);
+    assert.deepStrictEqual(sweepable.map((e) => e.original), ['RealOriginalValue123'],
+        '13.a: a value that is another entry\'s replacement entered the sweep as an original');
+
+    const viaProduced = survivors.sweepableEntries(
+        [{ key: 'field:c:z', kind: 'field', name: 'c', original: fake, replacement: 'OTHER-FAKE' }],
+        new Set([fake]));
+    assert.deepStrictEqual(viaProduced, [],
+        '13.b: a fake this run emitted entered the sweep as an original');
+    ok('fakes are never swept');
+}
+
+// --- 14. One original, two kinds: the choice is deterministic -------------
+// `fakeFor` keys on KIND, so one value substituted as a cookie and again as a
+// field legitimately carries two different fakes. The sweep sees text, not
+// kinds, so it must pick one -- and the same one every time, or two runs over
+// one input produce different bytes. Which one it picks is arbitrary; that it
+// is stable is not.
+{
+    const original = 'SharedAcrossTwoKinds1234';
+    const entries = [
+        { key: `field:x:${original}`, kind: 'field', name: 'x', original, replacement: 'FIELD-FAKE' },
+        { key: `cookie:x:${original}`, kind: 'cookie', name: 'x', original, replacement: 'COOKIE-FAKE' },
+    ];
+    const first = survivors.sweepableEntries(entries)[0].replacement;
+    const reversed = survivors.sweepableEntries(entries.slice().reverse())[0].replacement;
+    assert.strictEqual(first, reversed,
+        '14.a: the sweep picks a different replacement depending on the order the run ' +
+        'happened to record the entries, so one input no longer produces one output');
+    ok('deterministic across kinds');
 }
 
 console.log(`All subs-survivors tests passed (${passed} sections)`);
