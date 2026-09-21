@@ -284,5 +284,40 @@ const scrubbedBody = JSON.parse(entry.response.content.text);
     }
 }
 
+// --- 5. A payload with its own `entries` key does not renumber the walk. ---
+// From independent review. The entry index is claimed by name, so a captured
+// body carrying its own `entries` array could restart the numbering and send
+// the operator to the wrong entry -- a confidently WRONG location, which is
+// the same defect as no location at all, reached from the other side.
+{
+    const live = 'AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+    const har = {
+        log: {
+            entries: [
+                { request: { url: 'https://example.invalid/clean' } },
+                {
+                    request: { url: 'https://example.invalid/tiles' },
+                    // A field whose value happens to use the same key name.
+                    _capture: {
+                        entries: [
+                            { queryString: [{ name: 'access_token', value: live }] },
+                        ],
+                    },
+                },
+            ],
+        },
+    };
+
+    const seen = [];
+    secrets.walkForUnredactedSecrets(har, (name, where, at) => seen.push({ name, where, at }));
+    assert.strictEqual(seen.length, 1, '5.a: expected exactly one finding');
+    assert.strictEqual(seen[0].at.entryIndex, 1,
+        '5.b: a nested `entries` key restarted the entry numbering, so the finding '
+        + 'points at an entry it is not in');
+    assert.ok(seen[0].at.keyPath.startsWith('_capture.entries'),
+        '5.c: the key path lost the enclosing field, so it does not locate the '
+        + 'finding inside its entry');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log('All scrub-coordinate-reach tests passed');
