@@ -69,6 +69,10 @@ const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const { transformNested } = require(path.join(__dirname, 'har-nested.js'));
 const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
+// The substitution table read back as a POST-CONDITION (issue #475): the sweep
+// that removes every occurrence of a value this run decided to replace, and
+// the check that refuses the run when one survives anyway.
+const subsSurvivors = require(path.join(__dirname, 'subs-survivors.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -103,6 +107,12 @@ function parseArgs(argv) {
 // the copies get made again.
 const { LEGACY_SUBS_FILENAME, PII_SUBS_FILENAME } = subsDestination;
 const CAPTURES_DIR = '.har-captures';
+
+// The scrub refused to write because a value it had already decided to replace
+// survived in the document it was about to produce (issue #475). Its OWN code,
+// distinct from 1 (I/O or parse) and 2 (usage): a caller that reads this as a
+// crash would retry, and this is not a condition a retry fixes.
+const EXIT_SUBSTITUTION_SURVIVOR = 5;
 
 /**
  * Where a substitution table goes when the caller did not say.
@@ -299,6 +309,13 @@ function createContext(policy, subs, salt) {
         // Every fake this run has emitted. Membership here is the ONLY reason
         // the scrub skips a value -- see `alreadySubstituted`.
         produced: new Set(),
+        // key -> { key, kind, name, original, replacement }. The ORIGINALS,
+        // recorded as they are substituted rather than parsed back out of the
+        // table's keys afterwards: a key is `kind:name:value` at one call site
+        // and `kind:value` at another, and values routinely contain colons, so
+        // parsing is wrong by construction (issue #475). Held in memory only --
+        // this is the same plaintext the table is, and it is never printed.
+        originals: new Map(),
         formFieldRe: new RegExp(`\\b(${alternation})=([^&\\s"';,]+)`, 'gi'),
         jsonFieldRe: new RegExp(`("(?:${alternation})"\\s*:\\s*")([^"]*)(")`, 'gi'),
     };
@@ -312,7 +329,23 @@ function substitute(kind, name, value, ctx) {
     const key = `${kind}:${name.toLowerCase()}:${value}`;
     if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, value, ctx.salt);
     ctx.produced.add(ctx.subs[key]);
+    recordOriginal(ctx, key, kind, name, value, ctx.subs[key]);
     return ctx.subs[key];
+}
+
+/**
+ * Remember WHAT this run substituted, beside the table that remembers what it
+ * substituted it WITH.
+ *
+ * `replacement` is passed rather than read from `ctx.subs[key]` because the
+ * two are not always the same string: the bearer site stores `Bearer <fake>`
+ * in the table while the value that stands in for the token is the fake alone.
+ * A sweep that used the table's spelling there would write `Bearer Bearer ...`
+ * wherever the bare token travelled without its scheme.
+ */
+function recordOriginal(ctx, key, kind, name, original, replacement) {
+    if (!ctx.originals || ctx.originals.has(key)) return;
+    ctx.originals.set(key, { key, kind, name: name === undefined ? null : name, original, replacement });
 }
 
 /**
@@ -390,6 +423,7 @@ function scrubFlat(s, ctx) {
         out = out.replace(re, (match) => {
             const key = `${kind}:${match}`;
             if (!ctx.subs[key]) ctx.subs[key] = fakeFor(kind, match, ctx.salt);
+            recordOriginal(ctx, key, kind, null, match, ctx.subs[key]);
             return ctx.subs[key];
         });
     }
@@ -543,6 +577,10 @@ function scrubHeaders(headers, ctx) {
             h.value = h.value.replace(/Bearer\s+(\S+)/i, (_m, tok) => {
                 const key = `bearer:${tok}`;
                 if (!ctx.subs[key]) ctx.subs[key] = `Bearer ${fakeFor('hex64', tok, ctx.salt).slice(0, 40)}`;
+                // The token's stand-in is the fake WITHOUT the scheme -- see
+                // recordOriginal. The table keeps the full header spelling.
+                recordOriginal(ctx, key, 'bearer', null, tok,
+                    ctx.subs[key].replace(/^Bearer\s+/i, ''));
                 return ctx.subs[key];
             });
         }
@@ -638,7 +676,8 @@ function main() {
     }
 
     const subs = {};
-    walk(har, createContext(policy, subs, salt));
+    const ctx = createContext(policy, subs, salt);
+    walk(har, ctx);
 
     // Typed-PII pass (issue #46): runs after legacy regex scrub so that
     // anything still in the HAR (emails in custom-named fields, phones,
@@ -652,6 +691,59 @@ function main() {
     // project's `piiFields` and `cardIssuers` validated, merged, loaded -- and
     // never consulted on the side that actually rewrites the capture.
     const piiResult = pii.scrubPii(har, policy);
+
+    // The substitution sweep (issue #475). A key in the table is this run's own
+    // statement that the value it names must be replaced, and the scrub was
+    // leaving occurrences of exactly those values standing -- 116 of 119
+    // replaced for one cookie, 1 of 128 for one field, with the gate reporting
+    // `0 blocking leaks` both times. The survivors carry no name the policy
+    // knows and no shape any pattern matches, so nothing but the run's own
+    // record of the value can reach them.
+    //
+    // Placed after the typed-PII pass so every earlier pass has had its say,
+    // and before the literal pass and the serialization, which are the only
+    // steps that follow and neither of which can put an original back.
+    //
+    // THIS RUN's substitutions, never the merged historical table: the merged
+    // table holds other captures' credentials, which is a different question
+    // with a different false-positive profile.
+    const runEntries = [...ctx.originals.values()];
+    const sweep = subsSurvivors.applySweep(har, runEntries, ctx.produced);
+
+    // The POST-CONDITION. Cheap, exact, and the only one of the three checks
+    // that can catch a value the scrubber itself said to replace. It should now
+    // be unfalsifiable -- the sweep just ran -- which is the point: it is what
+    // makes the sweep's completeness a checked property rather than a claim.
+    const survivors = subsSurvivors.findSurvivors(har, runEntries, ctx.produced);
+    if (survivors.length) {
+        // Nothing is written. A refusal that left a partially-scrubbed file
+        // behind would be a refusal in the log and a leak on disk, which is the
+        // shape `assertDerivedDestinationsProtected` refuses in for the tables.
+        console.error(
+            `sanitize-har: REFUSING to write ${outPath}: ${survivors.length} value(s) this ` +
+            `run's own substitution table says must be replaced survived the scrub. ` +
+            `No output and no substitution table were written.`);
+        for (const f of survivors) {
+            console.error(`  - ${subsSurvivors.describeSurvivor(f)}`);
+        }
+        console.error(
+            'sanitize-har: places and counts only -- the values are deliberately withheld, ' +
+            'because a report that quoted one would relocate the leak into the log that ' +
+            'reports it.');
+        process.exit(EXIT_SUBSTITUTION_SURVIVOR);
+    }
+
+    // The second, narrower defect #475 records: two unrelated originals
+    // collapsing onto one replacement makes the table ambiguous to read
+    // backwards, which is the one thing it exists to prevent. Reported, not
+    // blocking -- widening the fake would change every replacement in every
+    // merged table and every committed reference, and that is an owner's
+    // decision rather than a scrub's.
+    const collisions = subsSurvivors.findCollisions(runEntries);
+    for (const c of collisions) {
+        console.error(`sanitize-har: NOTE -- non-reversible substitution: ` +
+            `${subsSurvivors.describeCollision(c)}`);
+    }
 
     // Literal-value pass runs LAST, over the SERIALIZED document, so a single
     // sweep covers URLs, headers, request bodies and response bodies -- the
@@ -785,7 +877,9 @@ function main() {
     console.log(
         `sanitize-har: wrote ${outPath} ` +
         `(${Object.keys(subs).length} legacy + ${piiResult.substitutions.length} typed-PII ` +
-        `substitutions; literals: ${literalSummary})`);
+        `substitutions; literals: ${literalSummary}; substitution sweep: ` +
+        `${sweep.occurrences} occurrence(s) of ${sweep.entries} original(s) at ` +
+        `${sweep.leaves} location(s))`);
     process.exit(0);
 }
 
@@ -820,4 +914,5 @@ module.exports = {
     PATTERNS,
     CAPTURES_DIR,
     PWD_ENVELOPE_FAKE_PREFIX,
+    EXIT_SUBSTITUTION_SURVIVOR,
 };
