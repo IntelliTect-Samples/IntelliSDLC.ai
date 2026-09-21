@@ -73,6 +73,7 @@ const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 // that removes every occurrence of a value this run decided to replace, and
 // the check that refuses the run when one survives anyway.
 const subsSurvivors = require(path.join(__dirname, 'subs-survivors.js'));
+const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -619,9 +620,53 @@ function walk(node, ctx) {
     return node;
 }
 
+/**
+ * Stop, with a message an operator can act on, when the capture is too large
+ * to be held as a single string (issue #528).
+ *
+ * WHY A REFUSAL IS THE RIGHT ANSWER HERE and not merely a louder crash: what
+ * this scrub produces is the only shareable form of a capture. The raw is the
+ * credential-bearing artifact by design, confined to a gitignored store, so a
+ * scrub that cannot run leaves the operator holding the one copy that must not
+ * be committed. Saying so by name -- the file, its size, the limit -- is what
+ * turns a dead end into a decision: trim the capture, or split the session next
+ * time. Streaming the scrub is the fix that removes the cliff entirely and it
+ * belongs to issue #450; this is the message that stops the cliff being
+ * discovered as `Cannot create a string longer than 0x1fffffe8 characters`.
+ *
+ * A capture whose size cannot be read is NOT refused. That is the ordinary
+ * missing-file case, and the read below reports it far better than a stat
+ * failure could.
+ */
+function refuseCaptureTooLargeToRead(inPath) {
+    let bytes;
+    try { bytes = fs.statSync(inPath).size; } catch { return; }
+
+    const verdict = captureSize.assessCaptureSize(bytes, inPath);
+    if (verdict.status !== 'exceeds') return;
+
+    console.error(`sanitize-har: ${verdict.message}`);
+    console.error(
+        'sanitize-har: nothing was written and the raw capture is untouched. ' +
+        'Trim the capture first, or record the session in smaller parts.');
+    process.exit(1);
+}
+
 function main() {
     const args = parseArgs(process.argv.slice(2));
     if (!args.in) usage();
+
+    // FIRST, before profile, policy or any destination work: is this capture
+    // one the scrub can read at all? (issue #528)
+    //
+    // Everything below reads the document whole, so a capture past Node's
+    // string ceiling dooms the run no matter how well the rest is configured.
+    // Asking here means the operator is told the fact that actually ended the
+    // run, rather than being sent to fix a missing profile that would have
+    // changed nothing. It is also the cheapest check in the file -- one
+    // `statSync`, no read -- so the refusal costs nothing and leaves nothing
+    // behind.
+    refuseCaptureTooLargeToRead(args.in);
 
     let profile;
     try {
@@ -664,6 +709,19 @@ function main() {
     try {
         raw = fs.readFileSync(args.in, 'utf8');
     } catch (e) {
+        // The preflight compares BYTES against a ceiling counted in UTF-16 code
+        // units, which makes it a safe lower bound but not an exact one: a file
+        // it passes can still be too long to hold. Recognising the condition
+        // here keeps the readable message on that path too, rather than letting
+        // the hex text through the one gap the size check cannot close.
+        if (captureSize.isStringTooLongError(e)) {
+            console.error('sanitize-har: ' + captureSize.describeStringLimitFailure({
+                filePath: args.in,
+                bytes: (() => { try { return fs.statSync(args.in).size; } catch { return undefined; } })(),
+                stage: 'reading the capture'
+            }));
+            process.exit(1);
+        }
         console.error(`sanitize-har: cannot read ${args.in}: ${e.message}`);
         process.exit(1);
     }
@@ -756,7 +814,29 @@ function main() {
     // sweep covers URLs, headers, request bodies and response bodies -- the
     // same identifier under three different names is one replacement, not
     // three key-list entries somebody has to know about in advance.
-    const serialized = JSON.stringify(har, null, 2);
+    //
+    // And it is the step most likely to hit the string ceiling on a document
+    // that was readable: pretty-printing adds indentation and newlines to every
+    // line, so the serialized form is larger than the file it came from. A
+    // capture that passed the preflight can fail HERE, and until now that
+    // arrived as an unhandled RangeError -- a stack trace, after the whole scrub
+    // had already run (issue #528).
+    let serialized;
+    try {
+        serialized = JSON.stringify(har, null, 2);
+    } catch (e) {
+        if (captureSize.isStringTooLongError(e)) {
+            console.error('sanitize-har: ' + captureSize.describeStringLimitFailure({
+                filePath: args.in,
+                stage: 'serializing the scrubbed document, which is larger than the capture it came from'
+            }));
+            console.error(
+                'sanitize-har: nothing was written and the raw capture is untouched. ' +
+                'Trim the capture first, or record the session in smaller parts.');
+            process.exit(1);
+        }
+        throw e;
+    }
     const literalPass = harLiterals.applyLiteralPass(serialized, profile.literals);
 
     // Merge rather than overwrite: the substitution table is the project's
