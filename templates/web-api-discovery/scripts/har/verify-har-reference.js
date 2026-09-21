@@ -78,6 +78,9 @@ const harLiterals = require(path.join(__dirname, 'har-literals.js'));
 const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 // The canonical substitution-table filenames, imported rather than re-spelled
 // (issue #446). This gate refuses a reference tree containing one, so a name
 // spelled differently here than by the scrub is a table waved through.
@@ -389,15 +392,22 @@ function main() {
 
         let raw;
         let har;
+        let entries;
         try {
             raw = fs.readFileSync(file, 'utf8');
-            har = JSON.parse(raw);
+            // `raw` is needed for the flat sweeps below, so the recognition
+            // runs on the text already in hand rather than opening the file
+            // twice. A reference that is not a HAR now fails here instead of
+            // being verified as a reference containing nothing (issue #423) --
+            // which is the one result that would have passed every gate.
+            const read = harDocument.parseHarDocument(raw, rel);
+            har = read.document;
+            entries = read.entries;
         } catch (e) {
-            console.error(`verify-har-reference: cannot parse ${rel}: ${e.message}`);
+            console.error(`verify-har-reference: ${e.message}`);
             process.exit(1);
         }
 
-        const entries = (har.log && har.log.entries) || [];
         checkTruncation(entries, report);
         checkHollowRequestBody(entries, report);
         harSecrets.walkForUnredactedSecrets(har, (name, where) => {

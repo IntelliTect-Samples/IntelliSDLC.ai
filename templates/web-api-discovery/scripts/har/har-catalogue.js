@@ -51,6 +51,9 @@ const path = require('path');
 // comes from a module both callers import (#429). Two implementations that
 // agree today are the standard way a guard and the thing it guards drift apart.
 const { bodyCarriesPayloadStructure } = require(path.join(__dirname, 'har-body-grammar.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
 const CATALOGUE_FILE = 'catalogue.json';
 const README_FILE = 'README.md';
@@ -164,19 +167,17 @@ function responseBytes(entry) {
  * report a real reference as wrong.
  */
 function measureReference(harPath) {
-    let parsed;
+    // Name the file, and refuse it rather than measure it. A measurement that
+    // returned zeroes for an unreadable reference would let a deleted, corrupt
+    // or simply-not-a-HAR file pass as "a reference with no entries", which is
+    // the failure mode this whole issue is about. The ternary that used to end
+    // in `: []` here did exactly that for the second of those three (#423).
+    let entries;
     try {
-        parsed = JSON.parse(fs.readFileSync(harPath, 'utf8'));
+        entries = harDocument.readHarDocument(harPath).entries;
     } catch (e) {
-        // Name the file. A measurement that returned zeroes for an unreadable
-        // reference would let a deleted or corrupt file pass as "a reference
-        // with no entries", which is the failure mode this whole issue is about.
         throw new Error(`cannot read reference ${harPath}: ${e.message}`);
     }
-
-    const entries = (parsed && parsed.log && Array.isArray(parsed.log.entries))
-        ? parsed.log.entries
-        : [];
 
     const methods = new Set();
     const endpoints = new Set();

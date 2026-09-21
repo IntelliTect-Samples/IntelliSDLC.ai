@@ -64,6 +64,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const pii = require(path.join(__dirname, 'pii.js'));
+// One place recognises a file as a capture, and refuses it when it is not
+// one (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
@@ -741,11 +744,16 @@ function main() {
         process.exit(1);
     }
 
+    // Recognised as a CAPTURE, not merely parsed (issue #423). The scrub walks
+    // any JSON it is given, so a file that is not a HAR used to be scrubbed
+    // happily and written out as though it were one -- handing every later
+    // stage a document with no entries to find. `raw` is already in hand, so
+    // this parses that rather than opening the file a second time.
     let har;
     try {
-        har = JSON.parse(raw);
+        har = harDocument.parseHarDocument(raw, args.in).document;
     } catch (e) {
-        console.error(`sanitize-har: invalid JSON in ${args.in}: ${e.message}`);
+        console.error(`sanitize-har: ${e.message}`);
         process.exit(1);
     }
 

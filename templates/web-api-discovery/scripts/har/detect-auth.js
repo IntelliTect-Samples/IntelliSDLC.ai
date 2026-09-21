@@ -33,7 +33,9 @@
  */
 'use strict';
 
-const fs = require('fs');
+const path = require('path');
+
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
 const JWT_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
@@ -283,18 +285,18 @@ function main(argv) {
     process.stderr.write('usage: detect-auth.js <path-to-har> [--source-label=<label>]\n');
     process.exit(2);
   }
-  let raw;
-  try {
-    raw = fs.readFileSync(harPath, 'utf8');
-  } catch (err) {
-    process.stderr.write(`error: cannot read ${harPath}: ${err.message}\n`);
-    process.exit(1);
-  }
+  // Read through the shared boundary (issue #423). Parsing was never the
+  // whole test: a file can be perfectly good JSON and not be a HAR, and this
+  // command used to answer that file with `authModel: unknown, signal: "HAR
+  // contained no entries"` and exit 0 -- a confident verdict about traffic it
+  // had never seen. The classifiers below stay tolerant of a partial document
+  // because callers hand them one in memory; the FILE is what gets recognised
+  // or refused, here, once.
   let har;
   try {
-    har = JSON.parse(raw);
+    har = harDocument.readHarDocument(harPath).document;
   } catch (err) {
-    process.stderr.write(`error: ${harPath} is not valid JSON: ${err.message}\n`);
+    process.stderr.write(`error: ${err.message}\n`);
     process.exit(1);
   }
   const result = classifyAuth(har);
