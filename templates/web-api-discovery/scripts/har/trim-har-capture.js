@@ -55,6 +55,9 @@ const path = require('path');
 const entryClass = require(path.join(__dirname, 'har-entry-class.js'));
 const { createClassificationAccumulator, reportLines, KEPT_CATEGORIES } = entryClass;
 const harStream = require(path.join(__dirname, '..', 'lib', 'har-stream.js'));
+// The boundary that names the codes the engine raises, so every stage refuses
+// an unreadable capture in the same words (issue #423).
+const harDocument = require(path.join(__dirname, 'har-document.js'));
 
 const EXIT_UNREADABLE = 1;
 const EXIT_REFUSED = 2;
@@ -155,18 +158,29 @@ function main() {
         doc = harStream.openHarDocument(args.in);
     } catch (e) {
         // The message, never the stack: an operator needs to know what is wrong
-        // with their file, not where this script is. HarStreamError already says
-        // which file and which condition, so it is passed through as written
-        // rather than re-wrapped in a second, vaguer sentence.
-        if (e instanceof harStream.HarStreamError) fail(e.message, EXIT_UNREADABLE);
-        fail(`cannot read ${args.in} as a HAR: ${e.message}`, EXIT_UNREADABLE);
+        // with their file, not where this script is.
+        //
+        // Translated through the boundary rather than relayed raw (issue #423).
+        // The engine cannot import har-document.js -- the boundary requires the
+        // engine, and a require back would be a cycle -- so it raises its own
+        // error carrying one of the boundary's codes, and this is where the two
+        // meet. Every stage then refuses an unreadable capture in the same
+        // words, which is the whole point of there being one boundary.
+        fail(harDocument.fromEngineError(e, args.in).message, EXIT_UNREADABLE);
     }
 
     const accumulator = createClassificationAccumulator();
     try {
         for (const entry of doc.entries()) accumulator.add(entry);
     } catch (e) {
-        if (e instanceof harStream.HarStreamError) fail(e.message, EXIT_UNREADABLE);
+        // A capture that ends mid-entries reaches here rather than the open
+        // above, because the engine cannot know the document is truncated until
+        // it walks off the end of it. Same translation, same exit code: the
+        // operator is told the recording was cut off, not that the file is not
+        // a HAR, because those are different repairs.
+        if (e instanceof harStream.HarStreamError) {
+            fail(harDocument.fromEngineError(e, args.in).message, EXIT_UNREADABLE);
+        }
         throw e;
     }
     const report = accumulator.report();

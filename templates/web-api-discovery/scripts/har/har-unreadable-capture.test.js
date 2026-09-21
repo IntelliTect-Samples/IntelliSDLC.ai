@@ -202,6 +202,22 @@ test('a code the boundary does not know degrades rather than escaping as a forei
     assert.strictEqual(translated.code, 'unreadable');
 });
 
+test('every code the streaming engine raises is one the boundary promises', () => {
+    // The two modules match on STRING, not on a shared constant, because the
+    // boundary requires the engine and a require back would be the cycle both
+    // sides were built to avoid. Matching on a string is only safe if something
+    // checks it, so this is that check: a code added to the engine and
+    // forgotten here fails loudly, instead of quietly degrading to `unreadable`
+    // and telling the operator less than the engine knew.
+    const engine = require(path.join(__dirname, '..', 'lib', 'har-stream.js'));
+    const raised = Object.values(engine.codes);
+    assert.ok(raised.length > 0, 'the engine exports no codes to check');
+    for (const code of raised) {
+        assert.ok(harDocument.HAR_FORMAT_CODES.includes(code),
+            `the engine raises '${code}', which the boundary does not promise`);
+    }
+});
+
 test('the codes an operator is told apart stay told apart', () => {
     // Each of these is a different sentence to a human and a different repair.
     // Collapsing any pair of them would be the same mistake as the `[]` this
