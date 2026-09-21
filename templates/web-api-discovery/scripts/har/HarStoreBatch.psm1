@@ -157,6 +157,30 @@ function Invoke-HarCaptureBatch {
             continue
         }
 
+        # A FAILURE THE RECORDER ALREADY WROTE DOWN, said out loud here (#450).
+        #
+        # The inventory now carries what session.json recorded: post-processing
+        # errors, and a summary the recorder could not parse back. Those were
+        # printed once, by the run that failed, and then sat on disk. An
+        # operator triaging the store months later sees only that the capture is
+        # unscrubbed -- which looks exactly like "not scrubbed yet".
+        #
+        # Warned, not declined. The stage still runs: a capture whose scrub
+        # failed for a reason since fixed SHOULD be retried, and turning a
+        # recorded failure into a refusal would strand exactly the captures this
+        # is meant to rescue. What changes is that nobody has to already know to
+        # go looking.
+        $recorded = @()
+        if ($capture.PSObject.Properties['summaryParseError'] -and $capture.summaryParseError) {
+            $recorded += "the recorder could not read back the HAR it wrote: $($capture.summaryParseError)"
+        }
+        if ($capture.PSObject.Properties['postProcessErrors'] -and $capture.postProcessErrors) {
+            $recorded += @($capture.postProcessErrors)
+        }
+        foreach ($note in $recorded) {
+            Write-Warning "$($record.Label): recorded at capture time -- $note"
+        }
+
         if (-not $Force -and (& $IsProcessed $capture)) {
             $record.Outcome = $script:OutcomeSkipped
             $record.Reason = "already $Stage -- use -Force to run it again"

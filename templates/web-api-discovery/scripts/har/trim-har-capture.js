@@ -220,11 +220,24 @@ function main() {
         written = harStream.writeHarDocument(args.out, doc.envelope, kept, { flag: 'wx' });
     } catch (e) {
         if (e.code === 'EEXIST') {
+            // NOT ours to remove. 'wx' failed because the file was already
+            // there, so it belongs to whatever put it there.
             fail(`${args.out} appeared while this capture was being read. Refusing to
-`
-                + '  replace it. Nothing was written.', EXIT_REFUSED);
+  replace it. Nothing was written.`, EXIT_REFUSED);
         }
-        fail(`cannot write ${args.out}: ${e.message}`, EXIT_UNREADABLE);
+        // Everything else failed AFTER 'wx' created the file, so what is on
+        // disk is a partial capture. Removed rather than left: the refusal
+        // above means the next run would decline to overwrite it, and the
+        // operator would be told their output already exists when what exists
+        // is a fragment of a failed run. A truncated HAR that later reads as a
+        // capture is the worse half of the same problem.
+        let removed = true;
+        try { fs.unlinkSync(args.out); } catch { removed = false; }
+        fail(`cannot write ${args.out}: ${e.message}\n`
+            + (removed
+                ? '  The partial output was removed.'
+                : `  A PARTIAL output may remain at ${args.out} -- delete it before retrying.`),
+        EXIT_UNREADABLE);
     }
 
     const before = fs.statSync(args.in).size;
