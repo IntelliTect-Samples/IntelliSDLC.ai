@@ -187,7 +187,30 @@ function describeCaptureDir(dir) {
             rejected: hasRejectedScrub(dir),
             digest: exists(path.join(dir, DIGEST_FILE)),
             catalogue: exists(path.join(dir, CATALOGUE_FILE)),
-            substitutions: hasSubstitutionTable(dir)
+            substitutions: hasSubstitutionTable(dir),
+            // WHAT THE RECORDER ALREADY KNEW AND NOBODY READ (issue #450).
+            //
+            // The recorder writes a post-processing failure into `session.json`
+            // and, since f3d0360, prints it; since 9ff81ef it also exits 6. All
+            // of that happens ONCE, in the run that failed. Afterwards the
+            // capture sits in the store and this walk -- the one thing that
+            // looks at every capture, and the input to every batch driver and
+            // every agent triaging the store -- read `session.json` and ignored
+            // both of these fields entirely.
+            //
+            // So a capture whose scrub never ran was listed identically to one
+            // whose scrub succeeded: `scrubbed: false`, indistinguishable from
+            // "not scrubbed yet". That is how a 1.7 GB capture that failed at
+            // record time was described eight days later as the most
+            // evidence-dense unclaimed capture in the tree and recommended for
+            // keeping, while being unprocessable by every tool that would have
+            // kept it. An errors array with an entry in it is not a report; it
+            // is a place a report could have been read from. This reads it.
+            //
+            // Carried, not judged. This walk classifies; it does not decide
+            // what a failure means. Callers render it.
+            postProcessErrors: recordedErrors(session),
+            summaryParseError: recordedParseError(session)
         };
     }
 
@@ -220,8 +243,39 @@ function describeCaptureDir(dir) {
         // this shape -- foreign, but with a table sitting right there -- and
         // a blanket false would tell them it is not, which is the one wrong
         // answer this field exists to prevent.
-        substitutions: hasSubstitutionTable(dir)
+        substitutions: hasSubstitutionTable(dir),
+        // No session.json, so there is nothing recorded to carry. Empty and
+        // null are the honest answers, not "no failures".
+        postProcessErrors: [],
+        summaryParseError: null
     };
+}
+
+/**
+ * The post-processing errors `session.json` recorded, as strings.
+ *
+ * Defensive about the shape because this file is read from disk and may have
+ * been written by an older recorder, hand-edited, or truncated. A session whose
+ * `postProcess` is missing is not a session that succeeded -- but it is also not
+ * one this walk can claim failed, so it reports nothing rather than guessing.
+ */
+function recordedErrors(session) {
+    const errors = session && session.postProcess && session.postProcess.errors;
+    if (!Array.isArray(errors)) return [];
+    return errors.map((e) => `${e}`).filter((e) => e.length > 0);
+}
+
+/**
+ * The parse failure the recorder hit when it summarised its own output.
+ *
+ * Separate from the errors array because it means something different: the
+ * errors say a post-processing STAGE failed, this says the recorder could not
+ * read back the file it had just written. On the capture that motivated #450 it
+ * was the first signal of the whole defect, and it was recorded and never read.
+ */
+function recordedParseError(session) {
+    const e = session && session.summary && session.summary.parseError;
+    return e ? `${e}` : null;
 }
 
 /**

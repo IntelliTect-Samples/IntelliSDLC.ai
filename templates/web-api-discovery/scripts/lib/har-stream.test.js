@@ -455,6 +455,30 @@ test('the writer honours an exclusive-create flag', () => {
         (e) => e.code === 'EEXIST');
 });
 
+test('an entry source that throws mid-write leaves a PARTIAL file behind', () => {
+    // Stated as a fact about this writer rather than hidden, because callers
+    // depend on it. The file is CREATED when the write opens, and on a capture
+    // large enough to flush, bytes are already on disk before the last entry is
+    // known -- so a source that fails part way through cannot be undone from in
+    // here, and the writer does not know whether the caller wants the fragment
+    // kept for inspection or removed. What is asserted below is the part that
+    // holds at every size: after a failed write the path EXISTS and is not a
+    // readable capture. That is what makes trim-har-capture.js's cleanup
+    // necessary rather than defensive decoration -- without it, the next run
+    // refuses to overwrite a fragment while calling it an existing output.
+    const out = path.join(tmpRoot, 'partial.har');
+    const env = { log: { version: '1.2', entries: [] } };
+    const boom = (function* () {
+        yield { a: 1 };
+        yield { b: 2 };
+        throw new Error('source failed');
+    })();
+    assert.throws(() => hs.writeHarDocument(out, env, boom, { flag: 'wx' }), /source failed/);
+    assert.ok(fs.existsSync(out), 'the fragment is on disk -- that is the point');
+    assert.throws(() => JSON.parse(fs.readFileSync(out, 'utf8')),
+        'and it is NOT a readable HAR, so leaving it would be worse than removing it');
+});
+
 // ---------------------------------------------------------------------------
 // 4. Entries can be walked more than once, and the second walk agrees.
 

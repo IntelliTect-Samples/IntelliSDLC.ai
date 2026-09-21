@@ -395,6 +395,84 @@ section('7', () => {
     }
 });
 
+// A post-processing failure the recorder wrote down must be READABLE from the
+// inventory, not merely present in session.json (issue #450).
+//
+// The capture that motivated the issue recorded both signals on the day it was
+// captured -- a summary the recorder could not parse back, and a sanitize-har
+// error -- and was then described eight days later as the most evidence-dense
+// unclaimed capture in the tree, because the one walk that looks at every
+// capture read session.json and ignored both fields. A capture whose scrub
+// never ran was listed exactly like one not scrubbed yet.
+section('recorded post-processing failures are carried into the inventory', () => {
+    const dir = path.join(hostB, '2026-08-28-032544');
+    fs.mkdirSync(dir, { recursive: true });
+    writeHar(path.join(dir, 'raw.har'));
+    fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
+        sessionDir: dir,
+        endedUtc: '2026-08-28T03:50:00.000Z',
+        summary: { bytes: 1714570316, parseError: 'Cannot create a string longer than 0x1fffffe8 characters' },
+        postProcess: {
+            errors: ['sanitize-har: cannot read raw.har: Cannot create a string longer than 0x1fffffe8 characters'],
+            scrubbed: { path: null, verified: false }
+        }
+    }));
+
+    const entry = store.describeCaptureDir(dir);
+    assert.deepStrictEqual(entry.postProcessErrors, [
+        'sanitize-har: cannot read raw.har: Cannot create a string longer than 0x1fffffe8 characters'
+    ], 'the recorded stage failure is carried');
+    assert.strictEqual(entry.summaryParseError,
+        'Cannot create a string longer than 0x1fffffe8 characters',
+        'so is the failure to read back what was just written');
+    // The point of the issue: this is what made the failure invisible. The
+    // capture looks unscrubbed either way, so `scrubbed` cannot carry it.
+    assert.strictEqual(entry.scrubbed, false,
+        'and it remains indistinguishable from not-yet-scrubbed by that field alone');
+
+    // It must reach the inventory a batch driver and an agent actually read,
+    // not only a direct call.
+    const listed = store.listCaptureDirs(root).find((e) => e.dir === dir);
+    assert.ok(listed, 'the failed capture is in the store listing');
+    assert.strictEqual(listed.postProcessErrors.length, 1, 'with its error');
+    assert.strictEqual(listed.summaryParseError,
+        'Cannot create a string longer than 0x1fffffe8 characters');
+});
+
+section('a capture with nothing recorded reports nothing, not a false alarm', () => {
+    // The ablation for the block above: if these fields were populated
+    // unconditionally, the assertions there would pass on any capture and prove
+    // nothing. A clean capture must be quiet.
+    const clean = store.describeCaptureDir(done);
+    assert.deepStrictEqual(clean.postProcessErrors, [], 'a clean capture carries no errors');
+    assert.strictEqual(clean.summaryParseError, null, 'and no parse failure');
+
+    // A capture somebody else made has no session.json to record anything in,
+    // so the honest answer is empty rather than "no failures".
+    const foreign = store.describeCaptureDir(mitm);
+    assert.strictEqual(foreign.captureClass, store.CLASS_FOREIGN);
+    assert.deepStrictEqual(foreign.postProcessErrors, []);
+    assert.strictEqual(foreign.summaryParseError, null);
+});
+
+section('a malformed or older session.json does not crash the walk', () => {
+    // This file is read from disk and may predate the fields, or have been
+    // hand-edited. A walk that throws here takes the whole store inventory with
+    // it -- which would be a worse failure than the one being fixed.
+    const dir = path.join(hostB, '2026-08-29-000001');
+    fs.mkdirSync(dir, { recursive: true });
+    writeHar(path.join(dir, 'raw.har'));
+    fs.writeFileSync(path.join(dir, 'session.json'), JSON.stringify({
+        sessionDir: dir,
+        endedUtc: '2026-08-29T00:00:00.000Z',
+        summary: 'not an object',
+        postProcess: { errors: 'not an array' }
+    }));
+    const entry = store.describeCaptureDir(dir);
+    assert.deepStrictEqual(entry.postProcessErrors, []);
+    assert.strictEqual(entry.summaryParseError, null);
+});
+
 // `findProfileConflict` is async, and a promise nobody waits on is an assertion
 // that cannot fail. Settled before the verdict is printed.
 Promise.all(pending).then(() => {
