@@ -144,18 +144,60 @@ test('sizes are rendered in units a human reads, with the exact bytes kept', () 
 // Recognising Node's own failure, for the band a byte count cannot predict
 // ---------------------------------------------------------------------------
 
-test('Node\'s string-too-long error is recognised by its code', () => {
-    const e = new RangeError('Cannot create a string longer than 0x1fffffe8 characters');
-    e.code = 'ERR_STRING_TOO_LONG';
-    assert.strictEqual(size.isStringTooLongError(e), true);
+// THESE ERRORS ARE PROVOKED, NOT WRITTEN. An earlier version of this suite
+// hand-constructed a RangeError carrying Node's read-path wording and asserted
+// that it was recognised. It passed, and it was worthless: V8 does NOT use that
+// wording when a serialization overflows -- it raises a plain
+// `RangeError: Invalid string length` -- so the branch the test was standing in
+// for was dead code that re-threw the raw error after the whole scrub had run.
+// A hand-written error only ever pins what its author already believed.
+//
+// So each case below makes the RUNTIME raise the real thing. Neither costs
+// memory: V8 rejects an impossible length before allocating anything.
+
+function errorFromOverlongRepeat() {
+    try {
+        // Far beyond any ceiling, so it is refused on the length check alone.
+        'x'.repeat(Number.MAX_SAFE_INTEGER);
+    } catch (e) {
+        return e;
+    }
+    throw new Error('the runtime accepted an impossible string length');
+}
+
+function errorFromOverlongSerialize() {
+    try {
+        // JSON.stringify of a value whose output cannot exist. Same ceiling,
+        // and this is the exact call the scrub makes over the whole document.
+        JSON.stringify({ padding: 'x'.repeat(Number.MAX_SAFE_INTEGER) });
+    } catch (e) {
+        return e;
+    }
+    throw new Error('the runtime accepted an impossible serialization');
+}
+
+test('the error this runtime raises for an impossible string length is recognised', () => {
+    const e = errorFromOverlongRepeat();
+    assert.strictEqual(size.isStringTooLongError(e), true,
+        'unrecognised: ' + e.constructor.name + ' / ' + e.code + ' / ' + e.message);
 });
 
-test('the same failure is recognised when it arrives without a code', () => {
-    // JSON.stringify raises the identical condition as a bare RangeError with
-    // no `code`, and that is precisely the path a document inflated by
-    // serialization takes. Recognising only the coded form would leave the
-    // inflation case printing the raw text this issue is about.
+test('the error a real serialization overflow raises is recognised', () => {
+    // The path the scrub takes when pretty-printing inflates a document past
+    // the size it was read at. Its wording differs from the read path's, and
+    // that difference is what made the branch dead.
+    const e = errorFromOverlongSerialize();
+    assert.strictEqual(size.isStringTooLongError(e), true,
+        'unrecognised: ' + e.constructor.name + ' / ' + e.code + ' / ' + e.message);
+});
+
+test('Node\'s coded read-path error is recognised too', () => {
+    // The read path is the one the issue was reported from. Provoking it for
+    // real costs a 512 MB read, which is what the scrub suite does end to end;
+    // here the coded shape is asserted directly so both spellings are pinned in
+    // the module that claims to know them.
     const e = new RangeError('Cannot create a string longer than 0x1fffffe8 characters');
+    e.code = 'ERR_STRING_TOO_LONG';
     assert.strictEqual(size.isStringTooLongError(e), true);
 });
 
@@ -163,6 +205,9 @@ test('unrelated errors are not mistaken for it', () => {
     assert.strictEqual(size.isStringTooLongError(new Error('ENOENT: no such file')), false);
     assert.strictEqual(size.isStringTooLongError(null), false);
     assert.strictEqual(size.isStringTooLongError(undefined), false);
+    // V8's wording is generic enough to be worth narrowing: something that
+    // merely says so without being the runtime's own RangeError is not it.
+    assert.strictEqual(size.isStringTooLongError(new TypeError('Invalid string length')), false);
 });
 
 test('a recognised failure is described by file, size and limit too', () => {

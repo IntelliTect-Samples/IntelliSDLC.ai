@@ -143,6 +143,39 @@ test('the default threshold comes from the shared size module', () => {
         'a second, local threshold is a second thing to keep true');
 });
 
+test('a recorder attached to an existing log counts what is already there', () => {
+    // The log is append-only. A recorder that started its count at zero would
+    // sit hundreds of megabytes below the truth, and a warning that arrives
+    // after the ceiling has been passed is the defect, not the fix.
+    const logPath = path.join(tmp, `preexisting-${seq++}.ndjson`);
+    fs.writeFileSync(logPath, 'x'.repeat(50 * 1024), 'utf8');
+    const recorder = new captureHar.IncrementalRecorder(logPath, 60000, { warnAtBytes: 60 * 1024 });
+    assert.strictEqual(recorder.bytes, 50 * 1024, 'the existing log counts');
+
+    const warnings = [];
+    recorder.onSizeWarning = (t) => warnings.push(t);
+    for (let i = 0; i < 3; i++) recorder.add(bulkyEntry());
+    recorder.flush();
+    assert.strictEqual(warnings.length, 1,
+        'so a small further append crosses the threshold, as it should');
+});
+
+test('a warning that throws is not reported as a failed flush', () => {
+    // The two are different facts about a recording in progress, and confusing
+    // them sends anyone debugging a capture to the wrong place entirely.
+    const logPath = path.join(tmp, `throwing-${seq++}.ndjson`);
+    const recorder = new captureHar.IncrementalRecorder(logPath, 60000, {
+        warnAtBytes: 8 * 1024,
+        onSizeWarning: () => { throw new Error('warning channel is broken'); },
+    });
+    for (let i = 0; i < 10; i++) recorder.add(bulkyEntry());
+
+    assert.throws(() => recorder.flush(), /warning channel is broken/,
+        'the warning failure surfaces as itself');
+    assert.strictEqual(fs.readFileSync(logPath, 'utf8').trim().split('\n').length, 10,
+        'and the entries were written before it');
+});
+
 test('warning does not disturb the recording itself', () => {
     // The warning exists to protect the capture. A warning path that dropped,
     // duplicated or corrupted an entry would cost the thing it is defending.

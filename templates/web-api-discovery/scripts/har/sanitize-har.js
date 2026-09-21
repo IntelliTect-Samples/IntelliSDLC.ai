@@ -643,6 +643,21 @@ function refuseCaptureTooLargeToRead(inPath) {
     try { bytes = fs.statSync(inPath).size; } catch { return; }
 
     const verdict = captureSize.assessCaptureSize(bytes, inPath);
+
+    // The band between the threshold and the ceiling is not safe, it is merely
+    // readable. Serialization inflates the document -- pretty-printing adds
+    // indentation to every line -- so a capture that reads can still fail when
+    // the scrubbed form is written out, minutes later, with the whole walk
+    // already done. Saying so before starting is the difference between a late
+    // failure the operator was warned about and one that looks arbitrary.
+    if (verdict.status === 'warn') {
+        console.error(`sanitize-har: ${verdict.message}`);
+        console.error(
+            'sanitize-har: this capture still reads, but the scrubbed form is larger than ' +
+            'the capture it comes from, so this run may still fail when it writes.');
+        return;
+    }
+
     if (verdict.status !== 'exceeds') return;
 
     console.error(`sanitize-har: ${verdict.message}`);
