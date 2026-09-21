@@ -134,7 +134,16 @@ function fromEngineError(error, label) {
     if (error instanceof HarFormatError) return error;
     const code = error && HAR_FORMAT_CODES.includes(error.code) ? error.code : 'unreadable';
     const detail = error && error.message ? error.message : String(error);
-    return new HarFormatError(`${label} cannot be read as a HAR: ${detail}`, code);
+    // The engine names the file in its own message. Prefixing unconditionally
+    // printed the path twice in one sentence, which is the sort of thing an
+    // operator reads as a bug in the tool reporting their bug. The common
+    // phrase is what has to be there -- it is what makes an open-level and an
+    // entry-level refusal read as the same kind of event -- so it is added and
+    // the second copy of the label is not.
+    const message = detail.includes(label)
+        ? `cannot be read as a HAR: ${detail}`
+        : `${label} cannot be read as a HAR: ${detail}`;
+    return new HarFormatError(message, code);
 }
 
 /**
