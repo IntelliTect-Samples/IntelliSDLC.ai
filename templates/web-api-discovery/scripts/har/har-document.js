@@ -86,6 +86,13 @@ const path = require('path');
  *   not-a-har       it is JSON, but there is no `log.entries` array in it.
  *                   THE condition this issue is about: the one that used to
  *                   be an empty list
+ *   envelope-not-json  the JSON is broken OUTSIDE the entries array -- the
+ *                   entries themselves may be perfectly good. Distinct from
+ *                   `not-json` because it tells the operator something
+ *                   different: the recording is probably intact and the
+ *                   wrapper around it is not (streaming engine; a
+ *                   whole-document parse cannot tell the two apart and
+ *                   reports `not-json`)
  *   truncated       the document ends inside `log.entries` -- the shape was
  *                   right and the recording was cut off, which is a different
  *                   repair from "this is not a HAR" (raised by #450's
@@ -109,6 +116,7 @@ const HAR_FORMAT_CODES = Object.freeze([
     'unreadable',
     'not-json',
     'not-a-har',
+    'envelope-not-json',
     'truncated',
     'entry-not-json',
     'entry-too-large',
