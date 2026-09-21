@@ -215,14 +215,36 @@ test('a translated refusal always names the file, even when the label collides b
             `label '${label}' was wrongly treated as already named: ${e.message}`);
     }
 
-    // And the real case still dedups: the engine puts the path first, so the
-    // path appears once.
-    const real = harDocument.fromEngineError(
-        { code: 'truncated', message: 'raw.har ends inside log.entries -- the capture is truncated' },
-        'raw.har');
-    assert.strictEqual(real.message.split('raw.har').length - 1, 1,
-        `the file is named more than once: ${real.message}`);
-    assert.ok(real.message.includes('cannot be read as a HAR'));
+    // The degenerate pair, which a prefix test alone still lost. Neither is
+    // reachable from a current caller; both are constructible, and this is the
+    // function every other stage's refusal goes through, so "no caller does
+    // that today" is a reason to pin it rather than to skip it.
+    const noLabel = harDocument.fromEngineError({ code: 'not-a-har', message: 'cannot read data' }, '');
+    assert.ok(/^the capture cannot be read as a HAR/.test(noLabel.message),
+        `a missing label produced a refusal naming nothing: ${noLabel.message}`);
+
+    // An error carrying no message of its own stringifies to `Error`, which a
+    // file named `E` is a prefix of.
+    const stringified = harDocument.fromEngineError({ code: 'not-a-har', message: 'Error' }, 'E');
+    assert.ok(stringified.message.startsWith('E cannot be read as a HAR'),
+        `a one-character name was swallowed by the stringified error: ${stringified.message}`);
+
+    // And the real case still dedups, in BOTH spellings the engine uses -- the
+    // path followed by a space, and the path followed by a colon.
+    for (const detail of [
+        'raw.har has no log.entries',
+        'raw.har: entry 0 is not valid JSON',
+    ]) {
+        const e = harDocument.fromEngineError({ code: 'not-a-har', message: detail }, 'raw.har');
+        assert.strictEqual(e.message.split('raw.har').length - 1, 1,
+            `the file is named more than once: ${e.message}`);
+    }
+    // Whatever the branch, the common phrase is always there: it is what makes
+    // an open-level and an entry-level refusal read as one kind of event.
+    for (const [label, detail] of [...collisions, ['raw.har', 'raw.har has no log.entries']]) {
+        assert.ok(harDocument.fromEngineError({ code: 'not-a-har', message: detail }, label)
+            .message.includes('cannot be read as a HAR'));
+    }
 });
 
 test('a code the boundary does not know degrades rather than escaping as a foreign type', () => {

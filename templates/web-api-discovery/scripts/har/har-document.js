@@ -148,16 +148,26 @@ function fromEngineError(error, label) {
     // entry-level refusal read as the same kind of event -- so it is added and
     // the second copy of the label is not.
     //
-    // STARTS WITH, not contains, and the difference is the whole function's
-    // reason for existing. A containment test is satisfied by coincidence: a
-    // label of `a` is "contained" in `cannot read data`, so the prefix is
-    // suppressed and the message ends up naming no file at all -- the one
-    // outcome this boundary exists to prevent. Every error that reaches here
-    // puts the path at the very start, engine and fs alike, so the stricter
-    // test dedups every real case and cannot be fooled by an accident.
-    const message = detail.startsWith(label)
+    // The label must be a LEADING TOKEN, not merely a prefix, and not merely
+    // contained. Each weaker test loses the filename for a different input,
+    // and losing the filename is the one outcome this boundary exists to
+    // prevent:
+    //
+    //   contains    a label of `a` is "contained" in `cannot read data`, so a
+    //               real name that existed was dropped
+    //   starts with every string starts with the empty string, so a caller
+    //               that passed no label suppressed the prefix too; and an
+    //               error whose own message is empty stringifies to `Error`,
+    //               which a file named `E` is a prefix of
+    //
+    // Requiring a separator after the label costs nothing -- every error that
+    // reaches here writes the path as its first token, followed by a space or
+    // a colon, engine and fs alike -- and it cannot be satisfied by accident.
+    const named = label ? String(label) : 'the capture';
+    const deduped = detail.startsWith(`${named} `) || detail.startsWith(`${named}:`);
+    const message = deduped
         ? `cannot be read as a HAR: ${detail}`
-        : `${label} cannot be read as a HAR: ${detail}`;
+        : `${named} cannot be read as a HAR: ${detail}`;
     return new HarFormatError(message, code);
 }
 
