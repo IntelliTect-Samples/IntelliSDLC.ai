@@ -941,6 +941,12 @@ Set-Content -LiteralPath '$appLog' -Value ((@(`$args) -join ',') + '|' + (Get-Lo
         Set-Content -LiteralPath $plan -Value (@{
                 Command = $app; Arguments = ''; WorkingDirectory = ''
                 TargetFramework = 'net10.0'; TargetFrameworks = ''; Option = @()
+                # The inputs that existed when the plan was cached, as run.ps1
+                # records them; their disappearance is what invalidates it.
+                Input = @(
+                    (Join-Path $root 'src/App/App.csproj'),
+                    (Join-Path $root 'src/App/Properties/launchSettings.json')
+                ) | Sort-Object
             } | ConvertTo-Json)
         (Get-Item -LiteralPath $plan).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
 
@@ -994,6 +1000,9 @@ Set-Content -LiteralPath '$appLog' -Value ((@(`$args) -join ',') + '|' + (Get-Lo
         Set-Content -LiteralPath $plan -Value (@{
                 Command = $app; Arguments = ''; WorkingDirectory = ''
                 TargetFramework = 'net8.0'; TargetFrameworks = 'net8.0;net10.0'; Option = @()
+                # Current, so the refusal below is about the two frameworks and
+                # nothing else.
+                Input = @((Join-Path $root 'src/App/App.csproj'))
             } | ConvertTo-Json)
         (Get-Item -LiteralPath $plan).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
 
@@ -1432,26 +1441,73 @@ Describe 'Launch plan cache (issue #546)' {
     }
 
     It 'treats a plan older than the project file as stale' {
-        Set-Content -LiteralPath $script:lpPlanPath -Value '{}'
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        $plan = [pscustomobject]@{ Command = 'x'; Input = (Get-ExistingLaunchPlanInput -InputPath $inputs) }
+        Save-LaunchPlan -PlanPath $script:lpPlanPath -Plan $plan
         (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
         (Get-Item -LiteralPath $script:lpProjPath).LastWriteTimeUtc = [datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
 
-        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
-        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs | Should -BeFalse
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs -Plan (Read-LaunchPlan -PlanPath $script:lpPlanPath) | Should -BeFalse
     }
 
-    It 'keeps a plan newer than every input, and a missing input is not a change' {
-        Set-Content -LiteralPath $script:lpPlanPath -Value '{}'
+    It 'keeps a plan newer than every input that existed when it was cached' {
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        $plan = [pscustomobject]@{ Command = 'x'; Input = (Get-ExistingLaunchPlanInput -InputPath $inputs) }
+        Save-LaunchPlan -PlanPath $script:lpPlanPath -Plan $plan
         (Get-Item -LiteralPath $script:lpProjPath).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
         (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = [datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
 
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs -Plan (Read-LaunchPlan -PlanPath $script:lpPlanPath) | Should -BeTrue
+    }
+
+    It 'asks again when a file that shaped the plan has been deleted' {
+        # The deleted file may be the one that set the working directory, or
+        # disabled the apphost, or defined the default profile. Every surviving
+        # file is still older than the plan, so timestamps alone see nothing.
+        $settings = Join-Path $script:lpRoot 'Directory.Build.props'
+        Set-Content -LiteralPath $settings -Value '<Project />'
         $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
-        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs | Should -BeTrue
+        $plan = [pscustomobject]@{ Command = 'x'; Input = (Get-ExistingLaunchPlanInput -InputPath $inputs) }
+        Save-LaunchPlan -PlanPath $script:lpPlanPath -Plan $plan
+        (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs -Plan (Read-LaunchPlan -PlanPath $script:lpPlanPath) |
+            Should -BeTrue -Because 'nothing has changed yet'
+
+        Remove-Item -LiteralPath $settings
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs -Plan (Read-LaunchPlan -PlanPath $script:lpPlanPath) |
+            Should -BeFalse -Because 'the file that shaped the plan is gone'
+    }
+
+    It 'asks again for a plan cached by an older run.ps1, which recorded no inputs' {
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        Save-LaunchPlan -PlanPath $script:lpPlanPath -Plan ([pscustomobject]@{ Command = 'x' })
+        (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs -Plan (Read-LaunchPlan -PlanPath $script:lpPlanPath) | Should -BeFalse
     }
 
     It 'reports a damaged cache as no plan at all, rather than failing' {
         Set-Content -LiteralPath $script:lpPlanPath -Value 'not json{'
         Read-LaunchPlan -PlanPath $script:lpPlanPath | Should -BeNullOrEmpty
+    }
+
+    It 'reads the answer even when the SDK prints a diagnostic before it' {
+        # A preview-SDK banner (NETSDK1057) or similar in front of the JSON
+        # would otherwise break the parse and disable the fast launch on that
+        # machine forever, with nothing said.
+        function dotnet {
+            'NETSDK1057: You are using a preview version of .NET.'
+            '{ "Properties": { "RunCommand": "C:/app.exe", "RunArguments": "", "RunWorkingDirectory": "", "TargetFramework": "net10.0", "TargetFrameworks": "" } }'
+            $global:LASTEXITCODE = 0
+        }
+        $plan = Request-LaunchPlan -ProjectFile $script:lpProj -Option @()
+        $plan.Command | Should -Be 'C:/app.exe'
+    }
+
+    It 'reports no plan, rather than failing, when the query says nothing useful' {
+        function dotnet { 'error MSB1009: Project file does not exist.'; $global:LASTEXITCODE = 1 }
+        Request-LaunchPlan -ProjectFile $script:lpProj -Option @() | Should -BeNullOrEmpty
     }
 
     It 'round-trips a saved plan' {

@@ -593,21 +593,45 @@ function Get-LaunchPlanInput {
     return , $paths.ToArray()
 }
 
+function Get-ExistingLaunchPlanInput {
+    <#
+    .SYNOPSIS
+        The subset of $InputPath that is actually on disk, sorted.
+    #>
+    [OutputType([string[]])]
+    param([AllowNull()][string[]]$InputPath)
+
+    return , [string[]]@(@($InputPath) | Where-Object { Test-Path -LiteralPath $_ } | Sort-Object)
+}
+
 function Test-LaunchPlanCurrent {
     <#
     .SYNOPSIS
-        Returns $true when a cached plan exists and no input file is newer
-        than it. A missing input is not a change.
+        Returns $true when a cached plan exists, no input file is newer than
+        it, and exactly the same input files exist now as when it was cached.
+    .DESCRIPTION
+        Timestamps alone miss a DELETION: the file that set a custom working
+        directory, disabled the apphost or defined the default profile is gone,
+        every surviving file is still older than the plan, and the launcher
+        would happily start yesterday's command. So the plan records which
+        inputs existed when it was written, and a change in that set -- one
+        removed, or one added carrying an old timestamp -- means ask again.
     #>
-    param([string]$PlanPath, [AllowNull()][string[]]$InputPath)
+    param([string]$PlanPath, [AllowNull()][string[]]$InputPath, [AllowNull()]$Plan)
 
     if (-not (Test-Path -LiteralPath $PlanPath)) { return $false }
+
     $planTime = (Get-Item -LiteralPath $PlanPath).LastWriteTimeUtc
-    foreach ($path in @($InputPath)) {
-        if (-not (Test-Path -LiteralPath $path)) { continue }
+    $existing = Get-ExistingLaunchPlanInput -InputPath $InputPath
+    foreach ($path in $existing) {
         if ((Get-Item -LiteralPath $path).LastWriteTimeUtc -gt $planTime) { return $false }
     }
-    return $true
+
+    # A plan from an older run.ps1 carries no record of its inputs; treat it as
+    # stale rather than trusting a set it never captured.
+    $recorded = @(Get-PropertyValue $Plan 'Input')
+    if ($recorded.Count -eq 0 -and $existing.Count -gt 0) { return $false }
+    return ($recorded -join "`n") -eq ($existing -join "`n")
 }
 
 function Read-LaunchPlan {
@@ -647,14 +671,29 @@ function Request-LaunchPlan {
         '-getProperty:TargetFrameworks'
     ) + @($Option)
 
-    $raw = & dotnet @query 2>&1 | Out-String
-    if ($LASTEXITCODE -ne 0) { return $null }
+    # stdout only: stderr merged in would be parsed as part of the JSON. Even
+    # on stdout the SDK can prepend a diagnostic (the preview-SDK NETSDK1057
+    # banner, for one), so the JSON object is taken from wherever it starts
+    # rather than assumed to be the whole text -- otherwise one stray line
+    # would disable the fast launch on that machine forever, silently.
+    $raw = & dotnet @query 2>$null | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Verbose 'Could not ask MSBuild how the project starts; using dotnet run.'
+        return $null
+    }
 
-    try { $parsed = $raw | ConvertFrom-Json }
-    catch { return $null }
+    $parsed = $null
+    foreach ($candidate in @($raw, [regex]::Match($raw, '(?s)\{.*\}').Value)) {
+        if (-not $candidate) { continue }
+        try { $parsed = $candidate | ConvertFrom-Json; break }
+        catch { continue }
+    }
 
     $properties = Get-PropertyValue $parsed 'Properties'
-    if (-not $properties) { return $null }
+    if (-not $properties) {
+        Write-Verbose 'MSBuild did not answer with the run properties; using dotnet run.'
+        return $null
+    }
 
     return [pscustomobject]@{
         Command          = [string](Get-PropertyValue $properties 'RunCommand')
@@ -663,6 +702,7 @@ function Request-LaunchPlan {
         TargetFramework  = [string](Get-PropertyValue $properties 'TargetFramework')
         TargetFrameworks = [string](Get-PropertyValue $properties 'TargetFrameworks')
         Option           = [string[]]@($Option)
+        Input            = [string[]]@()
     }
 }
 
@@ -1627,15 +1667,21 @@ if ($null -eq $exitCode -and $commandLineUntouched) {
     $launchPlanPath = Get-LaunchPlanPath -ProjectFile $selectedProject
     $launchPlanInputs = Get-LaunchPlanInput -ProjectFile $selectedProject -Root $SearchRoot
 
-    if (Test-LaunchPlanCurrent -PlanPath $launchPlanPath -InputPath $launchPlanInputs) {
-        $launchPlan = Read-LaunchPlan -PlanPath $launchPlanPath
+    $cached = Read-LaunchPlan -PlanPath $launchPlanPath
+    if (Test-LaunchPlanCurrent -PlanPath $launchPlanPath -InputPath $launchPlanInputs -Plan $cached) {
+        $launchPlan = $cached
     }
 
     if (-not $launchPlan) {
         Write-TransientStatus 'Resolving how the application starts...'
         $launchPlan = Request-LaunchPlan -ProjectFile $selectedProject -Option $buildOptions
         Clear-TransientStatus
-        if ($launchPlan) { Save-LaunchPlan -PlanPath $launchPlanPath -Plan $launchPlan }
+        if ($launchPlan) {
+            # Which inputs existed at this moment is part of the answer: their
+            # disappearance later invalidates it (see Test-LaunchPlanCurrent).
+            $launchPlan.Input = Get-ExistingLaunchPlanInput -InputPath $launchPlanInputs
+            Save-LaunchPlan -PlanPath $launchPlanPath -Plan $launchPlan
+        }
     }
 }
 
