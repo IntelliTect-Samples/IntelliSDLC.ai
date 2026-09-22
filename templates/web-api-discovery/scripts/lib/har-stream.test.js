@@ -219,14 +219,23 @@ SWEPT.push(['the committed mitmproxy capture', COMMITTED_MITMPROXY]);
 
 for (const [name, file] of SWEPT) {
     const expected = JSON.parse(fs.readFileSync(file, 'utf8')).log.entries;
-    // A swept fixture with no entries would make every assertion below vacuous:
-    // deepStrictEqual([], []) passes at every chunk size and proves nothing. The
-    // committed file is the one that can change without this suite being
-    // touched, so the guard is on the whole list rather than on that one.
-    assert.ok(expected.length > 0 || name === 'an empty entries array',
-        name + ' has no entries -- the sweep over it would assert nothing');
 
     test('entries read identically at every chunk size: ' + name, () => {
+        // A swept fixture with no entries would make the sweep below vacuous:
+        // deepStrictEqual([], []) passes at every chunk size and proves nothing.
+        // The committed capture is the one that can change without this suite
+        // being touched, so the guard is on the whole list rather than that one.
+        //
+        // Exempted STRUCTURALLY rather than by name. Keying the exemption on the
+        // fixture's title would fail an honest second empty fixture added later
+        // under a different name -- safe, since it fails loudly rather than
+        // passing quietly, but it would report the wrong thing. Asking the
+        // document whether it is meant to be empty cannot drift from the
+        // document.
+        const meantToBeEmpty = Boolean(DOCS[name]) && DOCS[name].log.entries.length === 0;
+        assert.ok(expected.length > 0 || meantToBeEmpty,
+            name + ' has no entries -- the sweep over it would assert nothing');
+
         for (const chunkSize of CHUNK_SIZES) {
             const got = readAll(file, chunkSize).entries;
             assert.deepStrictEqual(got, expected,
