@@ -548,13 +548,17 @@ function Test-BuildDiagnostic {
         reported something keeps its ENTIRE output on screen (issue #521), so a
         warning is never hidden by the erase.
 
-        Matches the diagnostic ID form every MSBuild/Roslyn/SDK message carries
-        -- "warning CS0168", "error NETSDK1004" -- rather than the word alone,
-        so the "0 Warning(s)" summary line does not count as a diagnostic.
+        Matches the diagnostic CODE every MSBuild/Roslyn/SDK message carries
+        before its colon -- "CS0168:", "NETSDK1004:", "MSB3021:" -- not the
+        words "error" and "warning". MSBuild localizes those words through its
+        satellite assemblies, so a German host prints "Warnung CS0168:" and a
+        word-based test would erase a real warning there; the code does not
+        change with the UI culture. Matching the code also keeps the
+        "0 Warning(s)" summary line from counting as a diagnostic.
     #>
     param([AllowNull()][string[]]$Output)
 
-    return [bool](@($Output) -match '\b(error|warning)\s+[A-Za-z]{2,}\d+')
+    return [bool](@($Output) -match '\b[A-Za-z]{2,}\d{2,}\s*:')
 }
 
 function Get-BuildAffectingArgument {
@@ -1206,10 +1210,25 @@ $projectPath = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.F
 # to announce them on every run and --verbosity quiet silenced it; saying it
 # here instead keeps the information while the launcher works -- the up-to-date
 # check and any build -- and takes it away before the application writes a word.
-$launch = Resolve-LaunchProfile -ProjectDir $projectDir -ProfileName $LaunchProfile
-if ($launch.Path) {
-    $launchRelative = [System.IO.Path]::GetRelativePath($SearchRoot, $launch.Path)
-    Write-TransientStatus "Using launch settings from $launchRelative (profile: $($launch.Name))"
+#
+# Resolved through Get-LaunchProfileArgs, and the status is read back out of
+# the arguments it returned -- NOT from a second, independent call to
+# Resolve-LaunchProfile. A consumer hook may override Get-LaunchProfileArgs to
+# pick a different profile, and a status computed alongside it rather than from
+# it would then name a profile the run does not use.
+# Assign the call's result FIRST, then wrap that variable in @() -- wrapping the
+# CALL re-nests a hook that returns `, $list`, which is exactly what upstream's
+# own Get-LaunchProfileArgs returns (see the same pattern at the pre-run hook).
+$profileResult = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile
+$profileArgs = @($profileResult)
+$profileIndex = [array]::IndexOf($profileArgs, '--launch-profile')
+if ($profileIndex -ge 0 -and $profileIndex + 1 -lt $profileArgs.Count) {
+    $launchSettings = Join-Path $projectDir 'Properties' 'launchSettings.json'
+    $launchStatus = "Using launch profile: $($profileArgs[$profileIndex + 1])"
+    if (Test-Path -LiteralPath $launchSettings) {
+        $launchStatus = "Using launch settings from $([System.IO.Path]::GetRelativePath($SearchRoot, $launchSettings)) (profile: $($profileArgs[$profileIndex + 1]))"
+    }
+    Write-TransientStatus $launchStatus
 }
 
 if ($skipBuild.SkipBuild) {
@@ -1241,8 +1260,7 @@ Clear-TransientStatus
 # one, and not acceptable in a generic launcher.
 $dotnetArgs = @('run', '--project', $selectedProject.FullName, '--no-build', '--verbosity', 'quiet')
 
-# Add launch profile if applicable
-$profileArgs = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile
+# Add launch profile if applicable (resolved above, with the status line)
 $dotnetArgs += $profileArgs
 
 # Add pass-through arguments

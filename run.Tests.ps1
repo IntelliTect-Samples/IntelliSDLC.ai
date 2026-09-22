@@ -1160,6 +1160,25 @@ function Invoke-ProjectPreRun {
         $calls[-1] | Should -Match '^run .* -c Release'
     }
 
+    It 'names the launch profile the hook actually chose, not the one it would have (issue #521)' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # The status must be read back out of the arguments the run receives:
+        # computed independently, it would announce the auto-detected profile
+        # while the hook sends a different one to dotnet.
+        $body = @'
+$script:TransientStatusEnabled = $true
+function Get-LaunchProfileArgs {
+    param([string]$ProjectDir, [string]$ProfileName)
+    return , @('--launch-profile', 'HookChosen')
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        $out = & (Join-Path $root 'run.ps1') -- hello 6>&1 | Out-String
+        $out | Should -Match 'HookChosen'
+        @(Get-CapturedDotnetArg) | Should -Contain 'HookChosen'
+    }
+
     It 'keeps the whole build output when the build reported a warning (issue #521)' {
         . $script:UseHookShim
         . $script:NewHookFixture
@@ -1305,9 +1324,16 @@ Describe 'Test-BuildDiagnostic (issue #521)' {
         Test-BuildDiagnostic -Output @('error NETSDK1004: Assets file not found.') | Should -BeTrue
     }
 
+    It 'recognizes a diagnostic whose category word MSBuild localized' {
+        # MSBuild translates "warning"/"error" through its satellite assemblies,
+        # so a word-based test would erase a real warning on a German host.
+        Test-BuildDiagnostic -Output @('Program.cs(1,5): Warnung CS0168: Die Variable wird nicht verwendet') | Should -BeTrue
+        Test-BuildDiagnostic -Output @('Program.cs(1,1): erreur CS1002: ; attendu') | Should -BeTrue
+    }
+
     It 'does not treat the clean-build summary as a diagnostic' {
         $clean = @(
-            '  App -> bin\Debug\net10.0\App.dll',
+            '  App -> C:\src\App\bin\Debug\net10.0\App.dll',
             'Build succeeded.',
             '    0 Warning(s)',
             '    0 Error(s)',
