@@ -34,6 +34,17 @@
     Which launch settings and profile the run uses is reported while the
     launcher works, and erased before the application's own output begins.
 
+    The application is started directly, rather than through `dotnet run`,
+    whenever this script can reproduce exactly what `dotnet run` would do:
+    MSBuild is asked once how the project starts, the answer is cached beside
+    the build output, and it is reused while the project file, launchSettings
+    and Directory.Build.* files are unchanged. The launch profile's environment
+    variables are applied for the run and restored afterwards. Anything the
+    cache cannot describe exactly - multiple target frameworks, a profile that
+    is not a plain Project profile or that carries commandLineArgs, a run
+    command needing its own arguments, or a command line a run.project.ps1 hook
+    rewrote - falls back to `dotnet run --no-build`.
+
     Use `./run.ps1 test` to run `dotnet test` across the entire solution.
     Use `./run.ps1 help` to show the application's own help text.
 
@@ -536,6 +547,263 @@ function Test-RestoreFailure {
     param([AllowNull()][string[]]$Output)
 
     return [bool](@($Output) -match 'NETSDK10(04|05|47|64)\b')
+}
+
+# A cached answer to "how does this project start?", written next to the build
+# output. `dotnet run` re-derives it on every run by evaluating the project,
+# which costs ~1.4s before the application prints anything; starting the same
+# command directly costs ~0.1s (issue #546). The values come from MSBuild, not
+# from guessing where the output landed.
+$script:LaunchPlanName = 'run.ps1.launch.json'
+
+function Get-LaunchPlanPath {
+    param([System.IO.FileInfo]$ProjectFile)
+    return Join-Path $ProjectFile.DirectoryName 'obj' $script:LaunchPlanName
+}
+
+function Get-LaunchPlanInput {
+    <#
+    .SYNOPSIS
+        The files whose change invalidates a cached launch plan: the project
+        file, launchSettings.json, and the Directory.Build.* / Directory.Packages
+        files from the project directory up to $Root.
+    .DESCRIPTION
+        A short list walked upwards, not a tree walk: this is checked on every
+        run and has to cost microseconds, or it would eat the time the cache
+        saves. Source files are deliberately NOT inputs -- editing code changes
+        what the application does, never where it lives or how it starts.
+    #>
+    [OutputType([string[]])]
+    param([System.IO.FileInfo]$ProjectFile, [string]$Root)
+
+    $paths = [System.Collections.Generic.List[string]]::new()
+    $paths.Add($ProjectFile.FullName)
+    $paths.Add((Join-Path $ProjectFile.DirectoryName 'Properties' 'launchSettings.json'))
+
+    $rootFull = [System.IO.Path]::GetFullPath($Root)
+    $directory = $ProjectFile.Directory
+    while ($directory) {
+        foreach ($name in 'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props') {
+            $paths.Add((Join-Path $directory.FullName $name))
+        }
+        if ($directory.FullName -eq $rootFull) { break }
+        $directory = $directory.Parent
+    }
+
+    return , $paths.ToArray()
+}
+
+function Test-LaunchPlanCurrent {
+    <#
+    .SYNOPSIS
+        Returns $true when a cached plan exists and no input file is newer
+        than it. A missing input is not a change.
+    #>
+    param([string]$PlanPath, [AllowNull()][string[]]$InputPath)
+
+    if (-not (Test-Path -LiteralPath $PlanPath)) { return $false }
+    $planTime = (Get-Item -LiteralPath $PlanPath).LastWriteTimeUtc
+    foreach ($path in @($InputPath)) {
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        if ((Get-Item -LiteralPath $path).LastWriteTimeUtc -gt $planTime) { return $false }
+    }
+    return $true
+}
+
+function Read-LaunchPlan {
+    <#
+    .SYNOPSIS
+        Reads a cached launch plan, or $null when it is missing or unreadable.
+        A damaged cache is a reason to ask MSBuild again, never to fail.
+    #>
+    param([string]$PlanPath)
+
+    if (-not (Test-Path -LiteralPath $PlanPath)) { return $null }
+    try { $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json }
+    catch { return $null }
+    if (-not (Get-PropertyValue $plan 'Command')) { return $null }
+    return $plan
+}
+
+function Request-LaunchPlan {
+    <#
+    .SYNOPSIS
+        Asks MSBuild how the project starts: the run command, its arguments,
+        the working directory and the target framework(s). $null when the query
+        fails or cannot be parsed.
+    .DESCRIPTION
+        These are the very properties `dotnet run` itself uses, so the plan
+        cannot drift from what `dotnet run` would have done. $Option carries the
+        build-affecting arguments (-c Release and friends) so the answer
+        describes the same output the run will look for, and is recorded in the
+        plan so a later run with different options does not reuse it.
+    #>
+    param([System.IO.FileInfo]$ProjectFile, [AllowNull()][string[]]$Option)
+
+    $query = @(
+        'msbuild', $ProjectFile.FullName, '-nologo',
+        '-getProperty:RunCommand', '-getProperty:RunArguments',
+        '-getProperty:RunWorkingDirectory', '-getProperty:TargetFramework',
+        '-getProperty:TargetFrameworks'
+    ) + @($Option)
+
+    $raw = & dotnet @query 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { return $null }
+
+    try { $parsed = $raw | ConvertFrom-Json }
+    catch { return $null }
+
+    $properties = Get-PropertyValue $parsed 'Properties'
+    if (-not $properties) { return $null }
+
+    return [pscustomobject]@{
+        Command          = [string](Get-PropertyValue $properties 'RunCommand')
+        Arguments        = [string](Get-PropertyValue $properties 'RunArguments')
+        WorkingDirectory = [string](Get-PropertyValue $properties 'RunWorkingDirectory')
+        TargetFramework  = [string](Get-PropertyValue $properties 'TargetFramework')
+        TargetFrameworks = [string](Get-PropertyValue $properties 'TargetFrameworks')
+        Option           = [string[]]@($Option)
+    }
+}
+
+function Save-LaunchPlan {
+    <#
+    .SYNOPSIS
+        Caches a launch plan beside the build output. Skipped when the obj
+        directory does not exist (an artifacts layout), which simply means the
+        plan is resolved again next time.
+    #>
+    param([string]$PlanPath, $Plan)
+
+    if (-not (Test-Path -LiteralPath (Split-Path $PlanPath -Parent))) { return }
+    $Plan | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $PlanPath -Encoding utf8NoBOM
+}
+
+function Test-LaunchPlanUsable {
+    <#
+    .SYNOPSIS
+        Returns $true only when the plan describes a start this launcher can
+        reproduce exactly. Anything else falls back to `dotnet run`.
+    .DESCRIPTION
+        The bar is deliberately high, because the failure mode of guessing is
+        silently running the wrong binary. Refused: no run command, a command
+        that is not on disk, a command that needs its own arguments (the
+        `dotnet <dll>` form used when a project disables the apphost), a
+        multi-targeted project (which framework?), build options that differ
+        from the ones the plan was resolved with, and any launch profile that
+        is not a plain `Project` profile or that carries commandLineArgs.
+    #>
+    param([AllowNull()]$Plan, [AllowNull()]$Profile, [AllowNull()][string[]]$Option)
+
+    if (-not $Plan) { return $false }
+    if (-not (Get-PropertyValue $Plan 'Command')) { return $false }
+    if (-not (Test-Path -LiteralPath $Plan.Command -PathType Leaf)) { return $false }
+    if (Get-PropertyValue $Plan 'Arguments') { return $false }
+    if (Get-PropertyValue $Plan 'TargetFrameworks') { return $false }
+    if ((@(Get-PropertyValue $Plan 'Option') -join ' ') -ne (@($Option) -join ' ')) { return $false }
+
+    if ($Profile) {
+        if ((Get-PropertyValue $Profile 'commandName') -ne 'Project') { return $false }
+        if (Get-PropertyValue $Profile 'commandLineArgs') { return $false }
+    }
+
+    return $true
+}
+
+function Get-LaunchProfileDefinition {
+    <#
+    .SYNOPSIS
+        The launchSettings.json profile object of the given name, or $null.
+    #>
+    param([string]$ProjectDir, [string]$ProfileName)
+
+    if (-not $ProfileName) { return $null }
+    $launchSettingsPath = Join-Path $ProjectDir 'Properties' 'launchSettings.json'
+    if (-not (Test-Path -LiteralPath $launchSettingsPath)) { return $null }
+
+    try { $settings = Get-Content -LiteralPath $launchSettingsPath -Raw | ConvertFrom-Json }
+    catch { return $null }
+
+    $profiles = Get-PropertyValue $settings 'profiles'
+    if (-not $profiles) { return $null }
+    return Get-PropertyValue $profiles $ProfileName
+}
+
+function Get-LaunchProfileEnvironment {
+    <#
+    .SYNOPSIS
+        The environment `dotnet run` would set for a profile: its
+        environmentVariables, ASPNETCORE_URLS from applicationUrl, and
+        DOTNET_LAUNCH_PROFILE. Empty when there is no profile.
+    #>
+    [OutputType([hashtable])]
+    param([AllowNull()]$Profile, [string]$ProfileName)
+
+    $environment = @{}
+    if (-not $Profile) { return $environment }
+
+    $variables = Get-PropertyValue $Profile 'environmentVariables'
+    if ($variables) {
+        foreach ($name in $variables.PSObject.Properties.Name) {
+            $environment[$name] = [string]$variables.$name
+        }
+    }
+
+    $applicationUrl = Get-PropertyValue $Profile 'applicationUrl'
+    if ($applicationUrl) { $environment['ASPNETCORE_URLS'] = [string]$applicationUrl }
+    if ($ProfileName) { $environment['DOTNET_LAUNCH_PROFILE'] = $ProfileName }
+
+    return $environment
+}
+
+function Invoke-Application {
+    <#
+    .SYNOPSIS
+        Starts the application itself, with the launch profile's environment
+        applied and the caller's environment restored afterwards.
+    .DESCRIPTION
+        run.ps1 usually runs inside the developer's own shell, so every variable
+        set here is put back on the way out -- including on Ctrl+C -- rather
+        than left behind in their session.
+    .OUTPUTS
+        Nothing of its own: whatever the application writes flows straight
+        through to run.ps1's caller. The exit code is reported in
+        $script:ApplicationExitCode instead, because RETURNING it would make the
+        caller's `$exitCode = Invoke-Application ...` swallow the application's
+        own output into that variable -- the application would run and print
+        nothing.
+    #>
+    param(
+        [string]$Command,
+        [AllowNull()][string[]]$Argument,
+        [string]$WorkingDirectory,
+        [AllowNull()][hashtable]$Environment
+    )
+
+    $script:ApplicationExitCode = 0
+
+    $previous = @{}
+    $arguments = @($Argument)
+    try {
+        if ($Environment) {
+            foreach ($name in $Environment.Keys) {
+                $previous[$name] = [System.Environment]::GetEnvironmentVariable($name)
+                [System.Environment]::SetEnvironmentVariable($name, $Environment[$name])
+            }
+        }
+
+        Push-Location -LiteralPath $WorkingDirectory
+        try {
+            if ($arguments.Count -gt 0) { & $Command @arguments } else { & $Command }
+            $script:ApplicationExitCode = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+    }
+    finally {
+        foreach ($name in $previous.Keys) {
+            [System.Environment]::SetEnvironmentVariable($name, $previous[$name])
+        }
+    }
 }
 
 function Test-BuildDiagnostic {
@@ -1222,11 +1490,13 @@ $projectPath = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.F
 $profileResult = Get-LaunchProfileArgs -ProjectDir $projectDir -ProfileName $LaunchProfile
 $profileArgs = @($profileResult)
 $profileIndex = [array]::IndexOf($profileArgs, '--launch-profile')
+$launchProfileName = ''
 if ($profileIndex -ge 0 -and $profileIndex + 1 -lt $profileArgs.Count) {
+    $launchProfileName = $profileArgs[$profileIndex + 1]
     $launchSettings = Join-Path $projectDir 'Properties' 'launchSettings.json'
-    $launchStatus = "Using launch profile: $($profileArgs[$profileIndex + 1])"
+    $launchStatus = "Using launch profile: $launchProfileName"
     if (Test-Path -LiteralPath $launchSettings) {
-        $launchStatus = "Using launch settings from $([System.IO.Path]::GetRelativePath($SearchRoot, $launchSettings)) (profile: $($profileArgs[$profileIndex + 1]))"
+        $launchStatus = "Using launch settings from $([System.IO.Path]::GetRelativePath($SearchRoot, $launchSettings)) (profile: $launchProfileName)"
     }
     Write-TransientStatus $launchStatus
 }
@@ -1269,6 +1539,10 @@ if ($Args -and $Args.Count -gt 0) {
     $dotnetArgs += $Args
 }
 
+# What this script built, before any consumer hook sees it -- the yardstick for
+# deciding whether the fast launch below still describes the run (issue #546).
+$plannedDotnetArgs = @($dotnetArgs)
+
 # Last-chance mutation of the command line, and a seam after the process
 # exits (issue #462). Both optional: a hook implements only what it needs.
 #
@@ -1291,9 +1565,22 @@ if (Get-Command Invoke-ProjectPreRun -ErrorAction SilentlyContinue) {
     $dotnetArgs = @($hookResult)
 }
 
+# A hook that rewrote the command line is authoritative about how the
+# application starts, and this launcher cannot reproduce an arbitrary rewrite
+# by executing the binary itself -- so anything but an untouched command line
+# goes to `dotnet run` (issue #546).
+$commandLineUntouched = (@($dotnetArgs) -join "`n") -eq (@($plannedDotnetArgs) -join "`n")
+
+# Assign first, then wrap -- Get-BuildAffectingArgument returns `, $list`, and
+# @() around the CALL re-nests it. Nested, it stringifies to "System.String[]"
+# and never matches the options recorded in a cached plan, so the fast launch
+# silently never happened while every test still passed.
+$buildOptionResult = Get-BuildAffectingArgument -DotnetArgument $dotnetArgs
+$buildOptions = @($buildOptionResult)
+
 $exitCode = $null
 if ($buildRequired) {
-    $buildArgs = @('build', $selectedProject.FullName, '-nologo') + (Get-BuildAffectingArgument -DotnetArgument $dotnetArgs)
+    $buildArgs = @('build', $selectedProject.FullName, '-nologo') + $buildOptions
     $buildTitle = "Building $projectPath..."
     $build = Invoke-TransientBuild -Argument ($buildArgs + @(if (-not $restoreRequired) { '--no-restore' })) -Title $buildTitle
 
@@ -1324,10 +1611,53 @@ if ($buildRequired) {
     }
 }
 
+# Resolve how the application starts, from the cache when it is current and
+# from MSBuild otherwise (issue #546). Asking costs about as much as the
+# `dotnet run` it replaces, so a stale plan never makes a run slower than it
+# used to be -- and every later run starts in a fraction of the time.
+# NOT $launchProfile: PowerShell variable names are case-insensitive, so that
+# name IS the script's [string]$LaunchProfile parameter, and assigning the
+# profile OBJECT to it silently stringifies it to "@{commandName=Project}".
+# Every check against it then failed and the fast launch never happened, while
+# nothing reported a thing.
+$launchPlan = $null
+$launchProfileDefinition = $null
+if ($null -eq $exitCode -and $commandLineUntouched) {
+    $launchProfileDefinition = Get-LaunchProfileDefinition -ProjectDir $projectDir -ProfileName $launchProfileName
+    $launchPlanPath = Get-LaunchPlanPath -ProjectFile $selectedProject
+    $launchPlanInputs = Get-LaunchPlanInput -ProjectFile $selectedProject -Root $SearchRoot
+
+    if (Test-LaunchPlanCurrent -PlanPath $launchPlanPath -InputPath $launchPlanInputs) {
+        $launchPlan = Read-LaunchPlan -PlanPath $launchPlanPath
+    }
+
+    if (-not $launchPlan) {
+        Write-TransientStatus 'Resolving how the application starts...'
+        $launchPlan = Request-LaunchPlan -ProjectFile $selectedProject -Option $buildOptions
+        Clear-TransientStatus
+        if ($launchPlan) { Save-LaunchPlan -PlanPath $launchPlanPath -Plan $launchPlan }
+    }
+}
+
 if ($null -eq $exitCode) {
     Write-Host "Running $projectPath" -ForegroundColor DarkGray
-    & dotnet @dotnetArgs
-    $exitCode = $LASTEXITCODE
+
+    if (Test-LaunchPlanUsable -Plan $launchPlan -Profile $launchProfileDefinition -Option $buildOptions) {
+        $workingDirectory = $projectDir
+        if ($launchPlan.WorkingDirectory) { $workingDirectory = $launchPlan.WorkingDirectory }
+        # Called as a statement, never assigned: the application's own output
+        # must reach the caller, not a variable (see Invoke-Application).
+        Invoke-Application `
+            -Command $launchPlan.Command `
+            -Argument $Args `
+            -WorkingDirectory $workingDirectory `
+            -Environment (Get-LaunchProfileEnvironment -Profile $launchProfileDefinition -ProfileName $launchProfileName)
+        $exitCode = $script:ApplicationExitCode
+    }
+    else {
+        & dotnet @dotnetArgs
+        $exitCode = $LASTEXITCODE
+    }
 }
 
 if (Get-Command Invoke-ProjectPostRun -ErrorAction SilentlyContinue) {

@@ -687,10 +687,19 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
                 `$global:LASTEXITCODE = 0
             }
 
-            # Every dotnet invocation, one space-joined line each, in order.
+            # The dotnet COMMANDS run.ps1 ran, one space-joined line each, in
+            # order. The `msbuild -getProperty` launch-plan query is not one of
+            # them: it asks a question rather than doing anything, and counting
+            # it here would make every assertion about "what ran" wrong.
             function Get-DotnetInvocation {
                 if (-not (Test-Path -LiteralPath `$__log)) { return @() }
-                return @(Get-Content -LiteralPath `$__log)
+                return @(Get-Content -LiteralPath `$__log | Where-Object { `$_ -notmatch '^msbuild ' })
+            }
+
+            # The launch-plan queries, separately.
+            function Get-DotnetQuery {
+                if (-not (Test-Path -LiteralPath `$__log)) { return @() }
+                return @(Get-Content -LiteralPath `$__log | Where-Object { `$_ -match '^msbuild ' })
             }
 
             # These two return PLAIN arrays, never a comma-wrapped one. Their
@@ -908,6 +917,90 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         @(Get-DotnetInvocation)[0] | Should -Match '^build ' -Because 'the build check still ran'
     }
 
+    It 'starts the application itself when the cached plan is current (issue #546)' {
+        . $script:UseDotnetShim
+        # A .ps1 stands in for the built executable: it records what it was
+        # given and where, which is exactly what has to survive the switch away
+        # from `dotnet run`.
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        # With a launch profile, as a real project has: the profile puts
+        # --launch-profile on the command line, which is what the build-option
+        # comparison has to survive.
+        New-LaunchSettingsStub (Join-Path $root 'src/App') -ProfileName 'App'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        $appLog = Join-Path $root 'app.txt'
+        $app = Join-Path $root 'App.ps1'
+        Set-Content -LiteralPath $app -Value @"
+Set-Content -LiteralPath '$appLog' -Value ((@(`$args) -join ',') + '|' + (Get-Location).Path)
+'the app spoke'
+"@
+        $obj = Join-Path $root 'src/App/obj'
+        New-Item -ItemType Directory -Path $obj -Force | Out-Null
+        $plan = Join-Path $obj 'run.ps1.launch.json'
+        Set-Content -LiteralPath $plan -Value (@{
+                Command = $app; Arguments = ''; WorkingDirectory = ''
+                TargetFramework = 'net10.0'; TargetFrameworks = ''; Option = @()
+            } | ConvertTo-Json)
+        (Get-Item -LiteralPath $plan).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+
+        $printed = & (Join-Path $root 'run.ps1') post --to a,b --no-build | Out-String
+        $printed | Should -Match 'the app spoke' -Because "the application's own output must reach the caller, not a variable"
+        @(Get-DotnetInvocation) | Should -BeNullOrEmpty -Because 'dotnet run is exactly what the cached plan replaces'
+        @(Get-DotnetQuery) | Should -BeNullOrEmpty -Because 'the cached plan is current, so nothing needs asking'
+        $recorded = (Get-Content -LiteralPath $appLog -Raw).Trim()
+        $recorded | Should -Match '^post,--to,a,b\|'
+        $recorded | Should -Match ([regex]::Escape((Join-Path $root 'src/App'))) -Because 'the app runs in the project directory, as dotnet run runs it'
+    }
+
+    It 'asks MSBuild once, caches the answer, and does not ask again (issue #546)' {
+        . $script:UseDotnetShim
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        $app = Join-Path $root 'App.ps1'
+        Set-Content -LiteralPath $app -Value '$global:LASTEXITCODE = 0'
+        New-Item -ItemType Directory -Path (Join-Path $root 'src/App/obj') -Force | Out-Null
+        $answer = @{ Properties = @{
+                RunCommand = $app; RunArguments = ''; RunWorkingDirectory = ''
+                TargetFramework = 'net10.0'; TargetFrameworks = ''
+            }
+        } | ConvertTo-Json -Compress
+        function dotnet {
+            Add-Content -LiteralPath $__log -Value (@($args) -join ' ')
+            if ($args[0] -eq 'msbuild') { $answer }
+            $global:LASTEXITCODE = 0
+        }
+
+        & (Join-Path $root 'run.ps1') --no-build | Out-Null
+        @(Get-DotnetQuery).Count | Should -Be 1
+        Join-Path $root 'src/App/obj/run.ps1.launch.json' | Should -Exist
+
+        & (Join-Path $root 'run.ps1') --no-build | Out-Null
+        @(Get-DotnetQuery).Count | Should -Be 1 -Because 'the second run reuses the cached plan'
+        @(Get-DotnetInvocation) | Should -BeNullOrEmpty -Because 'neither run needed dotnet run'
+    }
+
+    It 'falls back to dotnet run when the cached plan cannot describe the start exactly (issue #546)' {
+        . $script:UseDotnetShim
+        $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
+        New-CsprojStub -Path (Join-Path $root 'src/App/App.csproj') -OutputType 'Exe'
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run.ps1') -Destination (Join-Path $root 'run.ps1')
+        $app = Join-Path $root 'App.ps1'
+        Set-Content -LiteralPath $app -Value '$global:LASTEXITCODE = 0'
+        $obj = Join-Path $root 'src/App/obj'
+        New-Item -ItemType Directory -Path $obj -Force | Out-Null
+        $plan = Join-Path $obj 'run.ps1.launch.json'
+        Set-Content -LiteralPath $plan -Value (@{
+                Command = $app; Arguments = ''; WorkingDirectory = ''
+                TargetFramework = 'net8.0'; TargetFrameworks = 'net8.0;net10.0'; Option = @()
+            } | ConvertTo-Json)
+        (Get-Item -LiteralPath $plan).LastWriteTimeUtc = (Get-Date).ToUniversalTime().AddMinutes(5)
+
+        & (Join-Path $root 'run.ps1') --no-build | Out-Null
+        @(Get-DotnetInvocation)[0] | Should -Match '^run ' -Because 'a multi-targeted project goes back to dotnet run'
+    }
+
     It 'records the restore after a successful build that restored (issue #519)' {
         . $script:UseDotnetShim
         $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
@@ -959,9 +1052,16 @@ Describe 'run.project.ps1 consumer hook (issue #462)' {
                 `$global:LASTEXITCODE = 0
             }
 
+            # As in the argv shim: the launch-plan query is a question, not a
+            # command, so it is reported separately.
             function Get-DotnetInvocation {
                 if (-not (Test-Path -LiteralPath `$__log)) { return @() }
-                return @(Get-Content -LiteralPath `$__log)
+                return @(Get-Content -LiteralPath `$__log | Where-Object { `$_ -notmatch '^msbuild ' })
+            }
+
+            function Get-DotnetQuery {
+                if (-not (Test-Path -LiteralPath `$__log)) { return @() }
+                return @(Get-Content -LiteralPath `$__log | Where-Object { `$_ -match '^msbuild ' })
             }
 
             function Get-CapturedDotnetArg {
@@ -1210,6 +1310,24 @@ function Get-LaunchProfileArgs {
         $out | Should -Match 'Running ' -Because 'the one surviving line still names what runs'
     }
 
+    It 'goes back to dotnet run when a hook rewrote the command line (issue #546)' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # The hook is authoritative about how the application starts, and this
+        # launcher cannot reproduce an arbitrary rewrite by executing the
+        # binary itself.
+        $body = @'
+function Invoke-ProjectPreRun {
+    param([string[]]$DotnetArgument, [string]$Project)
+    return , (@($DotnetArgument) + '--added-by-hook')
+}
+'@
+        $root = New-HookFixture -HookBody $body
+        & (Join-Path $root 'run.ps1') --no-build | Out-Null
+        @(Get-DotnetInvocation)[0] | Should -Match '^run '
+        @(Get-DotnetQuery) | Should -BeNullOrEmpty -Because 'no plan is worth resolving for a command line it cannot use'
+    }
+
     It 'calls the post-run seam with the exit code' {
         . $script:UseHookShim
         . $script:NewHookFixture
@@ -1289,6 +1407,153 @@ Describe 'Transient build status (issue #249)' {
         $script:TransientStatusEnabled = $false
         Clear-TransientStatus 6>$null
         $script:TransientStatusLength | Should -Be 4
+    }
+}
+
+Describe 'Launch plan cache (issue #546)' {
+    BeforeEach {
+        $script:lpRoot = Join-Path $TestDrive ([guid]::NewGuid())
+        $script:lpProjPath = Join-Path $script:lpRoot 'src/App/App.csproj'
+        New-CsprojStub -Path $script:lpProjPath
+        $script:lpProj = Get-Item -LiteralPath $script:lpProjPath
+        $script:lpPlanPath = Join-Path $script:lpRoot 'src/App/obj/run.ps1.launch.json'
+        New-Item -ItemType Directory -Path (Split-Path $script:lpPlanPath -Parent) -Force | Out-Null
+    }
+
+    It 'invalidates on the project file, launch settings and Directory.Build files, not on source code' {
+        # Assigned directly, NOT wrapped in @(): the function returns `, $list`,
+        # and @() around that call re-nests it (the trap documented in run.ps1).
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        $inputs | Should -Contain $script:lpProj.FullName
+        $inputs | Should -Contain (Join-Path $script:lpRoot 'src/App/Properties/launchSettings.json')
+        $inputs | Should -Contain (Join-Path $script:lpRoot 'Directory.Build.props')
+        $inputs | Should -Contain (Join-Path $script:lpRoot 'src/Directory.Build.targets')
+        ($inputs | Where-Object { $_ -like '*.cs' }) | Should -BeNullOrEmpty
+    }
+
+    It 'treats a plan older than the project file as stale' {
+        Set-Content -LiteralPath $script:lpPlanPath -Value '{}'
+        (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item -LiteralPath $script:lpProjPath).LastWriteTimeUtc = [datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs | Should -BeFalse
+    }
+
+    It 'keeps a plan newer than every input, and a missing input is not a change' {
+        Set-Content -LiteralPath $script:lpPlanPath -Value '{}'
+        (Get-Item -LiteralPath $script:lpProjPath).LastWriteTimeUtc = [datetime]::new(2020, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+        (Get-Item -LiteralPath $script:lpPlanPath).LastWriteTimeUtc = [datetime]::new(2021, 1, 1, 0, 0, 0, [System.DateTimeKind]::Utc)
+
+        $inputs = Get-LaunchPlanInput -ProjectFile $script:lpProj -Root $script:lpRoot
+        Test-LaunchPlanCurrent -PlanPath $script:lpPlanPath -InputPath $inputs | Should -BeTrue
+    }
+
+    It 'reports a damaged cache as no plan at all, rather than failing' {
+        Set-Content -LiteralPath $script:lpPlanPath -Value 'not json{'
+        Read-LaunchPlan -PlanPath $script:lpPlanPath | Should -BeNullOrEmpty
+    }
+
+    It 'round-trips a saved plan' {
+        $plan = [pscustomobject]@{
+            Command = 'C:\app.exe'; Arguments = ''; WorkingDirectory = ''
+            TargetFramework = 'net10.0'; TargetFrameworks = ''; Option = [string[]]@('-c', 'Release')
+        }
+        Save-LaunchPlan -PlanPath $script:lpPlanPath -Plan $plan
+        $read = Read-LaunchPlan -PlanPath $script:lpPlanPath
+        $read.Command | Should -Be 'C:\app.exe'
+        @($read.Option) | Should -Be @('-c', 'Release')
+    }
+}
+
+Describe 'Test-LaunchPlanUsable (issue #546)' {
+    BeforeEach {
+        $script:luExe = Join-Path $TestDrive ([guid]::NewGuid().ToString('N') + '.exe')
+        Set-Content -LiteralPath $script:luExe -Value 'stub'
+        $script:luPlan = [pscustomobject]@{
+            Command = $script:luExe; Arguments = ''; WorkingDirectory = ''
+            TargetFramework = 'net10.0'; TargetFrameworks = ''; Option = [string[]]@()
+        }
+    }
+
+    It 'accepts a plan whose command is on disk, single-targeted and self-contained' {
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @() | Should -BeTrue
+    }
+
+    It 'refuses a plan with no command, or one that is not on disk' {
+        Test-LaunchPlanUsable -Plan $null -Profile $null -Option @() | Should -BeFalse
+        $script:luPlan.Command = ''
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @() | Should -BeFalse
+        $script:luPlan.Command = Join-Path $TestDrive 'gone.exe'
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @() | Should -BeFalse
+    }
+
+    It 'refuses a run command that needs its own arguments' {
+        # The `dotnet <dll>` form a project using UseAppHost=false produces.
+        $script:luPlan.Arguments = 'exec App.dll'
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @() | Should -BeFalse
+    }
+
+    It 'refuses a multi-targeted project, where which framework to run is ambiguous' {
+        $script:luPlan.TargetFrameworks = 'net8.0;net10.0'
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @() | Should -BeFalse
+    }
+
+    It 'refuses a plan resolved under different build options' {
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $null -Option @('-c', 'Release') | Should -BeFalse
+    }
+
+    It 'refuses a launch profile this launcher does not reproduce exactly' {
+        $executable = [pscustomobject]@{ commandName = 'Executable' }
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $executable -Option @() | Should -BeFalse
+
+        $withArgs = [pscustomobject]@{ commandName = 'Project'; commandLineArgs = '--seed' }
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $withArgs -Option @() | Should -BeFalse
+
+        $plain = [pscustomobject]@{ commandName = 'Project' }
+        Test-LaunchPlanUsable -Plan $script:luPlan -Profile $plain -Option @() | Should -BeTrue
+    }
+}
+
+Describe 'Launch profile environment (issue #546)' {
+    It 'applies the profile environment dotnet run would apply' {
+        $profileDefinition = [pscustomobject]@{
+            commandName          = 'Project'
+            applicationUrl       = 'https://localhost:5001'
+            environmentVariables = [pscustomobject]@{ ASPNETCORE_ENVIRONMENT = 'Development'; API_KEY = 'x' }
+        }
+        $environment = Get-LaunchProfileEnvironment -Profile $profileDefinition -ProfileName 'https'
+        $environment['ASPNETCORE_ENVIRONMENT'] | Should -Be 'Development'
+        $environment['API_KEY'] | Should -Be 'x'
+        $environment['ASPNETCORE_URLS'] | Should -Be 'https://localhost:5001'
+        $environment['DOTNET_LAUNCH_PROFILE'] | Should -Be 'https'
+    }
+
+    It 'is empty when there is no profile' {
+        (Get-LaunchProfileEnvironment -Profile $null -ProfileName '').Count | Should -Be 0
+    }
+
+    It 'lets the application''s own output through instead of capturing it' {
+        # Returning the exit code would make the caller's assignment swallow
+        # everything the application printed: it would run and show nothing.
+        function Invoke-TalkingStub { 'hello from the app'; $global:LASTEXITCODE = 0 }
+        $out = Invoke-Application -Command 'Invoke-TalkingStub' -Argument @() -WorkingDirectory $TestDrive -Environment @{}
+        $out | Should -Be 'hello from the app'
+        $script:ApplicationExitCode | Should -Be 0
+    }
+
+    It 'puts the caller environment back after the application exits' {
+        $env:RUN_PS1_ENV_PROBE = 'original'
+        function Invoke-AppStub { $global:RunPs1SeenEnv = $env:RUN_PS1_ENV_PROBE; $global:LASTEXITCODE = 4 }
+
+        Invoke-Application -Command 'Invoke-AppStub' -Argument @() `
+            -WorkingDirectory $TestDrive -Environment @{ RUN_PS1_ENV_PROBE = 'from-profile' }
+
+        $global:RunPs1SeenEnv | Should -Be 'from-profile' -Because 'the application must see the profile value'
+        $env:RUN_PS1_ENV_PROBE | Should -Be 'original' -Because 'the developer shell must not keep it'
+        $script:ApplicationExitCode | Should -Be 4
+        $env:RUN_PS1_ENV_PROBE = $null
+        Remove-Variable -Name RunPs1SeenEnv -Scope Global -ErrorAction SilentlyContinue
     }
 }
 
