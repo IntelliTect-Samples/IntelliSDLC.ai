@@ -20,10 +20,19 @@
     To avoid needless recompilation, run mode skips the build step whenever
     no source file is newer than the project's last build output. The first
     run - or any run after a source file changes - compiles as a separate
-    `dotnet build` whose output is shown live and erased once it succeeds (a
-    failed build keeps it). The restore step inside that build is skipped too
-    while no project or package file has changed since the last restore. The
-    application itself always starts via `dotnet run --no-build`.
+    `dotnet build` whose output is shown live and erased once it succeeds
+    WITHOUT reporting anything; a build that failed, or that emitted an error
+    or warning, keeps its entire output. The restore step inside that build is
+    skipped too while no project or package file has changed since the last
+    restore. The application itself always starts via `dotnet run --no-build`.
+
+    A trailing `--no-build` - the very LAST token on the command line, after
+    the application's own arguments - skips the up-to-date check and the build
+    for that run, for when the caller already knows the build is current. It is
+    consumed by this script and never reaches the application.
+
+    Which launch settings and profile the run uses is reported while the
+    launcher works, and erased before the application's own output begins.
 
     Use `./run.ps1 test` to run `dotnet test` across the entire solution.
     Use `./run.ps1 help` to show the application's own help text.
@@ -59,6 +68,7 @@
     ./run.ps1 mysubcommand
     ./run.ps1 mysubcommand --help
     ./run.ps1 mysubcommand --to a,b
+    ./run.ps1 mysubcommand --to a,b --no-build
     ./run.ps1 -- mysubcommand --flag
     ./run.ps1 run -- --some-flag
     ./run.ps1 -LaunchProfile https
@@ -190,15 +200,33 @@ function Find-RunnableProjects {
     return $runnable
 }
 
-function Get-LaunchProfileArgs {
+function Resolve-LaunchProfile {
+    <#
+    .SYNOPSIS
+        Resolves which launchSettings.json profile the run will use, returning
+        its file Path, its Name, and the Argument list for `dotnet run`.
+    .DESCRIPTION
+        Path and Name exist so the launcher can SAY which launch settings it is
+        about to use (issue #521). `dotnet run` used to announce that itself
+        ("Using launch settings from ..."), and --verbosity quiet silenced it;
+        the launcher now reports it transiently instead, during the preamble.
+
+        All three are $null/empty when the project has no launchSettings.json,
+        no profile matches, or a named profile is missing -- the same cases in
+        which no --launch-profile argument is passed.
+    #>
     param([string]$ProjectDir, [string]$ProfileName)
 
+    # [string[]] so Argument is an empty array rather than the $null a bare @()
+    # becomes when a hashtable is converted to a pscustomobject.
+    $empty = [pscustomobject]@{ Path = $null; Name = $null; Argument = [string[]]@() }
+
     $launchSettingsPath = Join-Path $ProjectDir 'Properties' 'launchSettings.json'
-    if (-not (Test-Path $launchSettingsPath)) { return @() }
+    if (-not (Test-Path $launchSettingsPath)) { return $empty }
 
     $settings = Get-Content $launchSettingsPath -Raw | ConvertFrom-Json
     $profiles = Get-PropertyValue $settings 'profiles'
-    if (-not $profiles) { return @() }
+    if (-not $profiles) { return $empty }
 
     $profile = $null
 
@@ -206,7 +234,7 @@ function Get-LaunchProfileArgs {
         $profile = Get-PropertyValue $profiles $ProfileName
         if (-not $profile) {
             Write-Warning "Launch profile '$ProfileName' not found in $launchSettingsPath"
-            return @()
+            return $empty
         }
     }
     else {
@@ -221,10 +249,24 @@ function Get-LaunchProfileArgs {
         }
     }
 
-    if (-not $profile) { return @() }
+    if (-not $profile) { return $empty }
 
-    $extraArgs = @('--launch-profile', $ProfileName)
-    return $extraArgs
+    return [pscustomobject]@{
+        Path     = $launchSettingsPath
+        Name     = $ProfileName
+        Argument = @('--launch-profile', $ProfileName)
+    }
+}
+
+function Get-LaunchProfileArgs {
+    <#
+    .SYNOPSIS
+        The `dotnet run` arguments for the resolved launch profile, or an empty
+        array. Kept as its own function because a consumer hook may override it.
+    #>
+    param([string]$ProjectDir, [string]$ProfileName)
+
+    return , @((Resolve-LaunchProfile -ProjectDir $ProjectDir -ProfileName $ProfileName).Argument)
 }
 
 function Select-Project {
@@ -496,6 +538,25 @@ function Test-RestoreFailure {
     return [bool](@($Output) -match 'NETSDK10(04|05|47|64)\b')
 }
 
+function Test-BuildDiagnostic {
+    <#
+    .SYNOPSIS
+        Returns $true when build output contains a compiler or SDK diagnostic
+        (an error or a warning), as opposed to pure progress chatter.
+    .DESCRIPTION
+        A build that reported nothing is erased once it succeeds; a build that
+        reported something keeps its ENTIRE output on screen (issue #521), so a
+        warning is never hidden by the erase.
+
+        Matches the diagnostic ID form every MSBuild/Roslyn/SDK message carries
+        -- "warning CS0168", "error NETSDK1004" -- rather than the word alone,
+        so the "0 Warning(s)" summary line does not count as a diagnostic.
+    #>
+    param([AllowNull()][string[]]$Output)
+
+    return [bool](@($Output) -match '\b(error|warning)\s+[A-Za-z]{2,}\d+')
+}
+
 function Get-BuildAffectingArgument {
     <#
     .SYNOPSIS
@@ -627,6 +688,44 @@ function Resolve-VerbosePassthrough {
     if (-not $VerboseBound) { return , $ArgList }
     if ($ArgList -contains '--verbose' -or $ArgList -contains '-v') { return , $ArgList }
     return , (@('--verbose') + $ArgList)
+}
+
+# The token that turns the build off, spelled as `dotnet run` and `dotnet test`
+# spell it, and honored ONLY as the very last token on the command line.
+$script:SkipBuildSwitch = '--no-build'
+
+function Resolve-SkipBuildSwitch {
+    <#
+    .SYNOPSIS
+        Consumes a trailing --no-build, returning whether it was present and the
+        argument list without it.
+    .DESCRIPTION
+        Trailing position is the point (issue #521): it sits after the
+        application's own arguments, so it can be appended and removed without
+        touching the rest of the line -- `./run.ps1 post --to a,b --no-build`.
+
+        Only the LAST token counts, so the same word earlier on the line still
+        reaches the application. The cost, accepted and documented: an
+        application whose own final argument is literally --no-build cannot be
+        called without it being taken here.
+    .OUTPUTS
+        [pscustomobject] with SkipBuild and ArgList.
+    #>
+    [CmdletBinding()]
+    param([AllowNull()][string[]]$ArgList)
+
+    $tokens = @($ArgList)
+    if ($tokens.Count -eq 0 -or $tokens[-1] -ne $script:SkipBuildSwitch) {
+        return [pscustomobject]@{ SkipBuild = $false; ArgList = $tokens }
+    }
+
+    # NOT `$remaining = if (...) { @() } else { ... }`: a branch that yields an
+    # empty array emits NOTHING to the pipeline, so the assignment lands $null
+    # and `.ArgList.Count` on a fully consumed line throws under StrictMode.
+    # Assigning the empty array directly keeps it an empty array.
+    $remaining = [string[]]@()
+    if ($tokens.Count -gt 1) { $remaining = [string[]]@($tokens[0..($tokens.Count - 2)]) }
+    return [pscustomobject]@{ SkipBuild = $true; ArgList = $remaining }
 }
 
 function Test-RootHelpRequest {
@@ -1040,6 +1139,12 @@ if ($Command -eq 'test') {
 # the flag is not forwarded twice.
 $Args = Resolve-VerbosePassthrough -ArgList $Args -VerboseBound $PSBoundParameters.ContainsKey('Verbose')
 
+# Run mode only, and deliberately AFTER test mode has already exited: `dotnet
+# test` takes a --no-build of its own, and swallowing that one would change
+# what the caller asked for.
+$skipBuild = Resolve-SkipBuildSwitch -ArgList $Args
+$Args = $skipBuild.ArgList
+
 # If explicit project provided, use it directly
 if ($Project) {
     if (-not (Test-Path $Project)) {
@@ -1096,9 +1201,28 @@ $projectPath = [System.IO.Path]::GetRelativePath($SearchRoot, $selectedProject.F
 # while it matters and then erased. What survives is one line naming what is
 # about to run, in DarkGray, because it is context for the application's output
 # rather than a result of its own.
-Write-TransientStatus 'Checking whether a build is required...'
-$buildRequired = Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot
-$restoreRequired = $buildRequired -and (Test-RestoreRequired -ProjectFile $selectedProject -Root $SearchRoot)
+#
+# The launch settings are part of that preamble (issue #521). `dotnet run` used
+# to announce them on every run and --verbosity quiet silenced it; saying it
+# here instead keeps the information while the launcher works -- the up-to-date
+# check and any build -- and takes it away before the application writes a word.
+$launch = Resolve-LaunchProfile -ProjectDir $projectDir -ProfileName $LaunchProfile
+if ($launch.Path) {
+    $launchRelative = [System.IO.Path]::GetRelativePath($SearchRoot, $launch.Path)
+    Write-TransientStatus "Using launch settings from $launchRelative (profile: $($launch.Name))"
+}
+
+if ($skipBuild.SkipBuild) {
+    # The caller states the build is current, so neither the check nor the
+    # build runs -- the check itself walks the tree and is not free.
+    $buildRequired = $false
+    $restoreRequired = $false
+}
+else {
+    Write-TransientStatus 'Checking whether a build is required...'
+    $buildRequired = Test-BuildRequired -ProjectFile $selectedProject -Root $SearchRoot
+    $restoreRequired = $buildRequired -and (Test-RestoreRequired -ProjectFile $selectedProject -Root $SearchRoot)
+}
 Clear-TransientStatus
 
 # The application always starts with --no-build: when a build is needed it runs
@@ -1170,8 +1294,15 @@ if ($buildRequired) {
         Write-Host "Build failed: $projectPath" -ForegroundColor Red
         $exitCode = $build.ExitCode
     }
-    elseif ($restoreRequired) {
-        Save-RestoreStamp -ProjectFile $selectedProject
+    else {
+        # A build that reported a warning keeps its WHOLE output: erasing it
+        # would hide the one thing in it worth reading (issue #521). Only a
+        # build that said nothing of substance disappears. Redirected output
+        # already passed through line by line.
+        if ($script:TransientStatusEnabled -and (Test-BuildDiagnostic -Output $build.Output)) {
+            Write-BuildLog -Line $build.Output
+        }
+        if ($restoreRequired) { Save-RestoreStamp -ProjectFile $selectedProject }
     }
 }
 
