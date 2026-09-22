@@ -187,29 +187,44 @@ const DOCS = {
     'scalar elements': {
         log: { version: '1.2', entries: [1, 'two', null, true, 3.5, [4], { five: 5 }] },
     },
-    // A mitmproxy-shaped envelope: same HAR 1.2 structure, different creator,
-    // pages present. Pinned so neither this reader nor anything built on it
-    // regresses into assuming the Playwright shape is the only one it reads.
-    // Invented hosts; no real capture content.
-    'a mitmproxy-shaped envelope': {
-        log: {
-            version: '1.2',
-            creator: { name: 'mitmproxy', version: '12.2.3', comment: 'hardump' },
-            pages: [],
-            entries: [
-                { startedDateTime: '2026-01-01T00:00:00.000Z', request: { method: 'GET', url: 'https://example.invalid/one' } },
-                { startedDateTime: '2026-01-01T00:00:01.000Z', request: { method: 'POST', url: 'https://example.invalid/two' } },
-            ],
-        },
-    },
 };
+
+// The committed mitmproxy capture, which replaced an inline copy of the same
+// idea (#423, #450).
+//
+// TWO FIXTURES FOR ONE PROPERTY IS A FIXTURE THAT DRIFTS. #423 landed this file
+// to pin that a non-Playwright envelope reads, and a synthetic near-duplicate
+// lived here for the same reason until that one was on main. The committed one
+// wins: it is what the rest of the pipeline's suites assert against, so a reader
+// that disagreed with it would be caught everywhere at once rather than here
+// alone.
+//
+// It is also the BETTER fixture for this suite, which was not the reason for
+// preferring it but is worth saying. It is indented with FOUR spaces, so it is
+// the one swept input whose on-disk shape is not what `JSON.stringify(doc, null,
+// 2)` produces -- which is exactly the assumption a writer claiming byte
+// identity could quietly grow.
+const COMMITTED_MITMPROXY = path.join(__dirname, '..', '..', '..', '..',
+    '.github', 'agents', 'tests', 'fixtures', 'har', 'mitmproxy-pretty.har');
 
 // ---------------------------------------------------------------------------
 // 1. Chunk boundaries do not change the answer.
 
-for (const [name, doc] of Object.entries(DOCS)) {
-    const file = fixtureFrom(doc);
+// The synthetic hazards, plus the committed capture. The committed one is swept
+// at every chunk size like the rest rather than only round-tripped once: a
+// boundary landing mid-escape does not care whether the bytes came from a
+// fixture this file wrote or from one on disk.
+const SWEPT = Object.entries(DOCS).map(([name, doc]) => [name, fixtureFrom(doc)]);
+SWEPT.push(['the committed mitmproxy capture', COMMITTED_MITMPROXY]);
+
+for (const [name, file] of SWEPT) {
     const expected = JSON.parse(fs.readFileSync(file, 'utf8')).log.entries;
+    // A swept fixture with no entries would make every assertion below vacuous:
+    // deepStrictEqual([], []) passes at every chunk size and proves nothing. The
+    // committed file is the one that can change without this suite being
+    // touched, so the guard is on the whole list rather than on that one.
+    assert.ok(expected.length > 0 || name === 'an empty entries array',
+        name + ' has no entries -- the sweep over it would assert nothing');
 
     test('entries read identically at every chunk size: ' + name, () => {
         for (const chunkSize of CHUNK_SIZES) {
@@ -300,7 +315,7 @@ for (const [name, doc] of Object.entries(DOCS)) {
 }
 
 test('a write reflects a FILTERED entry stream, and stays well-formed', () => {
-    const file = fixtureFrom(DOCS['a mitmproxy-shaped envelope']);
+    const file = COMMITTED_MITMPROXY;
     const out = path.join(tmpRoot, 'filtered.har');
     const opened = hs.openHarDocument(file, { chunkSize: 7 });
     const kept = [];
@@ -310,7 +325,7 @@ test('a write reflects a FILTERED entry stream, and stays well-formed', () => {
         }
     })();
     const res = hs.writeHarDocument(out, opened.envelope, source);
-    assert.strictEqual(res.entries, 1, 'one entry survived the filter');
+    assert.strictEqual(res.entries, 2, 'the two GETs survived the filter, the POST did not');
     const back = JSON.parse(fs.readFileSync(out, 'utf8'));
     assert.deepStrictEqual(back.log.entries, kept);
     assert.strictEqual(back.log.creator.name, 'mitmproxy', 'the envelope came along');
@@ -394,7 +409,7 @@ test('an entries array nested somewhere other than log is not accepted', () => {
 });
 
 test('a capture truncated inside the entries array says so, distinctly', () => {
-    const full = JSON.stringify(DOCS['a mitmproxy-shaped envelope'], null, 2);
+    const full = fs.readFileSync(COMMITTED_MITMPROXY, 'utf8');
     const file = writeFixture(full.slice(0, Math.floor(full.length * 0.7)));
     let caught = null;
     try { hs.openHarDocument(file, { chunkSize: 6 }); } catch (e) { caught = e; }
@@ -506,8 +521,7 @@ test('an entry source that throws mid-write leaves a PARTIAL file behind', () =>
 // 4. Entries can be walked more than once, and the second walk agrees.
 
 test('entries() may be called twice and gives the same answer', () => {
-    const file = fixtureFrom(DOCS['a mitmproxy-shaped envelope']);
-    const opened = hs.openHarDocument(file, { chunkSize: 4 });
+    const opened = hs.openHarDocument(COMMITTED_MITMPROXY, { chunkSize: 4 });
     assert.deepStrictEqual(Array.from(opened.entries()), Array.from(opened.entries()));
 });
 
