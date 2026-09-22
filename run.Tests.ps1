@@ -890,6 +890,24 @@ Describe 'run.ps1 invoked as a script: what actually reaches dotnet (issue #461)
         $calls[2] | Should -Match '^run '
     }
 
+    It 'runs nothing but the app, and hides the switch from it, on a trailing --no-build (issue #521)' {
+        . $script:UseDotnetShim
+        # The fixture has never been built, so without the switch this would
+        # build first (see the build/run test above).
+        & $script:runScript post --to a,b --no-build | Out-Null
+        $calls = @(Get-DotnetInvocation)
+        $calls.Count | Should -Be 1 -Because 'the caller said the build is current'
+        $calls[0] | Should -Match '^run '
+        Get-ForwardedToken | Should -Be @('post', '--to', 'a,b') -Because 'the switch belongs to run.ps1, not to the application'
+    }
+
+    It 'still forwards the same word when it is not the last token (issue #521)' {
+        . $script:UseDotnetShim
+        & $script:runScript post --no-build --to a,b | Out-Null
+        Get-ForwardedToken | Should -Be @('post', '--no-build', '--to', 'a,b')
+        @(Get-DotnetInvocation)[0] | Should -Match '^build ' -Because 'the build check still ran'
+    }
+
     It 'records the restore after a successful build that restored (issue #519)' {
         . $script:UseDotnetShim
         $root = Join-Path $script:builtFixtureRoot ([guid]::NewGuid().ToString('N'))
@@ -1142,6 +1160,37 @@ function Invoke-ProjectPreRun {
         $calls[-1] | Should -Match '^run .* -c Release'
     }
 
+    It 'keeps the whole build output when the build reported a warning (issue #521)' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        # The hook is dot-sourced into run.ps1's own scope, which is the only
+        # way to put this session on the "live console" path: with output
+        # redirected the launcher passes every line through and the erase
+        # never applies, so the difference could not be observed.
+        $root = New-HookFixture -HookBody '$script:TransientStatusEnabled = $true'
+        function dotnet {
+            Add-Content -LiteralPath $__log -Value (@($args) -join ' ')
+            if ($args[0] -eq 'build') { 'Program.cs(1,5): warning CS0168: unused'; 'Build succeeded.' }
+            $global:LASTEXITCODE = 0
+        }
+        $out = & (Join-Path $root 'run.ps1') -- hello 6>&1 | Out-String
+        $out | Should -Match 'warning CS0168'
+    }
+
+    It 'erases a build that reported nothing (issue #521)' {
+        . $script:UseHookShim
+        . $script:NewHookFixture
+        $root = New-HookFixture -HookBody '$script:TransientStatusEnabled = $true'
+        function dotnet {
+            Add-Content -LiteralPath $__log -Value (@($args) -join ' ')
+            if ($args[0] -eq 'build') { '  App -> bin\Debug\net10.0\App.dll'; 'Build succeeded.'; '    0 Warning(s)' }
+            $global:LASTEXITCODE = 0
+        }
+        $out = & (Join-Path $root 'run.ps1') -- hello 6>&1 | Out-String
+        $out | Should -Not -Match 'Build succeeded' -Because 'a clean build leaves nothing behind'
+        $out | Should -Match 'Running ' -Because 'the one surviving line still names what runs'
+    }
+
     It 'calls the post-run seam with the exit code' {
         . $script:UseHookShim
         . $script:NewHookFixture
@@ -1221,6 +1270,71 @@ Describe 'Transient build status (issue #249)' {
         $script:TransientStatusEnabled = $false
         Clear-TransientStatus 6>$null
         $script:TransientStatusLength | Should -Be 4
+    }
+}
+
+Describe 'Resolve-SkipBuildSwitch (issue #521)' {
+    It 'consumes a trailing --no-build and reports it' {
+        $result = Resolve-SkipBuildSwitch -ArgList @('post', '--to', 'a,b', '--no-build')
+        $result.SkipBuild | Should -BeTrue
+        $result.ArgList | Should -Be @('post', '--to', 'a,b')
+    }
+
+    It 'consumes it when it is the only token' {
+        $result = Resolve-SkipBuildSwitch -ArgList @('--no-build')
+        $result.SkipBuild | Should -BeTrue
+        $result.ArgList.Count | Should -Be 0
+    }
+
+    It 'leaves the same word alone anywhere but last, so the app still gets it' {
+        $result = Resolve-SkipBuildSwitch -ArgList @('post', '--no-build', '--to', 'a')
+        $result.SkipBuild | Should -BeFalse
+        $result.ArgList | Should -Be @('post', '--no-build', '--to', 'a')
+    }
+
+    It 'reports nothing to skip for an empty or null list' {
+        (Resolve-SkipBuildSwitch -ArgList @()).SkipBuild | Should -BeFalse
+        (Resolve-SkipBuildSwitch -ArgList $null).SkipBuild | Should -BeFalse
+    }
+}
+
+Describe 'Test-BuildDiagnostic (issue #521)' {
+    It 'recognizes compiler and SDK diagnostics' {
+        Test-BuildDiagnostic -Output @('Program.cs(3,1): warning CS0168: unused') | Should -BeTrue
+        Test-BuildDiagnostic -Output @('Program.cs(1,1): error CS1002: ; expected') | Should -BeTrue
+        Test-BuildDiagnostic -Output @('error NETSDK1004: Assets file not found.') | Should -BeTrue
+    }
+
+    It 'does not treat the clean-build summary as a diagnostic' {
+        $clean = @(
+            '  App -> bin\Debug\net10.0\App.dll',
+            'Build succeeded.',
+            '    0 Warning(s)',
+            '    0 Error(s)',
+            'Time Elapsed 00:00:01.09')
+        Test-BuildDiagnostic -Output $clean | Should -BeFalse
+        Test-BuildDiagnostic -Output $null | Should -BeFalse
+    }
+}
+
+Describe 'Resolve-LaunchProfile (issue #521)' {
+    It 'reports the settings file and profile the run will use' {
+        New-CsprojStub "$TestDrive/src/Named/Named.csproj"
+        New-LaunchSettingsStub "$TestDrive/src/Named" -ProfileName 'Named'
+
+        $launch = Resolve-LaunchProfile -ProjectDir "$TestDrive/src/Named" -ProfileName ''
+        $launch.Name | Should -Be 'Named'
+        $launch.Path | Should -Exist
+        $launch.Argument | Should -Be @('--launch-profile', 'Named')
+    }
+
+    It 'reports nothing when the project has no launch settings' {
+        New-CsprojStub "$TestDrive/src/Bare/Bare.csproj"
+
+        $launch = Resolve-LaunchProfile -ProjectDir "$TestDrive/src/Bare" -ProfileName ''
+        $launch.Path | Should -BeNullOrEmpty
+        $launch.Argument.Count | Should -Be 0
+        Get-LaunchProfileArgs -ProjectDir "$TestDrive/src/Bare" -ProfileName '' | Should -BeNullOrEmpty
     }
 }
 
