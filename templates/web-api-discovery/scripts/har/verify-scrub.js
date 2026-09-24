@@ -54,7 +54,6 @@ const fs = require('fs');
 const path = require('path');
 const harProfile = require(path.join(__dirname, 'har-profile.js'));
 const harLiterals = require(path.join(__dirname, 'har-literals.js'));
-const harSecrets = require(path.join(__dirname, 'har-secrets.js'));
 // Shape patterns live in har-shapes.js so verify-har-reference.js gates the
 // committed reference on exactly the same list. The reference is the file
 // that actually ships.
@@ -64,32 +63,15 @@ const harPolicy = require(path.join(__dirname, 'har-policy.js'));
 // gate and every stage it guards cannot drift apart over what a HAR is.
 const harDocument = require(path.join(__dirname, 'har-document.js'));
 
-// Does a finding fail the run? One definition, in har-shapes.js, so the gate
-// on the committed reference cannot drift away from the gate on the
-// intermediate it came from. See `blocksLeak` there for what each setting
-// means and why an identifier-shaped finding is reported rather than dropped.
-const blocks = harShapes.blocksLeak;
+// What the gate ASKS -- collect, then gating / advisory / reported -- lives in
+// har-gate.js, so the scrubber's blunting pass (#511) asks the same question
+// in-process without loading this CLI. Re-exported below unchanged.
+const harGate = require(path.join(__dirname, 'har-gate.js'));
+const { collectFindings, classifyFindings, isAdvisory } = harGate;
 
 const EXIT_GATING = 3;
 const EXIT_ADVISORY = 4;
 const FINDINGS_FILENAME = 'scrub-findings.json';
-
-/**
- * Is this finding shape-only identity evidence -- reported, but not a reason
- * to withhold the artifact?
- *
- * Read off the policy `setting`, not off the class. A project may opt an
- * identity class UP to `gate`, and one that did must get the gating code; the
- * policy loader already refuses to let any secret class reach `advise`, so
- * this cannot quietly downgrade a secret.
- *
- * Findings with no `setting` at all -- a known secret name, a forbidden
- * literal -- are gating by construction, which is the safe default for a field
- * this predicate does not understand.
- */
-function isAdvisory(leak) {
-    return leak.setting === 'advise';
-}
 
 // Keys a finding may contribute to the report, whitelisted rather than
 // blacklisted. Every one of these is a NAME, a LOCATION or a non-reversible
@@ -216,21 +198,7 @@ function main() {
         process.exit(1);
     }
 
-    if (parsed) {
-        leaks = harShapes.findLeaksInHar(parsed, policy);
-        // The location travels with the finding (issue #529). Dropping it made
-        // this the one finding kind an operator could not act on: the report
-        // named a field and left the entry to be found by hand, which on a
-        // real capture meant walking tens of megabytes of JSON.
-        harSecrets.walkForUnredactedSecrets(parsed, (name, where, at) => {
-            leaks.push(Object.assign({ kind: 'known-secret', sample: name, gating: true },
-                at && at.entryIndex !== undefined ? { entryIndex: at.entryIndex } : null,
-                at && at.keyPath ? { keyPath: at.keyPath } : null,
-                at && at.enclosing ? { enclosing: at.enclosing } : null));
-        }, { policy });
-    } else {
-        leaks = harShapes.findLeaksDeep(raw, policy);
-    }
+    leaks = parsed ? collectFindings(parsed, policy) : harShapes.findLeaksDeep(raw, policy);
 
     // Forbidden literals. The profile is gitignored, so it is absent in CI;
     // say so rather than reporting a check that never ran as a pass.
@@ -264,9 +232,7 @@ function main() {
     //             outright would be an invisible loosening.
     const describe = (l) =>
         l.sample !== undefined ? `${l.kind}: ${l.sample}` : harShapes.describeLeak(l);
-    const gating = leaks.filter((l) => blocks(l) && !isAdvisory(l));
-    const advising = leaks.filter((l) => blocks(l) && isAdvisory(l));
-    const reported = leaks.filter((l) => !blocks(l));
+    const { gating, advising, reported } = classifyFindings(leaks);
 
     // A loosening the project chose is printed on EVERY run, clean or not.
     // `named-credential` is caught by name or not at all, so removing a name
@@ -365,6 +331,8 @@ if (require.main === module) main();
 module.exports = {
     main,
     parseArgs,
+    collectFindings,
+    classifyFindings,
     isAdvisory,
     reportableFinding,
     waiverFragment,

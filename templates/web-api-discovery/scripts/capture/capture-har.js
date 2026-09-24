@@ -2113,6 +2113,16 @@ function postProcess(session, opts = {}) {
         state.errors.push(`sanitize-har: ${sanitize.stderr.trim() || `exit ${sanitize.status}`}`);
         state.scrubbed = { path: null, verified: false, advisory: false };
     } else {
+        // The scrub's floor (#511): values the gate would have blocked were
+        // blunted rather than the capture refused. Read off the scrub's own
+        // stable stdout line -- counts only, never a value -- so the run
+        // summary says the artifact was blunted, not merely verified.
+        const blunted = /^sanitize-har: blunted: (.+)$/m.exec(sanitize.stdout || '');
+        if (blunted) {
+            state.blunted = blunted[1];
+            state.warnings.push(`sanitize-har: BLUNTED ${blunted[1]} -- values the leak gate ` +
+                'would have blocked, replaced by typed sentinels and recorded in the artifact');
+        }
         askTheGate(candidate, state, run);
     }
 
@@ -2588,7 +2598,8 @@ function postProcessLines(session) {
     const lines = [['verbose', `  raw:       ${session.harPath}  (unscrubbed -- never commit it)`]];
     if (pp.scrubbed && pp.scrubbed.path) {
         lines.push(['info', `  scrubbed:  ${pp.scrubbed.path}` +
-            `  (${pp.scrubbed.advisory ? 'kept -- advisory findings, see below' : 'verified'})`]);
+            `  (${pp.scrubbed.advisory ? 'kept -- advisory findings, see below' : 'verified'}` +
+            `${pp.blunted ? `; BLUNTED ${pp.blunted}` : ''})`]);
     } else if (pp.scrubbed && pp.scrubbed.quarantined) {
         // Where it went, not that it is gone. The predecessor of this line
         // said "deleted", which left the operator with an exit code, a missing

@@ -1019,6 +1019,7 @@ module.exports = {
     decodedShadow,
     fingerprint,
     describeLeak,
+    ENTRY_OWN_FIELDS,
     luhnValid,
     CARD_ISSUERS,
     hasAssignedIin,
