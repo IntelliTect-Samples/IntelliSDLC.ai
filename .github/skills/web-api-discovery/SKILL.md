@@ -21,6 +21,18 @@ dev-loop (via the standard `@dev-loop` agent). Re-running this skill against
 the same project updates only generated artifacts (`*.g.cs`) and HAR samples;
 user-edited code in sibling partial classes is preserved.
 
+**Outside a repository.** Installed globally (IntelliSDLC.ai's
+`Install-GlobalSkills.ps1`), the tooling sits inside this skill's own folder
+and the capture and scrub scripts are on PATH: call `Invoke-HarCapture`,
+`Invoke-HarCatalogue`, `Stop-HarRecording` and `Invoke-SanitizeHar` by bare
+name. A path this document writes as `templates/web-api-discovery/...`
+resolves against the repository root when there is one, otherwise against the
+folder this file is in. The working folder must be a git work tree -- run
+`git init` in a bare one first -- because the scrub refuses to write its
+substitution table anywhere nothing keeps it out of version control. And keep
+it outside Dropbox or any other synced folder: the raw capture carries live
+session cookies and lands under the current directory.
+
 > Every internal change to this skill itself must follow Phase 5b of
 > [`dev-loop.agent.md`](../../agents/dev-loop.agent.md) (Evidence & Verify)
 > -- see [`../evidence-capture/SKILL.md`](../evidence-capture/SKILL.md).
