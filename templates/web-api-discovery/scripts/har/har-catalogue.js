@@ -155,6 +155,20 @@ function responseBytes(entry) {
 }
 
 /**
+ * A reference's entries, one at a time, with a refusal re-worded to name the
+ * reference. Only the READ is translated: `for...of` never forwards an error
+ * thrown by its own loop body into the generator, so a defect in the
+ * measurement still surfaces as itself.
+ */
+function* walkReference(harPath) {
+    try {
+        yield* harDocument.iterateHarEntries(harPath);
+    } catch (e) {
+        throw new Error(`cannot read reference ${harPath}: ${e.message}`);
+    }
+}
+
+/**
  * The factual half of a catalogue row, computed from the reference itself.
  *
  * Every field here is one a row declares and the guard recomputes. The point
@@ -172,12 +186,12 @@ function measureReference(harPath) {
     // or simply-not-a-HAR file pass as "a reference with no entries", which is
     // the failure mode this whole issue is about. The ternary that used to end
     // in `: []` here did exactly that for the second of those three (#423).
-    let entries;
-    try {
-        entries = harDocument.readHarDocument(harPath).entries;
-    } catch (e) {
-        throw new Error(`cannot read reference ${harPath}: ${e.message}`);
-    }
+    //
+    // Walked, never held (#450): every figure below is a set or a running
+    // total, so the answer is accumulated and the entries are not. A refusal
+    // mid-walk throws before anything is returned, so no partial measurement
+    // can escape.
+    let entryCount = 0;
 
     const methods = new Set();
     const endpoints = new Set();
@@ -187,7 +201,8 @@ function measureReference(harPath) {
     let bodyBearingEntries = 0;
     let bodyBearingWithBody = 0;
 
-    for (const entry of entries) {
+    for (const entry of walkReference(harPath)) {
+        entryCount++;
         const request = entry.request || {};
         const method = request.method ? String(request.method).toUpperCase() : null;
         if (method) methods.add(method);
@@ -219,7 +234,7 @@ function measureReference(harPath) {
     }
 
     return {
-        EntryCount: entries.length,
+        EntryCount: entryCount,
         Methods: [...methods].sort(),
         Endpoints: [...endpoints].sort(),
         RequestBodies: requestBodies,

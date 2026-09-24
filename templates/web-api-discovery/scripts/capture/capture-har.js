@@ -2455,11 +2455,20 @@ function summarize(harPath) {
         // A file that is not a capture lands in `parseError` below with a
         // message saying so, rather than being summarised as a capture that
         // recorded nothing (issue #423).
-        const entries = harDocument.readHarDocument(harPath).entries;
-        summary.entries = entries.length;
-        summary.hosts = [...new Set(entries.map((e) => {
-            try { return new URL(e.request.url).host; } catch (x) { return '?'; }
-        }))].sort();
+        //
+        // Walked, never held (#450). This runs on the RAW at capture time, and
+        // the raw is the largest file the pipeline ever sees; a count and a
+        // set of hosts are all the summary keeps, so that is all it holds. The
+        // fields are assigned only after the walk completes, so a refusal
+        // mid-walk leaves a parseError and no partial count beside it.
+        let count = 0;
+        const hosts = new Set();
+        for (const e of harDocument.iterateHarEntries(harPath)) {
+            count++;
+            try { hosts.add(new URL(e.request.url).host); } catch (x) { hosts.add('?'); }
+        }
+        summary.entries = count;
+        summary.hosts = [...hosts].sort();
     } catch (e) {
         summary.parseError = e.message;
     }
@@ -3629,6 +3638,7 @@ module.exports = {
     buildEntry,
     assembleFromLog,
     annotateUnretainedBodies,
+    summarize,
     readLogEntries,
     resolveSessionPaths,
     uriFolder,
