@@ -77,6 +77,10 @@ const subsDestination = require(path.join(__dirname, 'subs-destination.js'));
 // the check that refuses the run when one survives anyway.
 const subsSurvivors = require(path.join(__dirname, 'subs-survivors.js'));
 const captureSize = require(path.join(__dirname, '..', 'lib', 'capture-size.js'));
+// The floor under the scrub (issue #511): blunt what the gate would still
+// block, rather than refuse the artifact over it.
+const harBlunt = require(path.join(__dirname, 'har-blunt.js'));
+const harShapes = require(path.join(__dirname, 'har-shapes.js'));
 
 function parseArgs(argv) {
     const out = {};
@@ -162,6 +166,47 @@ function assertDerivedDestinationsProtected(candidates) {
         if (!message) continue;
         console.error(`sanitize-har: ${message}`);
         process.exit(1);
+    }
+}
+
+/**
+ * Say what blunting did, in three places a caller can rely on.
+ *
+ *  - ONE stdout line under a stable prefix, `sanitize-har: blunted:`, with the
+ *    distinct-value and byte counts. The store batch reads it to report a
+ *    capture as blunted rather than clean -- the same contract as
+ *    `subs-table:`. Absent when nothing was blunted.
+ *  - One stderr line per kind, with the issue that would let the scrubber
+ *    clean it instead, so the debt is never anonymous.
+ *  - The gate's own description of each value it would have blocked --
+ *    location and UNSALTED fingerprint, exactly what verify-scrub printed when
+ *    it refused. That fingerprint is what a policy waiver keys on; without it
+ *    a false positive could only ever be blunted, never waived.
+ *
+ * Counts, kinds, places and fingerprints. Never a value.
+ */
+function reportBlunting(blunting) {
+    if (!blunting.findings.length && !blunting.unblunted.length) return;
+    if (blunting.findings.length) {
+        console.log(`sanitize-har: blunted: ${blunting.values} value(s), ${blunting.bytes} byte(s)`);
+        console.error(`sanitize-har: NOTE -- ${blunting.values} value(s) the leak gate would have ` +
+            `blocked were BLUNTED to typed sentinels instead of refusing the capture; recorded ` +
+            `in the artifact under log.${harBlunt.RECORD_KEY}:`);
+        for (const line of harBlunt.summarize(blunting)) console.error(`  ~ ${line}`);
+        for (const f of blunting.blocked) {
+            const said = f.kind === 'known-secret'
+                ? `known-secret: ${f.sample} at entry ${f.entryIndex} ${f.keyPath || ''}`.trim()
+                : harShapes.describeLeak(f);
+            console.error(`    was: ${said}`);
+        }
+    }
+    if (blunting.unblunted.length) {
+        // The one case the floor cannot cover: a finding with no entry to
+        // blunt it in. The file is still written and the gate refuses it, as
+        // before -- a defect to file, not a steady state.
+        console.error(`sanitize-har: ${blunting.unblunted.length} gating finding(s) could not be ` +
+            'attributed to any entry and were NOT blunted; the leak gate will refuse this capture. ' +
+            'That is a defect in the scrub -- please file it with the findings report.');
     }
 }
 
@@ -832,6 +877,15 @@ function main() {
         console.error(`sanitize-har: NOTE -- non-reversible substitution: ` +
             `${subsSurvivors.describeCollision(c)}`);
     }
+
+    // The FLOOR (issue #511). Whatever the leak gate would still block after
+    // every pass above is blunted to a typed sentinel here, rather than the
+    // whole artifact being refused over it. The gate is asked its own
+    // question -- har-blunt.js calls verify-scrub.js's classification, not a
+    // copy -- and it still runs over the written file afterwards, so nothing
+    // about what counts as a leak changed. Advisory findings are untouched.
+    const blunting = harBlunt.bluntHar(har, { policy, salt });
+    reportBlunting(blunting);
 
     // Literal-value pass runs LAST, over the SERIALIZED document, so a single
     // sweep covers URLs, headers, request bodies and response bodies -- the

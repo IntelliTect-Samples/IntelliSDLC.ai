@@ -22,6 +22,10 @@ Describe 'scrub rejection is non-destructive' {
     It 'runs <Name> and all of its behavioral assertions pass' -ForEach @(
         @{ Name = 'capture/capture-quarantine.test.js';    Expect = 'All capture-quarantine tests passed' }
         @{ Name = 'har/verify-scrub-findings.test.js';     Expect = 'All verify-scrub-findings tests passed' }
+        # #511 -- the floor under the scrub: blunt what the gate would block,
+        # never withhold the artifact.
+        @{ Name = 'har/har-blunt.test.js';                 Expect = 'All har-blunt tests passed' }
+        @{ Name = 'har/sanitize-har-blunt.test.js';        Expect = 'All sanitize-har-blunt tests passed' }
     ) {
         $testJs = Join-Path $script:ScriptsDir $Name
         Test-Path -LiteralPath $testJs | Should -BeTrue

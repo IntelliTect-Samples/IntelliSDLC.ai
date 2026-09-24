@@ -402,6 +402,59 @@ Describe 'a batch does not soften the leak gate' {
             Should -BeTrue
         $out | Should -Match '2 processed'
         $out | Should -Match 'ADVISORY'
+        $out | Should -Match 'Scrub verdicts: 0 clean, 0 blunted, 2 kept with advisories, 0 refused'
+    }
+
+    It 'counts a refusal as refused in the verdict line' {
+        $sanitize = New-StubbedGateScripts -Path $script:Stubbed -Verdict 3
+        $out = (& $sanitize -InputHar $script:Captures 6>&1) -join "`n"
+        $out | Should -Match 'Scrub verdicts: 0 clean, 0 blunted, 0 kept with advisories, 2 refused'
+    }
+}
+
+Describe 'a capture the gate would refuse is blunted, not withheld (#511)' {
+    # THE REAL GATE, NOT A STUB. The value planted here is one the scrub has no
+    # rule for at its position -- a 32-hex run visible only once a JSON escape
+    # is decoded, the shape that refused three captures in a measured store --
+    # so before #511 this capture came out REJECTED. Synthetic bytes throughout.
+
+    BeforeEach {
+        $script:Tmp = New-Tmp
+        $script:Captures = New-BatchFixtureStore -Path $script:Tmp
+        $script:Was = $PWD
+        Set-Location -LiteralPath $script:Tmp
+
+        $script:Planted = 'a1b2c3d4e5f60718293a4b5c6d7e8f90'
+        $script:Blunted = Join-Path $script:Captures 'www.example.test/2026-01-02-000001'
+        # Spliced in as JSON TEXT, not assigned and re-serialized: ConvertTo-Json
+        # decodes the `/` escape while writing, which removes exactly the
+        # spelling this fixture exists to carry.
+        $raw = Join-Path $script:Blunted 'raw.har'
+        $bodyJson = '"for (;;);{\"jsmods\":{\"require\":[[\"m\\u002F' + $script:Planted + '\",1]]}}"'
+        (Get-Content -LiteralPath $raw -Raw).Replace('"{\"ok\":true}"', $bodyJson) |
+            Set-Content -LiteralPath $raw -Encoding utf8 -NoNewline
+        (Get-Content -LiteralPath $raw -Raw) | Should -Match ([regex]::Escape('\\u002F' + $script:Planted))
+    }
+
+    AfterEach {
+        Set-Location -LiteralPath $script:Was
+        if ($script:Tmp -and (Test-Path -LiteralPath $script:Tmp)) {
+            Remove-Item -LiteralPath $script:Tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'promotes a scrubbed artifact that does not carry the value, and reports it as blunted' {
+        $out = (& $script:Sanitize -InputHar $script:Captures 6>&1) -join "`n"
+
+        $scrubbed = Join-Path $script:Blunted 'scrubbed.har'
+        Test-Path -LiteralPath $scrubbed | Should -BeTrue -Because 'the artifact always comes out'
+        Test-Path -LiteralPath (Join-Path $script:Blunted 'scrubbed.rejected.har') | Should -BeFalse
+        (Get-Content -LiteralPath $scrubbed -Raw) | Should -Not -Match $script:Planted `
+            -Because 'and it never carries the secret'
+
+        $out | Should -Match 'www\.example\.test/2026-01-02-000001 -- BLUNTED 1 value\(s\), 32 byte\(s\)'
+        $out | Should -Match 'Scrub verdicts: 1 clean, 1 blunted, 0 kept with advisories, 0 refused'
+        $out | Should -Not -Match $script:Planted -Because 'the summary never carries a value'
     }
 }
 

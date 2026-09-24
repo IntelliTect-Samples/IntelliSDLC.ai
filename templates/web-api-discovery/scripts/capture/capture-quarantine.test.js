@@ -639,6 +639,42 @@ test('advisory findings do not report as success, and are not reported as failur
         'and the assembled-from-log signal survives');
 });
 
+// ---------------------------------------------------------------------------
+// #511 -- a blunted scrub is reported as blunted, not merely "verified"
+// ---------------------------------------------------------------------------
+
+test('a scrub that blunted values says so in the run summary, and keeps the artifact', () => {
+    const dir = repo('blunted');
+    const s = session(dir, '2026-01-01-120000');
+    // The real scrub, with the stable line it prints when it blunted appended:
+    // what is under test is how the RECORDER reads that line, not which value
+    // happens to need blunting (sanitize-har-blunt.test.js pins that).
+    const gate = verdict(0);
+    const run = (script, argv) => {
+        const r = gate(script, argv);
+        if (script.endsWith('sanitize-har.js')) {
+            r.stdout += 'sanitize-har: blunted: 2 value(s), 64 byte(s)\n';
+        }
+        return r;
+    };
+    const state = inDir(dir, () => capture.postProcess(s, { run }));
+
+    assert.strictEqual(state.blunted, '2 value(s), 64 byte(s)');
+    assert.ok(state.warnings.some((w) => /BLUNTED 2 value\(s\), 64 byte\(s\)/.test(w)));
+    assert.ok(fs.existsSync(path.join(s.outputPath, SCRUBBED_HAR)), 'a blunted artifact is promoted');
+    const lines = capture.postProcessLines(Object.assign({}, s, { postProcess: state }));
+    assert.ok(lines.some(([, text]) => /verified; BLUNTED 2 value\(s\), 64 byte\(s\)/.test(text)));
+});
+
+test('a scrub that blunted nothing reports plain "verified"', () => {
+    const dir = repo('not-blunted');
+    const s = session(dir, '2026-01-01-120000');
+    const state = inDir(dir, () => capture.postProcess(s, { run: verdict(0) }));
+    assert.strictEqual(state.blunted, undefined);
+    const lines = capture.postProcessLines(Object.assign({}, s, { postProcess: state }));
+    assert.ok(lines.some(([, text]) => /\(verified\)$/.test(text)));
+});
+
 (async () => {
     let passed = 0;
     for (const { name, fn } of queued) {

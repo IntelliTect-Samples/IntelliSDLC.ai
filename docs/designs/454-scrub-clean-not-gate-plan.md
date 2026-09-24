@@ -97,7 +97,7 @@ All three gating causes actually reported on #454 are fixed without it.
 - [x] A nested `{name, value}` pair is removed, and the gate accepts the result
 - [x] `sanitize-har.js` carries no private `looksFormEncoded`
 - [x] Full existing suite green — 47/47 node suites
-- [ ] Blunting fallback — deferred to #456, see above
+- [x] Blunting fallback — landed under #511 (`har-blunt.js`)
 
 ## Implementation Checklist
 
@@ -107,7 +107,7 @@ All three gating causes actually reported on #454 are fixed without it.
 - [x] **Stage 3** — gate adopts it in visitor mode
 - [x] **Stage 4** — scrubber adopts it; private predicate deleted
 - [x] **Stage 5** — Pester wrapper so the suite reaches CI
-- [ ] **Stage 6-7** — blunting fallback + advisory-exclusion test (blocked on #456)
+- [x] **Stage 6-7** — blunting fallback + advisory-exclusion test — landed under #511
 - [x] **Stage 8** — evidence + docs
 
 ## Ablations

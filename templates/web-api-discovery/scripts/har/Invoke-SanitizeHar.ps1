@@ -429,10 +429,20 @@ if (Test-Path -LiteralPath $InputHar -PathType Container) {
             # -Force replaces the DERIVED artifact of a capture the operator
             # asked to redo. It never replaces a raw; no path here writes to one.
             Move-Item -LiteralPath $temp -Destination $final -Force
-            $note = if ($gate -eq 4) {
-                'gate returned ADVISORY findings (exit 4) -- artifact kept, findings to review'
+            # BLUNTED is read off the scrub's own stable stdout line (#511),
+            # the same contract as `subs-table:`. Counts only -- the line never
+            # carries a value, so it is safe to lift into the summary.
+            $notes = @()
+            $blunted = @($said | ForEach-Object { "$_" } |
+                Where-Object { $_ -match '^sanitize-har: blunted: (.+)$' } |
+                ForEach-Object { $Matches[1] }) | Select-Object -First 1
+            if ($blunted) {
+                $notes += "BLUNTED $blunted -- values the gate would have blocked, recorded in the artifact"
             }
-            else { $null }
+            if ($gate -eq 4) {
+                $notes += 'gate returned ADVISORY findings (exit 4) -- artifact kept, findings to review'
+            }
+            $note = if ($notes) { $notes -join '; ' } else { $null }
             return @{ Outcome = 'processed'; Reason = $note }
         }
 
@@ -467,6 +477,7 @@ if (Test-Path -LiteralPath $InputHar -PathType Container) {
     Write-Information ''
     Get-HarBatchSummaryLines -Results $results -Stage 'Scrub' |
         ForEach-Object { Write-Information $_ }
+    Get-HarScrubVerdictLine -Results $results | ForEach-Object { Write-Information $_ }
 
     # One code for "some capture failed", because a batch's exit cannot carry 88
     # verdicts and the summary above is where they are. The per-capture codes are
