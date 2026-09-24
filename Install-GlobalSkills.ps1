@@ -207,11 +207,21 @@ function Publish-GlobalSkills {
         throw "'$DeployRoot' already exists and was not created by this installer. Publishing mirrors (deletes what the source lacks), so it will not write there. Move or rename that folder, then run this again."
     }
     New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
-    if (-not (Test-Path -LiteralPath $marker)) {
-        Set-Content -LiteralPath $marker -Value 'Created by IntelliSDLC.ai Install-GlobalSkills.ps1. Contents are overwritten on publish; edit the source repository instead.'
+
+    # The marker also records which skills this installer published, so a
+    # later run removes only those -- never a folder someone else put here.
+    $previouslyPublished = @(if (Test-Path -LiteralPath $marker) {
+        Get-Content -LiteralPath $marker | ForEach-Object { if ($_ -match '^published: (.+)$') { $Matches[1] } }
+    })
+    $markerContent = @('Created by IntelliSDLC.ai Install-GlobalSkills.ps1. Skill folders it publishes are overwritten on every publish; edit the source repository instead.') +
+        ($script:SkillSources | ForEach-Object { "published: $($_.Name)" })
+    $changes = 0
+    if (-not (Test-Path -LiteralPath $marker) -or
+        ((Get-Content -LiteralPath $marker) -join "`n") -ne ($markerContent -join "`n")) {
+        Set-Content -LiteralPath $marker -Value $markerContent
+        $changes++
     }
 
-    $changes = 0
     $skillsRoot = Join-Path $DeployRoot 'skills'
     foreach ($skill in $script:SkillSources) {
         $skillDeploy = Join-Path $skillsRoot $skill.Name
@@ -223,10 +233,12 @@ function Publish-GlobalSkills {
         }
     }
 
-    # Skills removed from the list are removed from the deployment.
-    foreach ($dir in Get-ChildItem -LiteralPath $skillsRoot -Directory -Force) {
-        if ($script:SkillSources.Name -notcontains $dir.Name) {
-            Remove-Item -LiteralPath $dir.FullName -Recurse -Force
+    # A skill dropped from the list is removed -- only if this installer
+    # published it.
+    foreach ($name in $previouslyPublished) {
+        $dir = Join-Path $skillsRoot $name
+        if ($script:SkillSources.Name -notcontains $name -and (Test-Path -LiteralPath $dir)) {
+            Remove-Item -LiteralPath $dir -Recurse -Force
             $changes++
         }
     }
@@ -272,6 +284,16 @@ function Install-SkillLinks {
         }
         New-Item -ItemType $linkType -Path $link -Target $skill.FullName | Out-Null
         [pscustomobject]@{ Skill = $skill.Name; Status = 'Linked'; Detail = "$link -> $($skill.FullName)" }
+    }
+
+    # A link into this deployment whose skill is gone would otherwise dangle.
+    $deployedSkills = [System.IO.Path]::TrimEndingDirectorySeparator((Join-Path $DeployRoot 'skills')) + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($item in Get-ChildItem -LiteralPath $SkillsDir -Force | Where-Object LinkType) {
+        if ($item.Target -and $item.Target.StartsWith($deployedSkills, [System.StringComparison]::OrdinalIgnoreCase) -and
+            -not (Test-Path -LiteralPath $item.Target)) {
+            $item.Delete()
+            [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = "'$($item.FullName)' pointed at a skill no longer deployed" }
+        }
     }
 }
 
