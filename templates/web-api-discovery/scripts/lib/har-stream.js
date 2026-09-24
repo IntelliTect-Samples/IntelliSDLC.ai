@@ -97,6 +97,7 @@ const TRUNCATED = 'truncated';
 const ENVELOPE_UNPARSEABLE = 'envelope-not-json';
 const ENTRY_UNPARSEABLE = 'entry-not-json';
 const ENTRY_TOO_LARGE = 'entry-too-large';
+const DUPLICATE_KEY = 'duplicate-key';
 
 /**
  * Carries a `code` so a caller maps a cause to an exit status without matching
@@ -129,6 +130,33 @@ function decodeKey(bytes) {
     } catch {
         return null;
     }
+}
+
+/**
+ * Refuses a second `log` in the root, or a second `entries` in `log`.
+ *
+ * JSON leaves duplicate keys undefined and `JSON.parse` keeps the LAST one;
+ * this scanner locks onto the FIRST. Following either rule silently would let
+ * the two readers disagree about which traffic a capture holds -- and a first
+ * `entries: []` followed by the real one reads as zero entries, the exact
+ * silence #423 closed. Neither copy is the obviously right one, so the
+ * document is refused as ambiguous rather than read by a guess. Each object
+ * tracks its own seen keys, so this costs one Set on two containers.
+ */
+function refuseRepeatedPathKey(stack, key, filePath) {
+    if (key !== 'log' && key !== 'entries') return;
+    const top = stack[stack.length - 1];
+    const onPath = (stack.length === 1 && key === 'log')
+        || (stack.length === 2 && key === 'entries' && stack[1].key === 'log');
+    if (!onPath) return;
+    if (!top.seen) top.seen = new Set();
+    if (top.seen.has(key)) {
+        throw new HarStreamError(
+            `${filePath} has more than one "${key}" key on the log.entries path -- `
+            + 'which copy is the capture is ambiguous, so it is refused rather than guessed',
+            DUPLICATE_KEY);
+    }
+    top.seen.add(key);
 }
 
 /**
@@ -204,6 +232,7 @@ function locateEntries(filePath, chunkSize) {
                         const top = stack.length > 0 ? stack[stack.length - 1] : null;
                         if (top && top.type === 'obj') {
                             top.pendingKey = (keyBytes && !keyOverflow) ? decodeKey(keyBytes) : null;
+                            refuseRepeatedPathKey(stack, top.pendingKey, filePath);
                         }
                         awaitingColon = false;
                         keyBytes = null;
@@ -586,5 +615,6 @@ module.exports = {
         ENVELOPE_UNPARSEABLE,
         ENTRY_UNPARSEABLE,
         ENTRY_TOO_LARGE,
+        DUPLICATE_KEY,
     },
 };

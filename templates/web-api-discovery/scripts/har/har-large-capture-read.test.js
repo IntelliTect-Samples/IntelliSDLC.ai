@@ -211,6 +211,38 @@ test('a walk refuses a corrupt entry AT that entry, as the one canonical error',
     assert.ok(caught.message.includes('corrupt-third.har'), caught.message);
 });
 
+test('a repeated log or entries key is refused as ambiguous, never read as zero entries', () => {
+    // Found by independent review. JSON.parse keeps the LAST duplicate key and
+    // the scanner found the FIRST, so `entries: [], entries: [ ...traffic ]`
+    // read as a capture holding nothing -- #423's silence by another route.
+    const cases = {
+        'dup-entries.har': '{"log":{"version":"1.2","entries":[],"entries":[{"a":1},{"a":2}]}}',
+        'dup-log.har': '{"log":{"entries":[]},"log":{"entries":[{"a":1}]}}',
+        'dup-log-scalar.har': '{"log":{"entries":[{"a":1}]},"log":null}',
+    };
+    for (const [name, text] of Object.entries(cases)) {
+        const p = path.join(tmp, name);
+        fs.writeFileSync(p, text, 'utf8');
+        for (const read of [() => readHarDocument(p), () => { for (const e of iterateHarEntries(p)) void e; }]) {
+            let caught = null;
+            try { read(); } catch (e) { caught = e; }
+            assert.ok(caught instanceof HarFormatError, `${name} was not refused`);
+            assert.strictEqual(caught.code, 'duplicate-key', `${name}: ${caught.code} ${caught.message}`);
+            assert.ok(caught.message.includes(name), caught.message);
+        }
+    }
+});
+
+test('a repeated entries key OFF the log.entries path is ordinary content, not a refusal', () => {
+    // A captured body routinely carries its own `entries` -- only the root's
+    // `log` and log's `entries` decide what the capture is.
+    const p = path.join(tmp, 'dup-elsewhere.har');
+    fs.writeFileSync(p, '{"log":{"entries":[{"body":{"entries":1,"entries":2}}],"pages":{"log":1,"log":2}}}', 'utf8');
+    const read = readHarDocument(p);
+    assert.strictEqual(read.entries.length, 1);
+    assert.strictEqual(read.entries[0].body.entries, 2);
+});
+
 test('a walk over a truncated capture yields nothing and says truncated', () => {
     const p = path.join(tmp, 'cut.har');
     fs.writeFileSync(p, '{"log":{"entries":[{"a":1},{"a":2},{"a"', 'utf8');
