@@ -103,7 +103,14 @@ function findSetCookie(entry) {
  * The cookie *value* is irrelevant -- only the *name* signals Akamai.
  */
 function detectAntiBotCookies(har) {
-  const entries = (har && har.log && Array.isArray(har.log.entries)) ? har.log.entries : [];
+  return detectAntiBotCookiesInEntries(entriesOfHar(har));
+}
+
+/**
+ * The same scan over any iterable of entries -- including a streaming walk of
+ * a capture too large to hold (#450). Retains only the names it found.
+ */
+function detectAntiBotCookiesInEntries(entries) {
   const found = new Set();
   for (const entry of entries) {
     const reqHeaders = entry.request && entry.request.headers;
@@ -134,6 +141,11 @@ function detectAntiBotCookies(har) {
   }
   // Preserve canonical ordering for deterministic output.
   return AKAMAI_BOT_COOKIE_NAMES.filter((n) => found.has(n));
+}
+
+/** A parsed HAR's entries, tolerating a partial document handed over in memory. */
+function entriesOfHar(har) {
+  return (har && har.log && Array.isArray(har.log.entries)) ? har.log.entries : [];
 }
 
 function tryUrl(u) {
@@ -168,8 +180,19 @@ function findSsoRedirect(entry) {
  * @returns {{authModel: string, evidence: Array<{url:string,signal:string}>, idpName?: string}}
  */
 function classifyAuth(har) {
-  const entries = (har && har.log && Array.isArray(har.log.entries)) ? har.log.entries : [];
+  return classifyAuthEntries(entriesOfHar(har));
+}
+
+/**
+ * The same classification over any iterable of entries, walked ONCE (#450).
+ *
+ * A streaming walk cannot be rewound, so the fallback evidence -- one line per
+ * entry when nothing matched -- is gathered during the single pass rather than
+ * by a second loop over the entries. It holds a URL per entry, never the entry.
+ */
+function classifyAuthEntries(entries) {
   const evidence = [];
+  const seenUrls = [];
 
   let bearerEntry = null;
   let pkceEntry = null;
@@ -180,6 +203,7 @@ function classifyAuth(har) {
 
   for (const e of entries) {
     const url = (e.request && e.request.url) || '';
+    seenUrls.push(url);
 
     const pkce = findPkceMarker(e);
     if (pkce && !pkceEntry) {
@@ -239,11 +263,10 @@ function classifyAuth(har) {
   }
 
   // Priority 8: unknown - record what we did look at
-  if (entries.length === 0) {
+  if (seenUrls.length === 0) {
     evidence.push({ url: '', signal: 'HAR contained no entries' });
   } else {
-    for (const e of entries) {
-      const url = (e.request && e.request.url) || '';
+    for (const url of seenUrls) {
       evidence.push({ url, signal: 'no auth-related signal detected' });
     }
   }
@@ -292,15 +315,20 @@ function main(argv) {
   // had never seen. The classifiers below stay tolerant of a partial document
   // because callers hand them one in memory; the FILE is what gets recognised
   // or refused, here, once.
-  let har;
+  //
+  // Walked, never held (#450): two streaming passes, one per question, so the
+  // largest capture is classified in the memory of one entry. A refusal on
+  // either pass exits before anything reaches stdout.
+  let result;
+  let antiBot;
   try {
-    har = harDocument.readHarDocument(harPath).document;
+    result = classifyAuthEntries(harDocument.iterateHarEntries(harPath));
+    antiBot = detectAntiBotCookiesInEntries(harDocument.iterateHarEntries(harPath));
   } catch (err) {
+    if (!(err instanceof harDocument.HarFormatError)) throw err;
     process.stderr.write(`error: ${err.message}\n`);
     process.exit(1);
   }
-  const result = classifyAuth(har);
-  const antiBot = detectAntiBotCookies(har);
   if (antiBot.length > 0) {
     result.antiBotCookies = antiBot;
   }

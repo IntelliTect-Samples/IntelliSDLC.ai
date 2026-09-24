@@ -66,23 +66,33 @@
  *     be at the call sites BEFORE the streaming swap, or the swap re-touches
  *     every stage it was supposed to leave alone.
  *
- * SIZE IS NOT THIS MODULE'S PROBLEM, YET. A capture past the string limit
- * still fails here, as `unreadable`, carrying Node's own message. That is
- * #450's to remove; this file only guarantees it is never reported as zero
- * entries in the meantime.
+ * SIZE (#450). A file is never read into one string here: both readers go
+ * through the streaming engine in `lib/har-stream.js`, so a capture past Node's
+ * string limit reads. What that does NOT remove is memory. `readHarDocument`
+ * still holds every entry, because its callers need the whole document; only
+ * `iterateHarEntries` over a path holds one entry at a time. A stage that only
+ * walks entries should be on the iterator, accumulating its ANSWER rather than
+ * the entries -- collecting the walk into an array re-creates the defect as an
+ * out-of-memory instead of a string-length error.
  */
 
 const fs = require('fs');
 const path = require('path');
+const harStream = require(path.join(__dirname, '..', 'lib', 'har-stream.js'));
+
+// Node's longest string, in UTF-16 code units. A file of at least this many
+// BYTES cannot be read into one string, whatever it holds.
+const STRING_LIMIT = require('buffer').constants.MAX_STRING_LENGTH;
 
 /**
  * The one error a caller catches when a capture cannot be read as a HAR.
  *
  * `code` is the stable, machine-readable half:
  *
- *   unreadable      the bytes could not be obtained -- missing, permissions,
- *                   or (until #450) larger than a JavaScript string
- *   not-json        the bytes are not JSON
+ *   unreadable      the bytes could not be obtained -- missing, permissions
+ *   not-json        the bytes are not JSON (told apart from `not-a-har` only
+ *                   for a file small enough to parse whole; above the string
+ *                   limit the scanner can only say it found no entries)
  *   not-a-har       it is JSON, but there is no `log.entries` array in it.
  *                   THE condition this issue is about: the one that used to
  *                   be an empty list. A capture cut off BEFORE `log.entries`
@@ -266,47 +276,107 @@ function parseHarDocument(text, label) {
 }
 
 /**
- * Read a capture from disk into `{ document, entries }`, or throw.
+ * Open a capture through the streaming engine, translating every refusal into
+ * the canonical type.
  *
- * #450 replaces the body of this function with its streaming engine. The
- * return shape stays: the stages that need the whole document (the scrub
- * rewrites it, the trim filters and re-serialises it) keep working, and the
- * stages that only walk entries should move to `iterateHarEntries`.
+ * The one open-level refusal that is re-diagnosed is `not-a-har`. The engine
+ * finds `log.entries` by scanning, so "no entries array" is all it can say --
+ * about a flows dump, about a file that is not JSON at all, about a HAR whose
+ * `entries` is an object. Those are different repairs, and the whole-document
+ * reader told them apart (`not-json`, and the top-level key names). So when the
+ * file is small enough to be read whole, the refusal is re-derived by the
+ * whole-document parser, which produces the more useful sentence. Above the
+ * string limit that is impossible, and the engine's own refusal stands. This
+ * runs only on a path that is already failing, so it costs nothing on a
+ * capture that reads.
  */
-function readHarDocument(harPath) {
-    const label = path.basename(harPath) === harPath ? harPath : `${harPath}`;
+function openCapture(harPath) {
+    try {
+        return harStream.openHarDocument(harPath);
+    } catch (e) {
+        if (e && e.code === 'not-a-har') rediagnose(harPath);
+        throw fromEngineError(e, harPath);
+    }
+}
+
+function rediagnose(harPath) {
     let text;
     try {
+        if (fs.statSync(harPath).size >= STRING_LIMIT) return;
         text = fs.readFileSync(harPath, 'utf8');
     } catch (e) {
-        // Missing, unreadable, or -- until #450 -- longer than a JavaScript
-        // string. All three are "I could not obtain the bytes", which is not
-        // the same claim as "this is not a HAR", and the operator's next move
-        // differs for each.
-        throw new HarFormatError(`cannot read ${label}: ${e.message}`, 'unreadable');
+        return;
     }
-    return parseHarDocument(text, label);
+    // Throws the richer refusal. If it does NOT throw, the whole-document
+    // parser found entries the scanner did not -- the two readers disagree
+    // about this file, and returning quietly would let the scanner's answer
+    // win. That is a defect in the engine, and it is reported as one.
+    parseHarDocument(text, harPath);
+    throw new HarFormatError(
+        `${harPath}: the streaming reader found no log.entries but a whole-document parse did -- `
+        + 'the two readers disagree about this file; please report it', 'unreadable');
+}
+
+/** Walk an opened capture, translating an entry-level refusal as it surfaces. */
+function* walkOpened(opened, harPath) {
+    const it = opened.entries();
+    for (;;) {
+        let step;
+        try {
+            step = it.next();
+        } catch (e) {
+            throw fromEngineError(e, harPath);
+        }
+        if (step.done) return;
+        yield step.value;
+    }
+}
+
+/**
+ * Read a capture from disk into `{ document, entries }`, or throw.
+ *
+ * The file is never built as one string: the engine scans it, parses the
+ * envelope and each entry separately, and the entries are placed back into the
+ * envelope's own `log.entries` slot -- the key position the file had, so a
+ * stage that re-serialises the document writes the keys in the order it read
+ * them. `document.log.entries` IS `entries`, one array, so a stage that edits
+ * an entry and then serialises the document sees its own edit.
+ *
+ * This removes the string limit, not the memory: the whole document is still
+ * held. It is for the stages that genuinely need the document. A stage that
+ * only walks entries belongs on `iterateHarEntries`, which holds one.
+ */
+function readHarDocument(harPath) {
+    const opened = openCapture(harPath);
+    const entries = [];
+    for (const entry of walkOpened(opened, harPath)) entries.push(entry);
+    const document = opened.envelope;
+    document.log.entries = entries;
+    return { document, entries };
 }
 
 /**
  * Walk a capture's entries one at a time.
  *
- * Today this iterates an array that is already in memory, which buys nothing
- * on its own. It exists now so that the call sites say `iterateHarEntries`
- * BEFORE #450 swaps in a generator that never holds the whole document --
- * otherwise that work has to re-touch every stage this migration just moved.
+ * Given a PATH, this streams: one entry is held at a time, whatever the size
+ * of the file. Given an already-read document, it walks the array in memory.
  *
- * It fails the same way the whole-document read does, and it fails BEFORE
- * yielding anything: a walk that yielded three entries and then announced the
- * file was unreadable would leave the caller holding a partial answer it had
- * already acted on.
+ * WHEN IT FAILS. A capture refused at the OPEN -- not a HAR, cut off inside
+ * `log.entries`, a broken envelope -- fails before anything is yielded, because
+ * the open locates the whole entries array before the first entry is parsed.
+ * An entry that does not parse is only knowable when the walk reaches it, so
+ * that refusal arrives AFTER the entries before it were yielded. A stage must
+ * therefore accumulate its answer and act on it only once the walk completes;
+ * a throw mid-walk then leaves nothing acted on.
  *
  * @param {string|{entries: Array}} source a path, or an already-read document
  */
 function* iterateHarEntries(source) {
-    const entries = typeof source === 'string'
-        ? readHarDocument(source).entries
-        : entriesOf(source && source.document ? source.document : source, 'the capture');
+    if (typeof source === 'string') {
+        yield* walkOpened(openCapture(source), source);
+        return;
+    }
+    const entries = entriesOf(source && source.document ? source.document : source, 'the capture');
     for (const entry of entries) yield entry;
 }
 
