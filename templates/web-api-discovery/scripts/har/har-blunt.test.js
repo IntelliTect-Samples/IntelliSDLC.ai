@@ -87,6 +87,9 @@ test('hex32 in a JSON body is blunted in place', () => {
     assert.ok(text.endsWith('","x"]]},"z":"keep me"}'), 'every other byte is kept');
     assert.strictEqual(result.values, 1);
     assert.strictEqual(result.unblunted.length, 0);
+    // The record names the field the gate named, not just the body it sat in.
+    assert.strictEqual(doc.log[blunt.RECORD_KEY].findings[0].keyPath,
+        'response.content.text.jsmods.require[0][0]');
 });
 
 // 2. The gate groups by value and reports ONE location. Blunting by that

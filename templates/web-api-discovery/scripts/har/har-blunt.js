@@ -218,12 +218,16 @@ function bluntEntry(entry, entryIndex, opts) {
     // --- Pass 1: surgical. -------------------------------------------------
     const shapeKeys = new Set();
     const shapeKinds = new Set();
+    // Where the GATE placed each value -- a key path into the parsed body --
+    // which is more exact than the envelope string the blunt happens in.
+    const gatePath = new Map();
     let knownSecret = false;
     for (const f of gating) {
         if (f.kind === 'known-secret') knownSecret = true;
         else if (PATTERN_BY_KIND.has(f.kind) && typeof f.fingerprint === 'string') {
             shapeKeys.add(`${f.kind}:${f.fingerprint}`);
             shapeKinds.add(f.kind);
+            if (f.keyPath) gatePath.set(`${f.kind}:${f.fingerprint}`, f.keyPath);
         }
     }
 
@@ -233,7 +237,8 @@ function bluntEntry(entry, entryIndex, opts) {
             const re = new RegExp(PATTERN_BY_KIND.get(kind).re.source, 'g');
             out = out.replace(re, (m) => {
                 if (!shapeKeys.has(`${kind}:${harShapes.fingerprint(m)}`)) return m;
-                note(kind, m, keyPath, 'value', m.length, { class: PATTERN_BY_KIND.get(kind).class });
+                const at = gatePath.get(`${kind}:${harShapes.fingerprint(m)}`) || keyPath;
+                note(kind, m, at, 'value', m.length, { class: PATTERN_BY_KIND.get(kind).class });
                 return sentinelFor(kind, m, salt);
             });
         }
