@@ -216,11 +216,6 @@ function Publish-GlobalSkills {
     $markerContent = @('Created by IntelliSDLC.ai Install-GlobalSkills.ps1. Skill folders it publishes are overwritten on every publish; edit the source repository instead.') +
         ($script:SkillSources | ForEach-Object { "published: $($_.Name)" })
     $changes = 0
-    if (-not (Test-Path -LiteralPath $marker) -or
-        ((Get-Content -LiteralPath $marker) -join "`n") -ne ($markerContent -join "`n")) {
-        Set-Content -LiteralPath $marker -Value $markerContent
-        $changes++
-    }
 
     $skillsRoot = Join-Path $DeployRoot 'skills'
     foreach ($skill in $script:SkillSources) {
@@ -247,6 +242,14 @@ function Publish-GlobalSkills {
     if (-not (Test-Path -LiteralPath $installerTarget) -or
         (Get-FileHash -LiteralPath $installerTarget).Hash -ne (Get-FileHash -LiteralPath $InstallerPath).Hash) {
         Copy-Item -LiteralPath $InstallerPath -Destination $installerTarget -Force
+        $changes++
+    }
+
+    # Last, so an interrupted run still remembers a dropped skill and the
+    # next run removes it.
+    if (-not (Test-Path -LiteralPath $marker) -or
+        ((Get-Content -LiteralPath $marker) -join "`n") -ne ($markerContent -join "`n")) {
+        Set-Content -LiteralPath $marker -Value $markerContent
         $changes++
     }
     return $changes
