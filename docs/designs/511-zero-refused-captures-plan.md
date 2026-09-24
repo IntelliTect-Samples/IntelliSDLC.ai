@@ -55,6 +55,11 @@ parses the string and does see it.
 
 ### Not done here
 
+- **Forbidden literals** (the operator profile's own identifiers) are outside
+  blunting. The scrub's literal pass replaces them after blunting, over the
+  serialized text. A literal that survives that pass is still refused by the
+  gate, as it was before.
+
 - **The hex32 rule itself.** These hashes are probably not secrets, but deciding
   that belongs to #297's policy model (a waiver or a `notSecret` rule), not to one
   more shape exception. Blunting is the floor. The debt column names #408.
