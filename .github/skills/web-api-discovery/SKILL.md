@@ -24,8 +24,8 @@ user-edited code in sibling partial classes is preserved.
 **Outside a repository.** Installed globally (IntelliSDLC.ai's
 `Install-GlobalSkills.ps1`), the tooling sits inside this skill's own folder
 and the capture and scrub scripts are on PATH: call `Invoke-HarCapture`,
-`Invoke-HarCatalogue`, `Stop-HarRecording` and `Invoke-SanitizeHar` by bare
-name. A path this document writes as `templates/web-api-discovery/...`
+`Invoke-HarCatalogue`, `Stop-HarRecording`, `ConvertFrom-HarCatalogue` and
+`Invoke-SanitizeHar` by bare name. A path this document writes as `templates/web-api-discovery/...`
 resolves against the repository root when there is one, otherwise against the
 folder this file is in. The working folder must be a git work tree -- run
 `git init` in a bare one first -- because the scrub refuses to write its

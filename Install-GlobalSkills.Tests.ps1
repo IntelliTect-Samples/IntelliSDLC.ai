@@ -131,6 +131,28 @@ Describe 'Publish-GlobalSkills' {
         Join-Path $deploy 'skills/web-api-discovery/templates/web-api-discovery/csharp' | Should -Not -Exist
     }
 
+    It 'never removes a skill folder it did not publish' {
+        Publish-GlobalSkills -SourceRoot $clone.Root -DeployRoot $deploy -InstallerPath $clone.Installer | Out-Null
+        Set-File (Join-Path $deploy 'skills/my-own-skill/SKILL.md') 'mine'
+
+        Publish-GlobalSkills -SourceRoot $clone.Root -DeployRoot $deploy -InstallerPath $clone.Installer | Out-Null
+
+        Get-Content (Join-Path $deploy 'skills/my-own-skill/SKILL.md') | Should -Be 'mine'
+    }
+
+    It 'removes a skill it published once that skill is dropped from the list' {
+        Publish-GlobalSkills -SourceRoot $clone.Root -DeployRoot $deploy -InstallerPath $clone.Installer | Out-Null
+        $saved = $script:SkillSources
+        try {
+            $script:SkillSources = @($saved | Where-Object Name -ne 'next-issue')
+            Publish-GlobalSkills -SourceRoot $clone.Root -DeployRoot $deploy -InstallerPath $clone.Installer | Out-Null
+        }
+        finally { $script:SkillSources = $saved }
+
+        Join-Path $deploy 'skills/next-issue' | Should -Not -Exist
+        Join-Path $deploy 'skills/wrap-up/SKILL.md' | Should -Exist
+    }
+
     It 'refuses to mirror into a folder it did not create' {
         Set-File (Join-Path $deploy 'my-notes.txt') 'precious'
 
@@ -173,6 +195,21 @@ Describe 'Install-SkillLinks' {
 
         $result.Status | Should -Be 'Skipped'
         Get-Content (Join-Path $skillsDir 'wrap-up/SKILL.md') | Should -Be 'my own wrap-up'
+    }
+
+    It 'removes its link to a skill that is no longer deployed, and nothing else' {
+        Install-SkillLinks -DeployRoot $deploy -SkillsDir $skillsDir | Out-Null
+        $elsewhere = Join-Path $tmp 'elsewhere/gone'
+        Set-File (Join-Path $elsewhere 'SKILL.md') 'x'
+        New-Item -ItemType ($IsWindows ? 'Junction' : 'SymbolicLink') -Path (Join-Path $skillsDir 'unrelated') -Target $elsewhere | Out-Null
+        Remove-Item (Join-Path $elsewhere 'SKILL.md'); Remove-Item $elsewhere
+        Remove-Item (Join-Path $deploy 'skills/wrap-up') -Recurse -Force
+
+        $result = Install-SkillLinks -DeployRoot $deploy -SkillsDir $skillsDir | Where-Object Status -eq 'Removed'
+
+        $result.Skill | Should -Be 'wrap-up'
+        Get-Item (Join-Path $skillsDir 'wrap-up') -Force -ErrorAction SilentlyContinue | Should -BeNullOrEmpty
+        (Get-Item (Join-Path $skillsDir 'unrelated') -Force).LinkType | Should -Not -BeNullOrEmpty
     }
 
     It 'repoints a link left from an old deployment, without deleting what it pointed at' {
