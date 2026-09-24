@@ -119,6 +119,11 @@ const STRING_LIMIT = require('buffer').constants.MAX_STRING_LENGTH;
  *   entry-too-large one entry alone exceeds a JavaScript string (streaming
  *                   engine) -- the one size condition streaming does not
  *                   remove
+ *   duplicate-key   `log` appears twice in the root, or `entries` twice in
+ *                   `log`. Valid JSON, but which copy is the capture is
+ *                   ambiguous: `JSON.parse` keeps the last, a scanner the
+ *                   first, and a first `entries: []` would read as zero
+ *                   entries. Refused rather than guessed (streaming engine)
  */
 class HarFormatError extends Error {
     constructor(message, code) {
@@ -137,6 +142,7 @@ const HAR_FORMAT_CODES = Object.freeze([
     'truncated',
     'entry-not-json',
     'entry-too-large',
+    'duplicate-key',
 ]);
 
 /**
