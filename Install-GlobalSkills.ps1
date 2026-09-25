@@ -67,11 +67,16 @@ function Get-MainCheckout {
     #>
     param([Parameter(Mandatory)][string]$Path)
 
-    $commonDir = & git -C $Path rev-parse --path-format=absolute --git-common-dir 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $commonDir) {
+    # In a linked worktree the git dir differs from the common dir, whose
+    # parent is the main tree. Otherwise -- a plain clone or a submodule,
+    # whose common dir lives in the superproject's .git/modules -- this IS
+    # the main tree, and --show-toplevel names it.
+    $dirs = @(& git -C $Path rev-parse --path-format=absolute --git-dir --git-common-dir --show-toplevel 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $dirs.Count -ne 3) {
         throw "'$Path' is not inside a git clone of IntelliSDLC.ai. Clone it, then run this from the clone."
     }
-    return [System.IO.Path]::GetFullPath((Split-Path $commonDir -Parent))
+    $main = if ($dirs[0] -ne $dirs[1]) { Split-Path $dirs[1] -Parent } else { $dirs[2] }
+    return [System.IO.Path]::GetFullPath($main)
 }
 
 function Get-SkillFolders {
@@ -127,11 +132,19 @@ function Install-SkillLinks {
         [pscustomobject]@{ Skill = $name; Status = 'Linked'; Detail = "$link -> $source" }
     }
 
-    # A link into this clone whose skill is gone would otherwise dangle.
-    $owned = [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath($Root)) + [System.IO.Path]::DirectorySeparatorChar
+    # A link into one of this clone's skill folders whose skill is gone would
+    # otherwise dangle. Scoped to those folders, so a link of your own into
+    # some other part of the clone is never touched.
+    # Every folder a listed skill can live in, so a skill dropped from the
+    # list is still recognised as this clone's.
+    $owned = @($script:SkillSources) + $Skills | ForEach-Object {
+        [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Join-Path $Root (Split-Path $_ -Parent)))) +
+            [System.IO.Path]::DirectorySeparatorChar
+    } | Sort-Object -Unique
     foreach ($item in Get-ChildItem -LiteralPath $SkillsDir -Force | Where-Object LinkType) {
-        if ($item.Target -and $item.Target.StartsWith($owned, [System.StringComparison]::OrdinalIgnoreCase) -and
-            -not (Test-Path -LiteralPath $item.Target)) {
+        $target = $item.Target
+        if ($target -and -not (Test-Path -LiteralPath $target) -and
+            ($owned | Where-Object { $target.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })) {
             $item.Delete()
             [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = "'$($item.FullName)' pointed at a skill no longer in this clone" }
         }

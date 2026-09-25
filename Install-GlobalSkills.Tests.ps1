@@ -24,7 +24,7 @@ BeforeAll {
 
     function Remove-TempDir([string]$Dir) {
         # Delete links before their targets so nothing is removed through them.
-        Get-ChildItem $Dir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object LinkType | ForEach-Object { $_.Delete() }
+        Get-ChildItem $Dir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object LinkType -in 'Junction', 'SymbolicLink' | ForEach-Object { $_.Delete() }
         Remove-Item $Dir -Recurse -Force
     }
 }
@@ -39,6 +39,21 @@ Describe 'Get-MainCheckout' {
             git -C $main worktree add -q (Join-Path $main '.worktrees/wt') -b wt 2>$null
 
             Get-MainCheckout (Join-Path $main '.worktrees/wt') | Should -Be ([System.IO.Path]::GetFullPath($main))
+        }
+        finally { Remove-TempDir $tmp }
+    }
+
+    It 'resolves a submodule to its own working tree, not the superproject''s .git' {
+        $tmp = New-TempDir
+        try {
+            $sub = Join-Path $tmp 'sub-src'
+            git init -q $sub
+            git -C $sub -c user.email=t@e -c user.name=t -c commit.gpgsign=false commit -q --allow-empty -m init
+            $super = Join-Path $tmp 'super'
+            git init -q $super
+            git -C $super -c protocol.file.allow=always submodule add -q $sub sub 2>$null
+
+            Get-MainCheckout (Join-Path $super 'sub') | Should -Be ([System.IO.Path]::GetFullPath((Join-Path $super 'sub')))
         }
         finally { Remove-TempDir $tmp }
     }
@@ -125,9 +140,9 @@ Describe 'Install-SkillLinks' {
         Join-Path $skillsDir 'no-such-skill' | Should -Not -Exist
     }
 
-    It 'removes its own link to a skill that is gone, and leaves other links alone' {
+    It 'removes its own link to a skill that is gone, and leaves a link into another part of the clone alone' {
         Install-SkillLinks -Root $root -Skills $skills -SkillsDir $skillsDir | Out-Null
-        $elsewhere = Join-Path $tmp 'elsewhere/gone'
+        $elsewhere = Join-Path $root 'docs/gone'
         Set-File (Join-Path $elsewhere 'SKILL.md')
         New-Item -ItemType ($IsWindows ? 'Junction' : 'SymbolicLink') -Path (Join-Path $skillsDir 'unrelated') -Target $elsewhere | Out-Null
         Remove-Item $elsewhere -Recurse -Force
