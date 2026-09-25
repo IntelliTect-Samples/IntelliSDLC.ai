@@ -193,52 +193,16 @@ Describe 'Test-LsRemoteOutputHasExactBranch' {
     }
 }
 
-Describe 'templates/ sync (issue #270)' {
-    # SKILL.md tells a consuming project to run tools by path under
-    # templates/<skill>/scripts/. Before #270 that tree was on no sync list, so
-    # a consumer received instructions naming files it had never been given.
+Describe 'templates/ retirement (issue #558)' {
+    # web-api-discovery moved to its own repository. The managed-path entry
+    # stays one release so diff-replay deletes the consumers' copies.
 
-    It 'ships templates/ to consumers' {
+    It 'keeps templates/ managed so its deletion reaches consumers' {
         $script:UpstreamManagedPaths | Should -Contain 'templates/'
     }
 
-    It 'withholds the toolkit own node tests' {
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/har/har-literals.test.js' |
-            Should -BeTrue
-    }
-
-    It 'ships the scripts those tests cover' {
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/capture-har.js' |
-            Should -BeFalse
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1' |
-            Should -BeFalse
-    }
-
-    It 'names paths that actually exist -- the carve-out is only meaningful over real files' {
-        # Test-IsUpstreamPrivatePath is a pure path predicate, so the four
-        # assertions above would keep passing against a tree that had been
-        # renamed or regrouped out from under them (issue #279). Pin the paths
-        # to the working tree so a move breaks this test instead of silently
-        # hollowing out the coverage.
-        foreach ($rel in @(
-                'templates/web-api-discovery/scripts/har/har-literals.test.js',
-                'templates/web-api-discovery/scripts/capture/capture-har.js',
-                'templates/web-api-discovery/scripts/capture/Invoke-HarCapture.ps1',
-                'templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl',
-                'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl')) {
-            Test-Path -LiteralPath (Join-Path $PSScriptRoot $rel) |
-                Should -BeTrue -Because "$rel is named by the templates/ sync carve-out tests"
-        }
-    }
-
-    It 'ships a tests/ directory under templates/ -- those are emitted templates, not our tests' {
-        # The generator writes these into the consumer's own solution; treating
-        # them like the toolkit's internal tests would emit a project that
-        # cannot build its test assembly.
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/ClientTests.cs.tmpl' |
-            Should -BeFalse
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl' |
-            Should -BeFalse
+    It 'no longer ships anything under templates/' {
+        Test-Path -LiteralPath (Join-Path $PSScriptRoot 'templates') | Should -BeFalse
     }
 
     It 'still withholds tests under the skills tree' {
@@ -4405,14 +4369,6 @@ Describe 'Test-IsUpstreamPrivatePath' {
         Test-IsUpstreamPrivatePath -Path '.github/ci/PesterGate.psm1' | Should -BeFalse
     }
 
-    It 'is false for a tests directory under templates/, which consumers must receive' {
-        # templates/**/tests/ holds test-project TEMPLATES the generator emits
-        # into the consumer's own solution. Widening the .github rule must not
-        # bleed into this tree.
-        Test-IsUpstreamPrivatePath -Path 'templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl' |
-            Should -BeFalse
-    }
-
     It 'is false for a directory merely containing "tests" in its name' {
         Test-IsUpstreamPrivatePath -Path '.github/agents/mytests/foo.md' | Should -BeFalse
     }
@@ -4546,54 +4502,6 @@ Describe 'Get-UpstreamPrivatePruneOps' {
             '.github/ci/tests/PesterGate.Tests.ps1',
             '.github/instructions/tests/shape.Tests.ps1'
         )
-    }
-
-    It 'prunes an upstream-private node test under templates/' {
-        # $script:UpstreamPrivatePrefixes has always had two entries, but the
-        # prune inventory only ever walked .github -- so a consumer that
-        # received templates/**/*.test.js before that carve-out kept it
-        # forever. Same prune-scope-narrower-than-the-rule defect as #304.
-        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
-            -Seed {
-                New-Item -ItemType Directory -Path templates/web-api-discovery/scripts/har -Force | Out-Null
-                'ship' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.js -NoNewline
-                'test' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.test.js -NoNewline
-            }
-
-        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) | ForEach-Object { $_.Path }
-
-        $pruned | Should -Contain 'templates/web-api-discovery/scripts/har/har-literals.test.js'
-        $pruned | Should -Not -Contain 'templates/web-api-discovery/scripts/har/har-literals.js'
-    }
-
-    It 'prunes an upstream-private test-support helper under templates/' {
-        # A helper the node tests share is test scaffolding, so it is no more
-        # use to a consumer than the tests that call it -- but it is not named
-        # `*.test.js`, so without its own carve-out it would ship (issue #318).
-        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
-            -Seed {
-                New-Item -ItemType Directory -Path templates/web-api-discovery/scripts/har -Force | Out-Null
-                'ship'   | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-literals.js -NoNewline
-                'helper' | Out-File -Encoding utf8 templates/web-api-discovery/scripts/har/har-test-repo.test-support.js -NoNewline
-            }
-
-        $pruned = @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer) | ForEach-Object { $_.Path }
-
-        $pruned | Should -Contain 'templates/web-api-discovery/scripts/har/har-test-repo.test-support.js'
-        $pruned | Should -Not -Contain 'templates/web-api-discovery/scripts/har/har-literals.js'
-    }
-
-    It 'does not prune a test-project template under templates/, which consumers must receive' {
-        # A tests/ directory under templates/ holds test-project TEMPLATES the
-        # generator emits into the consumer's own solution. Widening the prune
-        # inventory to templates/ must not start deleting those.
-        $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
-            -Seed {
-                New-Item -ItemType Directory -Path templates/web-api-discovery/csharp/tests -Force | Out-Null
-                'tmpl' | Out-File -Encoding utf8 templates/web-api-discovery/csharp/tests/Tests.csproj.tmpl -NoNewline
-            }
-
-        @(Get-UpstreamPrivatePruneOps -RepoRoot $fx.Consumer).Count | Should -Be 0
     }
 
     It 'does not prune a shipped file that merely sits beside a private tests directory' {

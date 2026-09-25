@@ -211,13 +211,11 @@ $script:UpstreamManagedPaths = @(
     # keep that carve-out by exact name -- broadening the carve-out to
     # '.githooks/' would stop the guard hooks reaching consumers entirely.
     '.githooks/',
-    # Skill tooling: the capture / scrub / extract scripts and the code
-    # templates a skill invokes by path. SKILL.md documents these as
-    # `templates/<skill>/scripts/...`, so a consumer that never receives them
-    # gets instructions naming files that are not on its disk (issue #270).
-    # The toolkit's own `*.test.js` files are carved out in
-    # $script:UpstreamPrivatePrefixes -- they test this repo's internals and
-    # are noise in a consuming project.
+    # RETIRED (issue #558): web-api-discovery and its tooling moved to its own
+    # repository, https://github.com/IntelliTect-Samples/web-api-discovery.
+    # Kept on the managed list for one release so diff-replay deletes the
+    # consumers' copies -- the same pattern as Consolidate-Tasks.ps1 below.
+    # Remove once consumers have synced past the deletion.
     'templates/',
     # The consumer-owned spec-archive guide. Sync-managed so the same-name
     # scaffold delivers `docs/README.md` on first sync and the file is
@@ -407,19 +405,6 @@ $script:AlwaysLocalPrefixes = @(
 # .github to match, or the delete would never have been emitted.
 $script:UpstreamPrivatePrefixes = @(
     '^\.github/(?:[^/]+/)*(?:tests|fixtures)/',
-    # Node tests for the skill tooling under templates/. They exercise this
-    # repo's own scripts and add nothing to a consuming project, which receives
-    # the scripts themselves but never runs their unit tests (issue #270).
-    # NOTE: deliberately narrower than the rule above -- a `tests/` directory
-    # under templates/ holds test-project TEMPLATES the generator emits into
-    # the consumer's own solution, so it must ship.
-    '^templates/(?:[^/]+/)*[^/]+\.test\.js$',
-    # Helpers those node tests share. They are test scaffolding -- building a
-    # fixture repository, say -- so they are no more use to a consumer than the
-    # tests that call them, but they are not named `*.test.js` and would
-    # otherwise ship. The suffix is the marker; nothing executes them directly,
-    # so the Pester-wrapper coverage rule does not apply to them either.
-    '^templates/(?:[^/]+/)*[^/]+\.test-support\.js$',
     # Root-level Pester suites (issue #409). They test THIS repository's own
     # tooling: a consumer never runs them, gains nothing from them, and cannot
     # tell them apart from its own tests sitting in the same directory.
@@ -552,19 +537,15 @@ function Test-IsUpstreamPrivatePath {
     .SYNOPSIS
         Returns $true if the given repo-relative path is "upstream-private":
         a file inside a 'tests' or 'fixtures' directory at any depth under
-        .github/, a '*.test.js' or '*.test-support.js' beside the skill tooling
-        under templates/, or a root-level '*.Tests.ps1'. Consumer-owned
+        .github/, or a root-level '*.Tests.ps1'. Consumer-owned
         always-local paths are never private -- see .DESCRIPTION.
     .DESCRIPTION
         Upstream-private files test the toolkit's own internals and are never
         shipped to consuming projects. Today that is: Pester tests and HAR/PII
-        sample fixtures anywhere under .github/, node unit tests and their
-        .test-support.js helpers under templates/, and root-level *.Tests.ps1
+        sample fixtures anywhere under .github/, and root-level *.Tests.ps1
         (issue #409).
 
-        Two things are deliberately NOT private. A 'tests' directory under
-        templates/ holds test-project templates the generator emits into the
-        consumer's own solution, so it must ship. And always-local paths trump
+        Always-local paths are deliberately NOT private: they trump
         outright -- Test-IsAlwaysLocalPath is checked FIRST and returns $false
         immediately -- which is what preserves a consumer's own
         .github/skills/project-*/ tests and fixtures, and what exempts
@@ -574,7 +555,7 @@ function Test-IsUpstreamPrivatePath {
 
         Being private stops a file SHIPPING. Whether an existing copy is also
         deleted depends on Get-UpstreamPrivatePruneOps, whose inventory covers
-        .github and templates but deliberately not the repository root -- see
+        .github but deliberately not the repository root -- see
         that function.
 
         The path is matched against $script:UpstreamPrivatePrefixes.
@@ -1598,7 +1579,7 @@ function Get-UpstreamPrivatePruneOps {
         and returns an empty array.
 
         The inventory must cover every tree $script:UpstreamPrivatePrefixes can
-        match -- today .github and templates. Each time it has lagged that rule,
+        match -- today .github. Each time it has lagged that rule,
         consumers have kept files forever: scoped to agents/ and skills/ it
         missed .github/instructions/tests/*.Tests.ps1 (issue #304), and scoped
         to .github alone it missed templates/**/*.test.js (issue #313). Both are
@@ -1622,7 +1603,7 @@ function Get-UpstreamPrivatePruneOps {
     param([string]$RepoRoot = '.')
     Push-Location $RepoRoot
     try {
-        $tracked = & git ls-files -- '.github' 'templates' 2>$null
+        $tracked = & git ls-files -- '.github' 2>$null
     }
     finally { Pop-Location }
     $ops = New-Object System.Collections.Generic.List[hashtable]
