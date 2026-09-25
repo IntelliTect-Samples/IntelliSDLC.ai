@@ -37,7 +37,7 @@ Three categories, and every new file belongs to exactly one:
 
 | Category | Reaches consumers? | Examples |
 |---|---|---|
-| **Shipped** | Yes | `CLAUDE.md`, `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md`, `templates/**` |
+| **Shipped** | Yes | `CLAUDE.md`, `.github/agents/*.agent.md`, `.github/skills/*/SKILL.md` |
 | **Upstream-private** | No | Anything under a `tests/` or `fixtures/` directory in `.github/`; `.github/ci/`; this repo's CI workflow; root-level `*.Tests.ps1` (issue #409) |
 | **Consumer-owned** | Scaffolded once, then theirs | `README.md`, `CLAUDE.project.md`, this file, `run.Tests.ps1`, `docs/specs/`, `docs/designs/` |
 
@@ -73,10 +73,6 @@ alone is protection by *omission* — a later decision to add a `.github` subtre
 to the manifest would silently start shipping test files. The pattern rule holds
 regardless of the manifest.
 
-**Do not widen the upstream-private pattern to a `tests/` directory under
-`templates/`.** That one holds test-project *templates* the generator emits into
-the consumer's own solution; those must keep shipping.
-
 The root is no longer an exception. `^[^/]+\.Tests\.ps1$` is an
 upstream-private prefix as of issue #409, so `Pull-SDLC.ai.Tests.ps1`,
 `Consolidate-Specs.Tests.ps1`, `Consolidate-Tasks.Tests.ps1`,
@@ -100,8 +96,6 @@ explicit filename.
 |---|---|
 | Sync engine + repo tooling | PowerShell 7 (`Pull-SDLC.ai.ps1`, `Cleanup-Worktree.ps1`, `Start-IssueAgent.ps1`, `.github/ci/`) |
 | Tests | Pester 5/6 (`*.Tests.ps1`) -- the only test framework here |
-| Skill tooling under `templates/` | Node 20 (`capture-har.js`, `run-agent.js`), plus `*.test.js` |
-| Emitted code templates | C# / .NET 10 `*.tmpl` files -- generated *into consumers*, never compiled here |
 | CI | GitHub Actions (`.github/workflows/validate-instructions.yml`) |
 
 There is no compiler and no application. `dotnet` appears in CI only to exercise the
@@ -116,7 +110,7 @@ a consumer's repo. All are defined in `Pull-SDLC.ai.ps1`.
 |---|---|---|
 | **Upstream-managed** | `$script:UpstreamManagedPaths` | Upstream owns it; changes are diff-replayed into consumers. An explicit allowlist -- a path not on it is invisible to the sync. |
 | **Consumer-owned** / **always-local** | `$script:AlwaysLocalPaths`, `$script:AlwaysLocalPrefixes` | The consumer owns it. Never overwritten or deleted. **Trumps upstream-managed**, so a consumer-owned file can live inside a managed tree (this file does). |
-| **Upstream-private** | `$script:UpstreamPrivatePrefixes` | Exists upstream, never ships -- filtered out of the op list. Whether an existing copy is also *deleted* is a separate question: `Get-UpstreamPrivatePruneOps` delete-replays the trees it covers (`.github/`, `templates/`), but deliberately not the repository root, so root `*.Tests.ps1` a consumer already holds are swept by hand instead (issue #409). |
+| **Upstream-private** | `$script:UpstreamPrivatePrefixes` | Exists upstream, never ships -- filtered out of the op list. Whether an existing copy is also *deleted* is a separate question: `Get-UpstreamPrivatePruneOps` delete-replays the tree it covers (`.github/`), but deliberately not the repository root, so root `*.Tests.ps1` a consumer already holds are swept by hand instead (issue #409). |
 | **Merge-managed** | `$script:MergePaths` | Union-merged rather than overwritten: the consumer keeps its entries, new upstream entries are appended. Today only `.gitignore`. |
 | **Scaffold** | `$script:TemplateScaffoldMap` | Seeded once from a `*.template` (or same-name) source if absent, then never touched again. How a consumer gets its own `README.md`, `CLAUDE.project.md`, and this file. |
 | **Meta-script** | `$script:MetaScriptPaths` | Managed scripts whose mere presence must not be read as "this consumer already has managed content" -- they arrive via `iwr` to *perform* the bootstrap. |
