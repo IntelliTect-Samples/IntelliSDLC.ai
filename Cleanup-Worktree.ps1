@@ -744,11 +744,20 @@ function Get-BranchContentAccounting {
         return $result
     }
 
+    # A branch whose commits cancel out (add, then delete) changes nothing
+    # when merged, yet none of its commits is on the integration ref. The
+    # merge-tree check below would read that as "merged", so it only runs for
+    # a branch with a real net change (independent review of #551).
+    $base = & git -C $RepoPath merge-base $integration $ref 2>$null
+    $baseExit = $LASTEXITCODE
+    & git -C $RepoPath diff --quiet $base $ref 2>$null
+    $hasNetChange = ($baseExit -eq 0 -and $LASTEXITCODE -eq 1)
+
     # Exit 0 means a clean merge; a conflict (1) or an error answers "no".
     $merged = @(& git -C $RepoPath merge-tree --write-tree $integration $ref 2>$null)
     $mergeExit = $LASTEXITCODE
     $integrationTree = & git -C $RepoPath rev-parse "$integration^{tree}" 2>$null
-    if ($mergeExit -eq 0 -and $merged.Count -gt 0 -and $integrationTree -and $merged[0] -eq $integrationTree) {
+    if ($hasNetChange -and $mergeExit -eq 0 -and $merged.Count -gt 0 -and $integrationTree -and $merged[0] -eq $integrationTree) {
         $result.Accounted = $true
         $result.Check = "merge result (git merge-tree): merging '$Branch' into '$IntegrationRef' changes nothing"
         return $result
@@ -817,6 +826,13 @@ function Invoke-BranchCleanup {
         return $outcome
     }
 
+    # Checked here rather than left to Invoke-Git, so what this reports and
+    # what it does cannot come apart if the two are ever called differently.
+    if ($DryRun) {
+        Write-Host "[dry-run] git branch $flag $Branch" -ForegroundColor DarkGray
+        $outcome.Outcome = "$verb ($why)"
+        return $outcome
+    }
     try {
         Invoke-Git -Arguments @('branch', $flag, $Branch) | Out-Null
         $outcome.Outcome = "$verb ($why)"
