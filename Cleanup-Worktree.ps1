@@ -13,16 +13,31 @@
       2. Unlock the worktree (if locked) and remove it.
       3. Prune any stale worktree metadata.
       4. Switch to the default branch (main) and pull latest.
-      5. Delete the feature branch -- safe delete by default (-d), or force
-         delete (-D) when -Force is specified (for PRs closed without merge).
+      5. Delete the feature branch -- only when its content is accounted for
+         on the default branch (see BRANCH DELETION below), or unconditionally
+         with -Force (for PRs closed without merge).
+      6. Report what happened to each branch, then fail if any was left in
+         place.
 
     SWEEP (-Sweep or -PruneStale):
       After the targeted step (if any), also:
       * `git fetch --all --prune`  -- removes stale remote-tracking refs.
-      * Delete any local branch whose upstream is gone (typical after GitHub
-        squash-merges delete the PR branch). Uses -D because squash-merges
-        leave the local branch "unmerged" from git's perspective.
+      * Delete any local branch whose upstream is gone, through the same
+        content check: a gone upstream means the PR ended, not that it merged.
       * Remove any worktree whose branch no longer exists.
+
+    BRANCH DELETION (both modes, issue #551):
+    This repository allows only rebase merges, which land a branch's changes
+    on main under NEW SHAs, so `git branch -d` -- an ancestry check -- refused
+    after every merge and the script threw with cleanup half done. The fix is
+    not a reflexive -D, which would discard a genuinely unmerged branch just as
+    silently. A branch is deleted only when one of three checks shows its work
+    is on the default branch: ancestry, patch equivalence of every commit
+    (`git cherry`), or a merge that would change nothing (`git merge-tree`).
+    The report names the check that authorised each deletion. Otherwise the
+    branch is LEFT IN PLACE, the commits with no equivalent are named, and the
+    run fails -- after the report, so the summary never reads as a deletion.
+    A branch that is already gone is reported as absent, not as an error.
 
     UNCOMMITTED-WORK SAFETY (both modes, issue #392):
     `git worktree remove` refuses when the worktree is dirty. That refusal
@@ -101,8 +116,9 @@
 .PARAMETER Force
     Authorises DISCARDING WORK, in two places (widened in issue #392):
 
-      1. Force-delete the feature branch with `git branch -D` (discards
-         unmerged commits). Use for PRs that were closed without merging.
+      1. Force-delete the feature branch with `git branch -D` WITHOUT the
+         content check (discards unmerged commits). Use for PRs that were
+         closed without merging. A merged PR needs no -Force (issue #551).
       2. Destroy uncommitted changes to TRACKED files in the worktree being
          removed. Without -Force, an interactive run prompts and shows the
          file list; a non-interactive run FAILS and names -Force as the
@@ -658,6 +674,160 @@ function Assert-WorktreeRemovalConsent {
     }
 }
 
+<#
+.SYNOPSIS
+    Is everything on a branch already on the integration branch -- by CONTENT,
+    not only by ancestry?
+.DESCRIPTION
+    Issue #551. This repository allows only rebase merges, and a rebase merge
+    lands the branch's changes on main under NEW SHAs. `git branch -d` asks
+    the ancestry question, so it refuses after every merge -- for a branch
+    whose work is demonstrably on main. The reflexive answer, `-D`, discards a
+    genuinely unmerged branch just as silently (#392, #370, #371), so the
+    deletion has to be earned. Three checks, tried in order, each answering
+    "accounted for" only when it can show it:
+
+      1. ancestry      -- the branch tip is contained in the integration ref.
+      2. git cherry    -- every branch commit has a patch-equivalent commit on
+                          the integration ref. The rebase-merge case.
+      3. git merge-tree -- merging the branch into the integration ref would
+                          change nothing. Rescues a squash merge, or a branch
+                          that merged main into itself, where no single
+                          commit has an equivalent.
+
+    Every way these can be wrong errs toward REFUSAL: a directory rename
+    defeats patch-id, a later edit on main makes the merge conflict, and a git
+    command that fails answers "unknown", which is never read as "merged".
+.OUTPUTS
+    [pscustomobject] with Exists (bool), Accounted (bool), Check (string: which
+    check authorised the deletion) and Unaccounted (string[]: "sha subject" of
+    each commit with no equivalent).
+#>
+function Get-BranchContentAccounting {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Branch,
+        [Parameter(Mandatory)][string]$IntegrationRef,
+        [string]$RepoPath = (Get-Location).Path
+    )
+
+    $result = [pscustomobject]@{ Exists = $false; Accounted = $false; Check = $null; Unaccounted = @() }
+    $ref = "refs/heads/$Branch"
+
+    & git -C $RepoPath show-ref --verify --quiet $ref 2>$null
+    if ($LASTEXITCODE -ne 0) { return $result }
+    $result.Exists = $true
+
+    $integration = & git -C $RepoPath rev-parse --verify --quiet "$IntegrationRef^{commit}" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $integration) {
+        $result.Unaccounted = @("(cannot resolve '$IntegrationRef', so there is nothing to compare against)")
+        return $result
+    }
+
+    & git -C $RepoPath merge-base --is-ancestor $ref $integration 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $result.Accounted = $true
+        $result.Check = "ancestry: '$Branch' is contained in '$IntegrationRef'"
+        return $result
+    }
+
+    $cherry = @(& git -C $RepoPath cherry -v $integration $ref 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        $result.Unaccounted = @("(git cherry failed, so what is on '$IntegrationRef' is unknown)")
+        return $result
+    }
+    $commits = @($cherry | Where-Object { $_ -match '^[+-] [0-9a-f]{7,}' })
+    $missing = @($commits | Where-Object { $_ -like '+ *' })
+    if ($commits.Count -gt 0 -and $missing.Count -eq 0) {
+        $result.Accounted = $true
+        $result.Check = "patch equivalence (git cherry): $($commits.Count) of $($commits.Count) commit(s) have an equivalent on '$IntegrationRef'"
+        return $result
+    }
+
+    # Exit 0 means a clean merge; a conflict (1) or an error answers "no".
+    $merged = @(& git -C $RepoPath merge-tree --write-tree $integration $ref 2>$null)
+    $mergeExit = $LASTEXITCODE
+    $integrationTree = & git -C $RepoPath rev-parse "$integration^{tree}" 2>$null
+    if ($mergeExit -eq 0 -and $merged.Count -gt 0 -and $integrationTree -and $merged[0] -eq $integrationTree) {
+        $result.Accounted = $true
+        $result.Check = "merge result (git merge-tree): merging '$Branch' into '$IntegrationRef' changes nothing"
+        return $result
+    }
+
+    $result.Unaccounted = @($missing | ForEach-Object {
+        if ($_ -match '^\+ ([0-9a-f]{7,}) ?(.*)$') { "$($Matches[1].Substring(0, 12)) $($Matches[2])" } else { $_ }
+    })
+    return $result
+}
+
+<#
+.SYNOPSIS
+    Deletes a local branch only when that is earned, and says what happened.
+.DESCRIPTION
+    Issue #551. Returns an outcome rather than throwing, so the script can
+    report every branch honestly at the end of the run BEFORE it fails for a
+    refusal -- a run that throws half-way reads, in the hand-off comments
+    sessions write from it, as if the deletion happened.
+
+      branch absent                 -> "already absent", success
+      -Force                        -> `git branch -D`, no check: -Force is the
+                                       operator's authorisation to discard
+      content accounted for         -> deleted, naming the check that allowed it
+      anything unaccounted for      -> LEFT IN PLACE, naming each commit
+      git refuses the delete itself -> LEFT IN PLACE, with git's reason
+#>
+function Invoke-BranchCleanup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Branch,
+        [Parameter(Mandatory)][string]$IntegrationRef,
+        # Explicit for the same reason as Assert-WorktreeCaptureSafe: under
+        # Set-StrictMode an unset script-scope switch throws when dot-sourced.
+        [switch]$Force,
+        [switch]$DryRun
+    )
+
+    $outcome = [pscustomobject]@{ Branch = $Branch; Refused = $false; Outcome = $null }
+    $accounting = Get-BranchContentAccounting -Branch $Branch -IntegrationRef $IntegrationRef
+    $verb = if ($DryRun) { 'would delete' } else { 'deleted' }
+
+    if (-not $accounting.Exists) {
+        $outcome.Outcome = 'already absent -- nothing to delete'
+        return $outcome
+    }
+
+    if ($Force) {
+        $flag = '-D'
+        $why = '-Force: discarded on the operator''s authority, content not checked'
+    }
+    elseif ($accounting.Accounted) {
+        # Ancestry is what -d itself checks, so keep git's own safety net for
+        # that case; the content checks are what earn -D.
+        $flag = if ($accounting.Check -like 'ancestry*') { '-d' } else { '-D' }
+        $why = $accounting.Check
+    }
+    else {
+        $outcome.Refused = $true
+        $outcome.Outcome = (@(
+            "LEFT IN PLACE -- $(@($accounting.Unaccounted).Count) commit(s) have no equivalent on '$IntegrationRef':"
+            ($accounting.Unaccounted | ForEach-Object { "      $_" })
+            "    If '$IntegrationRef' is stale, pull it and re-run. If the PR was closed without merging, or you have"
+            '    verified by hand that the work landed under a different shape, re-run with -Force to discard it.'
+        ) -join [Environment]::NewLine)
+        return $outcome
+    }
+
+    try {
+        Invoke-Git -Arguments @('branch', $flag, $Branch) | Out-Null
+        $outcome.Outcome = "$verb ($why)"
+    }
+    catch {
+        $outcome.Refused = $true
+        $outcome.Outcome = "LEFT IN PLACE -- git refused to delete it: $($_.Exception.Message)"
+    }
+    return $outcome
+}
+
 # Skip the rest of the script when dot-sourced (e.g. by tests). Supersedes
 # the regex-slicing loader the #371 tests used, which cut the file at this
 # banner and re-parsed it -- fragile, and broken by moving the banner.
@@ -811,17 +981,12 @@ if (-not $SkipPull) {
 
 # --- 5. Delete target branch ----------------------------------------------
 
+# Issue #551: earned by a content check, not by ancestry alone -- see
+# Get-BranchContentAccounting. Outcomes are collected and reported at the end,
+# so a refusal never cuts the summary short.
+$branchOutcomes = @()
 if ($hasTarget -and $Branch -and -not $KeepBranch) {
-    $flag = if ($Force) { '-D' } else { '-d' }
-    try {
-        Invoke-Git -Arguments @('branch', $flag, $Branch) | Out-Null
-    }
-    catch {
-        if (-not $Force) {
-            Write-Warning "Safe delete failed for '$Branch'. If the PR was closed without merge, re-run with -Force."
-        }
-        throw
-    }
+    $branchOutcomes += Invoke-BranchCleanup -Branch $Branch -IntegrationRef $DefaultBranch -Force:$Force -DryRun:$DryRun
 }
 
 # --- 6. Sweep mode: prune stale remotes + branches + worktrees ------------
@@ -833,9 +998,10 @@ if ($Sweep) {
     # Fetch + prune removes remote-tracking branches whose remote ref is gone.
     Invoke-Git -Arguments @('fetch', '--all', '--prune') | Out-Null
 
-    # Find local branches whose upstream is "gone" (PR branch deleted on remote,
-    # typical after GitHub squash-merges). Uses -D because squash-merges leave
-    # the local branch "unmerged" from git's perspective.
+    # Find local branches whose upstream is "gone" (PR branch deleted on remote).
+    # A gone upstream says the PR ended, not that it MERGED -- a PR closed
+    # unmerged looks identical -- so each deletion goes through the same
+    # content check as the targeted one (issue #551), not a blanket -D.
     $goneRaw = & git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads 2>$null
     $goneBranches = @()
     foreach ($line in ($goneRaw -split "`r?`n")) {
@@ -865,7 +1031,7 @@ if ($Sweep) {
                 Invoke-Git -Arguments @('worktree', 'unlock', $wt.Path) -IgnoreFailure | Out-Null
                 Invoke-Git -Arguments @('worktree', 'remove', '--force', $wt.Path) -IgnoreFailure | Out-Null
             }
-            Invoke-Git -Arguments @('branch', '-D', $b) -IgnoreFailure | Out-Null
+            $branchOutcomes += Invoke-BranchCleanup -Branch $b -IntegrationRef $DefaultBranch -Force:$Force -DryRun:$DryRun
         }
     }
 
@@ -889,5 +1055,23 @@ if ($Sweep) {
     Invoke-Git -Arguments @('worktree', 'prune') | Out-Null
 }
 
+# --- 7. Report -------------------------------------------------------------
+# Issue #551: sessions quote this in their hand-off comments, so it must say
+# what actually happened to each branch -- and it is printed BEFORE any
+# refusal throws, so a refusal can never read as a deletion.
+
 Write-Host ''
+if ($branchOutcomes.Count -gt 0) {
+    Write-Host 'Local branches:' -ForegroundColor Cyan
+    foreach ($o in $branchOutcomes) {
+        $color = if ($o.Refused) { 'Red' } else { 'Gray' }
+        Write-Host "  $($o.Branch): $($o.Outcome)" -ForegroundColor $color
+    }
+    Write-Host ''
+}
+
+$refused = @($branchOutcomes | Where-Object { $_.Refused })
+if ($refused.Count -gt 0) {
+    throw "Cleanup incomplete: $($refused.Count) local branch(es) LEFT IN PLACE because their work is not accounted for on '$DefaultBranch' -- see above."
+}
 Write-Host 'Cleanup complete.' -ForegroundColor Green
