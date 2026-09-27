@@ -791,3 +791,268 @@ Describe 'Targeted-site path resolution' {
         $raw | Should -Match "'worktree', 'remove', '--force', \`$absWorktree"
     }
 }
+
+# --- Issue #551: rebase-merged branches ------------------------------------
+
+Describe 'Issue #551: the branch delete is earned by a content check' {
+
+    BeforeAll {
+        function New-IntegrationRepo {
+            <# A real repo with a `main` and a feature branch holding two commits. #>
+            $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("cw551-" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $dir | Out-Null
+            & git -C $dir init --quiet --initial-branch=main 2>$null
+            & git -C $dir config user.email 'test@example.com'
+            & git -C $dir config user.name 'Test'
+            & git -C $dir config commit.gpgsign false
+            Set-Content -Path (Join-Path $dir 'base.txt') -Value 'base'
+            & git -C $dir add -A 2>$null
+            & git -C $dir commit --quiet -m 'init' 2>$null
+            & git -C $dir switch --quiet -c fix/1-thing 2>$null
+            Set-Content -Path (Join-Path $dir 'a.txt') -Value 'a'
+            & git -C $dir add -A 2>$null
+            & git -C $dir commit --quiet -m 'feat: add a' 2>$null
+            Set-Content -Path (Join-Path $dir 'b.txt') -Value 'b'
+            & git -C $dir add -A 2>$null
+            & git -C $dir commit --quiet -m 'feat: add b' 2>$null
+            & git -C $dir switch --quiet main 2>$null
+            return $dir
+        }
+
+        function Invoke-RebaseMerge {
+            <# What GitHub's rebase merge does: the same changes, NEW SHAs, on main. #>
+            param([string]$Repo, [string]$Branch = 'fix/1-thing')
+            # An unrelated commit first, so the replayed commits cannot keep their SHAs.
+            Set-Content -Path (Join-Path $Repo 'other.txt') -Value 'other'
+            & git -C $Repo add -A 2>$null
+            & git -C $Repo commit --quiet -m 'chore: unrelated work on main' 2>$null
+            & git -C $Repo cherry-pick "main..$Branch" 2>$null | Out-Null
+        }
+
+        function Invoke-CleanupScript {
+            <# Runs the REAL script body in the temp repo; its side effects stay there. #>
+            param([string]$Repo, [string[]]$Arguments)
+            Push-Location $Repo
+            try {
+                $out = & pwsh -NoProfile -NonInteractive -File $script:ScriptPath @Arguments 2>&1 |
+                    ForEach-Object { "$_" }
+                return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = ($out -join "`n") }
+            }
+            finally { Pop-Location }
+        }
+
+        function Test-BranchExist {
+            param([string]$Repo, [string]$Branch)
+            & git -C $Repo show-ref --verify --quiet "refs/heads/$Branch"
+            return ($LASTEXITCODE -eq 0)
+        }
+
+        function New-BareRemote {
+            param([string]$Repo)
+            $remote = Join-Path ([System.IO.Path]::GetTempPath()) ("cw551r-" + [guid]::NewGuid().ToString('N'))
+            & git init --quiet --bare $remote 2>$null
+            & git -C $Repo remote add origin $remote
+            & git -C $Repo push --quiet -u origin main fix/1-thing 2>$null
+            return $remote
+        }
+    }
+
+    Context 'end to end' {
+
+        It 'deletes a REBASE-merged branch without an error, and says which check authorised it' {
+            $repo = New-IntegrationRepo
+            try {
+                Invoke-RebaseMerge -Repo $repo
+                # Precondition, so the test cannot pass vacuously: git's own
+                # ancestry check really does refuse this branch.
+                & git -C $repo merge-base --is-ancestor fix/1-thing main
+                $LASTEXITCODE | Should -Not -Be 0 -Because 'the rebase rewrote the SHAs'
+
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull')
+
+                $r.ExitCode | Should -Be 0 -Because $r.Output
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeFalse
+                $r.Output | Should -Match 'git cherry'
+                $r.Output | Should -Match 'Cleanup complete'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'REFUSES a genuinely unmerged branch, keeps it, and names the commits not on main' {
+            $repo = New-IntegrationRepo
+            try {
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull')
+
+                $r.ExitCode | Should -Not -Be 0
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeTrue
+                $r.Output | Should -Match 'feat: add a'
+                $r.Output | Should -Match 'feat: add b'
+                $r.Output | Should -Match 'LEFT IN PLACE'
+                $r.Output | Should -Not -Match 'Cleanup complete'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'refuses a PARTIALLY merged branch, naming only the commit that did not land' {
+            $repo = New-IntegrationRepo
+            try {
+                & git -C $repo cherry-pick fix/1-thing~1 2>$null | Out-Null   # only 'add a' lands
+
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull')
+
+                $r.ExitCode | Should -Not -Be 0
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeTrue
+                $r.Output | Should -Match '[0-9a-f]{7,} feat: add b'
+                $r.Output | Should -Not -Match '[0-9a-f]{7,} feat: add a'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'reports an ALREADY-deleted branch as absent, and succeeds' {
+            $repo = New-IntegrationRepo
+            try {
+                Invoke-RebaseMerge -Repo $repo
+                & git -C $repo branch -D fix/1-thing 2>$null | Out-Null
+
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull')
+
+                $r.ExitCode | Should -Be 0 -Because $r.Output
+                $r.Output | Should -Match 'already absent'
+                $r.Output | Should -Match 'Cleanup complete'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still force-deletes an unmerged branch under -Force, because -Force is the authorisation' {
+            $repo = New-IntegrationRepo
+            try {
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull', '-Force')
+
+                $r.ExitCode | Should -Be 0 -Because $r.Output
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeFalse
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'deletes nothing under -DryRun, but says what it would do' {
+            $repo = New-IntegrationRepo
+            try {
+                Invoke-RebaseMerge -Repo $repo
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Branch', 'fix/1-thing', '-SkipPull', '-DryRun')
+
+                $r.ExitCode | Should -Be 0 -Because $r.Output
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeTrue
+                $r.Output | Should -Match 'would delete'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'sweep leaves an UNMERGED gone-upstream branch in place rather than force-deleting it' {
+            $repo = New-IntegrationRepo
+            $remote = New-BareRemote -Repo $repo
+            try {
+                # PR closed, remote branch deleted, never merged.
+                & git -C $repo push --quiet origin --delete fix/1-thing 2>$null
+
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Sweep', '-SkipPull')
+
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeTrue -Because $r.Output
+                $r.Output | Should -Match '[0-9a-f]{7,} feat: add b'
+                $r.Output | Should -Match 'LEFT IN PLACE'
+            }
+            finally {
+                Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item $remote -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'sweep still deletes a REBASE-merged gone-upstream branch' {
+            $repo = New-IntegrationRepo
+            $remote = New-BareRemote -Repo $repo
+            try {
+                Invoke-RebaseMerge -Repo $repo
+                & git -C $repo push --quiet origin main 2>$null
+                & git -C $repo push --quiet origin --delete fix/1-thing 2>$null
+
+                $r = Invoke-CleanupScript -Repo $repo -Arguments @('-Sweep', '-SkipPull')
+
+                $r.ExitCode | Should -Be 0 -Because $r.Output
+                Test-BranchExist -Repo $repo -Branch 'fix/1-thing' | Should -BeFalse
+            }
+            finally {
+                Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue
+                Remove-Item $remote -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    Context 'Get-BranchContentAccounting' {
+
+        It 'reports a missing branch as not existing' {
+            $repo = New-IntegrationRepo
+            try {
+                $a = Get-BranchContentAccounting -Branch 'no/such-branch' -IntegrationRef main -RepoPath $repo
+                $a.Exists | Should -BeFalse
+                $a.Accounted | Should -BeFalse
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'accounts for an ancestry-merged branch by ancestry' {
+            $repo = New-IntegrationRepo
+            try {
+                & git -C $repo merge --quiet --ff-only fix/1-thing 2>$null
+                $a = Get-BranchContentAccounting -Branch 'fix/1-thing' -IntegrationRef main -RepoPath $repo
+                $a.Accounted | Should -BeTrue
+                $a.Check | Should -Match 'ancestry'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'accounts for a rebase-merged branch by patch equivalence' {
+            $repo = New-IntegrationRepo
+            try {
+                Invoke-RebaseMerge -Repo $repo
+                $a = Get-BranchContentAccounting -Branch 'fix/1-thing' -IntegrationRef main -RepoPath $repo
+                $a.Accounted | Should -BeTrue
+                $a.Check | Should -Match 'git cherry'
+                $a.Check | Should -Match '2 of 2'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'accounts for a SQUASH-merged branch by merge result, where git cherry sees no equivalent' {
+            $repo = New-IntegrationRepo
+            try {
+                & git -C $repo merge --quiet --squash fix/1-thing 2>$null | Out-Null
+                & git -C $repo commit --quiet -m 'feat: a and b (squashed)' 2>$null
+                $a = Get-BranchContentAccounting -Branch 'fix/1-thing' -IntegrationRef main -RepoPath $repo
+                $a.Accounted | Should -BeTrue
+                $a.Check | Should -Match 'merge-tree'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'lists every unaccounted commit by sha and subject' {
+            $repo = New-IntegrationRepo
+            try {
+                $a = Get-BranchContentAccounting -Branch 'fix/1-thing' -IntegrationRef main -RepoPath $repo
+                $a.Exists | Should -BeTrue
+                $a.Accounted | Should -BeFalse
+                @($a.Unaccounted).Count | Should -Be 2
+                ($a.Unaccounted -join "`n") | Should -Match '[0-9a-f]{7,} feat: add a'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'treats an integration ref git cannot resolve as unaccounted, not as merged' {
+            $repo = New-IntegrationRepo
+            try {
+                $a = Get-BranchContentAccounting -Branch 'fix/1-thing' -IntegrationRef 'no-such-main' -RepoPath $repo
+                $a.Exists | Should -BeTrue
+                $a.Accounted | Should -BeFalse
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
