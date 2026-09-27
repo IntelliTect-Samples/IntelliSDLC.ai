@@ -1033,6 +1033,27 @@ Describe 'Issue #551: the branch delete is earned by a content check' {
             finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
         }
 
+        It 'refuses a branch whose commits cancel out, rather than reading "merge changes nothing" as merged' {
+            # Independent review (PR for #551): add-then-delete nets to no
+            # change, so a merge would change nothing -- but none of these
+            # commits is on main, and git's own -d refuses. Unknown is not empty.
+            $repo = New-IntegrationRepo
+            try {
+                & git -C $repo switch --quiet -c fix/2-netzero 2>$null
+                Set-Content -Path (Join-Path $repo 'tmp.txt') -Value 'draft'
+                & git -C $repo add -A 2>$null
+                & git -C $repo commit --quiet -m 'wip: draft' 2>$null
+                & git -C $repo rm --quiet tmp.txt 2>$null
+                & git -C $repo commit --quiet -m 'wip: drop draft' 2>$null
+                & git -C $repo switch --quiet main 2>$null
+
+                $a = Get-BranchContentAccounting -Branch 'fix/2-netzero' -IntegrationRef main -RepoPath $repo
+                $a.Accounted | Should -BeFalse
+                ($a.Unaccounted -join "`n") | Should -Match 'wip: drop draft'
+            }
+            finally { Remove-Item $repo -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
         It 'lists every unaccounted commit by sha and subject' {
             $repo = New-IntegrationRepo
             try {
