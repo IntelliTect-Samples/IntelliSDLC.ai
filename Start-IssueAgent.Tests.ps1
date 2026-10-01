@@ -980,3 +980,241 @@ Describe 'Start-IssueAgent.ps1 command-line contract' {
         $helpText | Should -Match '(?s)-NewTab.*dispatch|dispatch.*new tab'
     }
 }
+
+Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #571)' {
+    # These exercise MAIN, which dot-sourcing cannot reach (the script returns
+    # early when $MyInvocation.InvocationName is '.'). That matters here for the
+    # same reason it did for run.ps1's argument nesting: the defect lives at a
+    # CALL SITE, not inside any function, so a suite of function-level tests can
+    # be entirely green while the script still resolves the wrong repository.
+    #
+    # Pester's Mock reaches a script invoked with `& $path` (verified: an
+    # over-narrow Get-Command mock surfaced inside the script's own PATH
+    # preflight), so `gh` and `Start-Process` are observed directly -- no
+    # child-scope shim files needed.
+    #
+    # The launcher itself is NOT copied to a fixture: the bug is "the script
+    # lives in repository A while the caller stands in repository B", and this
+    # checkout already is a real repository distinct from any temp fixture.
+
+    BeforeAll {
+        $script:Launcher = Join-Path $PSScriptRoot 'Start-IssueAgent.ps1'
+
+        # The launcher's own repository, the anchor the defect wrongly used.
+        $script:LauncherRoot = [IO.Path]::GetFullPath(
+            (Split-Path (
+                Invoke-GitWithoutOverrides -ArgumentList @(
+                    '-C', $PSScriptRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir') |
+                    Select-Object -First 1).Trim() -Parent))
+
+        function New-RepoFixture {
+            <#  A real repository in a temp directory with a real origin remote.
+                Real git, no mocks: the premise under test is what git actually
+                reports from a subdirectory and from a linked worktree. #>
+            param([string]$Slug, [switch]$NoOrigin, [switch]$NotARepo)
+
+            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            if ($NotARepo) { return $root }
+
+            git init -q -b main $root 2>&1 | Out-Null
+            if (-not $NoOrigin) {
+                git -C $root remote add origin "https://github.com/$Slug.git" 2>&1 | Out-Null
+            }
+            git -C $root -c user.email=test@example.com -c user.name=Test `
+                commit -q --allow-empty -m init 2>&1 | Out-Null
+            return $root
+        }
+
+        function Get-RepoRootFromGit {
+            # git's own answer on both sides of every path assertion, so an 8.3
+            # short path or temp-directory casing cannot skew the comparison.
+            param([string]$Path)
+            return [IO.Path]::GetFullPath(
+                (git -C $Path rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+        }
+
+        function Remove-RepoFixture {
+            param([string]$Path)
+            if ($Path -and (Test-Path $Path)) {
+                git -C $Path worktree prune 2>&1 | Out-Null
+                Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:originalWtSession = $env:WT_SESSION
+        $script:originalClaudeCode = $env:CLAUDECODE
+        # Out-of-pane dispatch, so `claude` is never executed: the working
+        # directory is observed from the launch message and the encoded command
+        # instead of from a Push-Location around a live session.
+        $env:WT_SESSION = $null
+        $env:CLAUDECODE = $null
+    }
+
+    AfterEach {
+        $env:WT_SESSION = $script:originalWtSession
+        $env:CLAUDECODE = $script:originalClaudeCode
+    }
+
+    It 'fetches the issue from the repository the caller is standing in, not the launcher''s own checkout' {
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { & $script:Launcher 7 6>&1 | Out-Null } finally { Pop-Location }
+
+            # The value after --repo, not a joined argv: the launcher passes
+            # `--json number,title`, which PowerShell binds as an ARRAY, so
+            # ($args -join ' ') renders that element as "System.Object[]" and no
+            # whole-vector string can ever match. Asserting the --repo value is
+            # also the behavior this test is about.
+            Should -Invoke gh -Times 1 -ParameterFilter {
+                $i = [Array]::IndexOf($args, '--repo')
+                $i -ge 0 -and $args[$i + 1] -eq 'caller-owner/caller-repo'
+            }
+        }
+        finally { Remove-RepoFixture $caller }
+    }
+
+    It 'starts the session in the caller''s repository, not the launcher''s' {
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = Get-RepoRootFromGit $caller
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { $out = & $script:Launcher 7 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String) | Should -Match ([regex]::Escape(" in $expected"))
+            $expected | Should -Not -Be $script:LauncherRoot -Because 'the fixture must differ from the launcher''s own repo or the assertion is vacuous'
+        }
+        finally { Remove-RepoFixture $caller }
+    }
+
+    It 'hands the session the caller''s repository as its working directory' {
+        # The launch message and the directory the session actually starts in are
+        # two different things; this asserts the second, from the encoded command.
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = Get-RepoRootFromGit $caller
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { & $script:Launcher 7 6>&1 | Out-Null } finally { Pop-Location }
+
+            Should -Invoke Start-Process -Times 1 -ParameterFilter {
+                $encodedIndex = [Array]::IndexOf($ArgumentList, '-EncodedCommand')
+                if ($encodedIndex -lt 0) { return $false }
+                $decoded = [Text.Encoding]::Unicode.GetString(
+                    [Convert]::FromBase64String($ArgumentList[$encodedIndex + 1]))
+                $decoded -match [regex]::Escape("Set-Location '$expected'")
+            }
+        }
+        finally { Remove-RepoFixture $caller }
+    }
+
+    It 'resolves the caller''s repository root from a deep subdirectory of it' {
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = Get-RepoRootFromGit $caller
+            $deep = Join-Path $caller 'src/nested/deep'
+            New-Item -ItemType Directory -Path $deep -Force | Out-Null
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $deep
+            try { $out = & $script:Launcher 7 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String) | Should -Match ([regex]::Escape(" in $expected"))
+            Should -Invoke gh -Times 1 -ParameterFilter {
+                $i = [Array]::IndexOf($args, '--repo')
+                $i -ge 0 -and $args[$i + 1] -eq 'caller-owner/caller-repo'
+            }
+        }
+        finally { Remove-RepoFixture $caller }
+    }
+
+    It 'launches in the main worktree root when the caller is inside a linked worktree of their repo' {
+        # Issue #275's rule, re-anchored: @dev-loop's `git worktree add
+        # .worktrees/<n>-<name>` is relative, so starting a session inside a
+        # linked worktree nests a worktree in a worktree. An implementation that
+        # used --show-toplevel on the current directory passes every other test
+        # here and fails only this one.
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $linked = $null
+        try {
+            $expected = Get-RepoRootFromGit $caller
+            $linked = Join-Path ([IO.Path]::GetTempPath()) ('sia-571-wt-' + [guid]::NewGuid().ToString('N'))
+            git -C $caller worktree add -q -b feature $linked main 2>&1 | Out-Null
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $linked
+            try { $out = & $script:Launcher 7 6>&1 } finally { Pop-Location }
+
+            $rendered = $out | Out-String
+            $rendered | Should -Match ([regex]::Escape(" in $expected"))
+            $rendered | Should -Not -Match ([regex]::Escape($linked))
+        }
+        finally {
+            if ($linked -and (Test-Path $linked)) { Remove-Item $linked -Recurse -Force -ErrorAction SilentlyContinue }
+            Remove-RepoFixture $caller
+        }
+    }
+
+    It 'uses -Repo for the issue lookup while still launching in the caller''s repository' {
+        # Decision: a -Repo that disagrees with the current directory is accepted
+        # silently -- no prompt, no refusal. The launch message prints both.
+        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = Get-RepoRootFromGit $caller
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { $out = & $script:Launcher 7 -Repo 'other-owner/other-repo' 6>&1 } finally { Pop-Location }
+
+            Should -Invoke gh -Times 1 -ParameterFilter {
+                $i = [Array]::IndexOf($args, '--repo')
+                $i -ge 0 -and $args[$i + 1] -eq 'other-owner/other-repo'
+            }
+            ($out | Out-String) | Should -Match ([regex]::Escape(" in $expected"))
+        }
+        finally { Remove-RepoFixture $caller }
+    }
+
+    It 'falls back to the launcher''s own checkout when the caller is not in a git repository' {
+        # -Repo so the assertion never depends on this checkout having an origin.
+        $outside = New-RepoFixture -NotARepo
+        try {
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $outside
+            try { $out = & $script:Launcher 7 -Repo 'o/r' 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String) | Should -Match ([regex]::Escape(" in $script:LauncherRoot"))
+        }
+        finally { Remove-RepoFixture $outside }
+    }
+
+    It 'falls back instead of crashing when the caller stands in a non-FileSystem location' {
+        # Set-Location Env:\ leaves $PWD.ProviderPath EMPTY (measured -- also for
+        # Function:\ and Variable:\), and `git -C ''` is a parameter-binding
+        # failure, fatal under $ErrorActionPreference = 'Stop'. So this must not
+        # throw, and must land on the launcher's own checkout.
+        Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+        Mock -CommandName Start-Process -MockWith { }
+
+        Push-Location Env:\
+        try { $out = & $script:Launcher 7 -Repo 'o/r' 6>&1 } finally { Pop-Location }
+
+        ($out | Out-String) | Should -Match ([regex]::Escape(" in $script:LauncherRoot"))
+    }
+}
