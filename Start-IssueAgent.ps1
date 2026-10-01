@@ -467,6 +467,52 @@ function Get-GitCommonDir {
     return ($output | Select-Object -First 1)
 }
 
+function Resolve-GitCommonDir {
+    <#
+    .SYNOPSIS
+        The common git directory of the repository to act on: the current
+        directory's, falling back to the script's own checkout. '' when neither
+        is in a repository.
+    .DESCRIPTION
+        Which repository wins, and the caller's current directory does. Invoked
+        by absolute path from another repository, the launcher must fetch *that*
+        repository's issue and start the session there rather than in its own
+        checkout. Any subdirectory works -- `git -C <subdir> rev-parse` walks up
+        -- and so does any linked worktree, because --git-common-dir answers with
+        the main worktree's .git from every tree of the repository.
+
+        -ScriptRoot is only the fallback, for a current directory that is not in
+        a repository at all (a home directory, a scratch folder). That stays
+        silent: it was the sole behavior before there was any choice to make.
+
+        Where Get-GitCommonDir asks git about *one* path, this decides *which*
+        path to ask about. Asking about -ScriptRoot happens only when the current
+        directory produced nothing, so the common case costs one git call.
+
+        -CurrentDirectory is allowed to be empty because a caller standing in a
+        non-FileSystem provider location (Env:\, Function:\, Variable:\) has an
+        empty $PWD.ProviderPath, and handing that to `git -C` is a
+        parameter-binding failure -- fatal under $ErrorActionPreference 'Stop' --
+        rather than something Get-GitCommonDir could turn into a fallback. A
+        provider path that merely does not exist (HKLM:\ gives
+        'HKEY_LOCAL_MACHINE\') needs no special case: git exits non-zero and
+        Get-GitCommonDir already yields ''.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$CurrentDirectory,
+        [Parameter(Mandatory)][string]$ScriptRoot
+    )
+
+    if ($CurrentDirectory -and $CurrentDirectory.Trim()) {
+        $fromCurrent = Get-GitCommonDir -Path $CurrentDirectory
+        if ($fromCurrent -and $fromCurrent.Trim()) { return $fromCurrent }
+    }
+
+    return (Get-GitCommonDir -Path $ScriptRoot)
+}
+
 function Get-LaunchDirectory {
     <#
     .SYNOPSIS
@@ -917,6 +963,14 @@ if (-not $PSBoundParameters.ContainsKey('PermissionMode')) {
     $PermissionMode = Get-DefaultPermissionMode -ParameterSetName $PSCmdlet.ParameterSetName
 }
 
+# The CALLER's repository, not this script's: resolved from the current
+# directory -- any subdirectory, any linked worktree -- with this script's own
+# checkout as the silent fallback when the current directory is not in a
+# repository at all. $PWD.ProviderPath, not .Path: a PSDrive-mapped or UNC
+# location has to reach `git -C` as the real path it stands for.
+$startDir = Get-LaunchDirectory -ScriptRoot $PSScriptRoot -GitCommonDir (
+    Resolve-GitCommonDir -CurrentDirectory $PWD.ProviderPath -ScriptRoot $PSScriptRoot)
+
 if ($PSCmdlet.ParameterSetName -eq 'New') {
     # No gh/git call at all -- @plan resolves the repo and files the issue itself.
     $description = $New
@@ -930,15 +984,14 @@ else {
         exit 1
     }
 
-    # $PSScriptRoot, not the current directory: the same repository the session
-    # is launched into (see Get-GitHubRepoSlug / Get-LaunchDirectory).
-    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug -Path $PSScriptRoot }
+    # Read FROM the launch directory, so the issue and the session can never name
+    # two different repositories -- one anchor by construction rather than two
+    # lookups that have to be passed the same argument.
+    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug -Path $startDir }
     $issue = Get-GitHubIssue -Number $IssueNumber -RepoSlug $repoSlug
     $name = New-IssueAgentName -Issue $issue -MaxLength $maxNameLength
     $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber -Title ([string]$issue.title) -Context $Context
 }
-
-$startDir = Get-LaunchDirectory -GitCommonDir (Get-GitCommonDir -Path $PSScriptRoot) -ScriptRoot $PSScriptRoot
 
 Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
 # [ref], not a captured return value: capturing this call would redirect the
