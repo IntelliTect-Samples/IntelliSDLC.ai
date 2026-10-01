@@ -2019,14 +2019,21 @@ function Resolve-GitHooksDirectory {
     <#
     .SYNOPSIS
         Returns the absolute directory git runs hooks from for $RepoRoot:
-        core.hooksPath when configured, otherwise <git-dir>/hooks. $null when
-        $RepoRoot is not a git repository.
+        core.hooksPath when configured, otherwise <git-common-dir>/hooks. $null
+        when $RepoRoot is not a git repository.
     .DESCRIPTION
         A relative core.hooksPath is resolved against $RepoRoot, which is how
         git treats it for a non-bare repository ("relative to the directory
         where the hooks are run from", i.e. the top level of the working tree).
         In a linked worktree that top level is the worktree's own, which is why
         a consumer's `.githooks` setting keeps working inside .worktrees/.
+
+        The default location is the COMMON git dir's hooks, not the per-worktree
+        one -- `--git-common-dir`, not `--git-dir`. Hooks are not per-worktree:
+        a commit made inside a linked worktree runs <git-common-dir>/hooks and
+        ignores <git-dir>/hooks entirely. Verified by putting the same refusing
+        pre-commit in each and committing from the worktree -- only the common
+        one fired (review finding on #567).
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -2041,9 +2048,9 @@ function Resolve-GitHooksDirectory {
         }
     }
     finally { Pop-Location }
-    $gitDir = Resolve-GitRevParsePath -RepoRoot $RepoRoot -Flag '--git-dir'
-    if ([string]::IsNullOrWhiteSpace($gitDir)) { return $null }
-    return (Join-Path $gitDir 'hooks')
+    $commonDir = Resolve-GitRevParsePath -RepoRoot $RepoRoot -Flag '--git-common-dir'
+    if ([string]::IsNullOrWhiteSpace($commonDir)) { return $null }
+    return (Join-Path $commonDir 'hooks')
 }
 
 function Test-SdlcGuardHookWouldRefuse {
@@ -2114,8 +2121,11 @@ function Test-SdlcGuardHookWouldRefuse {
         # branch, so a repository whose protected branch is named something else
         # is STILL refused on main. Predict both rather than only the branch this
         # run was pointed at (review finding on #567).
+        # -cin, not -in: the hook compares in bash, which is case-sensitive, and
+        # so are git ref names. A branch literally named 'Main' is NOT refused by
+        # the hook, so predicting that it is would reroute for nothing.
         $refused = @($ProtectedBranch, 'main') | Where-Object { $_ } | Select-Object -Unique
-        if ($branch -in $refused) {
+        if ($branch -cin $refused) {
             $result.Refuses = $true
             $result.Reason = "the workflow guard hook refuses a commit on '$branch' ($hookPath)"
         }
