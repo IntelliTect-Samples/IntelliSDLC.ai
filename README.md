@@ -24,10 +24,13 @@ The script auto-detects the from-zero state (no `.sdlc-ai-sync.json`, no
 prior `chore(sdlc): sync` commit, no upstream-managed files) and proceeds
 without prompting. **Every sync, the first one included, routes through an
 auto-worktree (`.worktrees/sdlc-sync`) + PR for review.** The one exception
-is a repository the worktree path cannot deliver to -- no commit for a
-worktree to branch from, or no `origin` to push to (see **B. Brand-new
-project** below) -- where the sync commits on the current branch instead. Pass `-CommitOnMain` to force
-direct-on-`main` anyway, or `-CommitOnMain:$false` to forbid it.
+is a **first** sync into a repository the worktree path cannot deliver to --
+no commit for a worktree to branch from, or no `origin` to push to (see
+**B. Brand-new project** below) -- where the sync commits on the current
+branch instead. A steady-state sync never falls back on its own: it routes to
+the worktree either way, and warns when the branch cannot be pushed. Pass
+`-CommitOnMain` to force direct-on-`main` anyway, or `-CommitOnMain:$false`
+to forbid it.
 
 The first sync is not treated as an unreviewable onboarding commit, because
 it delivers `.githooks/pre-commit`: on a repository that had already run
