@@ -1875,23 +1875,36 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
     }
 
-    It 'commits directly on main at bootstrap by default (no flag, no state file)' {
-        # Bootstrap state: no .sdlc-ai-sync.json, no prior sync commit.
-        # First-time onboarding should commit on main without any flag.
+    It 'routes a bootstrap sync to the worktree when origin is configured (issue #567)' {
+        # Bootstrap state: no .sdlc-ai-sync.json, no prior sync commit -- and an
+        # origin to open the PR against. Bootstrap state alone NO LONGER enables
+        # commit-on-main: a first sync is reviewable like any other, and routing it
+        # through the worktree is what stops the sync tripping over the guard hook
+        # it installs (issue #567). Commit-on-main is now reserved for the states
+        # where the worktree path cannot deliver at all -- no commits yet, or no
+        # origin to push to (both covered below).
         $fx = New-DiffReplayFixture -Root $script:fixtureRoot `
             -Seed { 'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline } `
             -Tweak { 'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline }
+        $origin = Join-Path (Split-Path $fx.Consumer -Parent) 'origin.git'
+        git init --bare -q -b main $origin
         Push-Location $fx.Consumer
         try {
             git checkout -q main
-            # Origin is present -- bootstrap state alone is enough to enable
-            # commit-on-main; no empty-origin carve-out needed.
-            git remote add origin https://example.invalid/owner/repo.git
+            git remote add origin $origin
+            git push -q origin main
         } finally { Pop-Location }
 
-        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+        # -NoAutoPR only skips the `gh pr create` call; the route under test is the
+        # worktree + commit, which is what the guard hook accepts.
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
         $rc | Should -Be 0
-        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+        Push-Location $fx.Consumer
+        try {
+            (git log -1 --pretty=%s main).Trim() | Should -Be 'seed' -Because 'main must not carry the sync commit'
+        } finally { Pop-Location }
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
     }
 
     It 'allows direct commit on main when no origin is configured (brand-new project, bootstrap state)' {
@@ -1923,6 +1936,214 @@ Describe 'Invoke-PullSDLC protected-branch guard' {
         $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoWorktree -CommitOnMain:$false
         $rc | Should -Be 3
         (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'a'
+    }
+}
+
+function global:New-GuardHookSyncFixture {
+    <#
+    .SYNOPSIS
+        Builds an upstream + consumer pair where the consumer activated the
+        upstream guard hook (core.hooksPath -> .githooks) BEFORE its first
+        sync -- which is exactly what CLAUDE.md -> "Before ANY Commit" tells
+        consumers to do (issue #567).
+    .DESCRIPTION
+        The consumer has one seed commit, sits on main in bootstrap state (no
+        .sdlc-ai-sync.json, no prior sync commit) and has NO .githooks
+        directory of its own: the guard hook arrives with the sync, into the
+        directory core.hooksPath already points at.
+
+        -WithOrigin adds a local bare origin (with main pushed) so the
+        auto-worktree path has somewhere to push. -HooksPath aims
+        core.hooksPath somewhere other than the upstream-managed .githooks/.
+        -NoHooksPath leaves hooks unconfigured, so the synced hook file is
+        inert.
+    .OUTPUTS
+        @{ Upstream; Consumer; Origin }
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [switch]$WithOrigin,
+        [switch]$NoHooksPath,
+        [string]$HooksPath = '.githooks',
+        [string]$Branch = 'main'
+    )
+
+    $sourceHook = Join-Path $PSScriptRoot '.githooks/pre-commit'
+    Test-Path -LiteralPath $sourceHook | Should -BeTrue -Because 'the upstream pre-commit hook must be shipped'
+
+    $upstream = Join-Path $Root 'upstream'
+    $consumer = Join-Path $Root 'consumer'
+    New-Item -ItemType Directory -Path $upstream, $consumer -Force | Out-Null
+
+    Push-Location $upstream
+    try {
+        git init -q -b main
+        git config user.email u@u.u
+        git config user.name u
+        'a' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+        New-Item -ItemType Directory -Path .githooks -Force | Out-Null
+        Copy-Item -LiteralPath $sourceHook -Destination .githooks/pre-commit
+        git add -A | Out-Null
+        git commit -q -m anchor
+        'b' | Out-File -Encoding utf8 CLAUDE.md -NoNewline
+        git add -A | Out-Null
+        git commit -q -m 'upstream change'
+    } finally { Pop-Location }
+
+    $origin = $null
+    Push-Location $consumer
+    try {
+        git init -q -b $Branch
+        git config user.email c@c.c
+        git config user.name c
+        'seed' | Out-File -Encoding utf8 seed.txt -NoNewline
+        git add -A | Out-Null
+        git commit -q -m seed
+        if (-not $NoHooksPath) { git config core.hooksPath $HooksPath }
+        git remote add sdlc.ai $upstream
+        git fetch sdlc.ai --quiet 2>$null | Out-Null
+        if ($WithOrigin) {
+            $origin = Join-Path $Root 'origin.git'
+            git init --bare -q -b $Branch $origin
+            git remote add origin $origin
+            git push -q origin $Branch
+        }
+    } finally { Pop-Location }
+
+    return @{ Upstream = $upstream; Consumer = $consumer; Origin = $origin }
+}
+
+Describe 'Test-IsSdlcGuardHook' {
+
+    It 'recognizes the hook this repository ships' {
+        $content = Get-Content -LiteralPath (Join-Path $PSScriptRoot '.githooks/pre-commit') -Raw
+        Test-IsSdlcGuardHook -Content $content | Should -BeTrue
+    }
+
+    It 'does not claim an unrelated consumer hook' {
+        Test-IsSdlcGuardHook -Content "#!/bin/sh`nnpx lint-staged`n" | Should -BeFalse
+    }
+
+    It 'returns false for empty or missing content' {
+        Test-IsSdlcGuardHook -Content '' | Should -BeFalse
+        Test-IsSdlcGuardHook -Content $null | Should -BeFalse
+    }
+}
+
+Describe 'Issue #567: the sync must not install the guard hook and then trip over it' {
+
+    BeforeEach {
+        $script:g567Root = Join-Path $TestDrive ("g567-" + [guid]::NewGuid().ToString('N'))
+    }
+
+    It 'routes a bootstrap sync to the sync branch when the guard hook is already activated' {
+        # The reported failure: core.hooksPath was set before the first sync, the
+        # sync wrote .githooks/pre-commit into it, and the guard hook then refused
+        # the sync own commit on main from the repo root (rc=4, nothing committed).
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -WithOrigin
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            (git rev-parse --abbrev-ref HEAD).Trim() | Should -Be 'main'
+            (git log -1 --pretty=%s main).Trim() | Should -Be 'seed' -Because 'main must not carry the sync commit'
+        } finally { Pop-Location }
+        $wt = Join-Path $fx.Consumer '.worktrees/sdlc-sync'
+        Test-Path -LiteralPath $wt | Should -BeTrue
+        Push-Location $wt
+        try {
+            (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to'
+            (Get-Content (Join-Path $wt 'CLAUDE.md') -Raw) | Should -Be 'b'
+            Test-Path -LiteralPath (Join-Path $wt '.githooks/pre-commit') | Should -BeTrue
+        } finally { Pop-Location }
+    }
+
+    It 'routes to the sync branch from a feature branch too, because the guard refuses any root commit' {
+        # Test-CommitContextAllowed only looks at the branch, but the guard hook
+        # first check refuses a commit from the repo root on ANY branch.
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -WithOrigin
+        Push-Location $fx.Consumer
+        try { git checkout -q -b feat/already-working } finally { Pop-Location }
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -NoAutoPR
+
+        $rc | Should -Be 0
+        Push-Location $fx.Consumer
+        try {
+            (git log -1 --pretty=%s 'feat/already-working').Trim() | Should -Be 'seed'
+        } finally { Pop-Location }
+        Push-Location (Join-Path $fx.Consumer '.worktrees/sdlc-sync')
+        try { (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to' } finally { Pop-Location }
+    }
+
+    It 'aborts before applying any ops when the guard hook is active and no worktree sync is possible' {
+        # No origin -> the auto-worktree path cannot deliver (the push fails and the
+        # commit is stranded on a local scratch branch), so commit-on-main is the
+        # only route -- and the guard hook refuses it. Say so before touching the tree.
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+
+        $rc | Should -Be 3
+        Test-Path -LiteralPath (Join-Path $fx.Consumer 'CLAUDE.md') | Should -BeFalse -Because 'no op may be applied once the commit is known to be refused'
+        Test-Path -LiteralPath (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
+        Push-Location $fx.Consumer
+        try { (git status --porcelain | Out-String).Trim() | Should -BeNullOrEmpty } finally { Pop-Location }
+    }
+
+    It 'aborts the same way when -CommitOnMain is explicit, instead of failing at the commit' {
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -WithOrigin
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch -CommitOnMain
+
+        $rc | Should -Be 3
+        Test-Path -LiteralPath (Join-Path $fx.Consumer 'CLAUDE.md') | Should -BeFalse
+    }
+
+    It 'still commits on main when the synced hook is inert (core.hooksPath unset)' {
+        # The hook file lands in .githooks/ on every sync. Without core.hooksPath
+        # git never runs it, so nothing is refused and first-time onboarding must
+        # keep landing the files in the consumer own checkout.
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -NoHooksPath
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+        Push-Location $fx.Consumer
+        try { (git log -1 --pretty=%s).Trim() | Should -Match '^chore: sync IntelliSDLC\.ai to' } finally { Pop-Location }
+    }
+
+    It 'does not divert on an unrelated consumer pre-commit hook' {
+        # A husky / lint-staged hook is not the guard hook: it says nothing about
+        # worktrees, so the sync has no reason to change route for it.
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -HooksPath '.myhooks'
+        $hookDir = Join-Path $fx.Consumer '.myhooks'
+        New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
+        "#!/bin/sh`nexit 0`n" | Out-File -Encoding ascii -LiteralPath (Join-Path $hookDir 'pre-commit') -NoNewline
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+
+        $rc | Should -Be 0
+        (Get-Content (Join-Path $fx.Consumer 'CLAUDE.md') -Raw) | Should -Be 'b'
+    }
+
+    It 'leaves no .sdlc-ai-sync.json behind when the sync commit never lands' {
+        # "Resolve the policy violation and rerun" must mean the rerun is classified
+        # the way the failed run was. A state file left behind by a failed run makes
+        # the next run read the repo as already-synced and take a different path.
+        $fx = New-GuardHookSyncFixture -Root $script:g567Root -HooksPath '.myhooks'
+        $hookDir = Join-Path $fx.Consumer '.myhooks'
+        New-Item -ItemType Directory -Path $hookDir -Force | Out-Null
+        "#!/bin/sh`nexit 1`n" | Out-File -Encoding ascii -LiteralPath (Join-Path $hookDir 'pre-commit') -NoNewline
+
+        $rc = Invoke-PullSDLC -RepoRoot $fx.Consumer -RemoteName 'sdlc.ai' -Bootstrap -NoFetch
+
+        $rc | Should -Be 4 -Because 'the consumer hook rejected the commit'
+        Test-Path -LiteralPath (Join-Path $fx.Consumer '.sdlc-ai-sync.json') | Should -BeFalse
+        Test-IsBootstrapSync -RepoRoot $fx.Consumer | Should -BeTrue -Because 'the rerun must be classified exactly as the run that failed'
     }
 }
 
