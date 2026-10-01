@@ -30,9 +30,12 @@ Describe 'Get-GitHubRepoSlug' {
 
     It 'asks git for the remote of -Path, not of the current directory' {
         # The issue lookup and the launch directory must resolve the same
-        # repository: Get-LaunchDirectory anchors on $PSScriptRoot, so this
-        # must too, or an absolute-path invocation from another repo names the
-        # session from that repo's issue #N while launching into this one.
+        # repository, and Main achieves that by passing the already-resolved
+        # launch directory here -- so this must honor -Path rather than reading
+        # the process's own location. Which repository that is follows the
+        # caller's current directory (issue #571); before that both followed the
+        # launcher's own checkout, and an absolute-path invocation from another
+        # repo dispatched this repo's issue #N instead of that one's.
         Mock -CommandName git -MockWith { 'https://github.com/IntelliTect-Samples/IntelliSDLC.ai.git' }
 
         Get-GitHubRepoSlug -Path 'C:\some\other\repo' | Out-Null
@@ -449,8 +452,10 @@ Describe 'Get-RequiredCommand' {
     }
 
     It 'requires only claude under -New, which makes no gh call' {
-        # The -New path resolves nothing itself -- @plan does its own repo
-        # discovery and files the issue -- so gh need not be installed.
+        # -New calls no gh -- @plan does its own repo discovery and files the
+        # issue -- so gh need not be installed. Its one best-effort
+        # `git remote get-url origin`, for the launch message, does not make git
+        # a requirement either: Get-GitOriginUrl yields '' instead of throwing.
         (Get-RequiredCommand -ParameterSetName 'New') -join ',' | Should -Be 'claude'
     }
 
@@ -1216,5 +1221,362 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
         try { $out = & $script:Launcher 7 -Repo 'o/r' 6>&1 } finally { Pop-Location }
 
         ($out | Out-String) | Should -Match ([regex]::Escape(" in $script:LauncherRoot"))
+    }
+}
+
+Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (issue #571)' {
+    # The directory alone does not say which repository's issue was fetched, and
+    # the launcher now follows the caller's current directory rather than its own
+    # checkout -- so "which repo?" is a real question at dispatch time. Naming it
+    # also makes a -Repo that disagrees with the current directory visible
+    # without a prompt or a refusal.
+
+    BeforeAll {
+        $script:Launcher = Join-Path $PSScriptRoot 'Start-IssueAgent.ps1'
+
+        function New-MessageRepoFixture {
+            param([string]$Slug, [switch]$NoOrigin)
+
+            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571m-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            git init -q -b main $root 2>&1 | Out-Null
+            if (-not $NoOrigin) {
+                git -C $root remote add origin "https://github.com/$Slug.git" 2>&1 | Out-Null
+            }
+            git -C $root -c user.email=test@example.com -c user.name=Test `
+                commit -q --allow-empty -m init 2>&1 | Out-Null
+            return $root
+        }
+    }
+
+    BeforeEach {
+        $script:originalWtSession = $env:WT_SESSION
+        $script:originalClaudeCode = $env:CLAUDECODE
+        $env:WT_SESSION = $null
+        $env:CLAUDECODE = $null
+    }
+
+    AfterEach {
+        $env:WT_SESSION = $script:originalWtSession
+        $env:CLAUDECODE = $script:originalClaudeCode
+    }
+
+    It 'names the resolved repository in the launch message when dispatching an issue' {
+        $caller = New-MessageRepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = [IO.Path]::GetFullPath(
+                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { $out = & $script:Launcher 7 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String).Trim() | Should -Be "Launching claude session '7: Fixture issue' in $expected (caller-owner/caller-repo)"
+        }
+        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'names the resolved repository under -New, which makes no gh call at all' {
+        $caller = New-MessageRepoFixture -Slug 'caller-owner/caller-repo'
+        try {
+            $expected = [IO.Path]::GetFullPath(
+                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { $out = & $script:Launcher -New 'users need CSV export' 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String).Trim() | Should -Be "Launching claude session 'new: users need CSV export' in $expected (caller-owner/caller-repo)"
+            Should -Invoke gh -Times 0 -Because '-New resolves nothing through gh; @plan files the issue itself'
+        }
+        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'omits the repository rather than printing an empty one when the caller''s repo has no origin' {
+        # Degrade, do not throw: -New made no git remote call before this change,
+        # so a repository without an origin must still dispatch.
+        $caller = New-MessageRepoFixture -NoOrigin
+        try {
+            $expected = [IO.Path]::GetFullPath(
+                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $caller
+            try { $out = & $script:Launcher -New 'an idea' 6>&1 } finally { Pop-Location }
+
+            ($out | Out-String).Trim() | Should -Be "Launching claude session 'new: an idea' in $expected"
+            Should -Invoke Start-Process -Times 1 -Because 'it must still dispatch, just without naming a repository'
+        }
+        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+Describe 'Format-LaunchMessage' {
+    It 'names the session, the directory and the repository' {
+        Format-LaunchMessage -Name '7: Add widget support' -Directory 'C:\repo' -RepoSlug 'owner/name' |
+            Should -Be "Launching claude session '7: Add widget support' in C:\repo (owner/name)"
+    }
+
+    It 'omits the parenthesis entirely for an unknown repository rather than printing an empty one' {
+        Format-LaunchMessage -Name '7: Add widget support' -Directory 'C:\repo' -RepoSlug '' |
+            Should -Be "Launching claude session '7: Add widget support' in C:\repo"
+    }
+
+    It 'omits the parenthesis for a null repository' {
+        Format-LaunchMessage -Name 'new: an idea' -Directory 'C:\repo' -RepoSlug $null |
+            Should -Be "Launching claude session 'new: an idea' in C:\repo"
+    }
+}
+
+Describe 'ConvertTo-GitHubRepoSlug' {
+    It 'parses an https remote' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://github.com/some-owner/some-repo.git' |
+            Should -Be 'some-owner/some-repo'
+    }
+
+    It 'parses an https remote without a .git suffix' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://github.com/some-owner/some-repo' |
+            Should -Be 'some-owner/some-repo'
+    }
+
+    It 'parses an ssh remote' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'git@github.com:some-owner/some-repo.git' |
+            Should -Be 'some-owner/some-repo'
+    }
+
+    It 'returns empty for a remote that is not a recognizable GitHub URL' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl 'https://example.com/not-github' | Should -BeNullOrEmpty
+    }
+
+    It 'returns empty for an empty remote' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl '' | Should -BeNullOrEmpty
+    }
+
+    It 'returns empty for a null remote' {
+        ConvertTo-GitHubRepoSlug -RemoteUrl $null | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Get-GitOriginUrl' {
+    It 'reports the origin remote of the repository at -Path' {
+        $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571o-' + [guid]::NewGuid().ToString('N'))
+        try {
+            git init -q -b main $root 2>&1 | Out-Null
+            git -C $root remote add origin 'https://github.com/o/n.git' 2>&1 | Out-Null
+
+            (Get-GitOriginUrl -Path $root).Trim() | Should -Be 'https://github.com/o/n.git'
+        }
+        finally { if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'returns empty rather than throwing for a repository with no origin' {
+        $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571o-' + [guid]::NewGuid().ToString('N'))
+        try {
+            git init -q -b main $root 2>&1 | Out-Null
+
+            Get-GitOriginUrl -Path $root | Should -BeNullOrEmpty
+        }
+        finally { if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'returns empty rather than throwing when git is not installed' {
+        # The one mock here: a machine without git is impractical to arrange for
+        # real, and this is the contract that keeps -New working on a machine
+        # that has claude but no git -- CommandNotFoundException comes from the
+        # native call, not from a throw, so a -Quiet switch would not cover it.
+        Mock -CommandName git -MockWith { throw [Management.Automation.CommandNotFoundException]::new('git not found') }
+
+        Get-GitOriginUrl -Path 'C:\repo' | Should -BeNullOrEmpty
+    }
+
+    It 'asks git about -Path, not about the current directory' {
+        Mock -CommandName git -MockWith { 'https://github.com/o/n.git' }
+
+        Get-GitOriginUrl -Path 'C:\some\other\repo' | Out-Null
+
+        Should -Invoke git -Times 1 -ParameterFilter {
+            ($args -join ' ') -eq '-C C:\some\other\repo remote get-url origin'
+        }
+    }
+}
+
+Describe 'Resolve-GitCommonDir' {
+    # Real repositories, no mocks: the premise under test is what git actually
+    # reports from a subdirectory and from a linked worktree, which a mock would
+    # simply assert back at itself.
+
+    BeforeAll {
+        function New-ResolveFixture {
+            param([switch]$NotARepo)
+
+            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571r-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            if ($NotARepo) { return $root }
+
+            git init -q -b main $root 2>&1 | Out-Null
+            git -C $root -c user.email=test@example.com -c user.name=Test `
+                commit -q --allow-empty -m init 2>&1 | Out-Null
+            return $root
+        }
+
+        function Get-ExpectedCommonDir {
+            param([string]$Path)
+            return [IO.Path]::GetFullPath(
+                (git -C $Path rev-parse --path-format=absolute --git-common-dir | Select-Object -First 1).Trim())
+        }
+    }
+
+    It 'answers for the repository the current directory belongs to, not the script''s' {
+        $caller = New-ResolveFixture
+        try {
+            $expected = Get-ExpectedCommonDir $caller
+
+            $resolved = Resolve-GitCommonDir -CurrentDirectory $caller -ScriptRoot $PSScriptRoot
+
+            [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
+        }
+        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'answers the same from a deep subdirectory of that repository' {
+        $caller = New-ResolveFixture
+        try {
+            $expected = Get-ExpectedCommonDir $caller
+            $deep = Join-Path $caller 'a/b/c'
+            New-Item -ItemType Directory -Path $deep -Force | Out-Null
+
+            $resolved = Resolve-GitCommonDir -CurrentDirectory $deep -ScriptRoot $PSScriptRoot
+
+            [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
+        }
+        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'answers the main worktree''s git dir from inside a linked worktree -- #275 still holds' {
+        $caller = New-ResolveFixture
+        $linked = $null
+        try {
+            $expected = Get-ExpectedCommonDir $caller
+            $linked = Join-Path ([IO.Path]::GetTempPath()) ('sia-571r-wt-' + [guid]::NewGuid().ToString('N'))
+            git -C $caller worktree add -q -b feature $linked main 2>&1 | Out-Null
+
+            $resolved = Resolve-GitCommonDir -CurrentDirectory $linked -ScriptRoot $PSScriptRoot
+
+            [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
+        }
+        finally {
+            if ($linked -and (Test-Path $linked)) { Remove-Item $linked -Recurse -Force -ErrorAction SilentlyContinue }
+            if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'falls back to the script''s own repository when the current directory is not in one' {
+        $outside = New-ResolveFixture -NotARepo
+        try {
+            $expected = Get-ExpectedCommonDir $PSScriptRoot
+
+            $resolved = Resolve-GitCommonDir -CurrentDirectory $outside -ScriptRoot $PSScriptRoot
+
+            [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
+        }
+        finally { if (Test-Path $outside) { Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+
+    It 'falls back for an empty current directory -- a non-FileSystem location has no path git can use' {
+        # Set-Location Env:\ (also Function:\ and Variable:\) leaves
+        # $PWD.ProviderPath empty, and `git -C ''` is a parameter-binding failure,
+        # fatal under $ErrorActionPreference 'Stop' -- not something the git edge
+        # could turn into a fallback. So the guard belongs here, before the call.
+        $expected = Get-ExpectedCommonDir $PSScriptRoot
+
+        $fromEmpty = Resolve-GitCommonDir -CurrentDirectory '' -ScriptRoot $PSScriptRoot
+        $fromNull = Resolve-GitCommonDir -CurrentDirectory $null -ScriptRoot $PSScriptRoot
+
+        [IO.Path]::GetFullPath($fromEmpty.Trim()) | Should -Be $expected
+        [IO.Path]::GetFullPath($fromNull.Trim()) | Should -Be $expected
+    }
+
+    It 'returns empty when neither the current directory nor the script root is in a repository' {
+        $outside = New-ResolveFixture -NotARepo
+        try {
+            # '' is what Get-LaunchDirectory needs in order to fall back to its
+            # -ScriptRoot rather than deriving a directory from nothing.
+            Resolve-GitCommonDir -CurrentDirectory $outside -ScriptRoot $outside | Should -BeNullOrEmpty
+        }
+        finally { if (Test-Path $outside) { Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+Describe 'Start-IssueAgent.ps1: a missing issue number is a usage error (issue #571)' {
+    BeforeAll {
+        $script:Launcher = Join-Path $PSScriptRoot 'Start-IssueAgent.ps1'
+    }
+
+    BeforeEach {
+        $script:originalWtSession = $env:WT_SESSION
+        $script:originalClaudeCode = $env:CLAUDECODE
+        $env:WT_SESSION = $null
+        $env:CLAUDECODE = $null
+    }
+
+    AfterEach {
+        $env:WT_SESSION = $script:originalWtSession
+        $env:CLAUDECODE = $script:originalClaudeCode
+    }
+
+    It 'reports the missing issue number before resolving a repository or calling gh' {
+        # The check is hoisted above repository resolution on purpose: below it, a
+        # bare invocation inside a repository without an origin would report
+        # "Could not resolve 'origin' remote" instead of what the caller got wrong.
+        $bare = Join-Path ([IO.Path]::GetTempPath()) ('sia-571u-' + [guid]::NewGuid().ToString('N'))
+        try {
+            New-Item -ItemType Directory -Path $bare -Force | Out-Null
+            git init -q -b main $bare 2>&1 | Out-Null   # a repository with NO origin
+            Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"x"}' }
+            Mock -CommandName Start-Process -MockWith { }
+
+            Push-Location $bare
+            try {
+                # Write-Error is terminating here: the script sets
+                # $ErrorActionPreference = 'Stop', so `exit 1` is never reached and
+                # the error surfaces to the caller.
+                { & $script:Launcher } | Should -Throw '*IssueNumber is required*'
+            }
+            finally { Pop-Location }
+
+            Should -Invoke gh -Times 0
+            Should -Invoke Start-Process -Times 0
+        }
+        finally { if (Test-Path $bare) { Remove-Item $bare -Recurse -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+Describe 'Start-IssueAgent.ps1: the comment-based help states which repository wins (issue #571)' {
+    # The old help asserted the opposite rule as deliberate, in eight places. A
+    # reader who trusts it would reach the wrong conclusion about a defect, so
+    # the wording is part of the change rather than a tidy-up after it.
+
+    BeforeAll {
+        $script:HelpText = Get-Help (Join-Path $PSScriptRoot 'Start-IssueAgent.ps1') -Full | Out-String
+    }
+
+    It 'says the repository follows the caller''s current directory' {
+        $script:HelpText | Should -Match "(?s)current directory"
+    }
+
+    It 'no longer claims the anchor is this script''s own directory' {
+        $script:HelpText | Should -Not -Match "anchored on this script's own"
+    }
+
+    It 'still explains why the launch directory is the main worktree root (issue #275)' {
+        $script:HelpText | Should -Match '(?s)main worktree root'
+        $script:HelpText | Should -Match '(?s)nested inside that one'
+    }
+
+    It 'documents that -New makes no gh call while still naming the repository' {
+        $script:HelpText | Should -Not -Match 'No `gh`/`git remote` call is made'
+        $script:HelpText | Should -Match '(?s)launch message'
     }
 }

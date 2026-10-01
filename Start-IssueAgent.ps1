@@ -15,9 +15,12 @@
         <number>` -- so -New lands in the same place as issue dispatch, one
         step earlier. Permission mode `plan`, whose approval prompt is the
         design gate before the session starts filing issues and writing code.
-        No `gh`/`git remote` call is made by this script -- `@plan`
+        No `gh` call is made by this script -- `@plan`
         (.github/agents/plan.agent.md) runs its own discovery dialogue,
-        resolves the repo itself, and files the issue.
+        resolves the repo itself, and files the issue. One best-effort
+        `git remote get-url origin` *is* made, solely to name the repository
+        in the launch message; it neither requires `git` nor fails without
+        it (see Get-GitOriginUrl).
 
     Where the session lands depends on the current shell (identical in both
     modes):
@@ -38,9 +41,12 @@
     Steps (the `-IssueNumber` path; `-New` skips 1-2 entirely):
 
       1. Resolve owner/repo from `git remote get-url origin` (never from the
-         local directory name -- see CLAUDE.md), anchored on this script's own
-         directory rather than the caller's, so the issue is fetched from the
-         same repository the session is launched into (see step 5).
+         local directory name -- see CLAUDE.md), anchored on the **caller's
+         current directory**: the launch directory is resolved first (step 5)
+         and the slug is then read from *there*, so the issue and the session
+         can never name two different repositories. This script's own
+         checkout is used only when the current directory is not inside a
+         repository at all.
       2. `gh issue view <IssueNumber> --json number,title` to fetch just
          enough to name the session (@dev-loop itself already fetches the
          full issue -- title, body, comments -- when given an issue number,
@@ -73,10 +79,14 @@
 
     The session is left to create its own git worktree/branch as part of the
     dev loop (@dev-loop) -- this script does not pre-create one. It does start
-    the session in the repository's **main worktree root**, not in whichever
-    tree this script file happens to sit in: a copy of this launcher exists in
-    every linked worktree, and a session started there would create its own
-    worktree nested inside that one. See Get-LaunchDirectory.
+    the session in the **main worktree root of the repository the caller is
+    standing in** -- not in the current tree, because a session started inside
+    a linked worktree would create its own worktree nested inside that one,
+    and not in whichever tree this script file happens to sit in, because a
+    copy of this launcher exists in every linked worktree and in every
+    consuming project. Falls back to this script's own checkout only when the
+    current directory is outside any repository. See Resolve-GitCommonDir and
+    Get-LaunchDirectory.
 
 .PARAMETER IssueNumber
     The GitHub issue number to dispatch. Required for the default parameter
@@ -126,9 +136,14 @@
 
 .PARAMETER Repo
     Explicit `owner/repo` to pass to `gh issue view --repo`. If omitted, it is
-    resolved from `git remote get-url origin` in the repository this script
-    file lives in -- the same one the session is launched into -- not in the
-    caller's current directory. Unused under -New (no issue is fetched).
+    resolved from `git remote get-url origin` in the repository the **current
+    directory** belongs to -- the same one the session is launched into. Under
+    -New no issue is fetched, so -Repo there only labels the launch message.
+
+    A -Repo that disagrees with the current directory is accepted without a
+    prompt or a refusal: the issue comes from -Repo, the session still starts
+    in the current repository, and the launch message prints both so the split
+    is visible.
 
 .PARAMETER PermissionMode
     Value passed to `claude --permission-mode`. Defaults to `auto` when
@@ -234,9 +249,15 @@ function Invoke-GitWithoutOverrides {
         outside any repository still reported that repository's common dir.
 
         Every `git` call this script makes goes through here, so the guard
-        cannot be forgotten at the next one: both the repo-slug lookup and the
-        launch-directory lookup must answer for the same repository, and both
-        are anchored on $PSScriptRoot via -C.
+        cannot be forgotten at the next one: the repo-slug lookup and the
+        launch-directory lookup must answer for the same repository, and they
+        do by construction -- the slug is read from the launch directory the
+        second one returned, rather than from a second anchor that has to
+        agree. That anchor is the caller's current directory, with
+        $PSScriptRoot as the fallback; either way it reaches git via -C, which
+        a leaked GIT_DIR would otherwise override. The guard matters *more*
+        now than it did when the anchor was a fixed path, because the anchor
+        varies per invocation.
 
         The caller's environment is saved and restored, including when git
         fails -- stderr is discarded and $LASTEXITCODE is left for the caller
@@ -267,38 +288,104 @@ function Invoke-GitWithoutOverrides {
     }
 }
 
-function Get-GitHubRepoSlug {
+function Get-GitOriginUrl {
     <#
     .SYNOPSIS
-        Resolves `owner/repo` from the `origin` remote of the repository at
-        -Path.
+        The `origin` remote URL of the repository at -Path, or '' when there
+        isn't one (or git cannot answer).
+    .DESCRIPTION
+        The impure half of slug resolution, split out so -New can label its
+        launch message with the repository without inheriting the issue path's
+        failure contract. -New makes no `gh` call (see Get-RequiredCommand) and
+        must keep working on a machine that has `claude` but no `git`: a missing
+        git raises a CommandNotFoundException from the *native call*, which is
+        terminating under $ErrorActionPreference 'Stop', so it is caught here and
+        yields '' rather than killing the launch.
+
+        Deliberately no $LASTEXITCODE check: git writes nothing to stdout when it
+        fails -- stderr is discarded in Invoke-GitWithoutOverrides -- so empty
+        output is the signal, and reading an unset $LASTEXITCODE is itself an
+        error under Set-StrictMode.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$Path)
+
+    try {
+        $url = Invoke-GitWithoutOverrides -ArgumentList @('-C', $Path, 'remote', 'get-url', 'origin') |
+            Select-Object -First 1
+    }
+    catch {
+        Write-Verbose "Could not read the origin remote for '$Path': $_"
+        return ''
+    }
+
+    if (-not $url) { return '' }
+    return $url
+}
+
+function ConvertTo-GitHubRepoSlug {
+    <#
+    .SYNOPSIS
+        `owner/repo` parsed from a git remote URL, or '' when the URL is empty or
+        is not a recognizable GitHub URL.
     .DESCRIPTION
         Parses both URL forms git remotes commonly use:
           https://github.com/OWNER/REPO.git (or without .git)
           git@github.com:OWNER/REPO.git
         Never infers owner/repo from the local directory name (CLAUDE.md).
 
-        -Path, not the current directory: Get-LaunchDirectory resolves the
-        session's working directory from $PSScriptRoot, so the issue lookup
-        must be anchored there too. Otherwise this script, invoked by absolute
-        path from another repository (or from ~), fetches issue #N from *that*
-        repo's origin while launching the session in this one.
+        Returns '' rather than throwing, so the launch message can name the
+        repository when it is knowable and simply omit it when it is not.
+        Get-GitHubRepoSlug adds the throwing contract the issue lookup needs.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$RemoteUrl)
+
+    if (-not $RemoteUrl) { return '' }
+
+    if ($RemoteUrl -match 'github\.com[:/]+(?<owner>[^/]+)/(?<repo>.+?)(\.git)?$') {
+        return "$($Matches.owner)/$($Matches.repo)"
+    }
+
+    return ''
+}
+
+function Get-GitHubRepoSlug {
+    <#
+    .SYNOPSIS
+        Resolves `owner/repo` from the `origin` remote of the repository at
+        -Path, throwing when it cannot.
+    .DESCRIPTION
+        The issue lookup needs a slug or an actionable error -- there is no
+        sensible way to fetch an issue from an unknown repository -- so this
+        wraps the non-throwing pair (Get-GitOriginUrl, ConvertTo-GitHubRepoSlug)
+        with that contract. Both messages name -Repo as the way out.
+
+        -Path, not this process's current directory: Main passes the
+        already-resolved launch directory, so the issue is fetched from exactly
+        the repository the session will start in. Which repository *that* is
+        follows the caller's current directory (see Resolve-GitCommonDir); before
+        that, both followed this script's own checkout and ignored the caller,
+        and invoking the launcher by absolute path from another repository
+        dispatched this repository's issue #N instead of that one's.
     #>
     [CmdletBinding()]
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
 
-    $remoteUrl = Invoke-GitWithoutOverrides -ArgumentList @('-C', $Path, 'remote', 'get-url', 'origin') |
-        Select-Object -First 1
+    $remoteUrl = Get-GitOriginUrl -Path $Path
     if (-not $remoteUrl) {
         throw "Could not resolve 'origin' remote. Pass -Repo explicitly (e.g. -Repo owner/repo)."
     }
 
-    if ($remoteUrl -match 'github\.com[:/]+(?<owner>[^/]+)/(?<repo>.+?)(\.git)?$') {
-        return "$($Matches.owner)/$($Matches.repo)"
+    $slug = ConvertTo-GitHubRepoSlug -RemoteUrl $remoteUrl
+    if (-not $slug) {
+        throw "Could not parse owner/repo from origin remote '$remoteUrl'. Pass -Repo explicitly."
     }
 
-    throw "Could not parse owner/repo from origin remote '$remoteUrl'. Pass -Repo explicitly."
+    return $slug
 }
 
 function Get-GitHubIssue {
@@ -447,6 +534,9 @@ function Get-GitCommonDir {
         Anything that goes wrong -- not a repository, git not installed, or a
         git older than 2.31 which lacks `--path-format` -- yields '' so the
         caller falls back rather than throwing.
+
+        *Which* path it is asked about is Resolve-GitCommonDir's decision; this
+        only answers for the one it is given.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -533,6 +623,12 @@ function Get-LaunchDirectory {
         leaf is not `.git` has no main worktree to point at -- a bare repo, or
         a `--separate-git-dir` checkout -- so $ScriptRoot stands, as it does
         when git reported nothing at all.
+
+        The common dir handed in now comes from the **caller's current
+        directory** (see Resolve-GitCommonDir), so "the repository" above is
+        the caller's, not this file's. -ScriptRoot is only the fallback: for a
+        current directory outside any repository, and for the bare /
+        `--separate-git-dir` cases that have no main worktree to name.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -551,6 +647,43 @@ function Get-LaunchDirectory {
     # git reports forward slashes even on Windows; normalize for the display
     # message and for Set-Location/-WorkingDirectory.
     return [IO.Path]::GetFullPath($root)
+}
+
+function Format-LaunchMessage {
+    <#
+    .SYNOPSIS
+        The one-line launch announcement: the session name, the directory, and
+        the repository when it is known.
+    .DESCRIPTION
+        `Launching claude session '<name>' in <dir> (<owner/repo>)`
+
+        Naming the repository is the point. The directory alone does not say
+        which repository's issue was fetched, and the launcher follows the
+        caller's current directory rather than its own checkout, so "which repo?"
+        is a real question at dispatch time. It also makes an explicit -Repo that
+        disagrees with the current directory visible without a prompt or a
+        refusal.
+
+        -RepoSlug '' -- a repository with no origin, or a git that could not
+        answer -- drops the parenthesis entirely rather than printing an empty
+        one.
+
+        Format-, not this file's New- string-builder habit: New- trips
+        PSUseShouldProcessForStateChangingFunctions and would need the
+        suppression attribute its siblings carry, while formatting a value for
+        display is exactly what Format- names.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][AllowEmptyString()][AllowNull()][string]$RepoSlug
+    )
+
+    $message = "Launching claude session '$Name' in $Directory"
+    if ($RepoSlug) { $message += " ($RepoSlug)" }
+    return $message
 }
 
 function New-IssueAgentPrompt {
@@ -608,10 +741,15 @@ function Get-RequiredCommand {
         The external commands that must be on PATH for a given parameter set.
     .DESCRIPTION
         Issue dispatch calls `gh issue view` to name the session, so `gh` must
-        be installed for it. -New makes no `gh` or `git remote` call at all --
-        `@plan` resolves the repo and files the issue itself -- so requiring
-        `gh` there would fail a machine that has `claude` but not `gh`, for a
-        tool the run never invokes.
+        be installed for it. -New makes no `gh` call at all -- `@plan` resolves
+        the repo and files the issue itself -- so requiring `gh` there would
+        fail a machine that has `claude` but not `gh`, for a tool the run never
+        invokes.
+
+        -New does make one best-effort `git remote get-url origin`, to name the
+        repository in the launch message. That does not put `git` on this list
+        either: Get-GitOriginUrl yields '' when git is missing or has no answer,
+        and the message simply omits the repository.
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure lookup -- the Get- verb here names output shape, not state change.')]
@@ -963,6 +1101,15 @@ if (-not $PSBoundParameters.ContainsKey('PermissionMode')) {
     $PermissionMode = Get-DefaultPermissionMode -ParameterSetName $PSCmdlet.ParameterSetName
 }
 
+# Hoisted out of the Issue branch below: a missing issue number is a usage error,
+# and the repository is now resolved before that branch, so leaving this check
+# where it was would report "Could not resolve 'origin' remote" for a bare
+# invocation inside a repository that has no origin.
+if ($PSCmdlet.ParameterSetName -eq 'Issue' -and $IssueNumber -le 0) {
+    Write-Error 'IssueNumber is required, e.g. ./Start-IssueAgent.ps1 123 (or -New "<description>" to plan a new one)'
+    exit 1
+}
+
 # The CALLER's repository, not this script's: resolved from the current
 # directory -- any subdirectory, any linked worktree -- with this script's own
 # checkout as the silent fallback when the current directory is not in a
@@ -971,29 +1118,34 @@ if (-not $PSBoundParameters.ContainsKey('PermissionMode')) {
 $startDir = Get-LaunchDirectory -ScriptRoot $PSScriptRoot -GitCommonDir (
     Resolve-GitCommonDir -CurrentDirectory $PWD.ProviderPath -ScriptRoot $PSScriptRoot)
 
+# Read FROM the launch directory, so the issue and the session can never name two
+# different repositories -- one anchor by construction rather than two lookups
+# that have to be passed the same argument. One assignment rather than one per
+# branch, deliberately: with two, a reviewer has to verify that both use
+# $startDir, which is the failure mode that cost an issue already.
+$repoSlug = if ($Repo) { $Repo }
+    elseif ($PSCmdlet.ParameterSetName -eq 'New') {
+        # Best effort, for the launch message only: -New must not make `gh`
+        # required, and must not fail on a missing origin or a missing git.
+        ConvertTo-GitHubRepoSlug -RemoteUrl (Get-GitOriginUrl -Path $startDir)
+    }
+    else { Get-GitHubRepoSlug -Path $startDir }
+
 if ($PSCmdlet.ParameterSetName -eq 'New') {
-    # No gh/git call at all -- @plan resolves the repo and files the issue itself.
+    # No gh call at all -- @plan resolves the repo and files the issue itself.
     $description = $New
 
     $name = New-PlanAgentName -Description $description -MaxLength $maxNameLength
     $prompt = New-PlanAgentPrompt -Description $description
 }
 else {
-    if ($IssueNumber -le 0) {
-        Write-Error 'IssueNumber is required, e.g. ./Start-IssueAgent.ps1 123 (or -New "<description>" to plan a new one)'
-        exit 1
-    }
-
-    # Read FROM the launch directory, so the issue and the session can never name
-    # two different repositories -- one anchor by construction rather than two
-    # lookups that have to be passed the same argument.
-    $repoSlug = if ($Repo) { $Repo } else { Get-GitHubRepoSlug -Path $startDir }
     $issue = Get-GitHubIssue -Number $IssueNumber -RepoSlug $repoSlug
     $name = New-IssueAgentName -Issue $issue -MaxLength $maxNameLength
     $prompt = New-IssueAgentPrompt -IssueNumber $IssueNumber -Title ([string]$issue.title) -Context $Context
 }
 
-Write-Information "Launching claude session '$name' in $startDir" -InformationAction Continue
+Write-Information (Format-LaunchMessage -Name $name -Directory $startDir -RepoSlug $repoSlug) `
+    -InformationAction Continue
 # [ref], not a captured return value: capturing this call would redirect the
 # inline claude session's stdout away from the console (see
 # Start-ClaudeIssueSession).
