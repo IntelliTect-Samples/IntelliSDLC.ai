@@ -1,5 +1,55 @@
 BeforeAll {
     . "$PSScriptRoot/Start-IssueAgent.ps1"
+
+    function New-GitFixture {
+        <#  A real repository in a temp directory, optionally with a real origin
+            remote. Real git rather than a mocked one: several suites below turn
+            on what git actually reports from a subdirectory and from a linked
+            worktree, which a mock would only assert back at itself. #>
+        param([string]$Slug, [switch]$NoOrigin, [switch]$NotARepo)
+
+        $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-fixture-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        if ($NotARepo) { return $root }
+
+        git init -q -b main $root 2>&1 | Out-Null
+        if (-not $NoOrigin) {
+            git -C $root remote add origin "https://github.com/$Slug.git" 2>&1 | Out-Null
+        }
+        # An empty commit so `git worktree add <path> main` has a main to branch
+        # from; user.email/user.name inline so a machine without a global git
+        # identity can still run the suite.
+        git -C $root -c user.email=test@example.com -c user.name=Test `
+            commit -q --allow-empty -m init 2>&1 | Out-Null
+        return $root
+    }
+
+    function Remove-GitFixture {
+        param([string]$Path)
+
+        if ($Path -and (Test-Path $Path)) {
+            # Prune first: a fixture that gained a linked worktree leaves
+            # administrative files behind that otherwise outlive the directory.
+            git -C $Path worktree prune 2>&1 | Out-Null
+            Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Get-FixtureRoot {
+        # git's own answer on both sides of a path assertion, so an 8.3 short
+        # path or temp-directory casing cannot skew the comparison.
+        param([string]$Path)
+
+        return [IO.Path]::GetFullPath(
+            (git -C $Path rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+    }
+
+    function Get-FixtureCommonDir {
+        param([string]$Path)
+
+        return [IO.Path]::GetFullPath(
+            (git -C $Path rev-parse --path-format=absolute --git-common-dir | Select-Object -First 1).Trim())
+    }
 }
 
 Describe 'Get-GitHubRepoSlug' {
@@ -1012,40 +1062,6 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
                     '-C', $PSScriptRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir') |
                     Select-Object -First 1).Trim() -Parent))
 
-        function New-RepoFixture {
-            <#  A real repository in a temp directory with a real origin remote.
-                Real git, no mocks: the premise under test is what git actually
-                reports from a subdirectory and from a linked worktree. #>
-            param([string]$Slug, [switch]$NoOrigin, [switch]$NotARepo)
-
-            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $root -Force | Out-Null
-            if ($NotARepo) { return $root }
-
-            git init -q -b main $root 2>&1 | Out-Null
-            if (-not $NoOrigin) {
-                git -C $root remote add origin "https://github.com/$Slug.git" 2>&1 | Out-Null
-            }
-            git -C $root -c user.email=test@example.com -c user.name=Test `
-                commit -q --allow-empty -m init 2>&1 | Out-Null
-            return $root
-        }
-
-        function Get-RepoRootFromGit {
-            # git's own answer on both sides of every path assertion, so an 8.3
-            # short path or temp-directory casing cannot skew the comparison.
-            param([string]$Path)
-            return [IO.Path]::GetFullPath(
-                (git -C $Path rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
-        }
-
-        function Remove-RepoFixture {
-            param([string]$Path)
-            if ($Path -and (Test-Path $Path)) {
-                git -C $Path worktree prune 2>&1 | Out-Null
-                Remove-Item $Path -Recurse -Force -ErrorAction SilentlyContinue
-            }
-        }
     }
 
     BeforeEach {
@@ -1064,7 +1080,7 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
     }
 
     It 'fetches the issue from the repository the caller is standing in, not the launcher''s own checkout' {
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
@@ -1082,13 +1098,13 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
                 $i -ge 0 -and $args[$i + 1] -eq 'caller-owner/caller-repo'
             }
         }
-        finally { Remove-RepoFixture $caller }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'starts the session in the caller''s repository, not the launcher''s' {
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = Get-RepoRootFromGit $caller
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
 
@@ -1098,15 +1114,15 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
             ($out | Out-String) | Should -Match ([regex]::Escape(" in $expected"))
             $expected | Should -Not -Be $script:LauncherRoot -Because 'the fixture must differ from the launcher''s own repo or the assertion is vacuous'
         }
-        finally { Remove-RepoFixture $caller }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'hands the session the caller''s repository as its working directory' {
         # The launch message and the directory the session actually starts in are
         # two different things; this asserts the second, from the encoded command.
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = Get-RepoRootFromGit $caller
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
 
@@ -1121,13 +1137,13 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
                 $decoded -match [regex]::Escape("Set-Location '$expected'")
             }
         }
-        finally { Remove-RepoFixture $caller }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'resolves the caller''s repository root from a deep subdirectory of it' {
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = Get-RepoRootFromGit $caller
+            $expected = Get-FixtureRoot $caller
             $deep = Join-Path $caller 'src/nested/deep'
             New-Item -ItemType Directory -Path $deep -Force | Out-Null
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
@@ -1142,7 +1158,7 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
                 $i -ge 0 -and $args[$i + 1] -eq 'caller-owner/caller-repo'
             }
         }
-        finally { Remove-RepoFixture $caller }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'launches in the main worktree root when the caller is inside a linked worktree of their repo' {
@@ -1151,10 +1167,10 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
         # linked worktree nests a worktree in a worktree. An implementation that
         # used --show-toplevel on the current directory passes every other test
         # here and fails only this one.
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         $linked = $null
         try {
-            $expected = Get-RepoRootFromGit $caller
+            $expected = Get-FixtureRoot $caller
             $linked = Join-Path ([IO.Path]::GetTempPath()) ('sia-571-wt-' + [guid]::NewGuid().ToString('N'))
             git -C $caller worktree add -q -b feature $linked main 2>&1 | Out-Null
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
@@ -1169,16 +1185,16 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
         }
         finally {
             if ($linked -and (Test-Path $linked)) { Remove-Item $linked -Recurse -Force -ErrorAction SilentlyContinue }
-            Remove-RepoFixture $caller
+            Remove-GitFixture $caller
         }
     }
 
     It 'uses -Repo for the issue lookup while still launching in the caller''s repository' {
         # Decision: a -Repo that disagrees with the current directory is accepted
         # silently -- no prompt, no refusal. The launch message prints both.
-        $caller = New-RepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = Get-RepoRootFromGit $caller
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
 
@@ -1191,12 +1207,12 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
             }
             ($out | Out-String) | Should -Match ([regex]::Escape(" in $expected"))
         }
-        finally { Remove-RepoFixture $caller }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'falls back to the launcher''s own checkout when the caller is not in a git repository' {
         # -Repo so the assertion never depends on this checkout having an origin.
-        $outside = New-RepoFixture -NotARepo
+        $outside = New-GitFixture -NotARepo
         try {
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
@@ -1206,7 +1222,7 @@ Describe 'Start-IssueAgent.ps1: which repository the session works on (issue #57
 
             ($out | Out-String) | Should -Match ([regex]::Escape(" in $script:LauncherRoot"))
         }
-        finally { Remove-RepoFixture $outside }
+        finally { Remove-GitFixture $outside }
     }
 
     It 'falls back instead of crashing when the caller stands in a non-FileSystem location' {
@@ -1234,19 +1250,6 @@ Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (is
     BeforeAll {
         $script:Launcher = Join-Path $PSScriptRoot 'Start-IssueAgent.ps1'
 
-        function New-MessageRepoFixture {
-            param([string]$Slug, [switch]$NoOrigin)
-
-            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571m-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $root -Force | Out-Null
-            git init -q -b main $root 2>&1 | Out-Null
-            if (-not $NoOrigin) {
-                git -C $root remote add origin "https://github.com/$Slug.git" 2>&1 | Out-Null
-            }
-            git -C $root -c user.email=test@example.com -c user.name=Test `
-                commit -q --allow-empty -m init 2>&1 | Out-Null
-            return $root
-        }
     }
 
     BeforeEach {
@@ -1262,10 +1265,9 @@ Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (is
     }
 
     It 'names the resolved repository in the launch message when dispatching an issue' {
-        $caller = New-MessageRepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = [IO.Path]::GetFullPath(
-                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
 
@@ -1274,14 +1276,13 @@ Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (is
 
             ($out | Out-String).Trim() | Should -Be "Launching claude session '7: Fixture issue' in $expected (caller-owner/caller-repo)"
         }
-        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'names the resolved repository under -New, which makes no gh call at all' {
-        $caller = New-MessageRepoFixture -Slug 'caller-owner/caller-repo'
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
         try {
-            $expected = [IO.Path]::GetFullPath(
-                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName gh -MockWith { $global:LASTEXITCODE = 0; '{"number":7,"title":"Fixture issue"}' }
             Mock -CommandName Start-Process -MockWith { }
 
@@ -1291,16 +1292,15 @@ Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (is
             ($out | Out-String).Trim() | Should -Be "Launching claude session 'new: users need CSV export' in $expected (caller-owner/caller-repo)"
             Should -Invoke gh -Times 0 -Because '-New resolves nothing through gh; @plan files the issue itself'
         }
-        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'omits the repository rather than printing an empty one when the caller''s repo has no origin' {
         # Degrade, do not throw: -New made no git remote call before this change,
         # so a repository without an origin must still dispatch.
-        $caller = New-MessageRepoFixture -NoOrigin
+        $caller = New-GitFixture -NoOrigin
         try {
-            $expected = [IO.Path]::GetFullPath(
-                (git -C $caller rev-parse --path-format=absolute --show-toplevel | Select-Object -First 1).Trim())
+            $expected = Get-FixtureRoot $caller
             Mock -CommandName Start-Process -MockWith { }
 
             Push-Location $caller
@@ -1309,7 +1309,7 @@ Describe 'Start-IssueAgent.ps1: naming the resolved repository before launch (is
             ($out | Out-String).Trim() | Should -Be "Launching claude session 'new: an idea' in $expected"
             Should -Invoke Start-Process -Times 1 -Because 'it must still dispatch, just without naming a repository'
         }
-        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $caller }
     }
 }
 
@@ -1368,7 +1368,7 @@ Describe 'Get-GitOriginUrl' {
 
             (Get-GitOriginUrl -Path $root).Trim() | Should -Be 'https://github.com/o/n.git'
         }
-        finally { if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $root }
     }
 
     It 'returns empty rather than throwing for a repository with no origin' {
@@ -1378,7 +1378,7 @@ Describe 'Get-GitOriginUrl' {
 
             Get-GitOriginUrl -Path $root | Should -BeNullOrEmpty
         }
-        finally { if (Test-Path $root) { Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $root }
     }
 
     It 'returns empty rather than throwing when git is not installed' {
@@ -1407,43 +1407,22 @@ Describe 'Resolve-GitCommonDir' {
     # reports from a subdirectory and from a linked worktree, which a mock would
     # simply assert back at itself.
 
-    BeforeAll {
-        function New-ResolveFixture {
-            param([switch]$NotARepo)
-
-            $root = Join-Path ([IO.Path]::GetTempPath()) ('sia-571r-' + [guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $root -Force | Out-Null
-            if ($NotARepo) { return $root }
-
-            git init -q -b main $root 2>&1 | Out-Null
-            git -C $root -c user.email=test@example.com -c user.name=Test `
-                commit -q --allow-empty -m init 2>&1 | Out-Null
-            return $root
-        }
-
-        function Get-ExpectedCommonDir {
-            param([string]$Path)
-            return [IO.Path]::GetFullPath(
-                (git -C $Path rev-parse --path-format=absolute --git-common-dir | Select-Object -First 1).Trim())
-        }
-    }
-
     It 'answers for the repository the current directory belongs to, not the script''s' {
-        $caller = New-ResolveFixture
+        $caller = New-GitFixture -NoOrigin
         try {
-            $expected = Get-ExpectedCommonDir $caller
+            $expected = Get-FixtureCommonDir $caller
 
             $resolved = Resolve-GitCommonDir -CurrentDirectory $caller -ScriptRoot $PSScriptRoot
 
             [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
         }
-        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'answers the same from a deep subdirectory of that repository' {
-        $caller = New-ResolveFixture
+        $caller = New-GitFixture -NoOrigin
         try {
-            $expected = Get-ExpectedCommonDir $caller
+            $expected = Get-FixtureCommonDir $caller
             $deep = Join-Path $caller 'a/b/c'
             New-Item -ItemType Directory -Path $deep -Force | Out-Null
 
@@ -1451,14 +1430,14 @@ Describe 'Resolve-GitCommonDir' {
 
             [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
         }
-        finally { if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $caller }
     }
 
     It 'answers the main worktree''s git dir from inside a linked worktree -- #275 still holds' {
-        $caller = New-ResolveFixture
+        $caller = New-GitFixture -NoOrigin
         $linked = $null
         try {
-            $expected = Get-ExpectedCommonDir $caller
+            $expected = Get-FixtureCommonDir $caller
             $linked = Join-Path ([IO.Path]::GetTempPath()) ('sia-571r-wt-' + [guid]::NewGuid().ToString('N'))
             git -C $caller worktree add -q -b feature $linked main 2>&1 | Out-Null
 
@@ -1468,20 +1447,20 @@ Describe 'Resolve-GitCommonDir' {
         }
         finally {
             if ($linked -and (Test-Path $linked)) { Remove-Item $linked -Recurse -Force -ErrorAction SilentlyContinue }
-            if (Test-Path $caller) { Remove-Item $caller -Recurse -Force -ErrorAction SilentlyContinue }
+            Remove-GitFixture $caller
         }
     }
 
     It 'falls back to the script''s own repository when the current directory is not in one' {
-        $outside = New-ResolveFixture -NotARepo
+        $outside = New-GitFixture -NotARepo
         try {
-            $expected = Get-ExpectedCommonDir $PSScriptRoot
+            $expected = Get-FixtureCommonDir $PSScriptRoot
 
             $resolved = Resolve-GitCommonDir -CurrentDirectory $outside -ScriptRoot $PSScriptRoot
 
             [IO.Path]::GetFullPath($resolved.Trim()) | Should -Be $expected
         }
-        finally { if (Test-Path $outside) { Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $outside }
     }
 
     It 'falls back for an empty current directory -- a non-FileSystem location has no path git can use' {
@@ -1489,7 +1468,7 @@ Describe 'Resolve-GitCommonDir' {
         # $PWD.ProviderPath empty, and `git -C ''` is a parameter-binding failure,
         # fatal under $ErrorActionPreference 'Stop' -- not something the git edge
         # could turn into a fallback. So the guard belongs here, before the call.
-        $expected = Get-ExpectedCommonDir $PSScriptRoot
+        $expected = Get-FixtureCommonDir $PSScriptRoot
 
         $fromEmpty = Resolve-GitCommonDir -CurrentDirectory '' -ScriptRoot $PSScriptRoot
         $fromNull = Resolve-GitCommonDir -CurrentDirectory $null -ScriptRoot $PSScriptRoot
@@ -1499,13 +1478,13 @@ Describe 'Resolve-GitCommonDir' {
     }
 
     It 'returns empty when neither the current directory nor the script root is in a repository' {
-        $outside = New-ResolveFixture -NotARepo
+        $outside = New-GitFixture -NotARepo
         try {
             # '' is what Get-LaunchDirectory needs in order to fall back to its
             # -ScriptRoot rather than deriving a directory from nothing.
             Resolve-GitCommonDir -CurrentDirectory $outside -ScriptRoot $outside | Should -BeNullOrEmpty
         }
-        finally { if (Test-Path $outside) { Remove-Item $outside -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-GitFixture $outside }
     }
 }
 
