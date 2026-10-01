@@ -63,19 +63,25 @@
 
     The default is off -- every sync, including the first, routes through
     the auto-worktree workflow so the protected branch stays clean and
-    each sync is reviewed. It turns on by itself only where that workflow
-    cannot deliver the sync at all:
+    each sync is reviewed. It turns on by itself only on a FIRST sync (no
+    `.sdlc-ai-sync.json`, no prior sync commit) into a repository where
+    that workflow cannot deliver the sync at all:
     * the protected branch has no commit for a worktree to branch from
       (a repo straight out of `git init`), or
     * no `origin` is configured, so a sync branch could not be pushed or
       reviewed, and the commit would be stranded on a local branch while
       the consumer's own checkout stayed empty.
 
-    Being the FIRST sync is deliberately not one of those cases. The sync
-    delivers `.githooks/pre-commit`, so on a consumer that already ran
-    `git config core.hooksPath .githooks` (as CLAUDE.md instructs) a
-    commit-on-main first sync installed the guard hook and was then
-    refused by it -- see issue #567.
+    Being the FIRST sync is, on its own, deliberately not one of those
+    cases. The sync delivers `.githooks/pre-commit`, so on a consumer that
+    already ran `git config core.hooksPath .githooks` (as CLAUDE.md
+    instructs) a commit-on-main first sync installed the guard hook and was
+    then refused by it -- see issue #567.
+
+    A STEADY-STATE sync never turns it on by itself, even where the
+    worktree workflow cannot deliver either. It routes to the worktree
+    regardless and warns that the sync branch cannot be pushed; pass
+    `-CommitOnMain` if you want the commit made in place instead.
 
     Pass `-CommitOnMain` to force commit-on-main anyway (the rare
     "trusted maintenance commit" case); the run aborts up front, before
@@ -84,8 +90,10 @@
     deliver.
 
 .PARAMETER NoAutoWorktree
-    When on the protected branch with a gate, do NOT auto-create a worktree.
-    Restores the previous behavior: print remediation and exit rc=3.
+    When the sync commit cannot be made where the script was run -- on the
+    protected branch, or anywhere the workflow guard hook would refuse it,
+    which includes the repo root on any branch -- do NOT auto-create a
+    worktree. Restores the previous behavior: print remediation and exit rc=3.
 
 .PARAMETER NoAutoPR
     During auto-worktree mode, commit + push but do NOT open a pull request.
@@ -1927,6 +1935,10 @@ function Test-SamePath {
         [AllowNull()][AllowEmptyString()][string]$Left,
         [AllowNull()][AllowEmptyString()][string]$Right
     )
+    # Callers must pass ABSOLUTE paths. GetFullPath resolves a relative one
+    # against the PROCESS working directory, which is not the repo root a caller
+    # here would mean by it -- so pre-resolve (Resolve-GitRevParsePath and
+    # Resolve-GitHooksDirectory both do) rather than relying on this function to.
     if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
     try {
         $l = [System.IO.Path]::GetFullPath($Left).TrimEnd([char]'\', [char]'/')
@@ -1960,6 +1972,49 @@ function Test-IsSdlcGuardHook {
            ($Content -match 'COMMIT BLOCKED: You are on the')
 }
 
+function Resolve-GitRevParsePath {
+    <#
+    .SYNOPSIS
+        Runs `git rev-parse <Flag>` in $RepoRoot and returns the answer as an
+        absolute path. $null when $RepoRoot is not a git repository.
+    .DESCRIPTION
+        Deliberately asks only for flags git has had for over a decade and
+        resolves a relative answer here, rather than using the shorter
+        `--absolute-git-dir` (git 2.13) or `--path-format=absolute` (git 2.31).
+
+        An older git does not FAIL on an unrecognized long option --
+        `git rev-parse` echoes it back as its own output and still exits 0:
+
+            $ git rev-parse --totally-bogus-flag --git-common-dir
+            --totally-bogus-flag
+            .git
+            exit=0
+
+        So a version fallback written as "did it come back empty?" never fires:
+        the caller captures the flag's own name as the path and silently compares
+        a real path against garbage. For the guard-hook check that means the
+        repo-root refusal is never detected and issue #567 comes straight back on
+        every pre-2.31 git, with nothing to see. Asking only for `--git-dir` /
+        `--git-common-dir` removes the version question instead of handling it.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [Parameter(Mandatory)][ValidateSet('--git-dir', '--git-common-dir')][string]$Flag
+    )
+    Push-Location $RepoRoot
+    try {
+        $raw = (& git rev-parse $Flag 2>$null | Select-Object -First 1)
+    }
+    finally { Pop-Location }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    $raw = $raw.Trim()
+    # Relative answers are relative to the directory git ran in, i.e. $RepoRoot.
+    if ([System.IO.Path]::IsPathRooted($raw)) { return $raw }
+    return (Join-Path $RepoRoot $raw)
+}
+
 function Resolve-GitHooksDirectory {
     <#
     .SYNOPSIS
@@ -1984,11 +2039,11 @@ function Resolve-GitHooksDirectory {
             if ([System.IO.Path]::IsPathRooted($configured)) { return $configured }
             return (Join-Path $RepoRoot $configured)
         }
-        $gitDir = (& git rev-parse --absolute-git-dir 2>$null | Select-Object -First 1)
-        if ([string]::IsNullOrWhiteSpace($gitDir)) { return $null }
-        return (Join-Path $gitDir.Trim() 'hooks')
     }
     finally { Pop-Location }
+    $gitDir = Resolve-GitRevParsePath -RepoRoot $RepoRoot -Flag '--git-dir'
+    if ([string]::IsNullOrWhiteSpace($gitDir)) { return $null }
+    return (Join-Path $gitDir 'hooks')
 }
 
 function Test-SdlcGuardHookWouldRefuse {
@@ -2040,31 +2095,32 @@ function Test-SdlcGuardHookWouldRefuse {
     }
     if (-not $guardLive) { return $result }
 
-    Push-Location $RepoRoot
-    try {
-        $gitDir = (& git rev-parse --absolute-git-dir 2>$null | Select-Object -First 1)
-        $commonDir = (& git rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1)
-        if ([string]::IsNullOrWhiteSpace($commonDir)) {
-            # --path-format predates git 2.31; resolve the relative form ourselves.
-            $raw = (& git rev-parse --git-common-dir 2>$null | Select-Object -First 1)
-            if (-not [string]::IsNullOrWhiteSpace($raw)) {
-                $raw = $raw.Trim()
-                $commonDir = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $RepoRoot $raw }
-            }
-        }
-        if (Test-SamePath -Left $gitDir -Right $commonDir) {
-            $result.Refuses = $true
-            $result.Reason = "the workflow guard hook refuses a commit made from the repository root ($hookPath)"
-            return $result
-        }
-        $branch = (& git symbolic-ref --short HEAD 2>$null | Select-Object -First 1)
-        if ($branch -and $branch.Trim() -eq $ProtectedBranch) {
-            $result.Refuses = $true
-            $result.Reason = "the workflow guard hook refuses a commit on '$ProtectedBranch' ($hookPath)"
-        }
+    $gitDir = Resolve-GitRevParsePath -RepoRoot $RepoRoot -Flag '--git-dir'
+    $commonDir = Resolve-GitRevParsePath -RepoRoot $RepoRoot -Flag '--git-common-dir'
+    if (Test-SamePath -Left $gitDir -Right $commonDir) {
+        $result.Refuses = $true
+        $result.Reason = "the workflow guard hook refuses a commit made from the repository root ($hookPath)"
         return $result
     }
+
+    Push-Location $RepoRoot
+    try {
+        $branch = (& git symbolic-ref --short HEAD 2>$null | Select-Object -First 1)
+    }
     finally { Pop-Location }
+    if ($branch) {
+        $branch = $branch.Trim()
+        # The hook's second check is a literal `== "main"`, not a configurable
+        # branch, so a repository whose protected branch is named something else
+        # is STILL refused on main. Predict both rather than only the branch this
+        # run was pointed at (review finding on #567).
+        $refused = @($ProtectedBranch, 'main') | Where-Object { $_ } | Select-Object -Unique
+        if ($branch -in $refused) {
+            $result.Refuses = $true
+            $result.Reason = "the workflow guard hook refuses a commit on '$branch' ($hookPath)"
+        }
+    }
+    return $result
 }
 
 function Test-WorktreeSyncViable {
@@ -3368,6 +3424,14 @@ function Invoke-PullSDLC {
             }
 
             Write-Information "Cannot commit the sync here -- $gateReason. Switching to auto-worktree workflow ..."
+            if (-not $worktreeViability.Viable) {
+                # The commit cannot be made in place, so this is still the only
+                # route -- but say what it will not achieve. Otherwise the push
+                # fails into a warning further down and the run returns 0, which
+                # reads as success while the sync commit sits on a local branch
+                # nobody will look at (review finding on #567).
+                Write-Warning "The sync branch cannot be pushed or reviewed: $($worktreeViability.Reason). The sync commit will stay on the local sync branch."
+            }
             $syncArgs = @{
                 Branch         = $Branch
                 RemoteName     = $RemoteName

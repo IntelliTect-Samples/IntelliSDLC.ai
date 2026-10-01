@@ -2030,6 +2030,161 @@ Describe 'Test-IsSdlcGuardHook' {
     }
 }
 
+Describe 'Resolve-GitHooksDirectory / Test-SdlcGuardHookWouldRefuse (issue #567)' {
+
+    BeforeEach {
+        $script:hookDirRoot = Join-Path $TestDrive ("hookdir-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:hookDirRoot -Force | Out-Null
+    }
+
+    It 'resolves the default hooks directory when core.hooksPath is unset' {
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -NoHooksPath
+
+        $resolved = Resolve-GitHooksDirectory -RepoRoot $repo.Consumer
+
+        Test-SamePath -Left $resolved -Right (Join-Path $repo.Consumer '.git/hooks') | Should -BeTrue
+    }
+
+    It 'resolves a relative core.hooksPath against the repo root, not the process directory' {
+        # The caller's working directory is deliberately somewhere else entirely:
+        # git resolves a relative core.hooksPath against the top level of the
+        # working tree, and so must this.
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot
+        Push-Location $TestDrive
+        try { $resolved = Resolve-GitHooksDirectory -RepoRoot $repo.Consumer } finally { Pop-Location }
+
+        Test-SamePath -Left $resolved -Right (Join-Path $repo.Consumer '.githooks') | Should -BeTrue
+    }
+
+    It 'honors an absolute core.hooksPath pointing outside the repository' {
+        $outside = Join-Path $script:hookDirRoot 'elsewhere-hooks'
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -HooksPath $outside
+
+        $resolved = Resolve-GitHooksDirectory -RepoRoot $repo.Consumer
+
+        Test-SamePath -Left $resolved -Right $outside | Should -BeTrue
+    }
+
+    It 'reports a refusal in the repo root, and none inside a worktree on a feature branch' {
+        # The root/worktree answer is the one the whole reroute hangs on, and it
+        # is also what a version-dependent `git rev-parse` flag would silently
+        # get wrong on an older git (review finding on #567), so assert both
+        # sides of it directly rather than only through a full sync.
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -WithOrigin
+
+        $atRoot = Test-SdlcGuardHookWouldRefuse -RepoRoot $repo.Consumer -ProtectedBranch 'main'
+        $atRoot.Refuses | Should -BeTrue
+        $atRoot.Reason | Should -Match 'repository root'
+
+        $wt = Join-Path $script:hookDirRoot 'feature-wt'
+        git -C $repo.Consumer worktree add -q -b feat/guard-check $wt main 2>&1 | Out-Null
+        # The guard hook has to be present in the worktree for the resolved
+        # core.hooksPath to find it; the sync delivers it, so plant it here.
+        New-Item -ItemType Directory -Path (Join-Path $wt '.githooks') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '.githooks/pre-commit') `
+            -Destination (Join-Path $wt '.githooks/pre-commit')
+
+        $inWorktree = Test-SdlcGuardHookWouldRefuse -RepoRoot $wt -ProtectedBranch 'main'
+
+        $inWorktree.Refuses | Should -BeFalse -Because 'a feature branch inside a worktree is exactly what the hook accepts'
+    }
+
+    It 'reports a refusal on main inside a worktree, even when the protected branch is named something else' {
+        # The shipped hook's second check is a literal `== "main"`, so main is
+        # refused whatever this run was pointed at (review finding on #567).
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -WithOrigin
+        $wt = Join-Path $script:hookDirRoot 'main-wt'
+        # main cannot be checked out twice, so park the root checkout elsewhere
+        # before handing main to the worktree.
+        git -C $repo.Consumer checkout -q -b parking 2>&1 | Out-Null
+        git -C $repo.Consumer worktree add -q $wt main 2>&1 | Out-Null
+        Test-Path -LiteralPath (Join-Path $wt '.git') | Should -BeTrue -Because 'the worktree under test must exist'
+        New-Item -ItemType Directory -Path (Join-Path $wt '.githooks') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '.githooks/pre-commit') `
+            -Destination (Join-Path $wt '.githooks/pre-commit')
+
+        $result = Test-SdlcGuardHookWouldRefuse -RepoRoot $wt -ProtectedBranch 'release'
+
+        $result.Refuses | Should -BeTrue
+        $result.Reason | Should -Match "commit on 'main'"
+    }
+
+    It 'reports no refusal when core.hooksPath is unset, even in the repo root on main' {
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -NoHooksPath
+
+        (Test-SdlcGuardHookWouldRefuse -RepoRoot $repo.Consumer -ProtectedBranch 'main').Refuses |
+            Should -BeFalse
+    }
+}
+
+Describe 'Resolve-GitRevParsePath (issue #567)' {
+
+    BeforeEach {
+        $script:revParseRoot = Join-Path $TestDrive ("revparse-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:revParseRoot -Force | Out-Null
+    }
+
+    It 'returns the same absolute path for --git-dir and --git-common-dir in the repo root' {
+        $repo = New-GuardHookSyncFixture -Root $script:revParseRoot -NoHooksPath
+
+        $gitDir = Resolve-GitRevParsePath -RepoRoot $repo.Consumer -Flag '--git-dir'
+        $commonDir = Resolve-GitRevParsePath -RepoRoot $repo.Consumer -Flag '--git-common-dir'
+
+        [System.IO.Path]::IsPathRooted($gitDir) | Should -BeTrue -Because 'a relative answer must be resolved before it is compared'
+        Test-SamePath -Left $gitDir -Right $commonDir | Should -BeTrue
+    }
+
+    It 'returns different paths for the two flags inside a linked worktree' {
+        $repo = New-GuardHookSyncFixture -Root $script:revParseRoot -NoHooksPath
+        $wt = Join-Path $script:revParseRoot 'linked-wt'
+        git -C $repo.Consumer worktree add -q -b feat/revparse $wt main 2>&1 | Out-Null
+
+        $gitDir = Resolve-GitRevParsePath -RepoRoot $wt -Flag '--git-dir'
+        $commonDir = Resolve-GitRevParsePath -RepoRoot $wt -Flag '--git-common-dir'
+
+        Test-SamePath -Left $gitDir -Right $commonDir | Should -BeFalse -Because 'that difference IS how a worktree is told apart from the repo root'
+    }
+
+    It 'returns $null outside a git repository' {
+        $plain = Join-Path $script:revParseRoot 'not-a-repo'
+        New-Item -ItemType Directory -Path $plain -Force | Out-Null
+
+        Resolve-GitRevParsePath -RepoRoot $plain -Flag '--git-dir' | Should -BeNullOrEmpty
+    }
+
+    It 'refuses a flag outside the two it is allowed to ask for' {
+        # The ValidateSet is the guard against reintroducing a version-dependent
+        # flag whose unknown-option output git echoes back as a path.
+        { Resolve-GitRevParsePath -RepoRoot $script:revParseRoot -Flag '--path-format=absolute' } |
+            Should -Throw
+    }
+}
+
+Describe 'Test-SamePath' {
+
+    It 'ignores a trailing separator' {
+        Test-SamePath -Left 'C:\a\b' -Right 'C:\a\b\' | Should -BeTrue
+    }
+
+    It 'normalizes a relative segment' {
+        Test-SamePath -Left 'C:\a\b\..\b' -Right 'C:\a\b' | Should -BeTrue
+    }
+
+    It 'distinguishes different paths' {
+        Test-SamePath -Left 'C:\a\b' -Right 'C:\a\c' | Should -BeFalse
+    }
+
+    It 'returns false when either side is empty' {
+        Test-SamePath -Left '' -Right 'C:\a' | Should -BeFalse
+        Test-SamePath -Left 'C:\a' -Right $null | Should -BeFalse
+    }
+
+    It 'compares case-insensitively on Windows' -Skip:(-not $IsWindows) {
+        Test-SamePath -Left 'C:\A\B' -Right 'c:\a\b' | Should -BeTrue
+    }
+}
+
 Describe 'Issue #567: the sync must not install the guard hook and then trip over it' {
 
     BeforeEach {
