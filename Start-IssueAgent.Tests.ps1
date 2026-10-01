@@ -1559,3 +1559,108 @@ Describe 'Start-IssueAgent.ps1: the comment-based help states which repository w
         $script:HelpText | Should -Match '(?s)launch message'
     }
 }
+
+Describe 'Start-IssueAgent.ps1: the PATH each parameter set actually requires (issue #571)' {
+    # Get-RequiredCommand is unit-tested as a pure lookup, but that only proves
+    # what the list SAYS -- not that Main's preflight and the run that follows
+    # agree with it. These strip the real PATH, because the claim at stake is
+    # "-New still dispatches on a machine with claude but no git", and -New is
+    # the one path this change gave a new `git remote get-url origin` call.
+
+    BeforeAll {
+        $script:Launcher = Join-Path $PSScriptRoot 'Start-IssueAgent.ps1'
+
+        function Get-PathWithout {
+            # Every PATH entry that does NOT contain the named executable, so the
+            # command becomes genuinely unresolvable rather than merely mocked.
+            param([Parameter(Mandatory)][string]$Executable)
+
+            $sep = [IO.Path]::PathSeparator
+            $kept = foreach ($dir in ($env:PATH -split $sep | Where-Object { $_ })) {
+                $found = $false
+                foreach ($ext in @('.exe', '.cmd', '.bat', '')) {
+                    try {
+                        if (Test-Path -LiteralPath (Join-Path $dir ($Executable + $ext)) -ErrorAction Stop) {
+                            $found = $true
+                            break
+                        }
+                    }
+                    catch {
+                        # An unusable PATH entry (bad syntax, dead network share)
+                        # simply cannot hold the executable, so keep looking.
+                        Write-Verbose "Skipping unusable PATH entry '$dir': $_"
+                    }
+                }
+                if (-not $found) { $dir }
+            }
+            return ($kept -join $sep)
+        }
+    }
+
+    BeforeEach {
+        $script:originalPath = $env:PATH
+        $script:originalWtSession = $env:WT_SESSION
+        $script:originalClaudeCode = $env:CLAUDECODE
+        $env:WT_SESSION = $null
+        $env:CLAUDECODE = $null
+    }
+
+    AfterEach {
+        # PATH first: everything else in this suite needs git back.
+        $env:PATH = $script:originalPath
+        $env:WT_SESSION = $script:originalWtSession
+        $env:CLAUDECODE = $script:originalClaudeCode
+    }
+
+    It 'dispatches -New on a machine that has claude but no git' {
+        # The fixture is built BEFORE PATH is stripped -- git is needed to make it.
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
+        try {
+            Mock -CommandName Start-Process -MockWith { }
+            $env:PATH = Get-PathWithout -Executable 'git'
+            (Get-Command git -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty `
+                -Because 'the test is vacuous unless git is genuinely unresolvable'
+
+            Push-Location $caller
+            try { $out = & $script:Launcher -New 'probe idea' 6>&1 } finally { Pop-Location }
+
+            $rendered = ($out | Out-String).Trim()
+            $rendered | Should -BeLike "Launching claude session 'new: probe idea' in *"
+            $rendered | Should -Not -BeLike '* (*)' `
+                -Because 'with no git there is no origin to read, so the repository is omitted rather than guessed'
+            Should -Invoke Start-Process -Times 1 -Because '-New must still dispatch without git'
+        }
+        finally {
+            # PATH before the fixture: tearing the fixture down needs git, and
+            # this finally runs before AfterEach does.
+            $env:PATH = $script:originalPath
+            Remove-GitFixture $caller
+        }
+    }
+
+    It 'still refuses issue dispatch when gh is not on PATH' {
+        # gh is deliberately NOT mocked: a Pester mock defines a function, which
+        # Get-Command would find, and the preflight would pass for the wrong reason.
+        $caller = New-GitFixture -Slug 'caller-owner/caller-repo'
+        try {
+            Mock -CommandName Start-Process -MockWith { }
+            $env:PATH = Get-PathWithout -Executable 'gh'
+            (Get-Command gh -ErrorAction SilentlyContinue) | Should -BeNullOrEmpty `
+                -Because 'the test is vacuous unless gh is genuinely unresolvable'
+
+            Push-Location $caller
+            try {
+                # Write-Error is terminating here ($ErrorActionPreference = 'Stop'),
+                # so the preflight failure surfaces instead of reaching `exit 1`.
+                { & $script:Launcher 7 } | Should -Throw "*'gh' was not found on PATH*"
+            }
+            finally { Pop-Location }
+
+            Should -Invoke Start-Process -Times 0 -Because 'nothing should launch when a required tool is missing'
+        }
+        finally {
+            $env:PATH = $script:originalPath
+            Remove-GitFixture $caller
+        }
+    }
+}
