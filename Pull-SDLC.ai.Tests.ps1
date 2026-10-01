@@ -2045,6 +2045,24 @@ Describe 'Resolve-GitHooksDirectory / Test-SdlcGuardHookWouldRefuse (issue #567)
         Test-SamePath -Left $resolved -Right (Join-Path $repo.Consumer '.git/hooks') | Should -BeTrue
     }
 
+    It 'resolves the default hooks directory to the COMMON git dir inside a linked worktree' {
+        # Hooks are not per-worktree: a commit made inside a linked worktree runs
+        # <git-common-dir>/hooks and ignores <git-dir>/hooks entirely. Asking
+        # --git-dir here would name a directory git never reads (review finding
+        # on #567), and the repo-root case cannot catch it because the two flags
+        # answer identically there.
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -NoHooksPath
+        $wt = Join-Path $script:hookDirRoot 'default-hooks-wt'
+        git -C $repo.Consumer worktree add -q -b feat/default-hooks $wt main 2>&1 | Out-Null
+        Test-Path -LiteralPath (Join-Path $wt '.git') | Should -BeTrue -Because 'the worktree under test must exist'
+
+        $resolved = Resolve-GitHooksDirectory -RepoRoot $wt
+
+        Test-SamePath -Left $resolved -Right (Join-Path $repo.Consumer '.git/hooks') | Should -BeTrue
+        Test-SamePath -Left $resolved -Right (Join-Path $repo.Consumer '.git/worktrees/default-hooks-wt/hooks') |
+            Should -BeFalse -Because 'git never reads the per-worktree hooks directory'
+    }
+
     It 'resolves a relative core.hooksPath against the repo root, not the process directory' {
         # The caller's working directory is deliberately somewhere else entirely:
         # git resolves a relative core.hooksPath against the top level of the
@@ -2108,6 +2126,25 @@ Describe 'Resolve-GitHooksDirectory / Test-SdlcGuardHookWouldRefuse (issue #567)
 
         $result.Refuses | Should -BeTrue
         $result.Reason | Should -Match "commit on 'main'"
+    }
+
+    It 'does not predict a refusal for a differently-cased branch name' {
+        # The hook compares in bash, which is case-sensitive, so a branch named
+        # 'Main' is not refused by it. Predicting that it is would reroute for
+        # nothing (review finding on #567).
+        # The repo's only branch is MAIN -- a case-insensitive filesystem cannot
+        # hold both 'main' and 'MAIN' as loose refs, so this is the only shape the
+        # scenario has on Windows.
+        $repo = New-GuardHookSyncFixture -Root $script:hookDirRoot -WithOrigin -Branch 'MAIN'
+        $wt = Join-Path $script:hookDirRoot 'cased-wt'
+        git -C $repo.Consumer checkout -q -b parking 2>&1 | Out-Null
+        git -C $repo.Consumer worktree add -q $wt MAIN 2>&1 | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $wt '.githooks') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '.githooks/pre-commit') `
+            -Destination (Join-Path $wt '.githooks/pre-commit')
+        (git -C $wt rev-parse --abbrev-ref HEAD).Trim() | Should -Be 'MAIN' -Because 'the fixture must actually sit on the differently-cased branch'
+
+        (Test-SdlcGuardHookWouldRefuse -RepoRoot $wt -ProtectedBranch 'main').Refuses | Should -BeFalse
     }
 
     It 'reports no refusal when core.hooksPath is unset, even in the repo root on main' {
