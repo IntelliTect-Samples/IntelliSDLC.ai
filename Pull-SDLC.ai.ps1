@@ -61,18 +61,27 @@
     Commit the sync directly on the protected branch (typically `main`)
     instead of routing through the auto-worktree + PR path.
 
-    Default is state-driven:
-    * Bootstrap (no `.sdlc-ai-sync.json` AND no prior sync commit in the
-      git log) -> on. The first sync of a repo is tooling onboarding,
-      not a reviewable change; commit it directly.
-    * Steady state (the consumer has been synced before) -> off. Route
-      through the auto-worktree workflow so `main` stays clean and each
-      sync is reviewed.
+    The default is off -- every sync, including the first, routes through
+    the auto-worktree workflow so the protected branch stays clean and
+    each sync is reviewed. It turns on by itself only where that workflow
+    cannot deliver the sync at all:
+    * the protected branch has no commit for a worktree to branch from
+      (a repo straight out of `git init`), or
+    * no `origin` is configured, so a sync branch could not be pushed or
+      reviewed, and the commit would be stranded on a local branch while
+      the consumer's own checkout stayed empty.
 
-    Pass `-CommitOnMain` to force commit-on-main even in steady state
-    (the rare "trusted maintenance commit" case). Pass
-    `-CommitOnMain:$false` to force the auto-worktree path even at
-    bootstrap.
+    Being the FIRST sync is deliberately not one of those cases. The sync
+    delivers `.githooks/pre-commit`, so on a consumer that already ran
+    `git config core.hooksPath .githooks` (as CLAUDE.md instructs) a
+    commit-on-main first sync installed the guard hook and was then
+    refused by it -- see issue #567.
+
+    Pass `-CommitOnMain` to force commit-on-main anyway (the rare
+    "trusted maintenance commit" case); the run aborts up front, before
+    applying any op, if the guard hook would refuse it. Pass
+    `-CommitOnMain:$false` to forbid it even where nothing else can
+    deliver.
 
 .PARAMETER NoAutoWorktree
     When on the protected branch with a gate, do NOT auto-create a worktree.
@@ -1327,6 +1336,60 @@ function Set-SdlcSyncState {
     [System.IO.File]::WriteAllText($absPath, $json, (New-Object System.Text.UTF8Encoding $false))
 }
 
+function Reset-SdlcSyncState {
+    <#
+    .SYNOPSIS
+        Puts .sdlc-ai-sync.json back the way the run found it, and drops it from
+        the index, after a sync commit that never landed (issue #567).
+    .DESCRIPTION
+        The state file is the signal Test-IsBootstrapSync reads. A freshly
+        written one left behind by a FAILED commit makes the next run classify
+        the repo as already-synced, so the rerun the error message asks for
+        takes a different route than the run that failed -- which is how the
+        original report ended up with the sync commit on a scratch branch and
+        the whole op set still staged on main.
+
+        Everything else the run wrote is deliberately left in place for
+        inspection; this file is the script's own bookkeeping, not synced
+        content, and it is the one piece that changes the next run's behavior.
+    .OUTPUTS
+        [bool] $true when something was changed back.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [AllowNull()][byte[]]$OriginalBytes
+    )
+    $absPath = Join-Path $RepoRoot $script:SdlcSyncStateFile
+
+    Push-Location $RepoRoot
+    try {
+        # `git restore --staged` resolves HEAD, so it cannot run on a repo with
+        # no commits -- the state the script's own auto-init produces. `git rm
+        # --cached` drops the index entry without consulting HEAD and leaves the
+        # working-tree file alone, which is what is wanted there.
+        & git rev-parse --verify --quiet HEAD 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            & git restore --staged -- $script:SdlcSyncStateFile 2>&1 | Out-Null
+        }
+        else {
+            & git rm --cached --quiet -- $script:SdlcSyncStateFile 2>&1 | Out-Null
+        }
+    }
+    finally { Pop-Location }
+
+    if ($null -eq $OriginalBytes) {
+        if (Test-Path -LiteralPath $absPath) {
+            Remove-Item -LiteralPath $absPath -Force -ErrorAction SilentlyContinue
+            return $true
+        }
+        return $false
+    }
+    [System.IO.File]::WriteAllBytes($absPath, $OriginalBytes)
+    return $true
+}
+
 function Test-NoManagedFilesPresent {
     <#
     .SYNOPSIS
@@ -1844,6 +1907,212 @@ function Test-LocalDriftOnManagedPaths {
             }
         }
         return $drift.ToArray()
+    }
+    finally { Pop-Location }
+}
+
+function Test-SamePath {
+    <#
+    .SYNOPSIS
+        Returns $true when two paths name the same location. Case-insensitive
+        on Windows, case-sensitive elsewhere; trailing separators ignored.
+    .DESCRIPTION
+        Pure string + path normalization -- it never touches the filesystem, so
+        it answers for paths that do not exist yet (the guard hook this sync is
+        about to deliver, for instance).
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Left,
+        [AllowNull()][AllowEmptyString()][string]$Right
+    )
+    if ([string]::IsNullOrWhiteSpace($Left) -or [string]::IsNullOrWhiteSpace($Right)) { return $false }
+    try {
+        $l = [System.IO.Path]::GetFullPath($Left).TrimEnd([char]'\', [char]'/')
+        $r = [System.IO.Path]::GetFullPath($Right).TrimEnd([char]'\', [char]'/')
+    }
+    catch { return $false }
+    $comparison = if ($IsWindows) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    return [string]::Equals($l, $r, $comparison)
+}
+
+function Test-IsSdlcGuardHook {
+    <#
+    .SYNOPSIS
+        Returns $true when $Content is the upstream workflow guard hook -- the
+        .githooks/pre-commit this repository ships, which refuses a commit made
+        from the repo root and a commit made on the protected branch.
+    .DESCRIPTION
+        Recognized by the two refusal messages the hook prints, because those
+        refusals are what make it a guard. A consumer's own pre-commit hook
+        (husky, lint-staged, a formatter) says nothing about worktrees and must
+        NOT make the sync change route on its account, so matching the hook
+        rather than merely "a pre-commit hook exists" is the point (issue #567).
+
+        Pure: takes content, reads nothing.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([AllowNull()][AllowEmptyString()][string]$Content)
+    if ([string]::IsNullOrWhiteSpace($Content)) { return $false }
+    return ($Content -match 'COMMIT BLOCKED: You are committing from the repository root') -and
+           ($Content -match 'COMMIT BLOCKED: You are on the')
+}
+
+function Resolve-GitHooksDirectory {
+    <#
+    .SYNOPSIS
+        Returns the absolute directory git runs hooks from for $RepoRoot:
+        core.hooksPath when configured, otherwise <git-dir>/hooks. $null when
+        $RepoRoot is not a git repository.
+    .DESCRIPTION
+        A relative core.hooksPath is resolved against $RepoRoot, which is how
+        git treats it for a non-bare repository ("relative to the directory
+        where the hooks are run from", i.e. the top level of the working tree).
+        In a linked worktree that top level is the worktree's own, which is why
+        a consumer's `.githooks` setting keeps working inside .worktrees/.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([Parameter(Mandatory)][string]$RepoRoot)
+    Push-Location $RepoRoot
+    try {
+        $configured = (& git config --get core.hooksPath 2>$null | Select-Object -First 1)
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            $configured = $configured.Trim()
+            if ([System.IO.Path]::IsPathRooted($configured)) { return $configured }
+            return (Join-Path $RepoRoot $configured)
+        }
+        $gitDir = (& git rev-parse --absolute-git-dir 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($gitDir)) { return $null }
+        return (Join-Path $gitDir.Trim() 'hooks')
+    }
+    finally { Pop-Location }
+}
+
+function Test-SdlcGuardHookWouldRefuse {
+    <#
+    .SYNOPSIS
+        Returns @{ Refuses = $true/$false; Reason = <string>; HookPath = <path> }
+        -- whether the upstream guard hook will refuse a commit made in
+        $RepoRoot as it stands.
+    .DESCRIPTION
+        Two things have to hold, and both are checked without running anything.
+
+        First the guard has to be live by the time this sync commits. Either the
+        pre-commit hook git resolves already IS the guard hook, or
+        core.hooksPath points at the repo's own upstream-managed `.githooks/`
+        directory -- where THIS sync delivers it. The second case is the one
+        that produced issue #567: a consumer who followed CLAUDE.md and ran
+        `git config core.hooksPath .githooks` before their first sync had an
+        empty hooks directory, so nothing refused anything when the run started;
+        the sync then wrote the hook into it and the hook refused the sync's own
+        commit seconds later.
+
+        Second, the commit has to be one the guard actually refuses, so this
+        mirrors the hook's own two checks: a commit from the repo root (git-dir
+        and git-common-dir are the same path) or a commit on the protected
+        branch. Inside a worktree on a feature branch the hook passes and so
+        does this -- which is what makes the auto-worktree workflow the way out.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$ProtectedBranch = 'main'
+    )
+    $result = @{ Refuses = $false; Reason = $null; HookPath = $null }
+
+    $hooksDir = Resolve-GitHooksDirectory -RepoRoot $RepoRoot
+    if ([string]::IsNullOrWhiteSpace($hooksDir)) { return $result }
+    $hookPath = Join-Path $hooksDir 'pre-commit'
+    $result.HookPath = $hookPath
+
+    $guardLive = $false
+    if (Test-Path -LiteralPath $hookPath -PathType Leaf) {
+        $guardLive = Test-IsSdlcGuardHook -Content (Get-Content -LiteralPath $hookPath -Raw -ErrorAction SilentlyContinue)
+    }
+    if (-not $guardLive) {
+        # Not there (or not the guard) YET. This sync delivers
+        # .githooks/pre-commit on every run, so a core.hooksPath aimed at that
+        # directory means the guard is live by the time the commit is made.
+        $guardLive = Test-SamePath -Left $hooksDir -Right (Join-Path $RepoRoot '.githooks')
+    }
+    if (-not $guardLive) { return $result }
+
+    Push-Location $RepoRoot
+    try {
+        $gitDir = (& git rev-parse --absolute-git-dir 2>$null | Select-Object -First 1)
+        $commonDir = (& git rev-parse --path-format=absolute --git-common-dir 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($commonDir)) {
+            # --path-format predates git 2.31; resolve the relative form ourselves.
+            $raw = (& git rev-parse --git-common-dir 2>$null | Select-Object -First 1)
+            if (-not [string]::IsNullOrWhiteSpace($raw)) {
+                $raw = $raw.Trim()
+                $commonDir = if ([System.IO.Path]::IsPathRooted($raw)) { $raw } else { Join-Path $RepoRoot $raw }
+            }
+        }
+        if (Test-SamePath -Left $gitDir -Right $commonDir) {
+            $result.Refuses = $true
+            $result.Reason = "the workflow guard hook refuses a commit made from the repository root ($hookPath)"
+            return $result
+        }
+        $branch = (& git symbolic-ref --short HEAD 2>$null | Select-Object -First 1)
+        if ($branch -and $branch.Trim() -eq $ProtectedBranch) {
+            $result.Refuses = $true
+            $result.Reason = "the workflow guard hook refuses a commit on '$ProtectedBranch' ($hookPath)"
+        }
+        return $result
+    }
+    finally { Pop-Location }
+}
+
+function Test-WorktreeSyncViable {
+    <#
+    .SYNOPSIS
+        Returns @{ Viable = $true/$false; Code = <string>; Reason = <string> }
+        -- whether the auto-worktree workflow can actually DELIVER this sync.
+    .DESCRIPTION
+        This is the question behind whether a first sync may be routed through
+        a worktree instead of committed on the protected branch (issue #567).
+        Two states say no, and both are ordinary first-sync states:
+
+        * `NoProtectedCommit` -- the protected branch does not resolve to a
+          commit, so `git worktree add -b <sync branch> <path> <protected>` has
+          nothing to branch from. This is exactly what the script's own
+          `git init -b main` auto-init leaves behind.
+        * `NoOrigin` -- no origin is configured. The payoff of the worktree path
+          is a pushed branch and a PR; with no remote the push fails, the sync
+          commit is stranded on a local scratch branch, and the consumer's own
+          checkout is left without the files they ran the script to get.
+
+        In either state commit-on-main is the only route that delivers, so the
+        caller keeps it. See the -CommitOnMain decision in Invoke-PullSDLC.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RepoRoot,
+        [string]$ProtectedBranch = 'main'
+    )
+    Push-Location $RepoRoot
+    try {
+        & git rev-parse --verify --quiet "refs/heads/$ProtectedBranch" 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            return @{
+                Viable = $false
+                Code   = 'NoProtectedCommit'
+                Reason = "branch '$ProtectedBranch' has no commit for a worktree to branch from"
+            }
+        }
+        $originUrl = (& git remote get-url origin 2>$null | Select-Object -First 1)
+        if ([string]::IsNullOrWhiteSpace($originUrl)) {
+            return @{
+                Viable = $false
+                Code   = 'NoOrigin'
+                Reason = 'no origin is configured, so a sync branch could not be pushed or reviewed'
+            }
+        }
+        return @{ Viable = $true; Code = 'Viable'; Reason = $null }
     }
     finally { Pop-Location }
 }
@@ -3006,21 +3275,87 @@ function Invoke-PullSDLC {
         return 7
     }
 
+    # Can the auto-worktree workflow actually deliver this sync? Computed up
+    # front because both the -CommitOnMain decision and the guard-hook abort
+    # below need the answer, and because its Reason is the remediation a
+    # blocked run has to print.
+    $worktreeViability = Test-WorktreeSyncViable -RepoRoot $RepoRoot -ProtectedBranch $Branch
+
     # Determine the effective -CommitOnMain setting.
     # Explicit -CommitOnMain (or -CommitOnMain:$false) always wins.
-    # Otherwise default is on for first-time bootstrap, off in steady state.
     if ($PSBoundParameters.ContainsKey('CommitOnMain')) {
         $commitOnMainEffective = [bool]$CommitOnMain
     }
     else {
-        $commitOnMainEffective = Test-IsBootstrapSync -RepoRoot $RepoRoot
+        # Being the FIRST sync no longer implies commit-on-main (issue #567).
+        # The sync delivers .githooks/pre-commit, and a consumer who already
+        # followed CLAUDE.md's `git config core.hooksPath .githooks` had that
+        # hook refuse the sync's own commit on the protected branch moments
+        # after the sync installed it -- rc=4, nothing committed, every op left
+        # staged. Routing the commit the way the repository's own policy
+        # demands fixes that at the root instead of bypassing the hook, and a
+        # first sync is as reviewable as any other.
+        #
+        # Commit-on-main survives only where the worktree workflow cannot
+        # deliver at all (no commit to branch from, or no origin to push to) --
+        # see Test-WorktreeSyncViable.
+        $commitOnMainEffective = $false
+        if (Test-IsBootstrapSync -RepoRoot $RepoRoot) {
+            if (-not $worktreeViability.Viable) {
+                $commitOnMainEffective = $true
+                Write-Information "First sync, and the worktree workflow cannot deliver it ($($worktreeViability.Reason)); committing on '$Branch'."
+            }
+        }
+    }
+
+    # Will the guard hook refuse a commit made right here? Asked before any op is
+    # applied, because the answer decides the route -- and because an abort that
+    # has already rewritten every managed file is not an abort (issue #567). A
+    # read-only probe, so it is safe to ask under -WhatIf; the two decisions
+    # below are the ones -WhatIf skips.
+    $guard = Test-SdlcGuardHookWouldRefuse -RepoRoot $RepoRoot -ProtectedBranch $Branch
+
+    if (-not $WhatIfPreference -and $commitOnMainEffective -and $guard.Refuses) {
+        # Commit-on-main is the chosen (or demanded) route and the guard hook
+        # will refuse it. Nothing has been written yet; say so now rather than
+        # applying every op and failing at `git commit`.
+        Write-Error "ABORT: cannot create sync commit -- $($guard.Reason)." -ErrorAction Continue
+        Write-Information ''
+        Write-Information 'Resolve it one of these ways:'
+        if ($PSBoundParameters.ContainsKey('CommitOnMain') -and [bool]$CommitOnMain -and $worktreeViability.Viable) {
+            Write-Information '  * Drop -CommitOnMain. The sync then goes through .worktrees/sdlc-sync and a'
+            Write-Information '    PR, which the guard hook accepts.'
+        }
+        elseif ($worktreeViability.Code -eq 'NoOrigin') {
+            Write-Information '  * Give the repository an origin, then rerun. The sync then goes through'
+            Write-Information '    .worktrees/sdlc-sync and a PR, which the guard hook accepts:'
+            Write-Information '      git remote add origin <url>'
+        }
+        elseif ($worktreeViability.Code -eq 'NoProtectedCommit') {
+            Write-Information "  * Make the first commit on '$Branch' yourself, then rerun -- a worktree needs"
+            Write-Information '    a commit to branch from, and the sync can then go through one.'
+        }
+        Write-Information '  * Or take the hook out of the way for this one sync:'
+        Write-Information '      git config --unset core.hooksPath'
+        Write-Information '      <rerun the sync>'
+        Write-Information '      git config core.hooksPath .githooks'
+        Write-Information ''
+        Write-Information 'Use -WhatIf to preview ops without committing.'
+        return 3
     }
 
     if (-not $commitOnMainEffective -and -not $WhatIfPreference) {
         $ctx = Test-CommitContextAllowed -RepoRoot $RepoRoot -ProtectedBranch $Branch
-        if (-not $ctx.Allowed) {
+        # Two separate reasons a commit cannot be made here, and either one
+        # routes to the same place. Test-CommitContextAllowed is the policy
+        # check (never commit the sync on the protected branch); the guard hook
+        # also refuses a commit from the repo ROOT on any branch, which the
+        # policy check does not model -- so a consumer sitting on a feature
+        # branch in their main checkout was still hitting rc=4 (issue #567).
+        $gateReason = if (-not $ctx.Allowed) { $ctx.Reason } elseif ($guard.Refuses) { $guard.Reason } else { $null }
+        if ($gateReason) {
             if ($NoAutoWorktree) {
-                Write-Error "ABORT: cannot create sync commit -- $($ctx.Reason)." -ErrorAction Continue
+                Write-Error "ABORT: cannot create sync commit -- $gateReason." -ErrorAction Continue
                 Write-Information ''
                 Write-Information 'Create a worktree first:'
                 Write-Information '  git worktree add .worktrees/sdlc-sync -b chore/sdlc-sync main'
@@ -3032,7 +3367,7 @@ function Invoke-PullSDLC {
                 return 3
             }
 
-            Write-Information "On protected branch '$($ctx.Branch)'. Switching to auto-worktree workflow ..."
+            Write-Information "Cannot commit the sync here -- $gateReason. Switching to auto-worktree workflow ..."
             $syncArgs = @{
                 Branch         = $Branch
                 RemoteName     = $RemoteName
@@ -3257,6 +3592,13 @@ function Invoke-PullSDLC {
     # between anchor and head, so a stale anchor yields identical results; it
     # merely re-diffs a slightly wider range until real managed content lands.
     $syncStateChanged = ($ops.Count -gt 0) -or ($mergedPaths.Count -gt 0)
+    # Captured so a sync commit that never lands can put the file back exactly
+    # as this run found it -- see Reset-SdlcSyncState and issue #567.
+    $syncStatePathAbs = Join-Path $RepoRoot $script:SdlcSyncStateFile
+    $syncStateBefore = if (Test-Path -LiteralPath $syncStatePathAbs) {
+        [System.IO.File]::ReadAllBytes($syncStatePathAbs)
+    }
+    else { $null }
     if ($syncStateChanged) {
         Set-SdlcSyncState -RepoRoot $RepoRoot -Remote $RemoteName -Ref $Branch -Commit $upstreamHead
     }
@@ -3373,6 +3715,10 @@ function Invoke-PullSDLC {
             $headAfter = (git rev-parse HEAD 2>$null).Trim()
             if ($headBefore -eq $headAfter) {
                 Write-Error 'ERROR: git commit did not advance HEAD. The commit was likely blocked by a pre-commit hook or branch protection.' -ErrorAction Continue
+                # Put the state file back first: left behind, it makes the rerun
+                # this warning asks for read the repo as already-synced and take
+                # a different route than the run that just failed (issue #567).
+                $null = Reset-SdlcSyncState -RepoRoot $RepoRoot -OriginalBytes $syncStateBefore
                 Write-Warning 'Working tree changes have been left in place for inspection. Resolve the policy violation and rerun.'
                 return 4
             }

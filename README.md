@@ -22,12 +22,17 @@ iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pu
 
 The script auto-detects the from-zero state (no `.sdlc-ai-sync.json`, no
 prior `chore(sdlc): sync` commit, no upstream-managed files) and proceeds
-without prompting. **First-time sync commits directly on the current
-branch** -- tooling onboarding is not a reviewable change. **Subsequent
-syncs** detect the prior state file and route through an auto-worktree
-(`.worktrees/sdlc-sync`) + PR for review. Pass `-CommitOnMain` to force
-direct-on-`main` even on a steady-state sync, or `-CommitOnMain:$false`
-to force the auto-worktree path on the first sync.
+without prompting. **Every sync, the first one included, routes through an
+auto-worktree (`.worktrees/sdlc-sync`) + PR for review.** The one exception
+is a repository the worktree path cannot deliver to -- no commit for a
+worktree to branch from, or no `origin` to push to (see **B. Brand-new
+project** below) -- where the sync commits on the current branch instead. Pass `-CommitOnMain` to force
+direct-on-`main` anyway, or `-CommitOnMain:$false` to forbid it.
+
+The first sync is not treated as an unreviewable onboarding commit, because
+it delivers `.githooks/pre-commit`: on a repository that had already run
+`git config core.hooksPath .githooks`, a commit-on-main first sync installed
+that guard hook and was then refused by it (issue #567).
 
 What the script does:
 
@@ -63,9 +68,10 @@ iwr https://raw.githubusercontent.com/IntelliTect-Samples/IntelliSDLC.ai/main/Pu
 gh repo create --source=. --public --push
 ```
 
-The script detects the bootstrap state (no `.sdlc-ai-sync.json`, no
-prior sync commit) and commits the first sync directly on `main`. Once
-the project has been synced once, subsequent runs route through the
+Here the sync commits directly on `main`: there is no `origin` yet to push a
+sync branch to (and, before `gh repo create`, often no commit for a worktree
+to branch from either), so the worktree + PR path could not deliver the files
+at all. Once the project has a remote, every run routes through the
 auto-worktree + PR path automatically.
 
 `-NoAutoInit` disables the auto-`git init` step if you prefer to set up the
