@@ -1,6 +1,30 @@
 BeforeAll {
     . "$PSScriptRoot/Start-IssueAgent.ps1"
 
+    # The launcher's PATH preflight requires `claude`, and Pester can only Mock
+    # a command that resolves. A CI runner has no Claude Code installed, so
+    # without this 19 tests fail on "not found" before reaching the behavior
+    # they test (issue #564). When claude is absent, put a stub on PATH for the
+    # suite's duration. No test here launches a real session -- each mocks
+    # claude or dispatches out of pane -- so the stub fails loudly if run.
+    $script:SuitePath = $env:PATH
+    $script:ClaudeStubDir = $null
+    if (-not (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue)) {
+        $script:ClaudeStubDir = Join-Path ([IO.Path]::GetTempPath()) ('sia-claude-stub-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:ClaudeStubDir -Force | Out-Null
+        if ($IsWindows) {
+            Set-Content -LiteralPath (Join-Path $script:ClaudeStubDir 'claude.cmd') -Value @(
+                '@echo test stub: claude must be mocked, never executed 1>&2', '@exit /b 1')
+        }
+        else {
+            $stub = Join-Path $script:ClaudeStubDir 'claude'
+            Set-Content -LiteralPath $stub -Value @(
+                '#!/bin/sh', 'echo "test stub: claude must be mocked, never executed" >&2', 'exit 1')
+            chmod +x $stub
+        }
+        $env:PATH = $script:ClaudeStubDir + [IO.Path]::PathSeparator + $env:PATH
+    }
+
     function New-GitFixture {
         <#  A real repository in a temp directory, optionally with a real origin
             remote. Real git rather than a mocked one: several suites below turn
@@ -49,6 +73,13 @@ BeforeAll {
 
         return [IO.Path]::GetFullPath(
             (git -C $Path rev-parse --path-format=absolute --git-common-dir | Select-Object -First 1).Trim())
+    }
+}
+
+AfterAll {
+    $env:PATH = $script:SuitePath
+    if ($script:ClaudeStubDir) {
+        Remove-Item -LiteralPath $script:ClaudeStubDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
