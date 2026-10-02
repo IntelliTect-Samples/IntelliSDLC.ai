@@ -1,0 +1,70 @@
+name: "Root Tests"
+
+# Runs the repo-root Pester suites (Cleanup-Worktree.Tests.ps1,
+# Pull-SDLC.ai.Tests.ps1, Start-IssueAgent.Tests.ps1, ...) on Windows -- the
+# platform those scripts are written for. The "Pester tests (.github/)" job in
+# validate-instructions.yml covers only the suites under .github/ (issue #564).
+#
+# Triggered only when something the root suites exercise or read changes:
+#   '*'                    every root-level file -- the scripts, their suites,
+#                          and the *.template / README files the Pull-SDLC.ai
+#                          suite inspects; one test also enumerates the root.
+#   '.gitattributes',      dotfiles at the root, listed explicitly rather than
+#   '.gitignore'           relying on '*' to match a leading dot.
+#   '.githooks/**'         Pull-SDLC.ai.Tests.ps1 copies and runs pre-commit.
+#   'templates/**'         a test asserts the retired templates/ stays absent.
+#   '.github/ci/**'        the gate this job runs.
+#   this workflow file.
+#
+# Known gap: Pull-SDLC.ai.Tests.ps1 also asserts that EVERY tracked file is
+# stored with LF (issue #274). A CRLF blob added elsewhere will not trigger this
+# workflow; the root .gitattributes (`* text=auto eol=lf`) is what prevents one.
+#
+# REQUIRED-CHECK WARNING: main has no branch protection or rulesets today, so
+# nothing is a required check. If this job is ever made required, a
+# workflow-level `paths:` filter means PRs that touch none of these paths never
+# report it, and they wait on "Expected" forever. Before marking it required,
+# either move the filter to job level (a skipped job counts as success) or add
+# a same-named no-op job triggered by the inverse `paths-ignore`.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*'
+      - '.gitattributes'
+      - '.gitignore'
+      - '.githooks/**'
+      - 'templates/**'
+      - '.github/ci/**'
+      - '.github/workflows/root-tests.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '*'
+      - '.gitattributes'
+      - '.gitignore'
+      - '.githooks/**'
+      - 'templates/**'
+      - '.github/ci/**'
+      - '.github/workflows/root-tests.yml'
+
+jobs:
+  pester-root:
+    name: Pester tests (repo root, Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      # Same gate as the .github/ job: it fails when zero tests run, when a
+      # discovered file produced no container, or when any test fails (issue
+      # #304). It is handed the root suite FILES rather than '.', because a
+      # directory root would recurse into .github/ and run those suites twice.
+      - name: Run Pester suite
+        shell: pwsh
+        run: |
+          Install-Module -Name Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -MinimumVersion 5.0.0
+          Write-Output "Pester $((Get-Module Pester).Version)"
+          $files = @(Get-ChildItem -LiteralPath . -File -Filter '*.Tests.ps1' | ForEach-Object FullName)
+          ./.github/ci/Invoke-PesterSuite.ps1 -Path $files
