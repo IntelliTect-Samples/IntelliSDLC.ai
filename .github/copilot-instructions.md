@@ -76,6 +76,11 @@ When multiple languages coexist, apply each language's rules to the files of tha
 If the language is not listed, infer conventions from the project's existing code,
 README, and build files.
 
+Whatever the language, code that writes interactive status to a terminal (progress,
+spinners, pickers, live counters) follows `.github/instructions/console-ui.instructions.md`:
+one line per item updated in place, cursor-relative updates, no escape codes when the
+output is redirected.
+
 ## Development Philosophy
 
 1. **Behavior-first testing** -- Ship a test with every behavior change; default to test-first. The test must fail for a behavioral reason (assertion failure, not compile error) when the change is reverted. Spikes may defer test-first but must be deleted or retro-fitted with behavior-first tests before merge.

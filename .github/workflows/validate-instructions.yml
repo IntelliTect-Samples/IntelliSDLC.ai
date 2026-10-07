@@ -28,6 +28,7 @@ jobs:
             .github/agents/plan.agent.md \
             .github/agents/instructions.agent.md \
             .github/agents/prd.agent.md \
+            .github/instructions/console-ui.instructions.md \
             .github/instructions/copilot-coding-agent.instructions.md \
             .github/instructions/csharp.instructions.md \
             .github/instructions/powershell.instructions.md \
