@@ -77,9 +77,7 @@ If the language is not listed, infer conventions from the project's existing cod
 README, and build files.
 
 Whatever the language, code that writes interactive status to a terminal (progress,
-spinners, pickers, live counters) follows `.github/instructions/console-ui.instructions.md`:
-one line per item updated in place, cursor-relative updates, no escape codes when the
-output is redirected.
+spinners, pickers, live counters) follows `.github/instructions/console-ui.instructions.md`.
 
 ## Development Philosophy
 

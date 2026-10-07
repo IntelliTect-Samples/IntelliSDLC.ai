@@ -193,7 +193,7 @@ pre-existing on `main`.
 - **Development conventions**: [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) -- code style, testing conventions, branching strategy, commit format, and workflow.
 - **Skills**: [`.github/skills/`](./.github/skills/) -- reusable process definitions (behavior-first testing, refactoring, code review, debugging, functional testing, phase gates).
 - **Agents**: [`.github/agents/`](./.github/agents/) -- orchestrators and interactive workflows (dev loop, planning, code review, instructions, PRD).
-- **Language conventions**: [`.github/instructions/`](./.github/instructions/) -- C#, PowerShell, TypeScript, behavior-first testing principles, console UI (progress and live status in a terminal).
+- **Language conventions**: [`.github/instructions/`](./.github/instructions/) -- C#, PowerShell, TypeScript, behavior-first testing principles, and console UI ([`console-ui.instructions.md`](./.github/instructions/console-ui.instructions.md) -- progress and live status in a terminal).
 
 ## Repository Structure
 
