@@ -143,15 +143,17 @@ function Get-PropertyValue {
 }
 
 # Directory names never searched for projects or sources: build output,
-# version-control metadata, other checkouts, and package trees.
-$script:PrunedDirectoryNames = @('bin', 'obj', '.git', '.worktrees', '.vs', 'node_modules')
+# version-control metadata, other checkouts, and package trees. '.claude'
+# holds agent settings and Claude Code's sub-agent worktrees
+# (.claude/worktrees/<id>), never the checkout's own projects (issue #583).
+$script:PrunedDirectoryNames = @('bin', 'obj', '.git', '.worktrees', '.claude', '.vs', 'node_modules')
 
 function Get-TreeFile {
     <#
     .SYNOPSIS
         Enumerates files under $Root whose extension is in $Extension or whose
         name is in $FileName, never descending into a pruned directory
-        (bin, obj, .git, .worktrees, .vs, node_modules).
+        (bin, obj, .git, .worktrees, .claude, .vs, node_modules).
     .DESCRIPTION
         Pruning happens DURING the walk (issue #519). Filtering the output of
         Get-ChildItem -Recurse still enumerates every excluded file first: in a

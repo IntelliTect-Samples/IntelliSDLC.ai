@@ -157,6 +157,28 @@ Describe 'Find-RunnableProjects' {
         $result.Count | Should -Be 1
         $result[0].FullName | Should -Not -BeLike '*\.worktrees\*'
     }
+
+    It 'excludes projects inside Claude Code agent worktrees (.claude/worktrees) (issue #583)' {
+        $testRoot = Join-Path $TestDrive 'claude-worktree-test'
+        New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+
+        New-CsprojStub "$testRoot/src/App/App.csproj" -OutputType 'Exe'
+        New-CsprojStub "$testRoot/.claude/worktrees/agent-1/src/App/App.csproj" -OutputType 'Exe'
+
+        $SearchRoot = $testRoot
+        $result = @(Find-RunnableProjects)
+        $result.Count | Should -Be 1
+        $result[0].FullName | Should -Not -BeLike '*\.claude\*'
+    }
+
+    It 'still finds the projects of an agent worktree when run from inside it (issue #583)' {
+        $root = Join-Path $TestDrive 'repo/.claude/worktrees/agent-2'
+        New-CsprojStub "$root/src/App/App.csproj" -OutputType 'Exe'
+
+        $SearchRoot = $root
+        $result = @(Find-RunnableProjects)
+        $result.Count | Should -Be 1
+    }
 }
 
 Describe 'Test-HasLaunchSettings' {
