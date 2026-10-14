@@ -146,6 +146,8 @@ function Get-PropertyValue {
 # version-control metadata, other checkouts, and package trees. '.claude'
 # holds agent settings and Claude Code's sub-agent worktrees
 # (.claude/worktrees/<id>), never the checkout's own projects (issue #583).
+# A project that does live under one of these is still runnable by pointing
+# -SearchPath at it: the root itself is never pruned (issue #233).
 $script:PrunedDirectoryNames = @('bin', 'obj', '.git', '.worktrees', '.claude', '.vs', 'node_modules')
 
 function Get-TreeFile {
