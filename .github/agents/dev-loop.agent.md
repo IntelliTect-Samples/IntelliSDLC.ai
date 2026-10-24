@@ -275,7 +275,7 @@ Phase 3-7 flow.** Displaying the result is a required output of every dev-loop r
      accessibility break)?
 5. **Branch on the review:**
    - A=yes, B=no -> write `.evidence/<phase-id>/PASSED`. Run
-     `Publish-Evidence.ps1 -ArtifactPath <artifact> -PullRequest <num> -LocalOnly`
+     `Publish-Evidence.ps1 -ArtifactPath <artifact> -LocalOnly`
      to print the clickable `file:///` URL for the entry-point file
      (typically `.evidence/<phase-id>/evidence.md`). **Defer the PR upload to
      Phase 7** -- the same script runs again without `-LocalOnly` once the PR
