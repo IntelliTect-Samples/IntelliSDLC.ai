@@ -75,3 +75,33 @@ Describe 'plan.agent.md preserves the core Socratic-question recipe' {
         $script:PlanText | Should -Match '(?i)multiple\s+choice'
     }
 }
+
+# Issue #589: a dispatch hand-off is a durable string that can be replayed days
+# after it was composed, by which time its issue may be closed and its work
+# merged. The dispatcher validates at claim time and then exits, so only the
+# receiver can catch a stale hand-off. Phase 0 must therefore check the issue
+# state before Phase 1 creates a worktree.
+
+Describe 'dev-loop.agent.md Phase 0 checks the issue state before any worktree' {
+    BeforeAll {
+        $script:Phase0Body = (Get-Phase0Section -Path $script:DevLoop) -join "`n"
+    }
+
+    It 'reads the issue state, not only its body' {
+        $script:Phase0Body | Should -Match 'gh issue view'
+        $script:Phase0Body | Should -Match '(?m)--json[^\r\n]*\bstate\b'
+    }
+
+    It 'says a closed issue stops the run' {
+        $script:Phase0Body | Should -Match '(?i)closed'
+        $script:Phase0Body | Should -Match '(?i)\bstop\b'
+    }
+
+    It 'names the closing pull request as what to report' {
+        $script:Phase0Body | Should -Match 'closedByPullRequestsReferences'
+    }
+
+    It 'puts the check before the worktree, by requiring it ahead of Phase 1' {
+        $script:Phase0Body | Should -Match '(?i)before\s+(Phase\s+1|(the\s+)?worktree)'
+    }
+}
