@@ -129,8 +129,24 @@ of context exploration, Socratic clarifying questions, 2-3 approach trade-offs,
 and GitHub-issue creation.
 
 1. **If a design issue already exists** for this task (user supplied an issue
-   number, or one is linked from the request), **skip Phase 0**. Record the
-   issue number for Phase 7 and proceed directly to Phase 1.
+   number, or one is linked from the request), **confirm it is still open
+   before Phase 1 creates a worktree.** A dispatch hand-off is a durable
+   string: it can be replayed days after it was composed, by which time the
+   issue may be closed and its work merged.
+
+   ```bash
+   gh issue view <n> --json state,stateReason,closedByPullRequestsReferences
+   ```
+
+   A `CLOSED` state is a **stop-and-report**, not a reason to reopen the issue
+   or to start parallel work: name the issue and the pull request in
+   `closedByPullRequestsReferences`, then end the run. The dispatcher validated
+   at claim time and then exited, so this is the only point at which a stale
+   hand-off is caught. Reading the body alone cannot catch it -- a closed
+   issue's body still reads as live work.
+
+   Otherwise **skip Phase 0**, record the issue number for Phase 7, and
+   proceed to Phase 1.
 2. **Otherwise, invoke `@plan`** to drive the design dialogue end-to-end.
 3. When `@plan` returns with an approved design saved as a GitHub issue,
    record the issue number and continue to Phase 1.
