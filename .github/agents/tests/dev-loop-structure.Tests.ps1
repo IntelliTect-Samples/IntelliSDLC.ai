@@ -81,27 +81,78 @@ Describe 'plan.agent.md preserves the core Socratic-question recipe' {
 # merged. The dispatcher validates at claim time and then exits, so only the
 # receiver can catch a stale hand-off. Phase 0 must therefore check the issue
 # state before Phase 1 creates a worktree.
+#
+# These assertions deliberately test the GUARD, not its vocabulary. An earlier
+# draft matched `closed`, `stop` and the field name anywhere in the section,
+# which passed against prose stating the opposite ("a CLOSED state is
+# informational only ... not a signal to halt"). Test-Phase0StateGuard below is
+# therefore polarity-aware, and 'rejects prose that inverts the guard' holds it
+# to that.
 
 Describe 'dev-loop.agent.md Phase 0 checks the issue state before any worktree' {
     BeforeAll {
+        # Phrases that neutralise the guard while keeping its vocabulary.
+        $script:Neutralisers = @(
+            '(?i)never\s+a\s+stop'
+            '(?i)not\s+a\s+(signal\s+to\s+halt|stop)'
+            '(?i)informational\s+only'
+            '(?i)for\s+context\s+only'
+            '(?i)no\s+stop\s+condition'
+        )
+
+        function Test-Phase0StateGuard {
+            <#  True only when the section reads the issue state AND ties a
+                CLOSED state to stopping, with no phrase undoing that.  #>
+            param([Parameter(Mandatory)][AllowEmptyString()][string]$Body)
+
+            if ($Body -notmatch 'gh issue view') { return $false }
+            if ($Body -notmatch '(?m)--json[^\r\n]*\bstate\b') { return $false }
+
+            foreach ($n in $script:Neutralisers) {
+                if ($Body -match $n) { return $false }
+            }
+
+            # The sentence that introduces CLOSED must itself say stop.
+            $sentences = [regex]::Split($Body, '(?<=[.!])\s+')
+            $closed = @($sentences | Where-Object { $_ -match '\bCLOSED\b' })
+            if (-not $closed) { return $false }
+            return [bool](@($closed | Where-Object { $_ -match '(?i)\bstop' }).Count)
+        }
+
         $script:Phase0Body = (Get-Phase0Section -Path $script:DevLoop) -join "`n"
     }
 
-    It 'reads the issue state, not only its body' {
-        $script:Phase0Body | Should -Match 'gh issue view'
-        $script:Phase0Body | Should -Match '(?m)--json[^\r\n]*\bstate\b'
+    It 'ties a CLOSED state to stopping the run' {
+        Test-Phase0StateGuard -Body $script:Phase0Body | Should -BeTrue
     }
 
-    It 'says a closed issue stops the run' {
-        $script:Phase0Body | Should -Match '(?i)closed'
-        $script:Phase0Body | Should -Match '(?i)\bstop\b'
+    It 'rejects prose that inverts the guard while keeping its vocabulary' {
+        # Guards the assertion above against becoming vacuous.
+        $inverted = @'
+A `CLOSED` state is informational only. You may run
+`gh issue view <n> --json state,stateReason,closedByPullRequestsReferences`
+for context. There is never a stop condition here, and
+`closedByPullRequestsReferences` is not a signal to halt. Always continue
+before Phase 1 creates a worktree.
+'@
+        Test-Phase0StateGuard -Body $inverted | Should -BeFalse
     }
 
-    It 'names the closing pull request as what to report' {
+    It 'reads the state before instructing the run to continue' {
+        $check = $script:Phase0Body.IndexOf('gh issue view')
+        $skip  = [regex]::Match($script:Phase0Body, '(?i)skip Phase 0').Index
+        $check | Should -BeGreaterThan -1
+        $skip  | Should -BeGreaterThan $check
+    }
+
+    It 'says what to report when a closed issue has no closing pull request' {
         $script:Phase0Body | Should -Match 'closedByPullRequestsReferences'
+        $script:Phase0Body | Should -Match '(?i)(empty|without one)'
+        $script:Phase0Body | Should -Match 'stateReason'
     }
 
-    It 'puts the check before the worktree, by requiring it ahead of Phase 1' {
-        $script:Phase0Body | Should -Match '(?i)before\s+(Phase\s+1|(the\s+)?worktree)'
+    It 'treats an unreadable issue as a stop, not as permission to proceed' {
+        $script:Phase0Body | Should -Match '(?i)(command itself fails|cannot read|deleted, transferred)'
+        $script:Phase0Body | Should -Match '(?i)also a stop'
     }
 }

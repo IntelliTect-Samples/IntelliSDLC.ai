@@ -400,7 +400,8 @@ Every feature must be tracked as a **GitHub issue** through the full lifecycle:
 
 - **Brainstorm (Phase 0) is owned by the `@plan` agent.** `@dev-loop`
   delegates the design dialogue to `@plan`, which creates the GitHub issue.
-  If a design issue already exists, Phase 0 is skipped.
+  If a design issue already exists, Phase 0 confirms it is still open -- a
+  closed issue stops the run -- and is otherwise skipped.
 - **Update the issue with the implementation plan (Phase 2).**
 - **Link the PR to the issue** with `Closes #<issue-number>`.
 
