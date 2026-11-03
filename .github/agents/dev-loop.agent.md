@@ -138,15 +138,15 @@ and GitHub-issue creation.
    gh issue view <n> --json state,stateReason,closedByPullRequestsReferences
    ```
 
-   A `CLOSED` state is a **stop-and-report**, not a reason to reopen the issue
-   or to start parallel work: name the issue and the pull request in
-   `closedByPullRequestsReferences`, then end the run. The dispatcher validated
-   at claim time and then exited, so this is the only point at which a stale
-   hand-off is caught. Reading the body alone cannot catch it -- a closed
-   issue's body still reads as live work.
+   A `CLOSED` state is a **stop-and-report** -- never a reason to reopen the
+   issue or to start parallel work. Report the closing pull request from
+   `closedByPullRequestsReferences`; when it is empty the issue was closed
+   without one, so report `stateReason` (e.g. `NOT_PLANNED`) instead. **If the
+   command itself fails** -- a deleted, transferred, or wrong issue number --
+   that is also a stop: an issue you cannot read is not one you may build on.
 
-   Otherwise **skip Phase 0**, record the issue number for Phase 7, and
-   proceed to Phase 1.
+   Only an `OPEN` issue continues: **skip Phase 0**, record the issue number
+   for Phase 7, and proceed to Phase 1.
 2. **Otherwise, invoke `@plan`** to drive the design dialogue end-to-end.
 3. When `@plan` returns with an approved design saved as a GitHub issue,
    record the issue number and continue to Phase 1.
@@ -571,7 +571,9 @@ Runs after the PR is merged or closed. Use the repo-root `Cleanup-Worktree.ps1` 
 ## Execution Guidelines
 
 1. **Always brainstorm first** -- delegate Phase 0 to `@plan` so the approved
-   design lands in a GitHub issue before any code is written.
+   design lands in a GitHub issue before any code is written. When the issue
+   already exists, Phase 0 first confirms it is still open; a closed issue
+   stops the run before Phase 1 creates a worktree.
 2. **Create a worktree before writing files** -- verify you are NOT on `main`.
 3. **Execute phases 3-7 autonomously** -- one continuous flow, no pausing.
 4. **One behavior at a time** -- complete the full loop before starting the next.
