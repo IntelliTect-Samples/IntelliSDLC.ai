@@ -82,41 +82,79 @@ Describe 'plan.agent.md preserves the core Socratic-question recipe' {
 # receiver can catch a stale hand-off. Phase 0 must therefore check the issue
 # state before Phase 1 creates a worktree.
 #
-# These assertions deliberately test the GUARD, not its vocabulary. An earlier
-# draft matched `closed`, `stop` and the field name anywhere in the section,
-# which passed against prose stating the opposite ("a CLOSED state is
-# informational only ... not a signal to halt"). Test-Phase0StateGuard below is
-# therefore polarity-aware, and 'rejects prose that inverts the guard' holds it
-# to that.
+# These assertions test the GUARD, not its vocabulary, and the fixture table
+# below is why. Two earlier drafts were defeated by independent review:
+#   1. Matching `closed`, `stop` and the field name anywhere in the section
+#      passed against prose reading "a CLOSED state is informational only ...
+#      not a signal to halt".
+#   2. Requiring the literal word `stop` in the same sentence as CLOSED, with a
+#      fixed list of neutralising phrases, still passed "does not stop the run"
+#      and "never stops the run" (the neutralisers all required the article
+#      "a"), and wrongly REJECTED correct guards worded with `halt` / `end the
+#      run`, or split across two sentences.
+# Every fixture below is a case that actually broke one of those drafts. Add to
+# it rather than loosening the predicate.
+
+BeforeDiscovery {
+    $script:GuardFixtures = @(
+        @{ Name = 'prose that says a closed state does not stop the run'
+           Expected = $false
+           Text = 'A `CLOSED` state does not stop the run; continue to Phase 1 regardless.' }
+        @{ Name = 'prose that says a closed state never stops the run'
+           Expected = $false
+           Text = 'A `CLOSED` state never stops the run -- proceed to Phase 1 either way.' }
+        @{ Name = "prose using the contracted won't stop"
+           Expected = $false
+           Text = "A `CLOSED` state won't stop the run; carry on to Phase 1." }
+        @{ Name = 'prose calling a closed state informational only'
+           Expected = $false
+           Text = 'A `CLOSED` state is informational only and is not a signal to halt.' }
+        @{ Name = 'a correct guard worded with halt and end the run'
+           Expected = $true
+           Text = 'If the result is `CLOSED`, halt immediately and end the run. Do not proceed to Phase 1.' }
+        @{ Name = 'a correct guard split across two sentences'
+           Expected = $true
+           Text = 'The issue may come back `CLOSED`. In that case, stop the run and report it.' }
+        @{ Name = 'a correct guard joined by a semicolon'
+           Expected = $true
+           Text = 'Read the state; a `CLOSED` result means stop the run.' }
+        @{ Name = 'the unguarded Phase 0 this issue replaced'
+           Expected = $false
+           Text = 'If a design issue already exists, skip Phase 0 and proceed directly to Phase 1.' }
+    )
+}
 
 Describe 'dev-loop.agent.md Phase 0 checks the issue state before any worktree' {
     BeforeAll {
-        # Phrases that neutralise the guard while keeping its vocabulary.
-        $script:Neutralisers = @(
-            '(?i)never\s+a\s+stop'
-            '(?i)not\s+a\s+(signal\s+to\s+halt|stop)'
-            '(?i)informational\s+only'
-            '(?i)for\s+context\s+only'
-            '(?i)no\s+stop\s+condition'
-        )
+        $stopVerb            = '(\bstops?\b|\bstopping\b|\bhalts?\b|\baborts?\b|ends?\s+the\s+run)'
+        $script:StopPattern  = "(?i)($stopVerb|do(es)?\s+not\s+(proceed|continue))"
+        $negator             = '(?i)(\bnot\b|\bnever\b|\bcannot\b|n''t\b|\bno\s+longer\b)'
+        $script:NegatedStop  = "$negator[^.!;]{0,20}?(?i)$stopVerb"
 
         function Test-Phase0StateGuard {
             <#  True only when the section reads the issue state AND ties a
-                CLOSED state to stopping, with no phrase undoing that.  #>
+                CLOSED result to stopping. Negating the stop verb anywhere in
+                the CLOSED sentence (or the one after it) disqualifies it, so
+                keeping the vocabulary while inverting the meaning fails.  #>
             param([Parameter(Mandatory)][AllowEmptyString()][string]$Body)
 
             if ($Body -notmatch 'gh issue view') { return $false }
             if ($Body -notmatch '(?m)--json[^\r\n]*\bstate\b') { return $false }
 
-            foreach ($n in $script:Neutralisers) {
-                if ($Body -match $n) { return $false }
-            }
-
-            # The sentence that introduces CLOSED must itself say stop.
+            # The guard may span the CLOSED sentence and the one following it.
             $sentences = [regex]::Split($Body, '(?<=[.!])\s+')
-            $closed = @($sentences | Where-Object { $_ -match '\bCLOSED\b' })
-            if (-not $closed) { return $false }
-            return [bool](@($closed | Where-Object { $_ -match '(?i)\bstop' }).Count)
+            $windows = @()
+            for ($i = 0; $i -lt $sentences.Count; $i++) {
+                if ($sentences[$i] -notmatch '\bCLOSED\b') { continue }
+                $w = $sentences[$i]
+                if ($i + 1 -lt $sentences.Count) { $w += ' ' + $sentences[$i + 1] }
+                $windows += $w
+            }
+            if (-not $windows) { return $false }
+
+            foreach ($w in $windows) { if ($w -match $script:NegatedStop) { return $false } }
+            foreach ($w in $windows) { if ($w -match $script:StopPattern) { return $true } }
+            return $false
         }
 
         $script:Phase0Body = (Get-Phase0Section -Path $script:DevLoop) -join "`n"
@@ -126,16 +164,11 @@ Describe 'dev-loop.agent.md Phase 0 checks the issue state before any worktree' 
         Test-Phase0StateGuard -Body $script:Phase0Body | Should -BeTrue
     }
 
-    It 'rejects prose that inverts the guard while keeping its vocabulary' {
-        # Guards the assertion above against becoming vacuous.
-        $inverted = @'
-A `CLOSED` state is informational only. You may run
-`gh issue view <n> --json state,stateReason,closedByPullRequestsReferences`
-for context. There is never a stop condition here, and
-`closedByPullRequestsReferences` is not a signal to halt. Always continue
-before Phase 1 creates a worktree.
-'@
-        Test-Phase0StateGuard -Body $inverted | Should -BeFalse
+    It 'judges <Name> as <Expected>' -ForEach $script:GuardFixtures {
+        # Every fixture carries the state-read preamble, so only the guard
+        # sentence under test decides the verdict.
+        $body = "gh issue view <n> --json state,stateReason,closedByPullRequestsReferences`n" + $Text
+        Test-Phase0StateGuard -Body $body | Should -Be $Expected
     }
 
     It 'reads the state before instructing the run to continue' {
