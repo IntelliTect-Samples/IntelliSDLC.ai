@@ -155,3 +155,107 @@ Describe 'Install-SkillLinks' {
         (Get-Item (Join-Path $skillsDir 'unrelated') -Force).LinkType | Should -Not -BeNullOrEmpty
     }
 }
+
+# Issue #593: the global working rules, wired into every engine's user-level
+# instructions file.
+
+Describe 'Get-InstructionFiles' {
+    BeforeEach { $script:home_ = New-TempDir }
+    AfterEach { Remove-TempDir $home_ }
+
+    It 'wires nothing when no engine is installed' {
+        @(Get-InstructionFiles -HomeDir $home_) | Should -BeNullOrEmpty
+    }
+
+    It 'imports into Claude''s CLAUDE.md, and inlines for each other engine present' {
+        foreach ($engine in '.claude', '.copilot', '.codex', '.gemini') { New-Item -ItemType Directory (Join-Path $home_ $engine) | Out-Null }
+
+        $files = Get-InstructionFiles -HomeDir $home_ | Sort-Object Path
+
+        $files.Path | Should -Be @(
+            (Join-Path $home_ '.claude/CLAUDE.md')
+            (Join-Path $home_ '.codex/AGENTS.md')
+            (Join-Path $home_ '.copilot/copilot-instructions.md')
+            (Join-Path $home_ '.gemini/GEMINI.md')
+        )
+        ($files | Where-Object Path -like '*CLAUDE.md').Mode | Should -Be 'Import'
+        ($files | Where-Object Path -notlike '*CLAUDE.md').Mode | Sort-Object -Unique | Should -Be 'Inline'
+    }
+
+    It 'wires only the engines that are installed' {
+        New-Item -ItemType Directory (Join-Path $home_ '.codex') | Out-Null
+
+        (Get-InstructionFiles -HomeDir $home_).Path | Should -Be (Join-Path $home_ '.codex/AGENTS.md')
+    }
+}
+
+Describe 'Get-InstructionBlock' {
+    BeforeEach {
+        $script:tmp = New-TempDir
+        $script:source = Join-Path $tmp 'GLOBAL-INSTRUCTIONS.md'
+        Set-File $source "# Rules`n`nBe good."
+    }
+    AfterEach { Remove-TempDir $tmp }
+
+    It 'imports the file by absolute path, so an edit or git pull is live without a rerun' {
+        Get-InstructionBlock -Source $source -Mode Import | Should -Be ('@' + ($source -replace '\\', '/'))
+    }
+
+    It 'inlines the file''s text for an engine that cannot import' {
+        Get-InstructionBlock -Source $source -Mode Inline | Should -Be "# Rules`n`nBe good."
+    }
+}
+
+Describe 'Set-ManagedBlock' {
+    BeforeEach {
+        $script:tmp = New-TempDir
+        $script:file = Join-Path $tmp 'engine/CLAUDE.md'
+    }
+    AfterEach { Remove-TempDir $tmp }
+
+    It 'creates the file, holding only the managed block, when there is none' {
+        (Set-ManagedBlock -Path $file -Content 'rules v1').Status | Should -Be 'Created'
+
+        $text = Get-Content -Raw $file
+        $text | Should -BeLike "*$($script:BlockBegin)*rules v1*$($script:BlockEnd)*"
+    }
+
+    It 'appends the block to a file of the user''s own, keeping every line of it' {
+        Set-File $file "# My own notes`nAlways use tabs."
+
+        (Set-ManagedBlock -Path $file -Content 'rules v1').Status | Should -Be 'Added'
+
+        $text = Get-Content -Raw $file
+        $text | Should -BeLike "# My own notes*Always use tabs.*rules v1*"
+    }
+
+    It 'replaces only the block on a later run, leaving the user''s text around it alone' {
+        Set-File $file "# Mine above"
+        Set-ManagedBlock -Path $file -Content 'rules v1' | Out-Null
+        Add-Content -LiteralPath $file -Value 'Mine below'
+
+        (Set-ManagedBlock -Path $file -Content 'rules v2').Status | Should -Be 'Updated'
+
+        $text = Get-Content -Raw $file
+        $text | Should -Not -BeLike '*rules v1*'
+        $text | Should -BeLike '# Mine above*rules v2*Mine below*'
+        ([regex]::Matches($text, [regex]::Escape($script:BlockBegin))).Count | Should -Be 1
+    }
+
+    It 'reports unchanged, and does not rewrite the file, on a second identical run' {
+        Set-ManagedBlock -Path $file -Content 'rules v1' | Out-Null
+        $before = (Get-Item $file).LastWriteTimeUtc
+        Start-Sleep -Milliseconds 50
+
+        (Set-ManagedBlock -Path $file -Content 'rules v1').Status | Should -Be 'Unchanged'
+        (Get-Item $file).LastWriteTimeUtc | Should -Be $before
+    }
+}
+
+Describe 'GLOBAL-INSTRUCTIONS.md' {
+    It 'stays repo-private: Pull-SDLC never ships it to a consuming project' {
+        $managed = (Get-Content -Raw (Join-Path $PSScriptRoot 'Pull-SDLC.ai.ps1')) -match "'GLOBAL-INSTRUCTIONS\.md'"
+        $managed | Should -BeFalse
+        Join-Path $PSScriptRoot 'GLOBAL-INSTRUCTIONS.md' | Should -Exist
+    }
+}
