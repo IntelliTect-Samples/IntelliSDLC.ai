@@ -242,6 +242,30 @@ Describe 'Set-ManagedBlock' {
         ([regex]::Matches($text, [regex]::Escape($script:BlockBegin))).Count | Should -Be 1
     }
 
+    It 'refuses to touch a file whose markers are damaged, rather than swallow the user''s text' {
+        Set-File $file "top`n$($script:BlockBegin)`nmy precious notes"
+        $before = Get-Content -Raw $file
+
+        foreach ($run in 1, 2) {
+            (Set-ManagedBlock -Path $file -Content 'rules v1' -WarningAction SilentlyContinue).Status | Should -Be 'Skipped'
+        }
+        Get-Content -Raw $file | Should -BeExactly $before
+    }
+
+    It 'is unchanged on a rerun even when the content has Windows line endings' {
+        Set-ManagedBlock -Path $file -Content "line 1`r`nline 2" | Out-Null
+
+        (Set-ManagedBlock -Path $file -Content "line 1`r`nline 2").Status | Should -Be 'Unchanged'
+    }
+
+    It 'writes regex replacement tokens in the content literally' {
+        Set-ManagedBlock -Path $file -Content 'v1' | Out-Null
+
+        Set-ManagedBlock -Path $file -Content 'costs $5 and $& and $1' | Out-Null
+
+        Get-Content -Raw $file | Should -BeLike '*costs $5 and $& and $1*'
+    }
+
     It 'reports unchanged, and does not rewrite the file, on a second identical run' {
         Set-ManagedBlock -Path $file -Content 'rules v1' | Out-Null
         $before = (Get-Item $file).LastWriteTimeUtc

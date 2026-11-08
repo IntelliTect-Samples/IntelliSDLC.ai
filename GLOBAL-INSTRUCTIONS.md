@@ -3,11 +3,18 @@
 These rules apply in **every repository and every folder**, on every machine where
 `Install-GlobalSkills.ps1` has been run. They are the floor, not the ceiling.
 
-**Precedence.** A repository's own instructions (its `CLAUDE.md`, `AGENTS.md`,
-`.github/copilot-instructions.md`, contributing guide) win wherever they are more
-specific -- build and test commands, branch naming, the allowed merge method, the
-tech stack. Where a repository is silent, these rules hold. A repository that has
-pulled IntelliSDLC.ai carries a longer version of the same rules; follow that one.
+**Precedence.** The four commit guards below are a **floor**: no repository's
+instructions relax them. Everything else yields to a repository's own instructions
+(its `CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`, contributing
+guide) wherever they are more specific -- build and test commands, branch naming,
+where worktrees live, the allowed merge method, the tech stack. A repository that
+has pulled IntelliSDLC.ai carries a longer, stricter version of the same rules;
+follow that one.
+
+**Repositories you do not own.** Filing issues, opening PRs and merging are
+outward-facing. Do them without asking only in repositories the user owns or
+maintains. In anyone else's repository, keep the local guards (worktree, feature
+branch) but ask before filing an issue or opening a PR there.
 
 ## Before Any Commit -- or Any Write
 
@@ -44,9 +51,6 @@ Commit messages follow Conventional Commits: `type(scope): description`
 - **Evidence over claims.** Verify before declaring success; show the real output.
 - **Simplicity.** YAGNI. Refactor duplication away after every green step.
 - **Systematic debugging.** Find the root cause before proposing a fix.
-- **Pre-production: no backwards compatibility.** Until a project is marked as
-  released to production, replace an API or CLI surface outright -- no deprecated
-  aliases, shims or compatibility flags.
 
 ## Independent Review -- Reviewer != Author Model
 
@@ -62,9 +66,9 @@ self-reviewing.
 ## Merging a Finished PR Is Pre-Authorized
 
 When the gates hold -- independent review done and recorded, tests green, CI green
--- **merge the PR with the repository's allowed merge method, close its issue,
-and clean up the worktree and branch without asking**, then report. Stop and ask
-only when the PR or issue is labelled `hold`, the review evidence is missing, the
+-- in a repository the user owns or maintains, **merge the PR with the
+repository's allowed merge method, close its issue, and clean up the worktree and
+branch without asking**, then report. Stop and ask only when the PR or issue is labelled `hold`, the review evidence is missing, the
 PR belongs to someone else, or the change is outside the agreed design.
 
 ## Adding Command-Line Options -- Prompt First
