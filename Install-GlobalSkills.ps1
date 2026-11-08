@@ -211,9 +211,21 @@ function Set-ManagedBlock {
         [Parameter(Mandatory)][string]$Content
     )
 
-    $block = "$script:BlockBegin`n$Content`n$script:BlockEnd"
+    $block = "$script:BlockBegin`n$($Content -replace "`r`n", "`n")`n$script:BlockEnd"
     $existing = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw } else { $null }
     $pattern = [regex]::Escape($script:BlockBegin) + '[\s\S]*?' + [regex]::Escape($script:BlockEnd)
+
+    # Exactly one BEGIN followed by one END, or neither. Anything else is a
+    # hand-damaged block, and guessing its extent could swallow the user's text.
+    if ($existing) {
+        $begins = [regex]::Matches($existing, [regex]::Escape($script:BlockBegin))
+        $ends = [regex]::Matches($existing, [regex]::Escape($script:BlockEnd))
+        if ($begins.Count -gt 1 -or $ends.Count -gt 1 -or $begins.Count -ne $ends.Count -or
+            ($begins.Count -eq 1 -and $ends[0].Index -lt $begins[0].Index)) {
+            Write-Warning "'$Path' has damaged IntelliSDLC.ai markers -- left alone. Remove the partial block by hand, then rerun."
+            return [pscustomobject]@{ Path = $Path; Status = 'Skipped' }
+        }
+    }
 
     if ($null -eq $existing) {
         $status, $text = 'Created', "$block`n"

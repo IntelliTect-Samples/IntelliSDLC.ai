@@ -122,8 +122,9 @@ wires [`GLOBAL-INSTRUCTIONS.md`](./GLOBAL-INSTRUCTIONS.md) into the user-level
 instructions file of every installed engine (`~/.claude/CLAUDE.md` by
 `@`-import; `~/.copilot/copilot-instructions.md`, `~/.codex/AGENTS.md` and
 `~/.gemini/GEMINI.md` by copy), inside a managed block that leaves the rest of
-each file alone. To update: `git pull`, then rerun. A repository's own
-instructions still win wherever they are more specific. Claude Code cloud
+each file alone (a hand-damaged block is reported and skipped). To update:
+`git pull`, then rerun. The commit guards are a floor; everything else yields
+to a repository's own, more specific instructions. Claude Code cloud
 sessions and GitHub's Copilot coding agent read only the repository, so they
 need it onboarded.
 
