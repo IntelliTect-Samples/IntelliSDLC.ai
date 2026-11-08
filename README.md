@@ -107,6 +107,26 @@ guard refuses to run if any upstream-managed file shows local edits since
 the last sync; pass `-Force` to override (and explain why in the commit
 message).
 
+## Every Repo, Every Machine -- Global Install
+
+To get the core working rules and the portable skills in **every** repository
+and folder -- not only onboarded ones -- clone this repository once per machine
+and run:
+
+```powershell
+./Install-GlobalSkills.ps1
+```
+
+It links the portable skills into `~/.claude/skills` and `~/.agents/skills`, and
+wires [`GLOBAL-INSTRUCTIONS.md`](./GLOBAL-INSTRUCTIONS.md) into the user-level
+instructions file of every installed engine (`~/.claude/CLAUDE.md` by
+`@`-import; `~/.copilot/copilot-instructions.md`, `~/.codex/AGENTS.md` and
+`~/.gemini/GEMINI.md` by copy), inside a managed block that leaves the rest of
+each file alone. To update: `git pull`, then rerun. A repository's own
+instructions still win wherever they are more specific. Claude Code cloud
+sessions and GitHub's Copilot coding agent read only the repository, so they
+need it onboarded.
+
 ## Template Scaffolding
 
 On first sync the script copies these `*.template` files to their bare

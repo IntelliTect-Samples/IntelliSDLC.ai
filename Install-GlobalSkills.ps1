@@ -3,8 +3,9 @@
 
 <#
 .SYNOPSIS
-    Make this repository's portable skills available in every directory, to
-    every installed AI engine, straight from this clone.
+    Make this repository's portable skills and global working rules
+    available in every directory, to every installed AI engine, straight from
+    this clone.
 
 .DESCRIPTION
     A consuming repository gets these skills by pulling IntelliSDLC.ai. A bare
@@ -28,9 +29,21 @@
     (the dev-loop gate, evidence capture) and web-api-discovery, which is
     installed from its own repository.
 
-    Twice-runnable: a second run reports every link unchanged. A real folder
-    of the same name is never replaced; a link this clone owns whose skill no
-    longer exists is removed.
+    GLOBAL INSTRUCTIONS (issue #593). GLOBAL-INSTRUCTIONS.md -- the working
+    rules that apply in every repository and folder -- is wired into the
+    user-level instructions file of every installed engine, inside a
+    marker-delimited managed block. Text outside the block is never touched.
+
+      ~/.claude/CLAUDE.md                 an @-import of the file: live
+      ~/.copilot/copilot-instructions.md  the file's text, refreshed per run
+      ~/.codex/AGENTS.md                  the file's text, refreshed per run
+      ~/.gemini/GEMINI.md                 the file's text, refreshed per run
+
+    After a `git pull`, rerun this to refresh the inlined copies.
+
+    Twice-runnable: a second run reports every link and block unchanged. A
+    real folder of the same name is never replaced; a link this clone owns
+    whose skill no longer exists is removed.
 
 .EXAMPLE
     ./Install-GlobalSkills.ps1
@@ -151,6 +164,74 @@ function Install-SkillLinks {
     }
 }
 
+# The global working rules (issue #593), and each engine's user-level
+# instructions file. Claude Code can @-import a file, so an edit or `git pull`
+# is live at once; the others get the text itself, refreshed on every run.
+$script:InstructionsSource = 'GLOBAL-INSTRUCTIONS.md'
+$script:InstructionTargets = @(
+    [pscustomobject]@{ File = '.claude/CLAUDE.md'; EngineHome = '.claude'; Mode = 'Import' }
+    [pscustomobject]@{ File = '.copilot/copilot-instructions.md'; EngineHome = '.copilot'; Mode = 'Inline' }
+    [pscustomobject]@{ File = '.codex/AGENTS.md'; EngineHome = '.codex'; Mode = 'Inline' }
+    [pscustomobject]@{ File = '.gemini/GEMINI.md'; EngineHome = '.gemini'; Mode = 'Inline' }
+)
+$script:BlockBegin = '<!-- BEGIN IntelliSDLC.ai global instructions -- managed by Install-GlobalSkills.ps1; edits inside this block are overwritten -->'
+$script:BlockEnd = '<!-- END IntelliSDLC.ai global instructions -->'
+
+function Get-InstructionFiles {
+    <# The user-level instructions files to wire, for the engines present under $HomeDir. #>
+    param([Parameter(Mandatory)][string]$HomeDir)
+
+    foreach ($target in $script:InstructionTargets) {
+        if (Test-Path -LiteralPath (Join-Path $HomeDir $target.EngineHome)) {
+            [pscustomobject]@{ Path = Join-Path $HomeDir $target.File; Mode = $target.Mode }
+        }
+    }
+}
+
+function Get-InstructionBlock {
+    <# What goes inside the managed block: an @-import of $Source, or its text. #>
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][ValidateSet('Import', 'Inline')][string]$Mode
+    )
+
+    if ($Mode -eq 'Import') { return '@' + ($Source -replace '\\', '/') }
+    return (Get-Content -LiteralPath $Source -Raw).TrimEnd()
+}
+
+function Set-ManagedBlock {
+    <#
+        Put $Content between the managed markers in $Path. Creates the file,
+        appends the block to a file without one, or replaces the existing
+        block -- never touching any text outside it. Writes nothing when the
+        block already holds $Content.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Content
+    )
+
+    $block = "$script:BlockBegin`n$Content`n$script:BlockEnd"
+    $existing = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw } else { $null }
+    $pattern = [regex]::Escape($script:BlockBegin) + '[\s\S]*?' + [regex]::Escape($script:BlockEnd)
+
+    if ($null -eq $existing) {
+        $status, $text = 'Created', "$block`n"
+    }
+    elseif ($existing -match $pattern) {
+        if ($Matches[0] -replace "`r`n", "`n" -ceq $block) { return [pscustomobject]@{ Path = $Path; Status = 'Unchanged' } }
+        $status = 'Updated'
+        $text = [regex]::new($pattern).Replace($existing, { $block }, 1)
+    }
+    else {
+        $status, $text = 'Added', ($existing.TrimEnd() + "`n`n$block`n")
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path $Path -Parent) -Force | Out-Null
+    [System.IO.File]::WriteAllText($Path, $text, [System.Text.UTF8Encoding]::new($false))
+    [pscustomobject]@{ Path = $Path; Status = $status }
+}
+
 # Dot-sourced (by the tests): load the functions, run nothing.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
@@ -164,4 +245,15 @@ foreach ($folder in $folders) {
     Write-Information "$folder" -InformationAction Continue
     Install-SkillLinks -Root $root -Skills $script:SkillSources -SkillsDir $folder |
         ForEach-Object { Write-Information "  $($_.Skill): $($_.Status) -- $($_.Detail)" -InformationAction Continue }
+}
+
+$source = Join-Path $root $script:InstructionsSource
+if (-not (Test-Path -LiteralPath $source)) {
+    Write-Warning "No '$source' in this clone -- `git pull` it, then rerun. No instructions wired."
+    return
+}
+Write-Information "Global instructions ($source)" -InformationAction Continue
+foreach ($file in Get-InstructionFiles -HomeDir $HOME) {
+    $result = Set-ManagedBlock -Path $file.Path -Content (Get-InstructionBlock -Source $source -Mode $file.Mode)
+    Write-Information "  $($result.Path): $($result.Status) ($($file.Mode.ToLower()))" -InformationAction Continue
 }
