@@ -73,6 +73,10 @@ artifacts into this archive:
 - `~/.copilot/session-state/*/plan.md` -> copied into `docs/designs/` (repo-scoped via the session-store DB), default ON
 - `~/.claude/...` session notes -> copied into `docs/designs/`, opt-in (`-IncludeClaudeSessions`)
 
+A leading `YYYY-MM-DD-` date in a legacy name is kept, so
+`tasks/2026-04-12-foo-plan.md` becomes `docs/designs/2026-04-12-foo-plan.md`
+and imported files keep their chronological order.
+
 It uses the standard PowerShell `SupportsShouldProcess` pattern:
 
 ```powershell
@@ -84,7 +88,9 @@ It uses the standard PowerShell `SupportsShouldProcess` pattern:
 ```
 
 The script is idempotent (re-runs are no-ops) and writes a manifest to
-`docs/MIGRATION.md` recording each action.
+`docs/MIGRATION.md` recording each action, oldest source first. Its
+`Source Date` column is the date in the source's name; else the date the file
+was first committed, following renames; else its last-write time.
 
 See the inline comment-based help (`Get-Help ./Consolidate-Specs.ps1 -Full`)
 for the full switch list.
