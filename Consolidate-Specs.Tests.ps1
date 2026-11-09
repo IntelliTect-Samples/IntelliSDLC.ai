@@ -16,11 +16,24 @@ BeforeAll {
         }
         finally { Pop-Location }
     }
+
+    # Stages everything and commits it with a fixed author date, so a test can
+    # control the date git reports for a file.
+    function Invoke-GitCommitAt {
+        param([string]$Root, [string]$Date, [string]$Message)
+        $previous = $env:GIT_AUTHOR_DATE
+        $env:GIT_AUTHOR_DATE = "$($Date)T12:00:00Z"
+        try {
+            & git -C $Root add -A
+            & git -C $Root commit --quiet -m $Message
+        }
+        finally { $env:GIT_AUTHOR_DATE = $previous }
+    }
 }
 
 Describe "Get-FeatureSlug" {
-    It "strips a YYYY-MM-DD date prefix" {
-        Get-FeatureSlug -FileName "2026-05-12-foo-plan.md" | Should -Be "foo"
+    It "keeps a YYYY-MM-DD date prefix, so imports sort chronologically (#174)" {
+        Get-FeatureSlug -FileName "2026-05-12-foo-plan.md" | Should -Be "2026-05-12-foo"
     }
     It "strips a trailing -prd suffix" {
         Get-FeatureSlug -FileName "bar-prd.md" | Should -Be "bar"
@@ -28,14 +41,53 @@ Describe "Get-FeatureSlug" {
     It "strips a trailing -plan suffix" {
         Get-FeatureSlug -FileName "baz-plan.md" | Should -Be "baz"
     }
-    It "handles both date prefix and -plan suffix" {
-        Get-FeatureSlug -FileName "2025-01-01-qux-plan.md" | Should -Be "qux"
+    It "drops the -plan suffix but keeps the date prefix" {
+        Get-FeatureSlug -FileName "2025-01-01-qux-plan.md" | Should -Be "2025-01-01-qux"
     }
     It "returns the stem unchanged when no prefix/suffix matches" {
         Get-FeatureSlug -FileName "raw-name.md" | Should -Be "raw-name"
     }
     It "returns untitled for an effectively empty stem" {
         Get-FeatureSlug -FileName "-plan.md" | Should -Be "untitled"
+    }
+}
+
+Describe "Get-SourceDate" {
+    BeforeEach {
+        $script:repo = Join-Path $TestDrive "dates"
+        if (Test-Path $script:repo) { Remove-Item -Recurse -Force $script:repo }
+        New-FakeConsumerRepo -Root $script:repo
+    }
+
+    It "prefers a date embedded in the filename over git and the filesystem" {
+        $file = Join-Path $script:repo "2021-03-04-foo-plan.md"
+        Set-Content -LiteralPath $file -Value "x"
+        Invoke-GitCommitAt -Root $script:repo -Date "2023-01-01" -Message "add"
+        Get-SourceDate -Path $file | Should -Be "2021-03-04"
+    }
+
+    It "uses the date the file was first committed, not a later rename" {
+        Set-Content -LiteralPath (Join-Path $script:repo "old-plan.md") -Value "x"
+        Invoke-GitCommitAt -Root $script:repo -Date "2020-01-01" -Message "add"
+        & git -C $script:repo mv old-plan.md new-plan.md
+        Invoke-GitCommitAt -Root $script:repo -Date "2024-06-01" -Message "rename"
+        Get-SourceDate -Path (Join-Path $script:repo "new-plan.md") | Should -Be "2020-01-01"
+    }
+
+    It "falls back to the last-write time for a file git does not track" {
+        $file = Join-Path $script:repo "untracked-plan.md"
+        Set-Content -LiteralPath $file -Value "x"
+        (Get-Item -LiteralPath $file).LastWriteTimeUtc = [datetime]::new(2019, 5, 6, 12, 0, 0, [DateTimeKind]::Utc)
+        Get-SourceDate -Path $file | Should -Be "2019-05-06"
+    }
+
+    It "falls back to the last-write time outside any git repository" {
+        $dir = Join-Path $TestDrive "no-repo"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $file = Join-Path $dir "plan.md"
+        Set-Content -LiteralPath $file -Value "x"
+        (Get-Item -LiteralPath $file).LastWriteTimeUtc = [datetime]::new(2018, 7, 8, 12, 0, 0, [DateTimeKind]::Utc)
+        Get-SourceDate -Path $file | Should -Be "2018-07-08"
     }
 }
 
@@ -150,14 +202,34 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
         Test-Path (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/prd/beta-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "PRD.md") | Should -BeTrue
-        Test-Path (Join-Path $script:repo "docs/designs/alpha-plan.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeFalse
         Test-Path (Join-Path $script:repo "docs/MIGRATION.md") | Should -BeFalse
+    }
+
+    It "keeps a dated source's date on the destination name and leaves undated names alone (#174)" {
+        Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false | Out-Null
+        Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/designs/alpha-plan.md") | Should -BeFalse
+        Test-Path (Join-Path $script:repo "docs/specs/gamma-prd.md") | Should -BeTrue
+    }
+
+    It "records each source's date and lists manifest rows oldest first (#174)" {
+        # Discovery order is alphabetical: alpha (2026-05-12) is found before
+        # omega, an undated plan first committed in 2020.
+        Set-Content -LiteralPath (Join-Path $script:repo "tasks/omega-plan.md") -Value "PLAN-OMEGA"
+        Invoke-GitCommitAt -Root $script:repo -Date "2020-01-01" -Message "add an older undated plan"
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false
+        ($records | Where-Object { $_.Source -eq "tasks/omega-plan.md" }).SourceDate | Should -Be "2020-01-01"
+        ($records | Where-Object { $_.Source -eq "tasks/2026-05-12-alpha-plan.md" }).SourceDate | Should -Be "2026-05-12"
+        $rows = @(Get-Content -LiteralPath (Join-Path $script:repo "docs/MIGRATION.md") | Where-Object { $_ -match '`tasks/' })
+        $rows[0] | Should -Match "omega-plan\.md"
+        $rows[1] | Should -Match "alpha-plan\.md"
     }
 
     It "with -Confirm:false, moves files via git mv (history preserved)" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
         $records.Count | Should -BeGreaterOrEqual 4
-        Test-Path (Join-Path $script:repo "docs/designs/alpha-plan.md") | Should -BeTrue
+        Test-Path (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/specs/gamma-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/specs/beta-prd.md") | Should -BeTrue
         Test-Path (Join-Path $script:repo "docs/specs/legacy-prd.md") | Should -BeTrue
@@ -178,7 +250,7 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
 
     It "routes prd sources to docs/specs and plan sources to docs/designs" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -IncludeDocsPrd -IncludeRootDocs -LinkIssues -Confirm:$false
-        $records.Destination -join "`n" | Should -Match "docs/designs/alpha-plan.md"
+        $records.Destination -join "`n" | Should -Match "docs/designs/2026-05-12-alpha-plan.md"
         $records.Destination -join "`n" | Should -Match "docs/specs/gamma-prd.md"
         $records.Destination -join "`n" | Should -Match "docs/specs/beta-prd.md"
         $records.Destination -join "`n" | Should -Match "docs/specs/legacy-prd.md"
@@ -193,7 +265,7 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
     It "is idempotent: a second run with identical source content reports skip" {
         Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false | Out-Null
         New-Item -ItemType Directory -Path (Join-Path $script:repo "tasks") -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $script:repo "docs/designs/alpha-plan.md") -Destination (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md")
+        Copy-Item -LiteralPath (Join-Path $script:repo "docs/designs/2026-05-12-alpha-plan.md") -Destination (Join-Path $script:repo "tasks/2026-05-12-alpha-plan.md")
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false
         $skips = $records | Where-Object { $_.Action -eq "skip" }
         @($skips).Count | Should -BeGreaterOrEqual 1
@@ -259,6 +331,12 @@ Describe "Invoke-ConsolidateTasks -- copilot session sources" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -Confirm:$false
         ($records | Where-Object { $_.Action -eq "skip" }).Count | Should -BeGreaterOrEqual 1
     }
+
+    It "records the session plan's last-write date as its Source Date (#174)" {
+        (Get-Item -LiteralPath (Join-Path $script:matchDir "plan.md")).LastWriteTimeUtc = [datetime]::new(2025, 2, 3, 12, 0, 0, [DateTimeKind]::Utc)
+        $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeCopilotSessions -CopilotSessionRoot $script:sessionRoot -Confirm:$false
+        $records[0].SourceDate | Should -Be "2025-02-03"
+    }
 }
 
 Describe "Write-MigrationManifest" {
@@ -275,5 +353,21 @@ Describe "Write-MigrationManifest" {
         $text | Should -Match "#1 #2"
         $text | Should -Match "foo-plan.md"
         $text | Should -Match "session-x-plan.md"
+    }
+
+    It "leads with a Source Date column and lists rows oldest first, undated last (#174)" {
+        $records = @(
+            (New-MigrationRecord -Source "tasks/b-plan.md" -Destination "docs/designs/b-plan.md" -Action "move" -SourceType "legacy-tasks" -SourceDate "2024-02-02"),
+            (New-MigrationRecord -Source "tasks/u-plan.md" -Destination "docs/designs/u-plan.md" -Action "move" -SourceType "legacy-tasks"),
+            (New-MigrationRecord -Source "tasks/a-plan.md" -Destination "docs/designs/a-plan.md" -Action "move" -SourceType "legacy-tasks" -SourceDate "2021-01-01")
+        )
+        $path = Join-Path $TestDrive "ordered.md"
+        Write-MigrationManifest -Path $path -Records $records
+        $lines = Get-Content -LiteralPath $path
+        $lines | Should -Contain "| Source Date | Timestamp (UTC) | Action | Source Type | Source | Destination | Linked Issues | Note |"
+        $rows = @($lines | Where-Object { $_ -match '`tasks/' })
+        $rows[0] | Should -Match "^\| 2021-01-01 \|.*a-plan\.md"
+        $rows[1] | Should -Match "^\| 2024-02-02 \|.*b-plan\.md"
+        $rows[2] | Should -Match "^\|  \|.*u-plan\.md"
     }
 }
