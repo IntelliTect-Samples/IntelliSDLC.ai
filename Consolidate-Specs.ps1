@@ -83,8 +83,13 @@ function Get-SourceDate {
     if ($leaf -match "^(\d{4}-\d{2}-\d{2})-") { return $Matches[1] }
     # Newest first; the last line is the commit that added the file. Outside a
     # repository git exits non-zero; for an untracked file it prints nothing.
-    $dates = @(& git -C (Split-Path -Parent $Path) log --follow --format=%as -- $leaf 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $dates.Count -gt 0) { return $dates[-1].Trim() }
+    # A git that throws (missing, or Windows PowerShell 5.1 raising its stderr
+    # under Stop) also falls through to the last-write time.
+    try {
+        $dates = @(& git -C (Split-Path -Parent $Path) log --follow --format=%as -- $leaf 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $dates.Count -gt 0) { return $dates[-1].Trim() }
+    }
+    catch { }
     return (Get-Item -LiteralPath $Path).LastWriteTimeUtc.ToString("yyyy-MM-dd", [cultureinfo]::InvariantCulture)
 }
 

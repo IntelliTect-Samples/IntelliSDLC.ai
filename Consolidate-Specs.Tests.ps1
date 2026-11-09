@@ -89,6 +89,16 @@ Describe "Get-SourceDate" {
         (Get-Item -LiteralPath $file).LastWriteTimeUtc = [datetime]::new(2018, 7, 8, 12, 0, 0, [DateTimeKind]::Utc)
         Get-SourceDate -Path $file | Should -Be "2018-07-08"
     }
+
+    It "falls back to the last-write time when invoking git throws" {
+        # Windows PowerShell 5.1 raises git's stderr as a terminating error
+        # under -ErrorAction Stop, and a missing git throws everywhere.
+        Mock git { throw "fatal: not a git repository" }
+        $file = Join-Path $script:repo "plan.md"
+        Set-Content -LiteralPath $file -Value "x"
+        (Get-Item -LiteralPath $file).LastWriteTimeUtc = [datetime]::new(2017, 9, 10, 12, 0, 0, [DateTimeKind]::Utc)
+        Get-SourceDate -Path $file | Should -Be "2017-09-10"
+    }
 }
 
 Describe "Get-ShortHash" {
@@ -269,6 +279,8 @@ Describe "Invoke-ConsolidateTasks -- in-repo legacy moves" {
         $records = Invoke-ConsolidateTasks -RepoRoot $script:repo -IncludeLegacyTasks -Confirm:$false
         $skips = $records | Where-Object { $_.Action -eq "skip" }
         @($skips).Count | Should -BeGreaterOrEqual 1
+        # A re-run's manifest is ordered by skip rows too, so they carry the date.
+        @($skips)[0].SourceDate | Should -Be "2026-05-12"
     }
 
     It "appends a sha1 suffix when destination exists with different content" {
