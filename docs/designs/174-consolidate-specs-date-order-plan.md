@@ -1,7 +1,7 @@
 # Consolidate-Specs keeps the date prefix and chronological order
 
 - Issue: https://github.com/IntelliTect-Samples/IntelliSDLC.ai/issues/174
-- PR:    (filled in once the PR exists)
+- PR:    https://github.com/IntelliTect-Samples/IntelliSDLC.ai/pull/595
 - Slug:  174-consolidate-specs-date-order
 
 ## Overview
@@ -59,17 +59,18 @@ Decisions:
 
 ## Acceptance Criteria
 
-- [ ] `tasks/2026-05-12-alpha-plan.md` is moved to `docs/designs/2026-05-12-alpha-plan.md`.
-- [ ] An undated source keeps its current destination name.
-- [ ] Every record has a `SourceDate`: embedded prefix > first-added git author date (across a rename) > last-write time.
-- [ ] A file outside any git repository, or untracked inside one, falls back to its last-write time without error.
-- [ ] `docs/MIGRATION.md` has a `Source Date` column and lists rows oldest first, even when discovery order differs.
-- [ ] Session copies record their plan's last-write date.
-- [ ] Existing behavior holds: `-WhatIf` writes nothing, re-runs are idempotent, collisions get a hash suffix.
+- [x] `tasks/2026-05-12-alpha-plan.md` is moved to `docs/designs/2026-05-12-alpha-plan.md`.
+- [x] An undated source keeps its current destination name.
+- [x] Every record has a `SourceDate`: embedded prefix > first-added git author date (across a rename) > last-write time.
+- [x] A file outside any git repository, untracked inside one, or whose git call throws, falls back to its last-write time without error.
+- [x] `docs/MIGRATION.md` has a `Source Date` column and lists rows oldest first, even when discovery order differs.
+- [x] Session copies record their plan's last-write date.
+- [x] Existing behavior holds: `-WhatIf` writes nothing, re-runs are idempotent, collisions get a hash suffix.
 
 ## Implementation Checklist
 
-- [ ] Red: update the `Get-FeatureSlug` tests that pin the stripped date; add `Get-SourceDate`, integration and manifest-ordering tests.
-- [ ] Green: stop stripping in `Get-FeatureSlug`; add `Get-SourceDate`; thread `SourceDate` through `New-MigrationRecord`, both import helpers, and `Write-MigrationManifest`.
-- [ ] Docs: script help and `docs/README.md`.
-- [ ] Full Pester run of the repo-root suites; functional run against a throwaway repo.
+- [x] Red: update the `Get-FeatureSlug` tests that pin the stripped date; add `Get-SourceDate`, integration and manifest-ordering tests.
+- [x] Green: stop stripping in `Get-FeatureSlug`; add `Get-SourceDate`; thread `SourceDate` through `New-MigrationRecord`, both import helpers, and `Write-MigrationManifest`.
+- [x] Docs: script help and `docs/README.md`.
+- [x] Full Pester run of the repo-root suites; functional run against a throwaway repo.
+- [x] Independent review (Sonnet 5.5): git-throws fallback accepted and fixed test-first; re-review clean.
