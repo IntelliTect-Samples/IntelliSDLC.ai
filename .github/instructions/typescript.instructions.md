@@ -97,6 +97,7 @@ applyTo: '**/*.ts'
 
 - Add or update unit tests with the project's framework and naming style.
 - Expand integration or end-to-end suites when behavior crosses modules or platform APIs.
+- Code that crosses a provider or service boundary needs a **live** test against the real provider -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
 - Run targeted test scripts for quick feedback before submitting.
 - Avoid brittle timing assertions; prefer fake timers or injected clocks.
 

@@ -208,6 +208,10 @@ public class CalculatorServiceTests
 > **Namespace convention:** Test namespace mirrors source namespace with `.Tests.Unit` inserted:
 > `MyProject.Services.CalculatorService` -> `MyProject.Tests.Unit.Services.CalculatorServiceTests`.
 
+> **Every "Mock sparingly" / "Real code over mocks" row below covers our side of a
+> boundary only.** An operation that crosses into a provider or service still needs a
+> live test -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
+
 ### Rules -- C#
 
 | Rule | Detail |
