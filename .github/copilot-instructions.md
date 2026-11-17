@@ -164,7 +164,9 @@ Both kinds of test have a place, and they prove different things:
 - **Live tests** cover every operation that crosses a provider or service
   boundary -- a third-party HTTP API, a cloud service, a database, another
   team's service, an undocumented web backend. They run against the real
-  provider with real authentication.
+  provider with real authentication. A real instance of the provider, local or
+  hosted, counts as live -- a local database server or container is fine; a
+  hand-rolled fake is not.
 
 **Every operation that crosses a provider or service boundary needs at least
 one live test. An operation without one is not done.** A mock of the provider
@@ -180,14 +182,19 @@ Rules for live tests:
   access, a live test must skip with a stated reason, and the run reports how
   many were skipped. A skip is never green.
 - **Reads run by default** wherever credentials are available.
-- **Writes are opt-in** (an explicit environment toggle) and confined to a
-  disposable resource created by the test, named so it is recognisable, and
-  deleted in a `finally` block or equivalent. A live test never changes
-  anything it did not create.
+- **Writes are opt-in** -- an explicit switch in the test harness (for
+  example an environment variable read only by the test project; not a
+  product CLI option) -- and confined to a disposable resource created by the
+  test, named so it is recognisable, and deleted in a `finally` block or
+  equivalent. A live test never changes anything it did not create.
 - **Assert meaning, not just success.** Check the returned data against an
   independent source where one exists, not only that the call returned 2xx.
-- **Test each public surface end to end** (library, CLI, tool server, module)
-  against the live provider, not only the underlying client.
+- **Drive each boundary-crossing operation through every public surface that
+  exposes it** (library, CLI, tool server, module): at least one live test per
+  surface drives that operation through the surface, not only through the
+  underlying client. Surface-side control flow -- argument parsing, rendering,
+  prompts -- stays unit-tested; see **CLI Testing -- Scope and the `--dry-run`
+  Seam** below.
 - **Recorded fixtures come from the real provider.** When a unit test needs a
   provider's response, use one captured from the provider, never a
   hand-written guess at its shape.
@@ -209,7 +216,9 @@ Rules for live tests:
   something). When scoping test coverage for a CLI feature, ask "does this
   case need real external state to be meaningful, or is it exercising
   CLI-side control flow?" and route accordingly -- apply this across the
-  whole feature, not just to one option or flag within it.
+  whole feature, not just to one option or flag within it. The functions that
+  do call out fall under **Provider and Service Boundaries -- Live Tests Are
+  Required** above: each needs at least one live test.
 - **Proactively suggest `--dry-run` for write/destructive commands.** When a
   CLI command performs a write or destructive operation (create, delete,
   publish, or anything that mutates real external state) and has no

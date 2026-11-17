@@ -62,6 +62,25 @@ Describe 'copilot-instructions.md states the boundary rule' {
         $script:Rule | Should -Match '(?i)never\s+(pass|report)\s+(silently|green)'
     }
 
+    It 'runs reads by default and takes fixtures from the real provider' {
+        $script:Rule | Should -Match '(?i)reads\s+run\s+by\s+default'
+        $script:Rule | Should -Match '(?i)fixtures\s+come\s+from\s+the\s+real\s+provider'
+    }
+
+    It 'counts a real local or hosted instance as live, so no one is pushed at production' {
+        $script:Rule | Should -Match '(?i)real\s+instance\s+of\s+the\s+provider,\s+local\s+or\s+hosted,\s+counts\s+as\s+live'
+    }
+
+    It 'asks for a live test through each surface without making surface control flow live' {
+        $script:Rule | Should -Match '(?i)drives\s+that\s+operation\s+through\s+the\s+surface'
+        $script:Rule | Should -Match '(?i)stays\s+unit-tested'
+        $script:Rule | Should -Match 'CLI\s+Testing'
+    }
+
+    It 'keeps the write opt-in switch in the test harness, not on a product CLI' {
+        $script:Rule | Should -Match '(?i)not\s+a\s+product\s+CLI\s+option'
+    }
+
     It 'confines live writes to an opt-in, disposable resource cleaned up afterwards' {
         $script:Rule | Should -Match '(?i)opt-in'
         $script:Rule | Should -Match '(?i)disposable'
@@ -74,9 +93,27 @@ Describe 'every place that tells an agent to mock points at the boundary rule' -
     @{ File = '.github/instructions/powershell.instructions.md' }
     @{ File = '.github/instructions/copilot-coding-agent.instructions.md' }
     @{ File = '.github/skills/behavior-first-testing/SKILL.md' }
+    @{ File = '.github/skills/functional-testing/SKILL.md' }
+    @{ File = '.github/instructions/typescript.instructions.md' }
+    @{ File = '.github/skills/code-review-workflow/SKILL.md' }
 ) {
     It '<File> names Provider and Service Boundaries' {
         Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot $File) |
             Should -Match 'Provider\s+and\s+Service\s+Boundaries'
+    }
+}
+
+Describe 'the CLI Testing section points back at the boundary rule' {
+    It 'cross-references Provider and Service Boundaries' {
+        Get-Section -Path (Join-Path $script:RepoRoot '.github/copilot-instructions.md') `
+            -HeadingPattern 'CLI\s+Testing' |
+            Should -Match 'Provider\s+and\s+Service\s+Boundaries'
+    }
+}
+
+Describe 'code review asks for the missing live test' {
+    It 'lists a boundary-crossing operation with no live test as a finding' {
+        Get-Content -Raw -LiteralPath (Join-Path $script:RepoRoot '.github/skills/code-review-workflow/SKILL.md') |
+            Should -Match '(?i)boundary-crossing\s+operation\s+with\s+no\s+live\s+test'
     }
 }

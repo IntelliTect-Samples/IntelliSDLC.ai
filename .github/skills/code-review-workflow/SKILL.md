@@ -153,6 +153,7 @@ git diff --name-only origin/main...HEAD
 - Missing tests for error paths, boundary conditions, or edge cases.
 - Brittle tests coupled to implementation details.
 - **Tests that use mocks when real code is feasible** -- mocks should be last resort.
+- **Boundary-crossing operation with no live test** -- a mock of a provider or service does not count; see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
 - Test descriptions that don't match what is actually being tested.
 - **Test compliance** -- assess behavior-first testing by checking: (a) a test ships with each behavior change in the same commit / PR, (b) tests assert observable behavior rather than mirroring implementation, (c) the production change, when mentally reverted, would cause the test to fail with an *assertion* failure (not a compile/import error), (d) implementations do not hard-code the literal values used in the test (collusion), (e) test names follow `MethodName_Scenario_ExpectedBehavior` convention and use Arrange/Act/Assert. *Limitation:* test-first ordering cannot be verified from a diff alone -- only co-presence, structure, and collusion signals can be assessed.
 

@@ -37,7 +37,7 @@ the project's existing code and community standards.
 ### Performance
 
 - **Parallel execution** -- design tests to run independently so they can execute in parallel.
-- **Mock external services** -- mock network calls and external APIs when testing behavior, not connectivity.
+- **Mock external services** -- mock network calls and external APIs when testing behavior on our side, not connectivity. The boundary itself still needs a live test -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
 - **Keep tests fast** -- avoid unnecessary setup or redundant operations.
 
 ## Verification Before Completion
