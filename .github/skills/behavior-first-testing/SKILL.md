@@ -71,6 +71,7 @@ rationalizations. See the table below.
     > One logical behavior may require multiple assertions when they collectively verify a single outcome. For example, testing that a method returns a correctly populated object may assert multiple properties -- this is one behavior (correct object creation). However, testing that a method returns the right object AND logs the right message is two behaviors and should be two tests.
   - Group related behaviors together (e.g., nested classes in xUnit, `Describe`/`Context` blocks in Pester, `describe` in Vitest).
   - **Prefer real implementations over mocks.** Use mocks only when the real dependency is impractical in tests: network calls, file system operations with side effects, or time-dependent behavior. When mocking, verify the interaction contract, not implementation details.
+  - **A mock never replaces a live test at a provider boundary.** Mocks cover our side of the boundary; every operation that crosses into a provider or service also needs a live test. See **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
 
 | Quality | Good | Bad |
 |---------|------|-----|

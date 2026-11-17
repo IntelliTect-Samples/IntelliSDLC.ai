@@ -94,3 +94,4 @@ Fix all findings before committing.
 - Use **Arrange / Act / Assert** pattern within `It` blocks.
 - Use `BeforeAll`, `BeforeEach` for setup; `AfterAll`, `AfterEach` for cleanup.
 - Mock external commands with `Mock` and verify with `Should -Invoke`.
+- Code that crosses a provider or service boundary also needs a **live** test against the real provider -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.

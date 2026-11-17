@@ -59,6 +59,7 @@ Fix all format violations and test failures before committing. Never commit with
 - **Pattern**: Arrange / Act / Assert in every test method
 - **Naming**: `MethodName_Scenario_ExpectedBehavior`
 - **Isolation**: mock external dependencies with Moq; use real code paths for unit logic
+- **Live tests**: every operation that crosses a provider or service boundary also needs a live test against the real provider -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`
 - **Fixtures**: deterministic test data lives in `tests/fixtures/` or a `Fixtures/` subdirectory
 
 ## 6. Quality Bar
