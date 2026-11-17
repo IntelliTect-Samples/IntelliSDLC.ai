@@ -184,8 +184,9 @@ which writes:
 }
 ```
 
-Committing that does not install the plugin for anyone. Each teammate, once
-per machine, registers the marketplace and installs:
+Committing that alone installs nothing (Claude Code may offer to when a
+teammate first trusts the folder). Each teammate, once per clone, registers the
+marketplace and installs:
 
 ```powershell
 claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai
@@ -197,8 +198,13 @@ commit it was installed from, and every new commit here is an update:
 
 ```powershell
 claude plugin marketplace update intellisdlc-ai
-claude plugin update intellisdlc@intellisdlc-ai
+claude plugin update intellisdlc@intellisdlc-ai                   # a personal install
+claude plugin update intellisdlc@intellisdlc-ai --scope project   # a team-repo install, from that repo
 ```
+
+`claude plugin update` looks only at user scope unless told otherwise, so a
+team-repo install needs `--scope project` or it reports the plugin as not
+installed.
 
 Auto-update is off by default for marketplaces outside Anthropic's own; turn it
 on in `/plugin` -> **Marketplaces**.
