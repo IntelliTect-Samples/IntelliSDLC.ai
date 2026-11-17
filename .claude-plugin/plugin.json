@@ -1,0 +1,21 @@
+{
+  "name": "intellisdlc",
+  "description": "The IntelliSDLC.ai working rules (worktree, feature branch, issue, PR -- injected at session start) and the portable skills: behavior-first testing, code review, functional testing, refactoring, security review, systematic debugging, /next-issue and /wrap-up.",
+  "author": {
+    "name": "IntelliTect",
+    "url": "https://github.com/IntelliTect-Samples"
+  },
+  "homepage": "https://github.com/IntelliTect-Samples/IntelliSDLC.ai",
+  "repository": "https://github.com/IntelliTect-Samples/IntelliSDLC.ai",
+  "skills": [
+    "./.github/skills/behavior-first-testing",
+    "./.github/skills/code-review-workflow",
+    "./.github/skills/functional-testing",
+    "./.github/skills/refactor-workflow",
+    "./.github/skills/security-review",
+    "./.github/skills/systematic-debugging",
+    "./.claude/skills/next-issue",
+    "./.claude/skills/wrap-up"
+  ],
+  "hooks": "./.claude-plugin/hooks.json"
+}

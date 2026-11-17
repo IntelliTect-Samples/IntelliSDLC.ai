@@ -25,9 +25,14 @@
     shows up at once and `git pull` is the whole update. On another machine:
     clone, run this once.
 
-    NOT LINKED: skills whose value depends on this repository's own layout
-    (the dev-loop gate, evidence capture) and web-api-discovery, which is
-    installed from its own repository.
+    WHICH SKILLS: the ones the Claude Code plugin ships, read from
+    .claude-plugin/plugin.json. NOT LINKED: skills whose value depends on
+    this repository's own layout (the dev-loop gate, evidence capture) and
+    web-api-discovery, which is installed from its own repository.
+
+    CLAUDE CODE: the plugin (README, "Claude Code plugin") delivers the same
+    skills and rules without a clone. Use one or the other on a machine, not
+    both, or Claude Code sees every skill and rule twice.
 
     GLOBAL INSTRUCTIONS (issue #593). GLOBAL-INSTRUCTIONS.md -- the working
     rules that apply in every repository and folder -- is wired into the
@@ -54,17 +59,19 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Skills that work in any folder, relative to the repository root.
-$script:SkillSources = @(
-    '.github/skills/behavior-first-testing'
-    '.github/skills/code-review-workflow'
-    '.github/skills/functional-testing'
-    '.github/skills/refactor-workflow'
-    '.github/skills/security-review'
-    '.github/skills/systematic-debugging'
-    '.claude/skills/next-issue'
-    '.claude/skills/wrap-up'
-)
+function Get-PortableSkills {
+    <#
+        The skills that work in any folder, relative to the repository root.
+        Read from the Claude Code plugin manifest (issue #599), which ships the
+        same skills, so the plugin and this installer cannot drift apart.
+    #>
+    param([Parameter(Mandatory)][string]$Root)
+
+    $manifest = Get-Content -LiteralPath (Join-Path $Root '.claude-plugin/plugin.json') -Raw | ConvertFrom-Json
+    $manifest.skills | ForEach-Object { $_ -replace '^\./', '' }
+}
+
+$script:SkillSources = @(Get-PortableSkills -Root $PSScriptRoot)
 
 # Personal skills folders, and the home-folder entries that mean the engine
 # reading each one is installed.
