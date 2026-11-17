@@ -65,6 +65,22 @@ Describe 'Get-MainCheckout' {
     }
 }
 
+Describe 'Get-PortableSkills' {
+    It 'reads the skill list from the Claude Code plugin manifest, so the plugin and the global install cannot drift' {
+        $tmp = New-TempDir
+        try {
+            Set-File (Join-Path $tmp '.claude-plugin/plugin.json') '{ "name": "x", "skills": ["./.github/skills/alpha", "./.claude/skills/beta"] }'
+
+            Get-PortableSkills -Root $tmp | Should -Be @('.github/skills/alpha', '.claude/skills/beta')
+        }
+        finally { Remove-TempDir $tmp }
+    }
+
+    It 'is the list the installer links' {
+        $script:SkillSources | Should -Be @(Get-PortableSkills -Root $PSScriptRoot)
+    }
+}
+
 Describe 'Get-SkillFolders' {
     BeforeEach { $script:home_ = New-TempDir }
     AfterEach { Remove-TempDir $home_ }

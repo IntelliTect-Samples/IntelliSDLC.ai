@@ -14,6 +14,9 @@ name: "Root Tests"
 #   '.githooks/**'         Pull-SDLC.ai.Tests.ps1 copies and runs pre-commit.
 #   'templates/**'         a test asserts the retired templates/ stays absent.
 #   '.github/ci/**'        the gate this job runs.
+#   '.claude-plugin/**',   ClaudePlugin.Tests.ps1 validates the plugin
+#   '.claude/skills/**',   marketplace and every skill it ships (issue #599).
+#   '.github/skills/**'
 #   this workflow file.
 #
 # Known gap: Pull-SDLC.ai.Tests.ps1 also asserts that EVERY tracked file is
@@ -36,6 +39,9 @@ on:
       - '.githooks/**'
       - 'templates/**'
       - '.github/ci/**'
+      - '.claude-plugin/**'
+      - '.claude/skills/**'
+      - '.github/skills/**'
       - '.github/workflows/root-tests.yml'
   pull_request:
     branches: [main]
@@ -46,6 +52,9 @@ on:
       - '.githooks/**'
       - 'templates/**'
       - '.github/ci/**'
+      - '.claude-plugin/**'
+      - '.claude/skills/**'
+      - '.github/skills/**'
       - '.github/workflows/root-tests.yml'
 
 jobs:
@@ -55,6 +64,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+
+      # ClaudePlugin.Tests.ps1 runs `claude plugin validate` on the marketplace
+      # and FAILS when CI is set and claude is missing (issue #599), so this
+      # step is required. Pinned, so a validator change lands as a deliberate
+      # bump. No sign-in: validate reads only local files.
+      - name: Install Claude Code CLI
+        shell: pwsh
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.268
+          claude --version
 
       # Same gate as the .github/ job: it fails when zero tests run, when a
       # discovered file produced no container, or when any test fails (issue

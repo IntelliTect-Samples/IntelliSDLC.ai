@@ -1,0 +1,15 @@
+{
+  "name": "intellisdlc-ai",
+  "owner": {
+    "name": "IntelliTect",
+    "url": "https://github.com/IntelliTect-Samples"
+  },
+  "description": "IntelliSDLC.ai: shared AI working rules and portable dev-loop skills.",
+  "plugins": [
+    {
+      "name": "intellisdlc",
+      "source": "./",
+      "description": "The IntelliSDLC.ai working rules (worktree, feature branch, issue, PR -- injected at session start) and the portable skills: behavior-first testing, code review, functional testing, refactoring, security review, systematic debugging, /next-issue and /wrap-up."
+    }
+  ]
+}

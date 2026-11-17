@@ -1,7 +1,8 @@
 # IntelliSDLC.ai -- Global Working Rules
 
 These rules apply in **every repository and every folder**, on every machine where
-`Install-GlobalSkills.ps1` has been run. They are the floor, not the ceiling.
+`Install-GlobalSkills.ps1` has been run or the `intellisdlc` Claude Code plugin is
+installed. They are the floor, not the ceiling.
 
 **Precedence.** The four commit guards below are a **floor**: no repository's
 instructions relax them. Everything else yields to a repository's own instructions

@@ -107,6 +107,21 @@ guard refuses to run if any upstream-managed file shows local edits since
 the last sync; pass `-Force` to override (and explain why in the commit
 message).
 
+## Which Route
+
+There are three ways to get IntelliSDLC.ai, and they reach different people:
+
+| Route | Use it for | What arrives | Who gets it | Updating |
+|---|---|---|---|---|
+| **Onboard the repo** (`Pull-SDLC.ai.ps1`, above) | A repository other people work in | Everything: rules, agents, all skills, hooks, scripts | Everyone who clones it, on Claude Code and Copilot, plus cloud agents -- nothing to install | Rerun the sync; it opens a PR |
+| **Global install** (`Install-GlobalSkills.ps1`, below) | Your own machines, on every engine | The global working rules and the portable skills | Only you, on that machine | `git pull`, then rerun |
+| **Claude Code plugin** (below) | Claude Code, with no clone to keep | The global working rules and the portable skills | Whoever installs it | `claude plugin update` |
+
+The global install and the plugin overlap for Claude Code: use one or the
+other on a machine, not both, or Claude Code sees every skill and rule twice.
+Neither replaces onboarding -- the dev-loop agents, the phase gate, evidence
+capture, the language instructions and the guard hook arrive only with the repo.
+
 ## Every Repo, Every Machine -- Global Install
 
 To get the core working rules and the portable skills in **every** repository
@@ -127,6 +142,66 @@ each file alone (a hand-damaged block is reported and skipped). To update:
 to a repository's own, more specific instructions. Claude Code cloud
 sessions and GitHub's Copilot coding agent read only the repository, so they
 need it onboarded.
+
+## Claude Code Plugin
+
+This repository is also a Claude Code plugin marketplace
+(`.claude-plugin/`). The plugin ships the same portable skills as the global
+install -- invoked as `/intellisdlc:<skill>`, e.g.
+`/intellisdlc:behavior-first-testing` -- and a `SessionStart` hook that puts
+[`GLOBAL-INSTRUCTIONS.md`](./GLOBAL-INSTRUCTIONS.md) into context at the start
+of every session. Both come from one list: `.claude-plugin/plugin.json` is
+what `Install-GlobalSkills.ps1` links, too.
+
+**For yourself, on any machine** -- no clone:
+
+```powershell
+claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai
+claude plugin install intellisdlc@intellisdlc-ai
+```
+
+**For a team repository** (on top of onboarding it): from the repository
+root, declare the marketplace and enable the plugin in the committed
+`.claude/settings.json`:
+
+```powershell
+claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai --scope project
+claude plugin install intellisdlc@intellisdlc-ai --scope project
+```
+
+which writes:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "intellisdlc-ai": {
+      "source": { "source": "github", "repo": "IntelliTect-Samples/IntelliSDLC.ai" }
+    }
+  },
+  "enabledPlugins": {
+    "intellisdlc@intellisdlc-ai": true
+  }
+}
+```
+
+Committing that does not install the plugin for anyone. Each teammate, once
+per machine, registers the marketplace and installs:
+
+```powershell
+claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai
+claude plugin install intellisdlc@intellisdlc-ai --scope project
+```
+
+**Updating.** The plugin has no `version`, so each install is pinned to the
+commit it was installed from, and every new commit here is an update:
+
+```powershell
+claude plugin marketplace update intellisdlc-ai
+claude plugin update intellisdlc@intellisdlc-ai
+```
+
+Auto-update is off by default for marketplaces outside Anthropic's own; turn it
+on in `/plugin` -> **Marketplaces**.
 
 ## Template Scaffolding
 
@@ -237,6 +312,9 @@ consumer project, either:
 | `.claude/skills/next-issue/SKILL.md` | `/next-issue` -- claim the highest-priority unblocked issue and dispatch it to a dev-loop session (issue #498). **Upstream-managed** |
 | `.claude/skills/wrap-up/SKILL.md` | `/wrap-up` -- merge finished work, park the rest with a hand-off, file loose ends, then report (issue #500). **Upstream-managed** |
 | `Pull-SDLC.ai.ps1` | Sync this repo into a consumer project; scaffolds templates on first run |
+| `Install-GlobalSkills.ps1` | Link the portable skills and wire `GLOBAL-INSTRUCTIONS.md` into every installed engine on this machine (**upstream-only -- not distributed**) |
+| `GLOBAL-INSTRUCTIONS.md` | The working rules for every repository and folder, used by the global install and the plugin (**upstream-only -- not distributed**) |
+| `.claude-plugin/*` | The Claude Code plugin marketplace: `marketplace.json`, `plugin.json` (the portable-skill list) and `hooks.json` (**upstream-only -- not distributed**) |
 | `run.ps1` | Project-agnostic .NET runner -- **upstream-managed** (issue #462), so consumers receive fixes to it. A consumer that has changed it is left alone rather than overwritten or blocked |
 | `run.project.ps1` | Optional consumer extension point, dot-sourced by `run.ps1`. **Never scaffolded** -- create it only if you need to customize. Put project-specific behaviour here rather than editing `run.ps1` |
 | `run.Tests.ps1` | Tests for the runner -- **consumer-owned**: scaffolded once from upstream, then yours to customize per repo |

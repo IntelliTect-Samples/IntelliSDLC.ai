@@ -1,0 +1,15 @@
+{
+  "description": "Put the IntelliSDLC.ai global working rules into context at the start of every session.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat \"${CLAUDE_PLUGIN_ROOT}/GLOBAL-INSTRUCTIONS.md\""
+          }
+        ]
+      }
+    ]
+  }
+}
