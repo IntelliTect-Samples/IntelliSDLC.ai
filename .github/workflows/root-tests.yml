@@ -65,16 +65,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      # ClaudePlugin.Tests.ps1 runs `claude plugin validate` on the marketplace
-      # and FAILS when CI is set and claude is missing (issue #599), so this
-      # step is required. Pinned, so a validator change lands as a deliberate
-      # bump. No sign-in: validate reads only local files.
-      - name: Install Claude Code CLI
-        shell: pwsh
-        run: |
-          npm install -g @anthropic-ai/claude-code@2.1.268
-          claude --version
-
       # Same gate as the .github/ job: it fails when zero tests run, when a
       # discovered file produced no container, or when any test fails (issue
       # #304). It is handed the root suite FILES rather than '.', because a
@@ -87,3 +77,23 @@ jobs:
           Write-Output "Pester $((Get-Module Pester).Version)"
           $files = @(Get-ChildItem -LiteralPath . -File -Filter '*.Tests.ps1' | ForEach-Object FullName)
           ./.github/ci/Invoke-PesterSuite.ps1 -Path $files
+
+  # The plugin marketplace (issue #599), validated by the real Claude Code CLI.
+  # A job of its own, NOT a step in pester-root: the npm install puts a
+  # `claude` script shim on PATH, and Start-IssueAgent.Tests.ps1 then runs it
+  # instead of its mock. Pinned, so a validator change lands as a deliberate
+  # bump. No sign-in: validate reads only local files, and exits 1 on failure.
+  plugin-validate:
+    name: Claude plugin validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Claude Code CLI
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.268
+          claude --version
+
+      - name: Validate the marketplace and plugin
+        run: claude plugin validate .

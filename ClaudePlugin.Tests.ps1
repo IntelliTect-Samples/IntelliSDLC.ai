@@ -65,10 +65,10 @@ Describe 'Marketplace' {
     It 'passes claude plugin validate' {
         $claude = Get-Command claude -ErrorAction SilentlyContinue
         if (-not $claude) {
-            # On CI the workflow installs the CLI, so its absence is a broken
-            # gate, not a reason to report green having validated nothing.
-            if ($env:CI) { throw 'claude is not on PATH: the CI job must install @anthropic-ai/claude-code before this suite.' }
-            Set-ItResult -Skipped -Because 'the claude CLI is not installed on this machine'
+            # CI runs this exact check in the root-tests.yml `plugin-validate`
+            # job, which installs the CLI and fails red. It is kept off this
+            # suite's PATH there: a real `claude` defeats Start-IssueAgent's mocks.
+            Set-ItResult -Skipped -Because 'the claude CLI is not on PATH; CI validates in the plugin-validate job'
             return
         }
         $output = & $claude.Source plugin validate $PSScriptRoot 2>&1
