@@ -138,7 +138,8 @@ applyTo: '**/*.cs,**/*.csproj'
   -> `tests/unit/Services/FooServiceTests.cs`).
 - Use **Arrange / Act / Assert** pattern in every test method.
 - Use **descriptive test method names**: `MethodName_Scenario_ExpectedBehavior`.
-- Mock external dependencies with Moq. Use real code paths wherever possible.
+- Mock external dependencies with Moq for logic on our side of a boundary. Use real code paths wherever possible.
+- Code that crosses a provider or service boundary also needs a **live** test against the real provider -- see **Provider and Service Boundaries -- Live Tests Are Required** in `.github/copilot-instructions.md`.
 - Use **test fixtures** (saved data files in `tests/fixtures/`) for deterministic testing.
 - Use `IClassFixture<T>` or `ICollectionFixture<T>` for expensive shared setup.
 - Prefer `FluentAssertions` for readable assertions where available.

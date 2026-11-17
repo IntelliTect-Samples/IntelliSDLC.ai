@@ -154,6 +154,46 @@ backwards compatibility for its API or CLI surface.
 > Language-specific testing conventions are in the corresponding
 > `*.instructions.md` files referenced in the Language Detection table above.
 
+### Provider and Service Boundaries -- Live Tests Are Required
+
+Both kinds of test have a place, and they prove different things:
+
+- **Unit tests with mocks or fakes** cover logic on our side of the boundary:
+  mapping, parsing, validation, control flow, retry and error classification.
+  They are fast, deterministic and run everywhere.
+- **Live tests** cover every operation that crosses a provider or service
+  boundary -- a third-party HTTP API, a cloud service, a database, another
+  team's service, an undocumented web backend. They run against the real
+  provider with real authentication.
+
+**Every operation that crosses a provider or service boundary needs at least
+one live test. An operation without one is not done.** A mock of the provider
+only restates our assumption about how the provider behaves, so it cannot fail
+when that assumption is wrong -- and wrong assumptions about payload shape,
+field types, status codes, auth and paging are exactly what breaks at a
+boundary. The thinner the wrapper, the less a mock proves: for a client method
+that mostly forwards a request and maps the reply, the live test *is* the test.
+
+Rules for live tests:
+
+- **Never pass silently when they could not run.** Without credentials or
+  access, a live test must skip with a stated reason, and the run reports how
+  many were skipped. A skip is never green.
+- **Reads run by default** wherever credentials are available.
+- **Writes are opt-in** (an explicit environment toggle) and confined to a
+  disposable resource created by the test, named so it is recognisable, and
+  deleted in a `finally` block or equivalent. A live test never changes
+  anything it did not create.
+- **Assert meaning, not just success.** Check the returned data against an
+  independent source where one exists, not only that the call returned 2xx.
+- **Test each public surface end to end** (library, CLI, tool server, module)
+  against the live provider, not only the underlying client.
+- **Recorded fixtures come from the real provider.** When a unit test needs a
+  provider's response, use one captured from the provider, never a
+  hand-written guess at its shape.
+- **Run the live suite on a schedule** as well as on demand, so a provider
+  change is noticed before a user hits it.
+
 ### CLI Testing -- Scope and the `--dry-run` Seam
 
 - **Scope live/integration coverage to what actually needs a real dependency.**
