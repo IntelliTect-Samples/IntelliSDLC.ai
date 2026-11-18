@@ -62,6 +62,13 @@ Describe 'Marketplace' {
         (Get-Content -Raw (Join-Path $PSScriptRoot 'README.md')) | Should -Match ([regex]::Escape("`"$id`": true"))
     }
 
+    It 'documents the --scope project update a team-repo install needs -- update defaults to user scope' {
+        $id = "$($Manifest.name)@$($Marketplace.name)"
+        $readme = Get-Content -Raw (Join-Path $PSScriptRoot 'README.md')
+        $readme | Should -Match ([regex]::Escape("claude plugin install $id --scope project"))
+        $readme | Should -Match ([regex]::Escape("claude plugin update $id --scope project"))
+    }
+
     It 'passes claude plugin validate' {
         $claude = Get-Command claude -ErrorAction SilentlyContinue
         if (-not $claude) {
