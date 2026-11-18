@@ -640,3 +640,40 @@ Describe '/wrap-up merges only on an authorization the instructions actually gra
         $script:step2 | Should -Match '(?i)do(es)? not merge'
     }
 }
+
+# Issue #604: a Needs-you item that is a number plus a handle sends the owner
+# off to look up what is being asked. Each skill that writes Needs-you items
+# must say they stand on their own -- the skills ship through the plugin too,
+# where the shared instructions may not be present to fill the gap.
+Describe 'Needs-you items the skills write stand on their own' {
+    BeforeAll {
+        $script:wrapBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/wrap-up/SKILL.md')).Body
+        $script:nextBody = (Get-SkillFrontmatter -Path (Join-Path $script:repoRoot '.claude/skills/next-issue/SKILL.md')).Body
+        $script:wrapStep2 = [string](Get-SkillSection -Body $script:wrapBody -Heading 'Step 2')
+        $script:wrapStep5 = [string](Get-SkillSection -Body $script:wrapBody -Heading 'Step 5')
+        $script:wrapNeeds = [regex]::Match($script:wrapStep5, '(?ms)^-\s+\*\*Needs you\*\*.*?(?=^-\s|^\s*$|\z)').Value
+        $script:unattended = [string](Get-SkillSection -Body $script:nextBody -Heading 'When no user is present')
+    }
+
+    It '/wrap-up''s report says each Needs-you item stands on its own, and what it carries' {
+        $script:wrapNeeds | Should -Not -BeNullOrEmpty
+        $script:wrapNeeds | Should -Match '(?is)stands\s+on\s+its\s+own'
+        $script:wrapNeeds | Should -Match '(?is)why\s+it\s+needs\s+the\s+owner'
+        $script:wrapNeeds | Should -Match '(?is)the\s+options'
+        $script:wrapNeeds | Should -Match '(?is)exact\s+command'
+        $script:wrapNeeds | Should -Match '(?is)recommendation'
+        $script:wrapNeeds | Should -Match '(?is)how\s+to\s+answer'
+        $script:wrapNeeds | Should -Match '(?is)re-listed\s+item\s+repeats'
+    }
+
+    It '/wrap-up lists a ready-to-merge PR with what it changes, not only its number' {
+        $script:wrapStep2 | Should -Match '(?is)\*\*Needs you\*\*\s+as\s+ready\s+to\s+merge.{0,80}what\s+it\s+changes,\s+in\s+plain\s+words'
+    }
+
+    It '/next-issue, unattended, lists each triage finding self-contained' {
+        $script:unattended | Should -Match '(?is)\*\*Needs you\*\*,\s+each\s+self-contained'
+        $script:unattended | Should -Match '(?is)what\s+the\s+issue\s+is\s+about'
+        $script:unattended | Should -Match '(?is)how\s+to\s+answer'
+        $script:unattended | Should -Match '(?is)issue\s+number\s+alone\s+is\s+not\s+an\s+item'
+    }
+}

@@ -87,6 +87,15 @@ the default over adding an option. This holds in autopilot / unattended mode too
   assumptions `A1`, items needing the user `N1`. `N` numbers are stable for the
   session -- never reused, re-listed until answered. `R` and `A` restart in each
   report. This applies to every end-of-turn report, whatever its layout.
+- **Every Needs-you item stands on its own.** The user must decide from the item
+  alone, without scrolling back, opening an issue, or searching. Give what is
+  being decided and why it needs them, in plain words (a number, issue/PR
+  reference or label is not context; a link never replaces the explanation);
+  the options and what each does, with the exact command for anything they must
+  run; your recommendation and why; what the answer unblocks and how to answer
+  ("reply N3: 2"). A re-listed item repeats its full explanation every time --
+  never "unchanged" or "see above". Short, but complete. This too applies to
+  every end-of-turn report.
 
 ## Shell and Tooling
 

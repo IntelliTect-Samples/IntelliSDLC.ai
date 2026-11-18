@@ -76,9 +76,10 @@ it -- whether it is granted varies by repository and by instruction version.
   the PR did not), and clean up the worktree and branch (`Cleanup-Worktree.ps1`
   when present, otherwise the manual steps in the instructions).
 - **Not pre-authorized, or you cannot tell** -> do not merge. List the PR under
-  **Needs you** as ready to merge, with its evidence: the reviewer's model, the
-  triage outcome, the CI or recorded local-CI result with real counts, and the
-  exact merge command to run. Leave its worktree in place.
+  **Needs you** as ready to merge, with what it changes, in plain words, and its
+  evidence: the reviewer's model, the triage outcome, the CI or recorded
+  local-CI result with real counts, and the exact merge command to run. Leave
+  its worktree in place.
 
 **Any criterion fails -> park it (Step 3). Never merge a PR that fails one.**
 
@@ -131,7 +132,11 @@ Use the Task Complete Summary Format from the shared instructions:
 - **Filed** -- the issues created or commented on in Step 4.
 - **Assumptions** -- always present; "None" when there were none.
 - **Needs you** -- anything left for the owner, including items whose ownership
-  was unclear.
+  was unclear. Each item stands on its own, so the owner decides without
+  looking anything up: what it is and why it needs the owner, in plain words;
+  the options, with the exact command for anything the owner must run; the
+  recommendation and why; what the answer unblocks and how to answer. A number
+  or link alone is not an item, and a re-listed item repeats all of it.
 
 End by telling the user it is safe to restart.
 

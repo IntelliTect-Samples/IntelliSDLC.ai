@@ -20,11 +20,20 @@
 # reached from any repository. The rule now binds the report itself, names the
 # imposed-layout case, and requires an honest note when a layout cannot carry
 # the numbers.
+#
+# #604: numbered Needs-you items still arrived as a number plus a handle
+# ("N4. #212 -- approve?"), and a re-listed one shrank to "N4 (unchanged)", so
+# the owner had to scroll back, open the issue, or search to learn what was
+# asked. Every N item must now stand on its own -- what is being decided and why
+# it needs the user, the options, the recommendation, and how to answer -- and
+# a re-listed item repeats all of it. Pinned in the canonical subsection, its
+# pointers, the worked example, CLAUDE.md and the global floor.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
     $script:ClaudeMd   = Join-Path $script:RepoRoot 'CLAUDE.md'
     $script:CopilotIns = Join-Path $script:RepoRoot '.github/copilot-instructions.md'
+    $script:GlobalIns  = Join-Path $script:RepoRoot 'GLOBAL-INSTRUCTIONS.md'
 
     # A section is its heading line plus every line up to the next heading of
     # the same or a higher level.
@@ -48,6 +57,8 @@ BeforeAll {
     $script:Format    = Get-Section -Path $script:CopilotIns -HeadingPattern 'Task\s+Complete\s+Summary\s+Format'
     $script:Numbering = Get-Section -Path $script:CopilotIns -HeadingPattern 'Numbering\s+Report\s+Items'
     $script:ClaudeSec = Get-Section -Path $script:ClaudeMd   -HeadingPattern 'Task\s+Complete\s+Summaries'
+    $script:Standalone = Get-Section -Path $script:CopilotIns -HeadingPattern 'Self-Contained\s+Needs-You\s+Items'
+    $script:GlobalRep  = Get-Section -Path $script:GlobalIns  -HeadingPattern 'Reporting'
 
     # One field-table row, by field name.
     function Get-FieldRow {
@@ -55,6 +66,17 @@ BeforeAll {
         $m = [regex]::Match($Section, "(?m)^\|\s*\*\*$Field\*\*\s*\|[^\r\n]*")
         if ($m.Success) { return $m.Value } else { return $null }
     }
+
+    # One top-level bullet of a markdown list, by its bold lead-in, up to the
+    # next top-level bullet or blank line.
+    function Get-Bullet {
+        param([string]$Text, [string]$LeadIn)
+        $m = [regex]::Match([string]$Text, "(?ms)^-\s+\*\*$LeadIn.*?(?=^-\s|^\s*$|\z)")
+        if ($m.Success) { return $m.Value } else { return $null }
+    }
+
+    # The worked example's N1 item: from its marker up to the next field bullet.
+    $script:ExampleN1 = ([regex]::Match([string]$script:Format, '(?s)-\s*\*\*N1\.\*\*.*?(?=\n\s*-\s*\*\*Evidence)')).Value
 }
 
 Describe 'Task Complete Summary Format -- numbered report items (issue #509)' {
@@ -228,5 +250,165 @@ Describe 'CLAUDE.md mirrors the numbering rule (issue #509)' {
         $script:ClaudeSec | Should -Match '(?i)carry the letters into that layout'
         $script:ClaudeSec | Should -Match '(?i)bullet list is not an\s+exemption'
         $script:ClaudeSec | Should -Match '(?i)say so in the\s+report rather than dropping them silently'
+    }
+}
+
+Describe 'Every Needs-you item stands on its own (issue #604)' {
+
+    BeforeAll {
+        # The numbered list of what every item carries, up to the blank line
+        # that ends it -- so a clause stated anywhere else does not count.
+        $script:Carries = ([regex]::Match([string]$script:Standalone, '(?ms)^1\.\s+\*\*.*?(?=\n\s*\n)')).Value
+        # The sentence that forbids the shortcuts.
+        $script:Never = ([regex]::Match([string]$script:Standalone, '(?is)Never\s+write\s+.*?in\s+its\s+place\.')).Value
+        # The section's fenced examples, in order: the handle-only item first,
+        # then the self-contained one.
+        $script:Examples = @([regex]::Matches([string]$script:Standalone, '(?ms)^```[^\n]*\n(.*?)^```') |
+                ForEach-Object { $_.Groups[1].Value })
+    }
+
+    It 'is a subsection of the summary format, beside the numbering rule' {
+        $script:Standalone | Should -Not -BeNullOrEmpty
+        $script:Format     | Should -Match '(?m)^#{6}\s+Self-Contained\s+Needs-You\s+Items'
+    }
+
+    It 'requires that the user can decide from the item alone, without looking anything up' {
+        $script:Standalone | Should -Match '(?is)decide\s+from\s+the\s+item\s+alone'
+        $script:Standalone | Should -Match '(?is)scrolling\s+back'
+        $script:Standalone | Should -Match '(?is)opening\s+an\s+issue'
+        $script:Standalone | Should -Match '(?is)searching'
+    }
+
+    It 'says a number, an issue or PR reference, or a label is a handle, not context' {
+        $script:Standalone | Should -Match '(?is)a\s+number,\s+an\s+issue\s+or\s+PR\s+reference,\s+a\s+short\s+label'
+        $script:Standalone | Should -Match '(?is)a\s+handle\s+is\s+not\s+context'
+    }
+
+    It 'lets a link accompany the explanation but never replace it' {
+        $script:Standalone | Should -Match '(?is)link\s+may\s+accompany\s+the\s+explanation,\s+but\s+it\s+never\s+replaces\s+it'
+    }
+
+    It 'lists what is being decided and why it needs the user, in plain words, first' {
+        $script:Carries | Should -Match '(?is)\A1\.\s+\*\*What\s+is\s+being\s+decided,\s+and\s+why\s+it\s+needs\s+the\s+user\*\*,\s+in\s+plain\s+words'
+    }
+
+    It 'lists the options, each with what it does, and the exact command for an action the user takes' {
+        $script:Carries | Should -Match '(?im)^2\.\s+\*\*The\s+options\*\*,\s+each\s+with\s+what\s+it\s+does'
+        $script:Carries | Should -Match '(?is)the\s+user\s+must\s+take\s+themselves,\s+the\s+exact\s+command\s+or\s+steps'
+    }
+
+    It 'lists the recommendation and why' {
+        $script:Carries | Should -Match '(?im)^3\.\s+\*\*The\s+recommendation\s+and\s+why\*\*'
+    }
+
+    It 'lists what the answer unblocks and how to answer' {
+        $script:Carries | Should -Match '(?im)^4\.\s+\*\*What\s+the\s+answer\s+unblocks,\s+and\s+how\s+to\s+answer\*\*'
+    }
+
+    It 'requires a re-listed item to repeat its full explanation, every time' {
+        $script:Standalone | Should -Match '(?is)\*\*A\s+re-listed\s+item\s+repeats\s+its\s+full\s+explanation,\s+every\s+time\.\*\*'
+    }
+
+    It 'forbids each shortcut by name' {
+        $script:Never | Should -Not -BeNullOrEmpty
+        $script:Never | Should -Match '"unchanged"'
+        $script:Never | Should -Match '(?s)"as\s+explained\s+earlier"'
+        $script:Never | Should -Match '(?s)"see\s+above"'
+        $script:Never | Should -Match '(?s)the\s+number\s+plus\s+a\s+terse\s+label'
+    }
+
+    It 'asks for the shortest item that is still complete' {
+        $script:Standalone | Should -Match '(?is)as\s+short\s+as\s+it\s+can\s+be\s+while\s+still\s+complete'
+    }
+
+    It 'binds every end-of-turn report, whatever layout the harness imposes' {
+        $script:Standalone | Should -Match '(?is)binds\s+every\s+end-of-turn\s+report'
+        $script:Standalone | Should -Match '(?is)whatever\s+layout\s+the\s+harness\s+imposes'
+    }
+
+    It 'contrasts a handle-only item with a self-contained one' {
+        $script:Examples.Count | Should -BeGreaterOrEqual 2
+        $script:Examples[0] | Should -Match '\*\*N\d+\.\*\*\s+#\d+\s+--'
+        $script:Examples[1] | Should -Match 'Options:'
+        $script:Examples[1] | Should -Match 'Recommend'
+        $script:Examples[1] | Should -Match 'Reply\s+`N\d+:'
+        $script:Examples[1] | Should -Match '(?s)`gh\s[^`]+`' -Because 'its action is one the user takes, so it carries the exact command'
+    }
+}
+
+Describe 'The summary format points at the self-contained rule (issue #604)' {
+
+    It 'the format preamble scopes this rule, too, wider than the section' {
+        $script:Format | Should -Match '(?s)scoped\s+wider\s+than\s+this\s+section[^|]*?\*\*Self-Contained\s+Needs-You\s+Items\*\*'
+    }
+
+    It 'the Needs you field row points at the rule' {
+        Get-FieldRow -Section $script:Format -Field 'Needs you' | Should -Match '\*\*Self-Contained Needs-You Items\*\*'
+    }
+
+    It 'the numbering rule says a re-listed item is written out in full' {
+        $script:Numbering | Should -Match '(?is)re-listed\s+item\s+is\s+written\s+out\s+in\s+full'
+        $script:Numbering | Should -Match '(?s)\*\*Self-Contained\s+Needs-You\s+Items\*\*'
+    }
+
+    It 'the worked example''s N1 stands on its own' {
+        $script:ExampleN1 | Should -Not -BeNullOrEmpty
+        $script:ExampleN1 | Should -Match 'Options:'
+        $script:ExampleN1 | Should -Match 'Recommend'
+        $script:ExampleN1 | Should -Match 'Reply\s+`N1:'
+    }
+}
+
+Describe 'CLAUDE.md summarizes the self-contained rule (issue #604)' {
+
+    BeforeAll {
+        $script:ClaudeNeeds = Get-Bullet -Text $script:ClaudeSec -LeadIn 'Needs you'
+    }
+
+    It 'the Needs you bullet says what each item carries' {
+        $script:ClaudeNeeds | Should -Match '(?is)self-contained'
+        $script:ClaudeNeeds | Should -Match '(?is)what\s+is\s+being\s+decided\s+and\s+why\s+it\s+needs\s+the\s+user'
+        $script:ClaudeNeeds | Should -Match '(?is)is\s+not\s+context'
+        $script:ClaudeNeeds | Should -Match '(?is)the\s+options\s+and\s+what\s+each\s+does'
+        $script:ClaudeNeeds | Should -Match '(?is)exact\s+command'
+        $script:ClaudeNeeds | Should -Match '(?is)the\s+recommendation\s+and\s+why'
+        $script:ClaudeNeeds | Should -Match '(?is)what\s+the\s+answer\s+unblocks\s+and\s+how\s+to\s+answer'
+    }
+
+    It 'says a re-listed item repeats its full explanation, and names the shortcuts' {
+        $script:ClaudeSec | Should -Match '(?is)re-listed\s+item\s+repeats\s+its\s+full\s+explanation'
+        $script:ClaudeSec | Should -Match '"unchanged"'
+        $script:ClaudeSec | Should -Match '(?s)"see\s+above"'
+    }
+
+    It 'binds it to every end-of-turn report, and points at the canonical rule' {
+        $script:ClaudeSec | Should -Match '(?is)Every\s+Needs-you\s+item\s+stands\s+on\s+its\s+own.{0,400}every\s+end-of-turn\s+report'
+        $script:ClaudeSec | Should -Match '(?s)\*\*Self-Contained\s+Needs-You\s+Items\*\*'
+    }
+}
+
+Describe 'The global floor carries the self-contained rule (issue #604)' {
+
+    BeforeAll {
+        $script:GlobalNeeds = Get-Bullet -Text $script:GlobalRep -LeadIn 'Every Needs-you item stands on its own'
+    }
+
+    It 'has a Reporting bullet saying every Needs-you item stands on its own' {
+        $script:GlobalRep   | Should -Not -BeNullOrEmpty
+        $script:GlobalNeeds | Should -Not -BeNullOrEmpty
+    }
+
+    It 'says what each item carries' {
+        $script:GlobalNeeds | Should -Match '(?is)decide\s+from\s+the\s+item\s+alone'
+        $script:GlobalNeeds | Should -Match '(?is)is\s+not\s+context'
+        $script:GlobalNeeds | Should -Match '(?is)the\s+options\s+and\s+what\s+each\s+does'
+        $script:GlobalNeeds | Should -Match '(?is)exact\s+command'
+        $script:GlobalNeeds | Should -Match '(?is)recommendation\s+and\s+why'
+        $script:GlobalNeeds | Should -Match '(?is)what\s+the\s+answer\s+unblocks\s+and\s+how\s+to\s+answer'
+    }
+
+    It 'requires a re-listed item to repeat its full explanation' {
+        $script:GlobalNeeds | Should -Match '(?is)re-listed\s+item\s+repeats\s+its\s+full\s+explanation'
+        $script:GlobalNeeds | Should -Match '"unchanged"'
     }
 }

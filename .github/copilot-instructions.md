@@ -644,7 +644,8 @@ and branch names -- never plain-text references like `#131`.
 
 **Numbering Report Items** below is deliberately scoped wider than this
 section: it binds every end-of-turn report, whatever the harness calls it and
-whatever layout the harness imposes. Everything else here describes the
+whatever layout the harness imposes. So does
+**Self-Contained Needs-You Items**. Everything else here describes the
 `task_complete` summary specifically.
 
 Every `task_complete` summary must include the following fields whenever the
@@ -664,7 +665,7 @@ without the user, or state "None".
 | **Result display** | The actual result, so the user sees the change worked without re-running it. **Required on every dev-loop run.** For CLI/markdown changes render the real captured output **inline** (ANSI-stripped, fenced); for UI/binary changes a `file:///` link is sufficient. Omit the inline output only when the user opted out (`-SkipDisplay`), and then note it was skipped by user request. |
 | **Results** | The list of what was done or found, one item per outcome, numbered `R1`, `R2`, ... per **Numbering Report Items** below. This is not the **Result display**: that field is the single captured output and is not numbered. |
 | **Assumptions** | Every assumption you made while proceeding without the user (autopilot / unattended), each with what you assumed and the resulting decision, so they can be reviewed and corrected. **Always present in every `task_complete` summary** -- state "None" when you made no autonomous assumptions (see **Surfacing Assumptions**). Numbered per **Numbering Report Items** below. |
-| **Needs you** | Every decision, question, approval, or command the user must act on. Numbered per **Numbering Report Items** below. Omit when nothing needs the user. |
+| **Needs you** | Every decision, question, approval, or command the user must act on, each one written to stand on its own per **Self-Contained Needs-You Items** below: what is being decided and why, the options, the recommendation, and how to answer. Numbered per **Numbering Report Items** below. Omit when nothing needs the user. |
 | **Evidence (local)** | Clickable `file:///` URL to the entry-point file at `.evidence/<phase-id>/evidence.md` (printed by `Publish-Evidence.ps1`). Required when Phase 5b ran. |
 | **Evidence (PR)** | Link to the PR comment containing the captured runtime artifact, or to the CI-artifact URL for files larger than 25 MB. Required when Phase 5b ran and the PR exists. |
 
@@ -698,7 +699,12 @@ Example:
 - **Assumptions**:
   - **A1.** Kept the token TTL at the existing 3600s default (the issue did not specify); no new option added.
 - **Needs you**:
-  - **N1.** Confirm 3600s is the TTL you want before the next release.
+  - **N1.** How long an `app auth` token should last: the issue did not say,
+    so the change kept the existing 3600s (1 hour) default. Options: **1** keep
+    1 hour; **2** shorten to 15 minutes -- more refreshes, but a leaked token
+    is usable for less time. Recommend **1** until a security requirement asks
+    for shorter. Your answer settles the default before the next release.
+    Reply `N1: 1` or `N1: 2`.
 - **Evidence (local)**: file:///D:/Git/repo/.evidence/phase-5b-20260101T000000Z/evidence.md
 - **Evidence (PR)**: https://github.com/owner/repo/pull/57#issuecomment-1234567
 ```
@@ -726,6 +732,8 @@ is not `R`-numbered.
 **`N` numbers are stable for the whole session.** A number is never reused.
 Every end-of-turn report re-lists every open item under its same number --
 including any the user's last reply left unanswered -- until it is answered.
+A re-listed item is written out in full each time, never abbreviated (see
+**Self-Contained Needs-You Items**).
 An answered item is marked **resolved** once in the following end-of-turn
 report and never renumbered, so an earlier "re N3" still points at the right
 item.
@@ -758,6 +766,57 @@ loss later. Reaching for this should be near-never: `**R1.**` fits wherever the
 item's own text fits, so reformat the item -- into a bullet, a line, a
 sentence -- before concluding that the layout cannot carry it. A layout that
 merely makes the numbers inconvenient is not a layout that cannot carry them.
+
+###### Self-Contained Needs-You Items
+
+**Every `N` item stands on its own.** The user must be able to decide from the
+item alone -- without scrolling back through the conversation, opening an issue
+or PR, or searching. An item that is only a handle -- a number, an issue or PR
+reference, a short label -- sends the user off to find out what is being asked,
+which is the very work the list exists to save them. A handle is not context: a
+link may accompany the explanation, but it never replaces it.
+
+Each item carries:
+
+1. **What is being decided, and why it needs the user**, in plain words: what
+   the issue, PR or change is about, and why the session cannot settle it
+   alone.
+2. **The options**, each with what it does or what it changes. For an action
+   the user must take themselves, the exact command or steps.
+3. **The recommendation and why**, when there is one.
+4. **What the answer unblocks, and how to answer** -- e.g. "reply `N3: 2`".
+
+**A re-listed item repeats its full explanation, every time.** An open item
+carried forward under its stable number (see **Numbering Report Items**) is
+written out in full in every end-of-turn report that lists it, because the user
+may be reading only that report. Never write "unchanged", "as explained
+earlier", "see above", or the number plus a terse label in its place.
+
+Keep each item as short as it can be while still complete: a sentence or two
+of context, the options, the recommendation, the answer line. Complete comes
+first; within that, shorter is better.
+
+**Like the numbering, this binds every end-of-turn report**, whatever layout
+the harness imposes: an imposed layout's equivalent of **Needs you** carries
+self-contained items too.
+
+Not self-contained -- the user has to go and look:
+
+```markdown
+- **N2.** #212 -- needs your token.
+```
+
+Self-contained:
+
+```markdown
+- **N2.** The nightly package publish (issue #212) fails because the registry
+  token stored as a repository secret has expired, and only a maintainer can
+  issue a new one. Options: **1** renew it -- create a token with package-write
+  scope, then run `gh secret set REGISTRY_TOKEN --repo owner/repo` and paste it
+  when prompted; **2** turn the nightly publish off until someone renews it.
+  Recommend **1**: it takes a few minutes and keeps the nightly feed current.
+  Unblocks tonight's publish. Reply `N2: 1` once the secret is set, or `N2: 2`.
+```
 
 ##### PR Summary Formatting
 

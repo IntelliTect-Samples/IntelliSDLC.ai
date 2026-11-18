@@ -333,7 +333,12 @@ autonomous assumptions.
   so they can be reviewed and corrected. **Always present in every summary** --
   state "None" when you made no autonomous assumptions.
 - **Needs you** -- every decision, question, approval, or command the user must
-  act on. Omit when nothing needs the user.
+  act on, each one self-contained: what is being decided and why it needs the
+  user, in plain words (a number, issue/PR reference or label is not context,
+  and a link never replaces the explanation); the options and what each does,
+  with the exact command for anything the user must run; the recommendation
+  and why; what the answer unblocks and how to answer (`N3: 2`). Omit when
+  nothing needs the user.
 - **Evidence (local)** -- clickable `file:///` URL to
   `.evidence/<phase-id>/evidence.md` (the entry-point file). Required when
   Phase 5b ran.
@@ -354,6 +359,12 @@ equivalent sections -- a layout that asks for a bullet list is not an
 exemption. If the active layout genuinely cannot carry them, say so in the
 report rather than dropping them silently -- and reach for that near-never,
 since `**R1.**` fits wherever the item's own text fits.
+
+**Every Needs-you item stands on its own**: the user decides from the item
+alone, without scrolling back, opening an issue, or searching. A re-listed item
+repeats its full explanation every time -- never "unchanged", "see above", or
+the number plus a terse label. Like the numbering, this binds every
+end-of-turn report, whatever its layout. See **Self-Contained Needs-You Items**.
 
 See the **Task Complete Summary Format** subsection of
 `.github/copilot-instructions.md` for the canonical specification.
