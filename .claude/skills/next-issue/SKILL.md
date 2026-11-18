@@ -443,9 +443,11 @@ report ("unattended: claimed the top N without a pick").
 
 Triage labels nothing when unattended, and migrates nothing: legacy labels are
 read through `$rank` and listed as "to migrate". List the unprioritized,
-changed-since-prioritized and to-migrate issues under **Needs you**, each with a
-proposed decision and reason, and dispatch only from issues that already carry
-a priority label -- an unprioritized issue is never claimed without the owner.
+changed-since-prioritized and to-migrate issues under **Needs you**, each
+self-contained: what the issue is about, in a sentence of your own; the
+proposed decision and its reason; and how to answer. An issue number alone is
+not an item. Dispatch only from issues that already carry a priority label --
+an unprioritized issue is never claimed without the owner.
 Newly unblocked issues are still marked.
 
 ## Continuous dispatch
