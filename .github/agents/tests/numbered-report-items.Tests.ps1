@@ -435,21 +435,31 @@ Describe 'The global floor gives commands to run in one block (issue #606)' {
     It 'puts every command in one block the user pastes once, over a one-block-per-command default' {
         $script:GlobalBlock | Should -Match '(?is)more\s+than\s+one\s+command'
         $script:GlobalBlock | Should -Match '(?is)copy\s+once\s+and\s+paste\s+once'
-        $script:GlobalBlock | Should -Match '(?is)one\s+block\s+per\s+command'
+        $script:GlobalBlock | Should -Match '(?is)never\s+one\s+block\s+per\s+command'
     }
 
-    It 'makes the block stop at the first failure' {
-        $script:GlobalBlock | Should -Match '(?is)stops?\s+at\s+the\s+first\s+failure'
+    It 'makes the block stop at the first failure, including a failing native command' {
+        $script:GlobalBlock | Should -Match '(?is)stop\s+at\s+the\s+first\s+failure'
+        # A native command's failure only sets $LASTEXITCODE; nothing stops on
+        # it unless the block checks.
+        $script:GlobalBlock | Should -Match '\$LASTEXITCODE'
+        # Scoped, so nothing the block sets leaks into the user's session.
+        $script:GlobalBlock | Should -Match ([regex]::Escape('& { ... }'))
+        $script:GlobalBlock | Should -Match '(?is)never\s+`exit`'
+        $script:GlobalBlock | Should -Match 'set -e'
     }
 
-    It 'asks before each command when the user may not want them all' {
+    It 'asks before each command when the user may not want them all, without leaving step mode on' {
         $script:GlobalBlock | Should -Match '(?is)ask\s+before\s+each'
+        $script:GlobalBlock | Should -Match 'Read-Host'
         $script:GlobalBlock | Should -Match 'Set-PSDebug -Step'
+        $script:GlobalBlock | Should -Match '(?is)`Set-PSDebug -Off`\s+in\s+a\s+`finally`'
     }
 
-    It 'launches an elevated part from inside the same block and says where to paste it' {
-        $script:GlobalBlock | Should -Match '(?is)elevat'
-        $script:GlobalBlock | Should -Match '-Verb RunAs'
-        $script:GlobalBlock | Should -Match '(?is)which\s+window'
+    It 'launches an elevated part from inside a block pasted into a non-elevated window, and stops if it failed' {
+        $script:GlobalBlock | Should -Match '(?is)need\s+elevation'
+        $script:GlobalBlock | Should -Match '(?is)pasted\s+into\s+a\s+normal\s+\(non-elevated\)\s+window'
+        $script:GlobalBlock | Should -Match '-Verb RunAs -Wait -PassThru'
+        $script:GlobalBlock | Should -Match 'ExitCode'
     }
 }
