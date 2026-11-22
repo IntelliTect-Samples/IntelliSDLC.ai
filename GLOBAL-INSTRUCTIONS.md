@@ -109,9 +109,9 @@ the default over adding an option. This holds in autopilot / unattended mode too
   and function the block calls). If some steps need elevation, it is still one
   block, pasted into a normal (non-elevated) window: it launches the elevated part
   itself (`Start-Process pwsh -Verb RunAs -Wait -PassThru`, commands passed with
-  `-EncodedCommand`), which pauses on a `Read-Host` (not `-NoExit`) so the user
-  can read it and then exits with its status, and the block stops if that
-  `ExitCode` is not 0.
+  `-EncodedCommand`), whose elevated process pauses on a `Read-Host` (not
+  `-NoExit`) so the user can read it and then exits with its status; the block
+  stops if that `ExitCode` is not 0.
 
 ## Shell and Tooling
 
