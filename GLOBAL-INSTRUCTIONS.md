@@ -96,6 +96,14 @@ the default over adding an option. This holds in autopilot / unattended mode too
   ("reply N3: 2"). A re-listed item repeats its full explanation every time --
   never "unchanged" or "see above". Short, but complete. This too applies to
   every end-of-turn report.
+- **Commands to run go in one block.** When the user has to run more than one
+  command, give all of them in a single code block they copy once and paste once
+  -- never one block per command, even where the harness defaults to that. Make
+  the block stop at the first failure rather than carry on. If the user may not
+  want every command, make it ask before each one (`Set-PSDebug -Step` ...
+  `Set-PSDebug -Off`). If some steps need elevation and others do not, it is
+  still one block: launch the elevated part from it
+  (`Start-Process pwsh -Verb RunAs -Wait`), and say which window to paste it into.
 
 ## Shell and Tooling
 

@@ -28,6 +28,14 @@
 # it needs the user, the options, the recommendation, and how to answer -- and
 # a re-listed item repeats all of it. Pinned in the canonical subsection, its
 # pointers, the worked example, CLAUDE.md and the global floor.
+#
+# #606: the exact commands a report hands the owner arrived one block per
+# command -- the desktop app's own default -- so the owner copied and pasted each
+# one, and a failure part-way through went unnoticed. The preference had been
+# saved only to per-project memory, so it never reached other repositories or
+# machines. The global floor now says: all of them in one block, stop at the
+# first failure, ask before each command when not all may be wanted, and launch
+# an elevated part from inside the same block.
 
 BeforeAll {
     $script:RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\') | Select-Object -ExpandProperty Path
@@ -410,5 +418,38 @@ Describe 'The global floor carries the self-contained rule (issue #604)' {
     It 'requires a re-listed item to repeat its full explanation' {
         $script:GlobalNeeds | Should -Match '(?is)re-listed\s+item\s+repeats\s+its\s+full\s+explanation'
         $script:GlobalNeeds | Should -Match '"unchanged"'
+    }
+}
+
+Describe 'The global floor gives commands to run in one block (issue #606)' {
+
+    BeforeAll {
+        $script:GlobalBlock = Get-Bullet -Text $script:GlobalRep -LeadIn 'Commands to run go in one block'
+    }
+
+    It 'has a Reporting bullet saying commands to run go in one block' {
+        $script:GlobalRep   | Should -Not -BeNullOrEmpty
+        $script:GlobalBlock | Should -Not -BeNullOrEmpty
+    }
+
+    It 'puts every command in one block the user pastes once, over a one-block-per-command default' {
+        $script:GlobalBlock | Should -Match '(?is)more\s+than\s+one\s+command'
+        $script:GlobalBlock | Should -Match '(?is)copy\s+once\s+and\s+paste\s+once'
+        $script:GlobalBlock | Should -Match '(?is)one\s+block\s+per\s+command'
+    }
+
+    It 'makes the block stop at the first failure' {
+        $script:GlobalBlock | Should -Match '(?is)stops?\s+at\s+the\s+first\s+failure'
+    }
+
+    It 'asks before each command when the user may not want them all' {
+        $script:GlobalBlock | Should -Match '(?is)ask\s+before\s+each'
+        $script:GlobalBlock | Should -Match 'Set-PSDebug -Step'
+    }
+
+    It 'launches an elevated part from inside the same block and says where to paste it' {
+        $script:GlobalBlock | Should -Match '(?is)elevat'
+        $script:GlobalBlock | Should -Match '-Verb RunAs'
+        $script:GlobalBlock | Should -Match '(?is)which\s+window'
     }
 }
