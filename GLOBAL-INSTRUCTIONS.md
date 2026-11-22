@@ -99,18 +99,19 @@ the default over adding an option. This holds in autopilot / unattended mode too
 - **Commands to run go in one block.** When the user has to run more than one
   command, give all of them in a single code block they copy once and paste once
   -- never one block per command, even where the harness defaults to that. Make
-  it stop at the first failure: wrap it in `& { ... }` so nothing leaks into the
-  session, check `$LASTEXITCODE` after each native command and `throw` when it is
-  not 0, and never `exit` from it, which closes the user's window (`set -e` in
-  bash). If
-  the user may not want every command, make it ask before each one: a
-  `Read-Host` confirmation per command, or `Set-PSDebug -Step` with
+  it stop at the first failure: wrap it in `& { ... }` with
+  `$ErrorActionPreference = 'Stop'` as its first line (scoped, so nothing leaks
+  into the session), check `$LASTEXITCODE` after each native command and `throw`
+  when it is not 0, and never `exit` from it, which closes the user's window
+  (`set -e` in bash). If the user may not want every command, make it ask before
+  each one: a `Read-Host` confirmation per command, or `Set-PSDebug -Step` with
   `Set-PSDebug -Off` in a `finally` (step mode also prompts inside every script
   and function the block calls). If some steps need elevation, it is still one
   block, pasted into a normal (non-elevated) window: it launches the elevated part
   itself (`Start-Process pwsh -Verb RunAs -Wait -PassThru`, commands passed with
-  `-EncodedCommand`), keeps that window open until the user has read it, and
-  stops if its `ExitCode` is not 0.
+  `-EncodedCommand`), which pauses on a `Read-Host` (not `-NoExit`) so the user
+  can read it and then exits with its status, and the block stops if that
+  `ExitCode` is not 0.
 
 ## Shell and Tooling
 

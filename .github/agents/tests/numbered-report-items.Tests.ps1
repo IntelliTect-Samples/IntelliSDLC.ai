@@ -445,6 +445,8 @@ Describe 'The global floor gives commands to run in one block (issue #606)' {
         $script:GlobalBlock | Should -Match '\$LASTEXITCODE'
         # Scoped, so nothing the block sets leaks into the user's session.
         $script:GlobalBlock | Should -Match ([regex]::Escape('& { ... }'))
+        # A failing cmdlet only writes a non-terminating error unless told to stop.
+        $script:GlobalBlock | Should -Match ([regex]::Escape("`$ErrorActionPreference = 'Stop'"))
         $script:GlobalBlock | Should -Match '(?is)never\s+`exit`'
         $script:GlobalBlock | Should -Match 'set -e'
     }
@@ -461,5 +463,7 @@ Describe 'The global floor gives commands to run in one block (issue #606)' {
         $script:GlobalBlock | Should -Match '(?is)pasted\s+into\s+a\s+normal\s+\(non-elevated\)\s+window'
         $script:GlobalBlock | Should -Match '-Verb RunAs -Wait -PassThru'
         $script:GlobalBlock | Should -Match 'ExitCode'
+        # -NoExit keeps the window open but makes ExitCode 0 whatever failed.
+        $script:GlobalBlock | Should -Match '(?is)not\s+`-NoExit`'
     }
 }
