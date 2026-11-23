@@ -191,9 +191,7 @@ Describe 'Invoke-GlobalInstall' {
 
         Get-LinkNames $claudeSkills | Should -BeNullOrEmpty
         Join-Path $claudeSkills 'my-own-skill' | Should -Exist
-        $text = Get-Content -Raw $claudeMd
-        $text | Should -Not -BeLike "*$($script:BlockBegin)*"
-        $text | Should -BeLike '# Mine*Keep this.*'
+        (Get-Content -Raw $claudeMd) -replace "`r`n", "`n" | Should -BeExactly "# Mine`nKeep this.`n"
     }
 
     It 'puts the Claude copies back when the plugin is disabled again' {
@@ -205,6 +203,46 @@ Describe 'Invoke-GlobalInstall' {
 
         Get-LinkNames $claudeSkills | Should -HaveCount $script:SkillSources.Count
         Get-Content -Raw $claudeMd | Should -BeLike "*$($script:BlockBegin)*"
+    }
+}
+
+Describe 'Remove-SkillLinks' {
+    BeforeEach {
+        $script:tmp = New-TempDir
+        $script:root = Join-Path $tmp 'clone'
+        Set-File (Join-Path $root '.github/skills/alpha/SKILL.md')
+        Set-File (Join-Path $root '.github/skills/beta/SKILL.md')
+        $script:dir = Join-Path $tmp 'skills'
+        Install-SkillLinks -Root $root -Skills @('.github/skills/alpha') -SkillsDir $dir | Out-Null
+        $script:linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+    }
+    AfterEach { Remove-TempDir $tmp }
+
+    It 'removes the links it made for the listed skills' {
+        (Remove-SkillLinks -Root $root -Skills @('.github/skills/alpha') -SkillsDir $dir).Skill | Should -Be 'alpha'
+
+        Join-Path $dir 'alpha' | Should -Not -Exist
+        Join-Path $root '.github/skills/alpha/SKILL.md' | Should -Exist
+    }
+
+    It 'keeps a link of the user''s own to another skill in this clone' {
+        New-Item -ItemType $linkType -Path (Join-Path $dir 'beta') -Target (Join-Path $root '.github/skills/beta') | Out-Null
+
+        Remove-SkillLinks -Root $root -Skills @('.github/skills/alpha') -SkillsDir $dir | Out-Null
+
+        Get-LinkNames $dir | Should -Be @('beta')
+    }
+
+    It 'keeps a link of the user''s own to somewhere else, and a real folder' {
+        $elsewhere = Join-Path $tmp 'other-clone/.github/skills/alpha'
+        Set-File (Join-Path $elsewhere 'SKILL.md')
+        New-Item -ItemType $linkType -Path (Join-Path $dir 'gamma') -Target $elsewhere | Out-Null
+        New-Item -ItemType Directory (Join-Path $dir 'my-own-skill') | Out-Null
+
+        Remove-SkillLinks -Root $root -Skills @('.github/skills/alpha') -SkillsDir $dir | Out-Null
+
+        Get-LinkNames $dir | Should -Be @('gamma')
+        Join-Path $dir 'my-own-skill' | Should -Exist
     }
 }
 

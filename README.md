@@ -151,7 +151,7 @@ earlier run put there -- so Claude Code loads each skill and rule once, from
 the plugin. `~/.agents/skills` and the Copilot, Codex and Gemini files are
 served as usual. A plugin installed only in one project, or disabled, does not
 count; disable or uninstall it and rerun to put the Claude copies back. So on a
-machine with several engines:
+machine with several engines, from this repository's clone:
 
 ```powershell
 & {
