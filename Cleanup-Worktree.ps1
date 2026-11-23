@@ -75,6 +75,15 @@
     link loses nothing. The remedy is to move the captures to the shared
     store and re-run -- there is deliberately no override switch.
 
+    Copies of tracked capture files do NOT block removal either (issue #611).
+    A build that copies tracked reference captures into its gitignored output
+    folder leaves one behind per file, per build folder. Such a copy is let
+    through only when it is byte-for-byte identical to a tracked capture file
+    in the same worktree that still holds what is committed at HEAD -- git
+    has those bytes, so removing the copy loses nothing. A copy that was
+    edited, a copy of an uncommitted or merely staged change, and anything
+    the comparison cannot prove, still block.
+
     WHY A GUARD AND NOT A CHECK. The check that "found nothing" is the
     failure mode here, not the deletion. Six ordinary commands each report
     an empty result for a reason unrelated to emptiness:
@@ -355,6 +364,11 @@ function Get-WorktreeList {
     refusing every linked worktree forever -- and risk deleting through it,
     since Windows PowerShell 5.1's `Remove-Item -Recurse` follows junctions
     (pwsh 7 does not).
+
+    A byte-for-byte copy of a capture file git already holds is not returned
+    either (issue #611, Get-TrackedCaptureCopy): removing it loses nothing.
+    A file leaves the list on proof only -- if that check fails or cannot
+    tell, the file stays and the worktree is still refused.
 #>
 function Get-WorktreeCaptureArtifact {
     param([Parameter(Mandatory)][string]$WorktreePath)
@@ -391,7 +405,126 @@ function Get-WorktreeCaptureArtifact {
             $found += $item
         }
     }
+
+    # Issue #611: drop the copies of files git already holds. The catch is
+    # part of the guard, not tidiness: a check that throws has proved nothing,
+    # so every file stays counted.
+    $copies = @()
+    try {
+        $copies = @(Get-TrackedCaptureCopy -WorktreePath $WorktreePath -Capture $found |
+            ForEach-Object { $_.FullName })
+    }
+    catch { $copies = @() }
+    if ($copies.Count -gt 0) {
+        # -cnotcontains, not -notcontains: where file names are case-sensitive
+        # `Raw.har` and `raw.har` are two files, and only one was proved.
+        $found = @($found | Where-Object { $copies -cnotcontains $_.FullName })
+    }
     return $found
+}
+
+<#
+.SYNOPSIS
+    The captures that are byte-for-byte copies of capture files git already holds.
+.DESCRIPTION
+    Issue #611. A project can keep trimmed, scrubbed capture files IN git and
+    have a build copy them into its output folder. Build output is gitignored,
+    so the ignored-entry scan took each copy for a raw capture that exists
+    nowhere else, and refused every worktree that had ever been built.
+
+    A capture is returned -- and so not counted -- only when BOTH hold:
+
+      1. A tracked capture file in this worktree still holds, in its working
+         copy, what is committed at HEAD. git answers that: the file is hashed
+         the way `git add` would hash it and compared with the blob HEAD
+         records for its path, which is what `git status` asks.
+      2. The capture is byte-for-byte identical to that working copy.
+
+    Why the working copy, and not the capture's own blob id against the tree:
+    a checkout may convert line endings (`core.autocrlf`, `.gitattributes`),
+    so a byte copy of a checked-out file need not hash to the blob git stores.
+    Hashing the capture THROUGH that conversion would recognise the copy, but
+    it would also call two files identical that differ in their bytes. Here
+    git's conversion is applied only to the tracked file -- where git itself
+    already trusts it -- and the capture is compared byte for byte.
+
+    Why HEAD, and not the index: removing a worktree removes its index too. A
+    blob only the index refers to is left unreachable, for garbage collection
+    to delete, so a staged change is not something git "already holds".
+
+    Fail safe throughout: a git command that fails, a file that cannot be
+    read, a path that cannot be handed to git unambiguously -- each proves
+    nothing, and what is not proved is not returned.
+
+    Cost: nothing is read unless a tracked capture file has exactly the
+    capture's size, so a multi-gigabyte raw capture is normally never hashed;
+    and git runs twice in total, however many files there are.
+.OUTPUTS
+    [System.IO.FileInfo] -- the members of -Capture proved to be such copies.
+#>
+function Get-TrackedCaptureCopy {
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.IO.FileInfo[]]$Capture
+    )
+
+    if ($Capture.Count -eq 0) { return }
+    $wanted = @{}
+    foreach ($file in $Capture) { $wanted[$file.Length] = $true }
+
+    # -z output is NUL-separated and never quoted, whatever core.quotepath
+    # says, so a path with spaces or non-ASCII characters arrives as itself.
+    # (A console whose output encoding is not UTF-8 can still garble a
+    # non-ASCII path on its way in. That file is then not found, proves
+    # nothing, and its copies stay counted.)
+    $tree = & git -C $WorktreePath ls-tree -r -z HEAD 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $tree) { return }
+
+    $originals = @()
+    foreach ($entry in ((@($tree) -join "`n") -split "`0")) {
+        # Regular files only: not a symbolic link (120000), not a submodule.
+        if ($entry -notmatch '^100\d{3} blob ([0-9a-f]+)\t([^\r\n]+)\z') { continue }
+        $id = $Matches[1]
+        $relative = $Matches[2]
+        # The same two names the scan above looks for. A copy keeps a capture
+        # name, and this is what keeps a repository that tracks no capture
+        # file from being read at all.
+        $name = ($relative -split '/')[-1]
+        if ($name -notlike '*.har' -and $name -ne 'session.json') { continue }
+        # `hash-object --stdin-paths` takes one path per line and unquotes a
+        # line that starts with a quote; such a path cannot be sent as itself.
+        if ($relative.StartsWith('"')) { continue }
+        $item = Get-Item -LiteralPath (Join-Path $WorktreePath $relative) -Force -ErrorAction SilentlyContinue
+        if (-not $item -or $item.PSIsContainer) { continue }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        if (-not $wanted.ContainsKey($item.Length)) { continue }
+        $originals += [pscustomobject]@{ Id = $id; Relative = $relative; Item = $item }
+    }
+    if ($originals.Count -eq 0) { return }
+
+    # One git process for all of them, not one each. git reads the paths as
+    # UTF-8, so say so rather than inherit whatever the session has set.
+    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $ids = @($originals | ForEach-Object { $_.Relative } |
+        & git -C $WorktreePath hash-object --stdin-paths 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $ids.Count -ne $originals.Count) { return }
+
+    $heldLength = @{}
+    $heldHash = @{}
+    for ($i = 0; $i -lt $originals.Count; $i++) {
+        # Modified, staged, or otherwise not what HEAD holds for this path.
+        if ($ids[$i] -ne $originals[$i].Id) { continue }
+        $hash = Get-FileHash -LiteralPath $originals[$i].Item.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue
+        if (-not $hash) { continue }
+        $heldLength[$originals[$i].Item.Length] = $true
+        $heldHash[$hash.Hash] = $true
+    }
+
+    foreach ($file in $Capture) {
+        if (-not $heldLength.ContainsKey($file.Length)) { continue }
+        $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue
+        if ($hash -and $heldHash.ContainsKey($hash.Hash)) { $file }
+    }
 }
 
 <#

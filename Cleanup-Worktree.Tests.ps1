@@ -42,10 +42,31 @@ BeforeAll {
     }
 
     function New-Capture {
-        param([string]$WorktreePath, [string]$Relative, [int]$Bytes = 1024)
+        param([string]$WorktreePath, [string]$Relative, [int]$Bytes = 1024, [string]$Text)
         $full = Join-Path $WorktreePath $Relative
         New-Item -ItemType Directory -Path (Split-Path $full -Parent) -Force | Out-Null
-        [System.IO.File]::WriteAllBytes($full, (New-Object byte[] $Bytes))
+        # -Text gives a capture its own content; without it every capture is the
+        # same run of zero bytes, which cannot tell a copy from an original.
+        if ($PSBoundParameters.ContainsKey('Text')) { [System.IO.File]::WriteAllText($full, $Text) }
+        else { [System.IO.File]::WriteAllBytes($full, (New-Object byte[] $Bytes)) }
+        return $full
+    }
+
+    function Add-TrackedCapture {
+        <# A capture file the repository TRACKS: written, added and committed. #>
+        param([string]$WorktreePath, [string]$Relative, [string]$Text)
+        $full = New-Capture -WorktreePath $WorktreePath -Relative $Relative -Text $Text
+        & git -C $WorktreePath add -A 2>$null
+        & git -C $WorktreePath -c commit.gpgsign=false commit --quiet -m 'add tracked capture' 2>$null
+        return $full
+    }
+
+    function Copy-ToBuildOutput {
+        <# What a build does with a file marked "copy to output": a byte copy. #>
+        param([string]$Source, [string]$WorktreePath, [string]$Relative)
+        $full = Join-Path $WorktreePath $Relative
+        New-Item -ItemType Directory -Path (Split-Path $full -Parent) -Force | Out-Null
+        Copy-Item -LiteralPath $Source -Destination $full
         return $full
     }
 }
@@ -138,6 +159,225 @@ Describe 'Get-WorktreeCaptureArtifact' {
         @(Get-WorktreeCaptureArtifact -WorktreePath (Join-Path ([System.IO.Path]::GetTempPath()) 'cwguard-absent')).Count |
             Should -Be 0
     }
+
+    Context 'copies of tracked capture files (issue #611)' {
+        # A project can keep trimmed, scrubbed capture files IN git and have a
+        # build copy them into its output folder. Build output is gitignored,
+        # so every build leaves ignored *.har files behind, each one a byte
+        # copy of a file git already holds. Counting them refused every
+        # worktree that had ever been built. The cases below come in pairs:
+        # a copy that must be let through, and the near miss that must not.
+
+        It 'does not count build-output copies that are byte-identical to tracked capture files' {
+            $wt = New-TestWorktree -IgnorePatterns @('bin/', 'obj/')
+            try {
+                $refs = 'tests/Sample.Tests/References'
+                $sources = @(
+                    Add-TrackedCapture -WorktreePath $wt -Relative "$refs/login.har" -Text '{"log":{"entries":["login"]}}'
+                    Add-TrackedCapture -WorktreePath $wt -Relative "$refs/search.har" -Text '{"log":{"entries":["search","more"]}}'
+                    Add-TrackedCapture -WorktreePath $wt -Relative "$refs/session.json" -Text '{"site":"example"}'
+                )
+                foreach ($configuration in 'Debug', 'Release') {
+                    foreach ($source in $sources) {
+                        $relative = "tests/Sample.Tests/bin/$configuration/References/$(Split-Path $source -Leaf)"
+                        Copy-ToBuildOutput -Source $source -WorktreePath $wt -Relative $relative | Out-Null
+                    }
+                }
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count |
+                    Should -Be 0 -Because 'git already holds every byte of these six files'
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds an ignored capture whose content no tracked file has' {
+            # The same LENGTH as the tracked file on purpose: a size match is
+            # not a content match, and only identical content is safe to lose.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}' | Out-Null
+                New-Capture -WorktreePath $wt -Relative 'bin/Debug/raw.har' -Text '{"entries":["bbbb"]}' | Out-Null
+
+                $found = @(Get-WorktreeCaptureArtifact -WorktreePath $wt)
+                $found.Count | Should -Be 1
+                $found[0].Name | Should -Be 'raw.har'
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy whose content has since changed' {
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                $copy = Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har'
+                [System.IO.File]::WriteAllText($copy, '{"entries":["aaab"]}')   # one byte differs
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count |
+                    Should -Be 1 -Because 'an edited copy is the only place its bytes exist'
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'reports only the real capture when it sits among copies' {
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Release/sample.har' | Out-Null
+                New-Capture -WorktreePath $wt -Relative 'bin/Debug/raw.har' -Text '{"entries":["a real capture"]}' | Out-Null
+
+                $found = @(Get-WorktreeCaptureArtifact -WorktreePath $wt)
+                $found.Count | Should -Be 1
+                $found[0].Name | Should -Be 'raw.har'
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a capture whose name differs from a copy only by case' {
+            # Where file names are case-sensitive, `raw.har` and `Raw.har` are
+            # two files. Proving one of them a copy says nothing about the other.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                $bin = Join-Path $wt 'bin'
+                New-Item -ItemType Directory -Path $bin | Out-Null
+                if ($IsWindows) { & fsutil.exe file setCaseSensitiveInfo $bin enable *> $null }
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/raw.har' | Out-Null
+                New-Capture -WorktreePath $wt -Relative 'bin/Raw.har' -Text '{"entries":["REAL"]}' | Out-Null
+                if (@(Get-ChildItem -LiteralPath $bin -File).Count -ne 2) {
+                    Set-ItResult -Skipped -Because 'this file system cannot hold two names that differ only by case'
+                    return
+                }
+
+                $found = @(Get-WorktreeCaptureArtifact -WorktreePath $wt)
+                $found.Count | Should -Be 1
+                $found[0].Name | Should -BeExactly 'Raw.har'
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'recognises a copy when the tracked path has spaces and non-ASCII characters' {
+            # git quotes or escapes such a path in most of its output.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $folder = 'ref files/caf' + [char]0xE9
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative "$folder/sample one.har" -Text '{"entries":["aaaa"]}'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative "bin/$folder/sample one.har" | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 0
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'recognises a copy in a checkout that converts line endings' {
+            # `text eol=crlf` stores LF in the blob and keeps CRLF in the working
+            # tree, so the build's byte copy does not hash to the blob git holds.
+            # Comparing a copy's raw bytes with blob ids alone would go on
+            # refusing every built worktree in such a checkout.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Set-Content -Path (Join-Path $wt '.gitattributes') -Value '*.har text eol=crlf'
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text "{`r`n  `"entries`": []`r`n}`r`n"
+                # Preconditions, so the test cannot pass vacuously.
+                $blob = & git -C $wt rev-parse 'HEAD:refs/sample.har'
+                & git -C $wt hash-object --no-filters -- 'refs/sample.har' |
+                    Should -Not -Be $blob -Because 'the working file must differ from the stored blob for this case to exist'
+                & git -C $wt status --porcelain |
+                    Should -BeNullOrEmpty -Because 'git must still report the working file as unmodified'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 0
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a capture that differs from a tracked one only in its line endings' {
+            # The near miss of the case above. Run through git's own line-ending
+            # conversion, this file and the tracked one come out identical --
+            # but they are not the same bytes, so one of them exists nowhere else.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Set-Content -Path (Join-Path $wt '.gitattributes') -Value '*.har text eol=crlf'
+                Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text "{`r`n  `"entries`": []`r`n}`r`n" | Out-Null
+                New-Capture -WorktreePath $wt -Relative 'bin/Debug/sample.har' -Text "{`r`n  `"entries`": []`n}`r`n" | Out-Null
+                # Precondition: git itself would call the two the same content.
+                & git -C $wt hash-object -- 'bin/Debug/sample.har' |
+                    Should -Be (& git -C $wt rev-parse 'HEAD:refs/sample.har')
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy of a tracked capture whose change is not committed' {
+            # The copy matches the working file, but git does not hold that
+            # content: it exists in the working tree and its copies only.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                [System.IO.File]::WriteAllText($tracked, '{"entries":["edit"]}')
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy of a capture that is staged but not committed' {
+            # Removing a worktree removes its index too. A blob only the index
+            # refers to is left unreachable, for garbage collection to delete.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = New-Capture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                & git -C $wt add -A 2>$null
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        # The two cases below make a file unreadable by holding it open
+        # exclusively, which only Windows enforces against other processes.
+
+        It 'believes nothing git said in a run that failed, rather than assuming the rest is safe' -Skip:(-not $IsWindows) {
+            # Fail safe: a file leaves the list on proof only. git cannot hash a
+            # file another process holds exclusively, so it stops at the second
+            # original -- and the answer it had already given for the first is
+            # not believed either: a git run that failed has proved nothing.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            $lock = $null
+            try {
+                $first = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/a.har' -Text '{"entries":["aaaa"]}'
+                $second = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/b.har' -Text '{"entries":["bbbbbb"]}'
+                Copy-ToBuildOutput -Source $first -WorktreePath $wt -Relative 'bin/Debug/a.har' | Out-Null
+                Copy-ToBuildOutput -Source $second -WorktreePath $wt -Relative 'bin/Debug/b.har' | Out-Null
+                $lock = [System.IO.File]::Open($second, 'Open', 'Read', 'None')
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 2
+            }
+            finally {
+                if ($lock) { $lock.Dispose() }
+                Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'counts a copy that cannot itself be read' -Skip:(-not $IsWindows) {
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            $lock = $null
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                $copy = Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har'
+                $lock = [System.IO.File]::Open($copy, 'Open', 'Read', 'None')
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally {
+                if ($lock) { $lock.Dispose() }
+                Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
 
 Describe 'Assert-WorktreeCaptureSafe' {
@@ -191,6 +431,36 @@ Describe 'Assert-WorktreeCaptureSafe' {
             $err = { Assert-WorktreeCaptureSafe -WorktreePath $wt } | Should -Throw -PassThru
             $err.Exception.Message | Should -Not -Match '0 MB'
             $err.Exception.Message | Should -Match '2 KB'
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not refuse a worktree whose only captures are copies of tracked files' {
+        # Issue #611: build output holding copies of tracked capture files is
+        # not a reason to keep a worktree.
+        $wt = New-TestWorktree -IgnorePatterns @('bin/')
+        try {
+            $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+            Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+            Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Release/sample.har' | Out-Null
+
+            { Assert-WorktreeCaptureSafe -WorktreePath $wt } | Should -Not -Throw
+        }
+        finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'refuses for the real capture alone when copies sit beside it' {
+        # The count is what the operator has to go and move; copies of tracked
+        # files in it would send them looking for captures that are not there.
+        $wt = New-TestWorktree -IgnorePatterns @('bin/')
+        try {
+            $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+            Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+            Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Release/sample.har' | Out-Null
+            New-Capture -WorktreePath $wt -Relative 'bin/Debug/raw.har' -Text '{"entries":["a real capture"]}' | Out-Null
+
+            $err = { Assert-WorktreeCaptureSafe -WorktreePath $wt } | Should -Throw -PassThru
+            $err.Exception.Message | Should -Match 'holds 1 raw capture file'
         }
         finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
     }
