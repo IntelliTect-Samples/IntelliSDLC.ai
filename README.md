@@ -117,9 +117,10 @@ There are three ways to get IntelliSDLC.ai, and they reach different people:
 | **Global install** (`Install-GlobalSkills.ps1`, below) | Your own machines, on every engine | The global working rules and the portable skills | Only you, on that machine | `git pull`, then rerun |
 | **Claude Code plugin** (below) | Claude Code, with no clone to keep | The global working rules and the portable skills | Whoever installs it | `claude plugin update` |
 
-The global install and the plugin overlap for Claude Code: use one or the
-other on a machine, not both, or Claude Code sees every skill and rule twice.
-Neither replaces onboarding -- the dev-loop agents, the phase gate, evidence
+The global install and the plugin overlap only for Claude Code, and they
+combine cleanly: with the plugin installed for your user and enabled, the
+global install leaves Claude Code to it and serves Copilot, Codex and Gemini
+(see below). Neither replaces onboarding -- the dev-loop agents, the phase gate, evidence
 capture, the language instructions and the guard hook arrive only with the repo.
 
 ## Every Repo, Every Machine -- Global Install
@@ -142,6 +143,26 @@ each file alone (a hand-damaged block is reported and skipped). To update:
 to a repository's own, more specific instructions. Claude Code cloud
 sessions and GitHub's Copilot coding agent read only the repository, so they
 need it onboarded.
+
+**With the Claude Code plugin.** When the `intellisdlc` plugin (below) is
+installed for your user and enabled, the installer puts nothing in
+`~/.claude` -- and removes the links and the `~/.claude/CLAUDE.md` block an
+earlier run put there -- so Claude Code loads each skill and rule once, from
+the plugin. `~/.agents/skills` and the Copilot, Codex and Gemini files are
+served as usual. A plugin installed only in one project, or disabled, does not
+count; disable or uninstall it and rerun to put the Claude copies back. So on a
+machine with several engines:
+
+```powershell
+& {
+    $ErrorActionPreference = 'Stop'
+    claude plugin marketplace add IntelliTect-Samples/IntelliSDLC.ai
+    if ($LASTEXITCODE -ne 0) { throw "marketplace add failed ($LASTEXITCODE)" }
+    claude plugin install intellisdlc@intellisdlc-ai
+    if ($LASTEXITCODE -ne 0) { throw "plugin install failed ($LASTEXITCODE)" }
+    ./Install-GlobalSkills.ps1
+}
+```
 
 ## Claude Code Plugin
 

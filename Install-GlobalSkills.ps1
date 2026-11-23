@@ -30,9 +30,14 @@
     this repository's own layout (the dev-loop gate, evidence capture) and
     web-api-discovery, which is installed from its own repository.
 
-    CLAUDE CODE: the plugin (README, "Claude Code plugin") delivers the same
-    skills and rules without a clone. Use one or the other on a machine, not
-    both, or Claude Code sees every skill and rule twice.
+    CLAUDE CODE AND THE PLUGIN (issue #609): the Claude Code plugin (README,
+    "Claude Code Plugin") delivers the same skills and rules without a clone.
+    When it is installed for your user and enabled, this script leaves Claude
+    Code to it: nothing goes into ~/.claude, and the links and the managed
+    block an earlier run put there are removed. The other engines are served
+    as usual. A project-scope install or a disabled plugin does not count --
+    and disabling or uninstalling it, then rerunning, puts the Claude copies
+    back.
 
     GLOBAL INSTRUCTIONS (issue #593). GLOBAL-INSTRUCTIONS.md -- the working
     rules that apply in every repository and folder -- is wired into the
@@ -72,6 +77,45 @@ function Get-PortableSkills {
 }
 
 $script:SkillSources = @(Get-PortableSkills -Root $PSScriptRoot)
+
+function Get-PluginId {
+    <# This repository's Claude Code plugin as Claude Code names it: plugin@marketplace. #>
+    param([Parameter(Mandatory)][string]$Root)
+
+    $plugin = Get-Content -LiteralPath (Join-Path $Root '.claude-plugin/plugin.json') -Raw | ConvertFrom-Json
+    $marketplace = Get-Content -LiteralPath (Join-Path $Root '.claude-plugin/marketplace.json') -Raw | ConvertFrom-Json
+    return "$($plugin.name)@$($marketplace.name)"
+}
+
+function Test-ClaudePluginActive {
+    <#
+        True when Claude Code already gets the skills and rules from the plugin
+        $PluginId: installed at user scope -- every folder, not one project --
+        and enabled. Read from Claude Code's own records under $HomeDir/.claude.
+        Anything missing or unreadable counts as "not active", which keeps the
+        global install serving Claude Code as it always has.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$HomeDir,
+        [Parameter(Mandatory)][string]$PluginId
+    )
+
+    try {
+        $registry = Get-Content -LiteralPath (Join-Path $HomeDir '.claude/plugins/installed_plugins.json') -Raw -ErrorAction Stop |
+            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        $settings = Get-Content -LiteralPath (Join-Path $HomeDir '.claude/settings.json') -Raw -ErrorAction Stop |
+            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    }
+    catch { return $false }
+
+    $plugins = if ($registry -is [System.Collections.IDictionary]) { $registry['plugins'] }
+    $installs = if ($plugins -is [System.Collections.IDictionary]) { @($plugins[$PluginId]) } else { @() }
+    $forUser = $installs | Where-Object { $_ -is [System.Collections.IDictionary] -and $_['scope'] -eq 'user' }
+    $enabled = if ($settings -is [System.Collections.IDictionary] -and $settings['enabledPlugins'] -is [System.Collections.IDictionary]) {
+        $settings['enabledPlugins'][$PluginId]
+    }
+    return [bool]($forUser -and $enabled -eq $true)
+}
 
 # Personal skills folders, and the home-folder entries that mean the engine
 # reading each one is installed.
@@ -153,21 +197,57 @@ function Install-SkillLinks {
     }
 
     # A link into one of this clone's skill folders whose skill is gone would
-    # otherwise dangle. Scoped to those folders, so a link of your own into
-    # some other part of the clone is never touched.
-    # Every folder a listed skill can live in, so a skill dropped from the
-    # list is still recognised as this clone's.
+    # otherwise dangle.
+    foreach ($item in Get-OwnedSkillLinks -Root $Root -Skills $Skills -SkillsDir $SkillsDir) {
+        if (-not (Test-Path -LiteralPath $item.Target)) {
+            $item.Delete()
+            [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = "'$($item.FullName)' pointed at a skill no longer in this clone" }
+        }
+    }
+}
+
+function Get-OwnedSkillLinks {
+    <#
+        The links in $SkillsDir that point into one of this clone's skill
+        folders -- every folder a listed skill can live in, so a skill dropped
+        from the list is still recognised as this clone's. A link of your own
+        into some other part of the clone, or anywhere else, is not one of them.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string[]]$Skills,
+        [Parameter(Mandatory)][string]$SkillsDir
+    )
+
+    if (-not (Test-Path -LiteralPath $SkillsDir)) { return }
     $owned = @($script:SkillSources) + $Skills | ForEach-Object {
         [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Join-Path $Root (Split-Path $_ -Parent)))) +
             [System.IO.Path]::DirectorySeparatorChar
     } | Sort-Object -Unique
     foreach ($item in Get-ChildItem -LiteralPath $SkillsDir -Force | Where-Object LinkType) {
         $target = $item.Target
-        if ($target -and -not (Test-Path -LiteralPath $target) -and
-            ($owned | Where-Object { $target.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })) {
-            $item.Delete()
-            [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = "'$($item.FullName)' pointed at a skill no longer in this clone" }
+        if ($target -and ($owned | Where-Object { $target.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) })) {
+            $item
         }
+    }
+}
+
+function Remove-SkillLinks {
+    <#
+        Remove this clone's skill links from $SkillsDir, for an engine that now
+        gets the skills another way. A real folder, or a link of your own, is
+        left alone. Returns one result per link removed.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string[]]$Skills,
+        [Parameter(Mandatory)][string]$SkillsDir
+    )
+
+    foreach ($item in Get-OwnedSkillLinks -Root $Root -Skills $Skills -SkillsDir $SkillsDir) {
+        # Removing a junction or symlink removes the link, not its target.
+        $item.Delete()
+        [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = $item.FullName }
     }
 }
 
@@ -183,6 +263,21 @@ $script:InstructionTargets = @(
 )
 $script:BlockBegin = '<!-- BEGIN IntelliSDLC.ai global instructions -- managed by Install-GlobalSkills.ps1; edits inside this block are overwritten -->'
 $script:BlockEnd = '<!-- END IntelliSDLC.ai global instructions -->'
+$script:BlockPattern = [regex]::Escape($script:BlockBegin) + '[\s\S]*?' + [regex]::Escape($script:BlockEnd)
+
+function Test-ManagedBlockDamaged {
+    <#
+        Exactly one BEGIN followed by one END, or neither, is intact. Anything
+        else is a hand-damaged block, and guessing its extent could swallow the
+        user's text.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
+
+    $begins = [regex]::Matches($Text, [regex]::Escape($script:BlockBegin))
+    $ends = [regex]::Matches($Text, [regex]::Escape($script:BlockEnd))
+    return ($begins.Count -gt 1 -or $ends.Count -gt 1 -or $begins.Count -ne $ends.Count -or
+        ($begins.Count -eq 1 -and $ends[0].Index -lt $begins[0].Index))
+}
 
 function Get-InstructionFiles {
     <# The user-level instructions files to wire, for the engines present under $HomeDir. #>
@@ -220,27 +315,19 @@ function Set-ManagedBlock {
 
     $block = "$script:BlockBegin`n$($Content -replace "`r`n", "`n")`n$script:BlockEnd"
     $existing = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw } else { $null }
-    $pattern = [regex]::Escape($script:BlockBegin) + '[\s\S]*?' + [regex]::Escape($script:BlockEnd)
 
-    # Exactly one BEGIN followed by one END, or neither. Anything else is a
-    # hand-damaged block, and guessing its extent could swallow the user's text.
-    if ($existing) {
-        $begins = [regex]::Matches($existing, [regex]::Escape($script:BlockBegin))
-        $ends = [regex]::Matches($existing, [regex]::Escape($script:BlockEnd))
-        if ($begins.Count -gt 1 -or $ends.Count -gt 1 -or $begins.Count -ne $ends.Count -or
-            ($begins.Count -eq 1 -and $ends[0].Index -lt $begins[0].Index)) {
-            Write-Warning "'$Path' has damaged IntelliSDLC.ai markers -- left alone. Remove the partial block by hand, then rerun."
-            return [pscustomobject]@{ Path = $Path; Status = 'Skipped' }
-        }
+    if ($existing -and (Test-ManagedBlockDamaged $existing)) {
+        Write-Warning "'$Path' has damaged IntelliSDLC.ai markers -- left alone. Remove the partial block by hand, then rerun."
+        return [pscustomobject]@{ Path = $Path; Status = 'Skipped' }
     }
 
     if ($null -eq $existing) {
         $status, $text = 'Created', "$block`n"
     }
-    elseif ($existing -match $pattern) {
+    elseif ($existing -match $script:BlockPattern) {
         if ($Matches[0] -replace "`r`n", "`n" -ceq $block) { return [pscustomobject]@{ Path = $Path; Status = 'Unchanged' } }
         $status = 'Updated'
-        $text = [regex]::new($pattern).Replace($existing, { $block }, 1)
+        $text = [regex]::new($script:BlockPattern).Replace($existing, { $block }, 1)
     }
     else {
         $status, $text = 'Added', ($existing.TrimEnd() + "`n`n$block`n")
@@ -251,28 +338,89 @@ function Set-ManagedBlock {
     [pscustomobject]@{ Path = $Path; Status = $status }
 }
 
+function Remove-ManagedBlock {
+    <#
+        Take the managed block out of $Path, keeping every line of the user's
+        own above and below it. A file that held nothing but the block is
+        deleted. Damaged markers are reported and the file left alone.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $existing = if (Test-Path -LiteralPath $Path) { Get-Content -LiteralPath $Path -Raw }
+    if (-not $existing) { return [pscustomobject]@{ Path = $Path; Status = 'Absent' } }
+    if (Test-ManagedBlockDamaged $existing) {
+        Write-Warning "'$Path' has damaged IntelliSDLC.ai markers -- left alone. Remove the partial block by hand, then rerun."
+        return [pscustomobject]@{ Path = $Path; Status = 'Skipped' }
+    }
+    $match = [regex]::Match($existing, $script:BlockPattern)
+    if (-not $match.Success) { return [pscustomobject]@{ Path = $Path; Status = 'Absent' } }
+
+    $before = $existing.Substring(0, $match.Index).TrimEnd()
+    $after = $existing.Substring($match.Index + $match.Length).Trim("`r", "`n").TrimEnd()
+    $rest = @($before, $after) | Where-Object { $_ }
+    if (-not $rest) {
+        Remove-Item -LiteralPath $Path
+    }
+    else {
+        [System.IO.File]::WriteAllText($Path, (($rest -join "`n`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+    }
+    [pscustomobject]@{ Path = $Path; Status = 'Removed' }
+}
+
+function Invoke-GlobalInstall {
+    <#
+        The install: link the skills and wire the global rules for every
+        engine present under $HomeDir, from the clone at $Root. When this
+        repository's Claude Code plugin is installed for the user and enabled,
+        Claude Code gets both from the plugin instead, so ~/.claude gets
+        nothing and the copies an earlier run put there are removed (#609).
+    #>
+    param(
+        [Parameter(Mandatory)][string]$HomeDir,
+        [Parameter(Mandatory)][string]$Root
+    )
+
+    $folders = @(Get-SkillFolders -HomeDir $HomeDir)
+    if (-not $folders) {
+        Write-Warning 'No AI engine found in your home folder (looked for .claude, .copilot, .codex, .gemini, .agents). Nothing linked.'
+        return
+    }
+
+    $pluginId = Get-PluginId -Root $Root
+    $viaPlugin = Test-ClaudePluginActive -HomeDir $HomeDir -PluginId $pluginId
+    $claudeSkills = Join-Path $HomeDir '.claude/skills'
+    $claudeInstructions = Join-Path $HomeDir '.claude/CLAUDE.md'
+
+    foreach ($folder in $folders) {
+        if ($viaPlugin -and $folder -eq $claudeSkills) {
+            Write-Information "$folder -- left to the $pluginId Claude Code plugin (installed and enabled)" -InformationAction Continue
+            Remove-SkillLinks -Root $Root -Skills $script:SkillSources -SkillsDir $folder |
+                ForEach-Object { Write-Information "  $($_.Skill): Removed -- the plugin provides it" -InformationAction Continue }
+            continue
+        }
+        Write-Information "$folder" -InformationAction Continue
+        Install-SkillLinks -Root $Root -Skills $script:SkillSources -SkillsDir $folder |
+            ForEach-Object { Write-Information "  $($_.Skill): $($_.Status) -- $($_.Detail)" -InformationAction Continue }
+    }
+
+    $source = Join-Path $Root $script:InstructionsSource
+    if (-not (Test-Path -LiteralPath $source)) {
+        Write-Warning "No '$source' in this clone -- `git pull` it, then rerun. No instructions wired."
+        return
+    }
+    Write-Information "Global instructions ($source)" -InformationAction Continue
+    foreach ($file in Get-InstructionFiles -HomeDir $HomeDir) {
+        if ($viaPlugin -and $file.Path -eq $claudeInstructions) {
+            $result = Remove-ManagedBlock -Path $file.Path
+            Write-Information "  $($result.Path): $($result.Status) -- left to the $pluginId plugin" -InformationAction Continue
+            continue
+        }
+        $result = Set-ManagedBlock -Path $file.Path -Content (Get-InstructionBlock -Source $source -Mode $file.Mode)
+        Write-Information "  $($result.Path): $($result.Status) ($($file.Mode.ToLower()))" -InformationAction Continue
+    }
+}
+
 # Dot-sourced (by the tests): load the functions, run nothing.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-$root = Get-MainCheckout $PSScriptRoot
-$folders = @(Get-SkillFolders -HomeDir $HOME)
-if (-not $folders) {
-    Write-Warning 'No AI engine found in your home folder (looked for .claude, .copilot, .codex, .gemini, .agents). Nothing linked.'
-    return
-}
-foreach ($folder in $folders) {
-    Write-Information "$folder" -InformationAction Continue
-    Install-SkillLinks -Root $root -Skills $script:SkillSources -SkillsDir $folder |
-        ForEach-Object { Write-Information "  $($_.Skill): $($_.Status) -- $($_.Detail)" -InformationAction Continue }
-}
-
-$source = Join-Path $root $script:InstructionsSource
-if (-not (Test-Path -LiteralPath $source)) {
-    Write-Warning "No '$source' in this clone -- `git pull` it, then rerun. No instructions wired."
-    return
-}
-Write-Information "Global instructions ($source)" -InformationAction Continue
-foreach ($file in Get-InstructionFiles -HomeDir $HOME) {
-    $result = Set-ManagedBlock -Path $file.Path -Content (Get-InstructionBlock -Source $source -Mode $file.Mode)
-    Write-Information "  $($result.Path): $($result.Status) ($($file.Mode.ToLower()))" -InformationAction Continue
-}
+Invoke-GlobalInstall -HomeDir $HOME -Root (Get-MainCheckout $PSScriptRoot)
