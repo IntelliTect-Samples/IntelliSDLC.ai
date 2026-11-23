@@ -79,10 +79,15 @@
     A build that copies tracked reference captures into its gitignored output
     folder leaves one behind per file, per build folder. Such a copy is let
     through only when it is byte-for-byte identical to a tracked capture file
-    in the same worktree that still holds what is committed at HEAD -- git
-    has those bytes, so removing the copy loses nothing. A copy that was
-    edited, a copy of an uncommitted or merely staged change, and anything
-    the comparison cannot prove, still block.
+    in the same worktree, that file still holds what is committed at HEAD,
+    and a checkout of HEAD would write exactly those bytes back -- git can
+    reproduce them, so removing the copy loses nothing. A copy that was
+    edited, a copy of an uncommitted or merely staged change, a copy of a
+    file whose bytes a filter or a line-ending rule would not give back, and
+    anything the comparison cannot prove, still block. (Under -Force with an
+    unmerged branch the branch is deleted too, so what was committed at HEAD
+    is then reachable only through the reflog -- as it is for every tracked
+    file.)
 
     WHY A GUARD AND NOT A CHECK. The check that "found nothing" is the
     failure mode here, not the deletion. Six ordinary commands each report
@@ -365,10 +370,10 @@ function Get-WorktreeList {
     since Windows PowerShell 5.1's `Remove-Item -Recurse` follows junctions
     (pwsh 7 does not).
 
-    A byte-for-byte copy of a capture file git already holds is not returned
-    either (issue #611, Get-TrackedCaptureCopy): removing it loses nothing.
-    A file leaves the list on proof only -- if that check fails or cannot
-    tell, the file stays and the worktree is still refused.
+    A byte-for-byte copy of a capture file git can reproduce exactly is not
+    returned either (issue #611, Get-TrackedCaptureCopy): removing it loses
+    nothing. A file leaves the list on proof only -- if that check fails or
+    cannot tell, the file stays and the worktree is still refused.
 #>
 function Get-WorktreeCaptureArtifact {
     param([Parameter(Mandatory)][string]$WorktreePath)
@@ -406,9 +411,9 @@ function Get-WorktreeCaptureArtifact {
         }
     }
 
-    # Issue #611: drop the copies of files git already holds. The catch is
-    # part of the guard, not tidiness: a check that throws has proved nothing,
-    # so every file stays counted.
+    # Issue #611: drop the copies of files git can reproduce exactly. The catch
+    # is part of the guard, not tidiness: a check that throws has proved
+    # nothing, so every file stays counted.
     $copies = @()
     try {
         $copies = @(Get-TrackedCaptureCopy -WorktreePath $WorktreePath -Capture $found |
@@ -425,40 +430,50 @@ function Get-WorktreeCaptureArtifact {
 
 <#
 .SYNOPSIS
-    The captures that are byte-for-byte copies of capture files git already holds.
+    The captures that are byte-for-byte copies of files git can reproduce exactly.
 .DESCRIPTION
     Issue #611. A project can keep trimmed, scrubbed capture files IN git and
     have a build copy them into its output folder. Build output is gitignored,
     so the ignored-entry scan took each copy for a raw capture that exists
     nowhere else, and refused every worktree that had ever been built.
 
-    A capture is returned -- and so not counted -- only when BOTH hold:
+    A capture is returned -- and so not counted -- only when ALL of these hold:
 
       1. A tracked capture file in this worktree still holds, in its working
-         copy, what is committed at HEAD. git answers that: the file is hashed
+         copy, what is committed at HEAD, as git sees it: the file is hashed
          the way `git add` would hash it and compared with the blob HEAD
-         records for its path, which is what `git status` asks.
-      2. The capture is byte-for-byte identical to that working copy.
+         records for its path.
+      2. A checkout of HEAD would write that working copy back byte for byte:
+         what git produces for the path (`git cat-file --filters`) is compared
+         with the file. 1 alone is not enough. A clean filter that scrubs on
+         commit, or line endings a checkout would normalise, leave a file git
+         calls unmodified whose bytes git cannot give back.
+      3. The capture is byte-for-byte identical to that working copy.
 
     Why the working copy, and not the capture's own blob id against the tree:
     a checkout may convert line endings (`core.autocrlf`, `.gitattributes`),
     so a byte copy of a checked-out file need not hash to the blob git stores.
     Hashing the capture THROUGH that conversion would recognise the copy, but
     it would also call two files identical that differ in their bytes. Here
-    git's conversion is applied only to the tracked file -- where git itself
-    already trusts it -- and the capture is compared byte for byte.
+    git's conversion is applied only to the tracked file, and the capture is
+    compared byte for byte.
 
     Why HEAD, and not the index: removing a worktree removes its index too. A
     blob only the index refers to is left unreachable, for garbage collection
-    to delete, so a staged change is not something git "already holds".
+    to delete, so a staged change is not something git can still reproduce.
 
     Fail safe throughout: a git command that fails, a file that cannot be
     read, a path that cannot be handed to git unambiguously -- each proves
     nothing, and what is not proved is not returned.
 
+    Nothing here depends on the console. git is run with its pipes handled
+    as bytes (Invoke-GitRaw): paths are read and written as UTF-8, and file
+    content is hashed as it arrives, never decoded as text.
+
     Cost: nothing is read unless a tracked capture file has exactly the
-    capture's size, so a multi-gigabyte raw capture is normally never hashed;
-    and git runs twice in total, however many files there are.
+    capture's size, so a multi-gigabyte raw capture is normally never hashed.
+    git runs twice, plus once for each tracked capture file that can still
+    match a capture.
 .OUTPUTS
     [System.IO.FileInfo] -- the members of -Capture proved to be such copies.
 #>
@@ -471,17 +486,16 @@ function Get-TrackedCaptureCopy {
     if ($Capture.Count -eq 0) { return }
     $wanted = @{}
     foreach ($file in $Capture) { $wanted[$file.Length] = $true }
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
 
     # -z output is NUL-separated and never quoted, whatever core.quotepath
     # says, so a path with spaces or non-ASCII characters arrives as itself.
-    # (A console whose output encoding is not UTF-8 can still garble a
-    # non-ASCII path on its way in. That file is then not found, proves
-    # nothing, and its copies stay counted.)
-    $tree = & git -C $WorktreePath ls-tree -r -z HEAD 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $tree) { return }
+    $listing = [System.IO.MemoryStream]::new()
+    $exit = Invoke-GitRaw -WorktreePath $WorktreePath -Arguments 'ls-tree', '-r', '-z', 'HEAD' -Output $listing
+    if ($exit -ne 0) { return }
 
     $originals = @()
-    foreach ($entry in ((@($tree) -join "`n") -split "`0")) {
+    foreach ($entry in ($utf8.GetString($listing.ToArray()) -split "`0")) {
         # Regular files only: not a symbolic link (120000), not a submodule.
         if ($entry -notmatch '^100\d{3} blob ([0-9a-f]+)\t([^\r\n]+)\z') { continue }
         $id = $Matches[1]
@@ -502,12 +516,12 @@ function Get-TrackedCaptureCopy {
     }
     if ($originals.Count -eq 0) { return }
 
-    # One git process for all of them, not one each. git reads the paths as
-    # UTF-8, so say so rather than inherit whatever the session has set.
-    $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-    $ids = @($originals | ForEach-Object { $_.Relative } |
-        & git -C $WorktreePath hash-object --stdin-paths 2>$null)
-    if ($LASTEXITCODE -ne 0 -or $ids.Count -ne $originals.Count) { return }
+    # One git process for all of them, not one each.
+    $answer = [System.IO.MemoryStream]::new()
+    $exit = Invoke-GitRaw -WorktreePath $WorktreePath -Arguments 'hash-object', '--stdin-paths' `
+        -InputLine @($originals | ForEach-Object { $_.Relative }) -Output $answer
+    $ids = @($utf8.GetString($answer.ToArray()) -split "`r?`n" | Where-Object { $_ })
+    if ($exit -ne 0 -or $ids.Count -ne $originals.Count) { return }
 
     $heldLength = @{}
     $heldHash = @{}
@@ -516,6 +530,12 @@ function Get-TrackedCaptureCopy {
         if ($ids[$i] -ne $originals[$i].Id) { continue }
         $hash = Get-FileHash -LiteralPath $originals[$i].Item.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue
         if (-not $hash) { continue }
+        # The round trip: would a checkout of HEAD write these very bytes?
+        # --filters is what makes this the checkout's output and not the
+        # stored blob. A git that fails here has answered nothing.
+        $checkout = Get-GitOutputHash -WorktreePath $WorktreePath `
+            -Arguments 'cat-file', '--filters', "HEAD:$($originals[$i].Relative)"
+        if ($checkout -ne $hash.Hash) { continue }
         $heldLength[$originals[$i].Item.Length] = $true
         $heldHash[$hash.Hash] = $true
     }
@@ -524,6 +544,94 @@ function Get-TrackedCaptureCopy {
         if (-not $heldLength.ContainsKey($file.Length)) { continue }
         $hash = Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue
         if ($hash -and $heldHash.ContainsKey($hash.Hash)) { $file }
+    }
+}
+
+<#
+.SYNOPSIS
+    Runs git with its pipes handled as bytes, and returns git's exit code.
+.DESCRIPTION
+    PowerShell reads what a native command prints as TEXT, decoded with the
+    console's output encoding -- and before 7.4 it does so even on the way
+    into a file or another command. For the copy check (issue #611) that is
+    wrong twice over: a UTF-8 path read on a console set to code page 437
+    arrives garbled, and file content put through any text decoding is no
+    longer that content. So git is started directly. What it prints is copied
+    into -Output untouched; what it is to read is sent as UTF-8, which is how
+    git reads a path.
+
+    Arguments go through ArgumentList, so a path needs no quoting. Standard
+    output and standard error are both drained while the input is written,
+    so no pipe can fill and stall git; standard error is discarded, as
+    `2>$null` discards it elsewhere in this script.
+.OUTPUTS
+    [int] -- git's exit code.
+#>
+function Invoke-GitRaw {
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][System.IO.Stream]$Output,
+        [string[]]$InputLine = @()
+    )
+
+    # The git the rest of this script runs: found on PATH by PowerShell, not
+    # by the operating system, which would look in the current directory first.
+    $git = (Get-Command git -CommandType Application | Select-Object -First 1).Source
+    $start = [System.Diagnostics.ProcessStartInfo]::new($git)
+    foreach ($argument in @('-C', $WorktreePath) + $Arguments) { $start.ArgumentList.Add($argument) }
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+
+    $process = [System.Diagnostics.Process]::Start($start)
+    try {
+        $copied = $process.StandardOutput.BaseStream.CopyToAsync($Output)
+        $discarded = $process.StandardError.BaseStream.CopyToAsync([System.IO.Stream]::Null)
+        if ($InputLine.Count -gt 0) {
+            $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($InputLine -join "`n") + "`n")
+            $process.StandardInput.BaseStream.Write($bytes, 0, $bytes.Length)
+        }
+        # Closed even when there is nothing to send, so that neither git nor a
+        # filter it starts can sit waiting on the console.
+        $process.StandardInput.Close()
+        # $null = : to PowerShell these tasks carry a result object, and an
+        # object left on the pipeline here would be returned with the exit code.
+        $null = $copied.GetAwaiter().GetResult()
+        $null = $discarded.GetAwaiter().GetResult()
+        $process.WaitForExit()
+        return $process.ExitCode
+    }
+    finally { $process.Dispose() }
+}
+
+<#
+.SYNOPSIS
+    SHA-256 of exactly what a git command prints; nothing when git fails.
+.DESCRIPTION
+    The output is hashed as it streams out of git (Invoke-GitRaw). It is never
+    held in memory and never decoded as text, so the result can be compared
+    with Get-FileHash of a file on disk.
+#>
+function Get-GitOutputHash {
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $sink = [System.Security.Cryptography.CryptoStream]::new(
+        [System.IO.Stream]::Null, $sha, [System.Security.Cryptography.CryptoStreamMode]::Write)
+    try {
+        if ((Invoke-GitRaw -WorktreePath $WorktreePath -Arguments $Arguments -Output $sink) -ne 0) { return }
+        $sink.FlushFinalBlock()
+        return [System.BitConverter]::ToString($sha.Hash).Replace('-', '')
+    }
+    finally {
+        $sink.Dispose()
+        $sha.Dispose()
     }
 }
 
