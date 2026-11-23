@@ -27,6 +27,28 @@ BeforeAll {
         Get-ChildItem $Dir -Recurse -Force -ErrorAction SilentlyContinue | Where-Object LinkType -in 'Junction', 'SymbolicLink' | ForEach-Object { $_.Delete() }
         Remove-Item $Dir -Recurse -Force
     }
+
+    # Record a Claude Code plugin the way `claude plugin install` / `disable`
+    # do: an entry in plugins/installed_plugins.json, and (for a user-scope
+    # install) enabledPlugins in the user's settings.json.
+    function Set-PluginState {
+        param(
+            [string]$HomeDir,
+            [string]$Id,
+            [ValidateSet('user', 'project')][string]$Scope,
+            [bool]$Enabled
+        )
+        $entry = @{ scope = $Scope; installPath = 'x'; version = 'abc123' }
+        if ($Scope -eq 'project') { $entry.projectPath = 'C:/some/repo' }
+        $registry = @{ version = 2; plugins = @{ $Id = @($entry) } }
+        Set-File (Join-Path $HomeDir '.claude/plugins/installed_plugins.json') ($registry | ConvertTo-Json -Depth 5)
+        $settings = if ($Scope -eq 'user') { @{ enabledPlugins = @{ $Id = $Enabled } } } else { @{} }
+        Set-File (Join-Path $HomeDir '.claude/settings.json') ($settings | ConvertTo-Json -Depth 5)
+    }
+
+    function Get-LinkNames([string]$Dir) {
+        @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue | Where-Object LinkType | ForEach-Object Name)
+    }
 }
 
 Describe 'Get-MainCheckout' {
@@ -78,6 +100,148 @@ Describe 'Get-PortableSkills' {
 
     It 'is the list the installer links' {
         $script:SkillSources | Should -Be @(Get-PortableSkills -Root $PSScriptRoot)
+    }
+}
+
+Describe 'Get-PluginId' {
+    It 'names the plugin as Claude Code does, plugin@marketplace, from the two manifests' {
+        $tmp = New-TempDir
+        try {
+            Set-File (Join-Path $tmp '.claude-plugin/plugin.json') '{ "name": "alpha", "skills": [] }'
+            Set-File (Join-Path $tmp '.claude-plugin/marketplace.json') '{ "name": "beta-market", "plugins": [] }'
+
+            Get-PluginId -Root $tmp | Should -Be 'alpha@beta-market'
+        }
+        finally { Remove-TempDir $tmp }
+    }
+}
+
+Describe 'Test-ClaudePluginActive' {
+    BeforeEach {
+        $script:home_ = New-TempDir
+        $script:id = 'alpha@beta-market'
+    }
+    AfterEach { Remove-TempDir $home_ }
+
+    It 'is false when the plugin was never installed' {
+        Test-ClaudePluginActive -HomeDir $home_ -PluginId $id | Should -BeFalse
+    }
+
+    It 'is true when it is installed for the user and enabled' {
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $true
+
+        Test-ClaudePluginActive -HomeDir $home_ -PluginId $id | Should -BeTrue
+    }
+
+    It 'is false when it is installed only in one project, so Claude Code elsewhere still needs the global install' {
+        Set-PluginState -HomeDir $home_ -Id $id -Scope project -Enabled $true
+
+        Test-ClaudePluginActive -HomeDir $home_ -PluginId $id | Should -BeFalse
+    }
+
+    It 'is false when it is installed for the user but disabled' {
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $false
+
+        Test-ClaudePluginActive -HomeDir $home_ -PluginId $id | Should -BeFalse
+    }
+
+    It 'is false, not an error, when Claude Code''s plugin registry is unreadable' {
+        Set-File (Join-Path $home_ '.claude/plugins/installed_plugins.json') '{ not json'
+
+        Test-ClaudePluginActive -HomeDir $home_ -PluginId $id | Should -BeFalse
+    }
+}
+
+Describe 'Invoke-GlobalInstall' {
+    BeforeEach {
+        $script:home_ = New-TempDir
+        New-Item -ItemType Directory (Join-Path $home_ '.claude'), (Join-Path $home_ '.copilot') | Out-Null
+        $script:id = Get-PluginId -Root $PSScriptRoot
+        $script:claudeSkills = Join-Path $home_ '.claude/skills'
+        $script:claudeMd = Join-Path $home_ '.claude/CLAUDE.md'
+        $script:copilotMd = Join-Path $home_ '.copilot/copilot-instructions.md'
+    }
+    AfterEach { Remove-TempDir $home_ }
+
+    It 'serves Claude Code itself when the plugin is not installed' {
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+
+        Get-LinkNames $claudeSkills | Should -HaveCount $script:SkillSources.Count
+        Get-Content -Raw $claudeMd | Should -BeLike "*$($script:BlockBegin)*"
+    }
+
+    It 'leaves Claude Code to the plugin when it is installed for the user and enabled, and still serves the other engines' {
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $true
+
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+
+        Get-LinkNames $claudeSkills | Should -BeNullOrEmpty
+        $claudeMd | Should -Not -Exist
+        Get-LinkNames (Join-Path $home_ '.agents/skills') | Should -HaveCount $script:SkillSources.Count
+        Get-Content -Raw $copilotMd | Should -BeLike "*$($script:BlockBegin)*"
+    }
+
+    It 'removes its own earlier Claude copies once the plugin arrives, and keeps everything of the user''s' {
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+        Set-Content -LiteralPath $claudeMd -Value ("# Mine`nKeep this.`n`n" + (Get-Content -Raw $claudeMd))
+        New-Item -ItemType Directory (Join-Path $claudeSkills 'my-own-skill') | Out-Null
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $true
+
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+
+        Get-LinkNames $claudeSkills | Should -BeNullOrEmpty
+        Join-Path $claudeSkills 'my-own-skill' | Should -Exist
+        $text = Get-Content -Raw $claudeMd
+        $text | Should -Not -BeLike "*$($script:BlockBegin)*"
+        $text | Should -BeLike '# Mine*Keep this.*'
+    }
+
+    It 'puts the Claude copies back when the plugin is disabled again' {
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $true
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+        Set-PluginState -HomeDir $home_ -Id $id -Scope user -Enabled $false
+
+        Invoke-GlobalInstall -HomeDir $home_ -Root $PSScriptRoot 6>$null
+
+        Get-LinkNames $claudeSkills | Should -HaveCount $script:SkillSources.Count
+        Get-Content -Raw $claudeMd | Should -BeLike "*$($script:BlockBegin)*"
+    }
+}
+
+Describe 'Remove-ManagedBlock' {
+    BeforeEach {
+        $script:tmp = New-TempDir
+        $script:file = Join-Path $tmp 'engine/CLAUDE.md'
+    }
+    AfterEach { Remove-TempDir $tmp }
+
+    It 'removes only the block, leaving the user''s text above and below it' {
+        Set-File $file '# Mine above'
+        Set-ManagedBlock -Path $file -Content 'rules v1' | Out-Null
+        Add-Content -LiteralPath $file -Value 'Mine below'
+
+        (Remove-ManagedBlock -Path $file).Status | Should -Be 'Removed'
+
+        $text = Get-Content -Raw $file
+        $text | Should -Not -BeLike '*rules v1*'
+        $text | Should -BeLike '# Mine above*Mine below*'
+    }
+
+    It 'deletes a file that held nothing but the block' {
+        Set-ManagedBlock -Path $file -Content 'rules v1' | Out-Null
+
+        (Remove-ManagedBlock -Path $file).Status | Should -Be 'Removed'
+
+        $file | Should -Not -Exist
+    }
+
+    It 'refuses to touch a file whose markers are damaged, rather than swallow the user''s text' {
+        Set-File $file "top`n$($script:BlockBegin)`nmy precious notes"
+        $before = Get-Content -Raw $file
+
+        (Remove-ManagedBlock -Path $file 3>$null).Status | Should -Be 'Skipped'
+
+        Get-Content -Raw $file | Should -BeExactly $before
     }
 }
 
