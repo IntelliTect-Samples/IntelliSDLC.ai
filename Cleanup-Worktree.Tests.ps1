@@ -256,17 +256,29 @@ Describe 'Get-WorktreeCaptureArtifact' {
             finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
         }
 
-        It 'recognises a copy when the tracked path has spaces and non-ASCII characters' {
-            # git quotes or escapes such a path in most of its output.
+        It 'recognises a copy when the tracked path has spaces and non-ASCII characters, whatever the console encoding' {
+            # git quotes or escapes such a path in most of its output, and
+            # PowerShell decodes what a native command prints with the CONSOLE's
+            # encoding. On a console set to code page 437 -- usual where the
+            # script runs unattended -- a UTF-8 path read that way arrives
+            # garbled, and the tracked file is never found.
             $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            $console = [Console]::OutputEncoding
             try {
                 $folder = 'ref files/caf' + [char]0xE9
                 $tracked = Add-TrackedCapture -WorktreePath $wt -Relative "$folder/sample one.har" -Text '{"entries":["aaaa"]}'
                 Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative "bin/$folder/sample one.har" | Out-Null
 
-                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 0
+                foreach ($codePage in 437, 65001) {
+                    [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding($codePage)
+                    @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count |
+                        Should -Be 0 -Because "the console encoding is code page $codePage"
+                }
             }
-            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+            finally {
+                [Console]::OutputEncoding = $console
+                Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
 
         It 'recognises a copy in a checkout that converts line endings' {
@@ -333,6 +345,101 @@ Describe 'Get-WorktreeCaptureArtifact' {
                 Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
 
                 @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy when what git holds is not what the tracked file contains' {
+            # A clean filter that scrubs on commit. git reports the tracked file
+            # unmodified, yet HEAD holds the scrubbed text: the unscrubbed bytes
+            # exist in the working file and its copies only, and no checkout
+            # gives them back.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Set-Content -Path (Join-Path $wt '.gitattributes') -Value '*.har filter=scrub'
+                & git -C $wt config filter.scrub.clean 'sed s/SECRET//g'
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text 'dataSECRETdata'
+                # Preconditions, so the test cannot pass vacuously.
+                & git -C $wt cat-file -p 'HEAD:refs/sample.har' |
+                    Should -Be 'datadata' -Because 'the filter must have scrubbed what was committed'
+                & git -C $wt status --porcelain |
+                    Should -BeNullOrEmpty -Because 'git must still report the working file as unmodified'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy of a tracked file whose line endings a checkout would rewrite' {
+            # Mixed line endings under `text eol=crlf`. git stores LF throughout
+            # and reports the file unmodified, but a checkout would write CRLF
+            # throughout: the mixed bytes cannot be had back from git.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Set-Content -Path (Join-Path $wt '.gitattributes') -Value '*.har text eol=crlf'
+                & git -C $wt config core.safecrlf false
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text "a`r`nb`nc`r`n"
+                & git -C $wt status --porcelain |
+                    Should -BeNullOrEmpty -Because 'git must still report the working file as unmodified'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'counts a copy when git cannot produce the bytes a checkout would write' {
+            # Fail safe again. A smudge filter that fails -- a store that is
+            # offline, a tool that is missing -- means git cannot show what it
+            # would check out, so nothing is proved.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                Set-Content -Path (Join-Path $wt '.gitattributes') -Value '*.har filter=broken'
+                & git -C $wt config filter.broken.clean cat
+                & git -C $wt config filter.broken.smudge 'exit 1'
+                & git -C $wt config filter.broken.required true
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                # Preconditions, so the test cannot pass vacuously.
+                & git -C $wt cat-file --filters 'HEAD:refs/sample.har' 2>$null | Out-Null
+                $LASTEXITCODE | Should -Not -Be 0 -Because 'the smudge filter must fail for this case to exist'
+                & git -C $wt status --porcelain |
+                    Should -BeNullOrEmpty -Because 'git must still report the working file as unmodified'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'still finds a copy whose tracked original is no longer on disk' {
+            # The exemption rests on a tracked file that is there to compare
+            # with. Without it nothing shows whose bytes the copy holds.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+                Remove-Item -LiteralPath $tracked
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 1
+            }
+            finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'lets a copy through when its original is committed but no longer in the index' {
+            # `git rm --cached` leaves the file on disk and HEAD as it was. HEAD,
+            # not the index, is what outlives the worktree, and HEAD can still
+            # reproduce these bytes. The staged removal itself is the consent
+            # gate's business, not this guard's.
+            $wt = New-TestWorktree -IgnorePatterns @('bin/')
+            try {
+                $tracked = Add-TrackedCapture -WorktreePath $wt -Relative 'refs/sample.har' -Text '{"entries":["aaaa"]}'
+                Copy-ToBuildOutput -Source $tracked -WorktreePath $wt -Relative 'bin/Debug/sample.har' | Out-Null
+                & git -C $wt rm --cached --quiet -- 'refs/sample.har' 2>$null
+                (& git -C $wt status --porcelain) -join ' ' |
+                    Should -Match 'D  refs/sample\.har' -Because 'the removal must be staged for this case to exist'
+
+                @(Get-WorktreeCaptureArtifact -WorktreePath $wt).Count | Should -Be 0
             }
             finally { Remove-Item $wt -Recurse -Force -ErrorAction SilentlyContinue }
         }
