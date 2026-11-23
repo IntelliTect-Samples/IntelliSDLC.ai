@@ -234,9 +234,11 @@ function Get-OwnedSkillLinks {
 
 function Remove-SkillLinks {
     <#
-        Remove this clone's skill links from $SkillsDir, for an engine that now
-        gets the skills another way. A real folder, or a link of your own, is
-        left alone. Returns one result per link removed.
+        Remove the links this script makes for $Skills from $SkillsDir, for an
+        engine that now gets those skills another way. Only a link whose target
+        is exactly one of those skills goes: a real folder, a link of your own
+        -- even to another skill in this clone -- and anything else is left
+        alone. Returns one result per link removed.
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -244,10 +246,17 @@ function Remove-SkillLinks {
         [Parameter(Mandatory)][string]$SkillsDir
     )
 
-    foreach ($item in Get-OwnedSkillLinks -Root $Root -Skills $Skills -SkillsDir $SkillsDir) {
-        # Removing a junction or symlink removes the link, not its target.
-        $item.Delete()
-        [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = $item.FullName }
+    if (-not (Test-Path -LiteralPath $SkillsDir)) { return }
+    $ours = $Skills | ForEach-Object {
+        [System.IO.Path]::TrimEndingDirectorySeparator([System.IO.Path]::GetFullPath((Join-Path $Root $_)))
+    }
+    foreach ($item in Get-ChildItem -LiteralPath $SkillsDir -Force | Where-Object LinkType) {
+        $target = if ($item.Target) { [System.IO.Path]::TrimEndingDirectorySeparator($item.Target) }
+        if ($target -and ($ours | Where-Object { [string]::Equals($_, $target, [System.StringComparison]::OrdinalIgnoreCase) })) {
+            # Removing a junction or symlink removes the link, not its target.
+            $item.Delete()
+            [pscustomobject]@{ Skill = $item.Name; Status = 'Removed'; Detail = $item.FullName }
+        }
     }
 }
 
