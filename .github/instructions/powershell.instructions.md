@@ -58,7 +58,65 @@ applyTo: '**/*.ps1,**/*.psm1,**/*.psd1'
   the engine.
 - Set `[CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]` for
   destructive operations so they prompt by default; unattended callers opt out
-  with `-Confirm:$false`.
+  with `-Confirm:$false`. That prompt still needs a guard when no one can answer
+  it -- see **Non-Interactive Runs** below.
+
+## Non-Interactive Runs
+
+A script must never wait for input it cannot get -- the rule is
+**Non-Interactive Runs -- Never Block on Input** in
+`.github/copilot-instructions.md`. In PowerShell:
+
+- **These all prompt, so each needs an interactivity guard:** `Read-Host`,
+  `$Host.UI.PromptForChoice`, `Get-Credential`, `[Console]::ReadKey`,
+  `Out-GridView`, `pause`, `$PSCmdlet.ShouldContinue`, the confirmation of a
+  `ConfirmImpact = 'High'` function, and a `Mandatory` parameter left unbound.
+  With stdin an open pipe no one writes to -- an agent session, a CI step --
+  each of them hangs.
+- **`-NonInteractive` alone is not the fix.** Under it `Read-Host` writes a
+  non-terminating error and returns nothing, so the script carries on with an
+  empty answer and can exit 0.
+- **Prefer parameters to prompts.** Prompt only for a value that was not passed,
+  and only when interactive; otherwise `throw`, naming the parameter that
+  supplies it. Automation binds every `Mandatory` parameter and passes
+  `-Confirm:$false` (or `-Force`) deliberately.
+- **Decide interactivity in one function**, so tests can mock it:
+
+  ```powershell
+  function Test-Interactive {
+      [CmdletBinding()]
+      [OutputType([bool])]
+      param()
+      [Environment]::UserInteractive -and                    # not a service
+          -not [Console]::IsInputRedirected -and             # not piped, redirected, or an agent's pipe
+          $Host.Name -ne 'Default Host' -and                 # a host that can prompt (not a bare runspace)
+          -not ([Environment]::GetCommandLineArgs() -match '^(--?|/)noni') -and  # not -NonInteractive
+          -not $env:CI                                       # not CI
+  }
+  ```
+
+  `[Environment]::UserInteractive` alone is not enough: it is `$true` inside an
+  agent session, which is exactly the unattended case.
+- **Native commands get their non-interactive flags** (`--yes`, `--no-input`,
+  `--accept-*`, ...); one with no such flag gets no stdin to wait on:
+  `$null | <tool> ...`.
+- **Test the non-interactive path.** Mock `Test-Interactive` to return `$false`
+  to cover the branch, and run the real script once in a child process whose
+  stdin is an open pipe, under a timeout:
+
+  ```powershell
+  $psi = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+  '-NoProfile', '-File', $ScriptPath | ForEach-Object { $psi.ArgumentList.Add($_) }
+  $psi.RedirectStandardInput = $true   # held open, never written: the agent / CI case
+  $psi.RedirectStandardError = $true
+  $proc = [System.Diagnostics.Process]::Start($psi)
+  try {
+      $stderr = $proc.StandardError.ReadToEndAsync()
+      $proc.WaitForExit(30000) | Should -BeTrue -Because 'it must fail fast, not wait for input'
+      $proc.ExitCode | Should -Not -Be 0
+      $stderr.Result | Should -Match '-Name'   # the message names what to pass instead
+  } finally { if (-not $proc.HasExited) { $proc.Kill($true) } }
+  ```
 
 ## Error Handling
 

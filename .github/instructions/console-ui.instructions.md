@@ -21,6 +21,10 @@ applyTo: '**/*.cs,**/*.fs,**/*.ps1,**/*.psm1,**/*.sh,**/*.ts,**/*.js,**/*.py,**/
 - **Never decide the mode from whether a layout fits** (see rule 2).
 - `NO_COLOR` governs colour only: emit no SGR colour codes when it is set or
   the stream is not interactive. It does not select the plain mode.
+- **A picker or prompt also reads input.** An interactive output stream does
+  not mean someone can answer: when input is redirected or no one is attached,
+  take the non-interactive path or fail fast -- see **Non-Interactive Runs --
+  Never Block on Input** in `.github/copilot-instructions.md`.
 
 ## Progress and live status
 
