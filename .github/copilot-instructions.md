@@ -122,6 +122,56 @@ new option as a deliberate API decision, not an implementation detail.
 - This applies even in autopilot mode: a new CLI option is a design decision worth a
   confirmation prompt rather than a unilateral assumption.
 
+## Non-Interactive Runs -- Never Block on Input
+
+A command-line tool or script must **never wait for input it cannot get**. An agent
+session, a CI job, a scheduled task or a pipe has no one at the keyboard, so a
+prompt there does not fail -- it hangs until something kills the run, and nothing
+says why.
+
+**When the run is not interactive, take a non-interactive path or fail fast** with
+a clear message that names the flag or command to use instead. A run is not
+interactive when any of these holds:
+
+- stdin is redirected or piped;
+- PowerShell was started with `-NonInteractive`;
+- it runs in CI (`CI` is set);
+- it runs as a scheduled task or a service;
+- the host cannot prompt;
+- the prompt needs a console (a picker, a key press) and output is not attached
+  to one.
+
+Rules:
+
+- **Never call a prompting API without an interactivity guard.** Prefer explicit
+  parameters and switches over prompts: prompt only for a value that was not
+  passed, and only when interactive. In PowerShell that means `Read-Host`,
+  `$Host.UI.PromptForChoice`, `Get-Credential`, `[Console]::ReadKey`,
+  `Out-GridView`, `pause`, `ShouldContinue` or a `ConfirmImpact = 'High'`
+  confirmation, and a `Mandatory` parameter left unbound in automation.
+- **Check every signal, not one.** Interactive means a user session, input not
+  redirected, a host that can prompt, no `-NonInteractive`, and no `CI`.
+  `[Environment]::UserInteractive` alone is not enough -- it is `$true` inside an
+  agent session. A ready-made PowerShell check and a test shape are in
+  **Non-Interactive Runs** in `.github/instructions/powershell.instructions.md`.
+- **Pass every native tool its non-interactive flags** -- `-y`, `--yes`,
+  `--silent`, `--accept-*`, `--non-interactive`, `--no-input`, or the tool's
+  equivalent environment variable -- so a child process cannot block either. A
+  tool with no such flag gets no stdin to wait on.
+- **Every interactive feature has a documented non-interactive equivalent.**
+  Pickers and confirmations are welcome; each names, in its help and in its
+  fail-fast message, the parameter or command that does the same unattended. If
+  that needs a new flag, **Adding Command-Line Options -- Prompt First** still
+  applies -- prefer an existing switch, or a non-interactive default.
+- **Test the non-interactive path.** A test runs the tool with input redirected
+  (or under `-NonInteractive`), under a timeout, and asserts it returns or fails
+  promptly with that message -- so a regression fails the test instead of
+  hanging the run.
+
+A command block handed to a person to paste into their own console is
+interactive by definition; this rule is about tools and scripts, which also run
+unattended.
+
 ## Pre-Production -- No Backwards Compatibility
 
 Until a project is explicitly marked as released to production, do **not** maintain

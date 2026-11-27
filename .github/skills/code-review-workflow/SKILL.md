@@ -136,6 +136,7 @@ git diff --name-only origin/main...HEAD
 - Missing error handling or unhandled edge cases.
 - Incorrect or loose typing (where the language supports types).
 - Edge cases not covered by existing tests.
+- **A prompt with no interactivity guard** -- a tool or script that can wait for input no one can give (an agent session, CI, a pipe); see **Non-Interactive Runs -- Never Block on Input** in `.github/copilot-instructions.md`.
 - **Lint/compile verification** -- run the project's lint and compile tools and report any errors as Critical findings.
 
 ### Code Quality

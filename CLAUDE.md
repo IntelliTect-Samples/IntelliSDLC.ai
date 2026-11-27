@@ -289,6 +289,17 @@ option, its parsing, help text, or tests. This applies even in autopilot / auton
 mode. See the canonical **Adding Command-Line Options -- Prompt First** section in
 [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) for the full rule.
 
+## Non-Interactive Runs -- Never Block on Input
+
+A command-line tool or script must never wait for input it cannot get. When it is
+not interactive -- stdin redirected or piped, `-NonInteractive`, CI, a scheduled
+task or service, a host that cannot prompt -- it takes a non-interactive path or
+fails fast, naming the flag or command to use instead. Guard every prompt, pass
+native tools their non-interactive flags, give every picker or confirmation a
+documented non-interactive equivalent, and test that path with input redirected.
+See the canonical **Non-Interactive Runs -- Never Block on Input** section in
+[`.github/copilot-instructions.md`](./.github/copilot-instructions.md).
+
 ## Surfacing Assumptions -- Report What You Decided Without Me
 
 When you proceed without the user because they are unavailable (autopilot,
