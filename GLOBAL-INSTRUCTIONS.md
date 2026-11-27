@@ -82,9 +82,9 @@ the default over adding an option. This holds in autopilot / unattended mode too
 
 A command-line tool or script must **never wait for input it cannot get**. When it
 is not interactive -- stdin redirected or piped, PowerShell's `-NonInteractive`,
-CI (`CI` set), a scheduled task or service, a host or console that cannot prompt
--- it takes a non-interactive path or fails fast, naming the flag or command to
-use instead. Guard every prompt, pass child processes their non-interactive flags
+CI (`CI` set and not `false` or `0`), a scheduled task or service, a host or
+console that cannot prompt -- it takes a non-interactive path or fails fast,
+naming the flag or command to use instead. Guard every prompt, pass child processes their non-interactive flags
 (`--yes`, `--no-input`, ...), give every picker or confirmation a documented
 non-interactive equivalent, and test that path with input redirected. A command
 block handed to the user to paste is interactive by definition.

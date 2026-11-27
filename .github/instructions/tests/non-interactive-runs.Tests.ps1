@@ -87,7 +87,7 @@ Describe 'the global floor states the rule, briefly (issue #608)' {
     It 'names what "not interactive" covers' {
         $script:Global | Should -Match '(?is)stdin\s+redirected\s+or\s+piped'
         $script:Global | Should -Match '-NonInteractive'
-        $script:Global | Should -Match '`CI`'
+        $script:Global | Should -Match '(?is)`CI`\s+set\s+and\s+not\s+`false`\s+or\s+`0`'
         $script:Global | Should -Match '(?is)scheduled\s+task\s+or\s+service'
         $script:Global | Should -Match '(?is)cannot\s+prompt'
     }
@@ -125,7 +125,7 @@ Describe 'copilot-instructions.md holds the canonical rule (issue #608)' {
     It 'lists each way a run is not interactive' {
         $script:Rule | Should -Match '(?im)^-\s+stdin\s+is\s+redirected\s+or\s+piped'
         $script:Rule | Should -Match '(?im)^-\s+PowerShell\s+was\s+started\s+with\s+`-NonInteractive`'
-        $script:Rule | Should -Match '(?im)^-\s+it\s+runs\s+in\s+CI\s+\(`CI`\s+is\s+set\)'
+        $script:Rule | Should -Match '(?im)^-\s+it\s+runs\s+in\s+CI\s+\(`CI`\s+is\s+set\s+and\s+not\s+`false`\s+or\s+`0`\)'
         $script:Rule | Should -Match '(?im)^-\s+it\s+runs\s+as\s+a\s+scheduled\s+task\s+or\s+a\s+service'
         $script:Rule | Should -Match '(?im)^-\s+the\s+host\s+cannot\s+prompt'
         $script:Rule | Should -Match '(?is)output\s+is\s+not\s+attached\s+to\s+(a|one)\b'
@@ -145,6 +145,8 @@ Describe 'copilot-instructions.md holds the canonical rule (issue #608)' {
 
     It 'says UserInteractive alone is not enough, because it is $true in an agent session' {
         $script:Rule | Should -Match '(?is)UserInteractive\]?`?\s+alone\s+is\s+not\s+enough[^.]*agent\s+session'
+        $script:Rule | Should -Match '(?is)no\s+`CI`\s+\(other\s+than\s+`false`\s+or\s+`0`\)'
+        $script:Rule | Should -Match '(?is)pseudo-terminal[^.]*\.\s+[^.]*set\s+`CI`[^.]*explicit\s+(non-interactive\s+)?switch'
     }
 
     It 'passes native tools their non-interactive flags, so a child cannot block' {
@@ -237,6 +239,7 @@ Describe 'powershell.instructions.md gives the concrete PowerShell guidance (iss
 
     It 'warns that UserInteractive alone is $true inside an agent session' {
         $script:PwshSec | Should -Match '(?is)UserInteractive\]?`?\s+alone\s+is\s+not\s+enough[^.]*agent\s+session'
+        $script:PwshSec | Should -Match '(?is)pseudo-terminal[^.]*\.\s+[^.]*set\s+`CI`[^.]*explicit\s+(non-interactive\s+)?switch'
     }
 
     It 'gives native commands their flags, or no stdin to wait on' {
@@ -263,18 +266,29 @@ Describe 'the PowerShell interactivity check works as written (issue #608)' {
         $fence = [regex]::Match([string]$script:PwshSec, '(?ms)^\s*```powershell\s*\n(\s*function Test-Interactive\b.*?)^\s*```')
         $script:CheckSource = $fence.Groups[1].Value
 
-        # Runs the check in a child pwsh whose stdin is an open pipe nobody
+        # The same check with the session and stdin signals pinned to
+        # "interactive", so one remaining signal (CI, -NonInteractive) is the
+        # only thing that can make it say $false. The child's stdin is always
+        # redirected and an agent or CI runner may not be a user session, so
+        # without this those signals would decide every case on their own.
+        $script:IsolatedSource = $script:CheckSource.
+            Replace('[Environment]::UserInteractive', '$true').
+            Replace('[Console]::IsInputRedirected', '$false')
+
+        # Runs a check in a child pwsh whose stdin is an open pipe nobody
         # writes to -- the agent / CI case -- and returns what it printed.
-        function script:Invoke-Check([string[]] $ExtraArgs = @()) {
-            $file = Join-Path $TestDrive 'Test-Interactive.ps1'
-            Set-Content -LiteralPath $file -Value ($script:CheckSource + "`nTest-Interactive")
+        # CI is removed from the child's environment unless -CI gives a value.
+        function script:Invoke-Check {
+            param([string[]] $ExtraArgs = @(), [string] $Source = $script:CheckSource, [string] $CI)
+            $file = Join-Path $TestDrive ('Test-Interactive-{0}.ps1' -f [guid]::NewGuid().ToString('N'))
+            Set-Content -LiteralPath $file -Value ($Source + "`nTest-Interactive")
             $psi = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
             @('-NoProfile') + $ExtraArgs + @('-File', $file) | ForEach-Object { $psi.ArgumentList.Add($_) }
             $psi.RedirectStandardInput = $true
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
-            # Drop CI so a CI runner proves the input signal, not just the CI one.
             [void]$psi.Environment.Remove('CI')
+            if ($PSBoundParameters.ContainsKey('CI')) { $psi.Environment['CI'] = $CI }
             $proc = [System.Diagnostics.Process]::Start($psi)
             try {
                 $out = $proc.StandardOutput.ReadToEndAsync()
@@ -298,6 +312,32 @@ Describe 'the PowerShell interactivity check works as written (issue #608)' {
 
     It 'says not interactive under -NonInteractive' {
         Invoke-Check -ExtraArgs '-NonInteractive' | Should -Be 'False'
+    }
+
+    It 'can be isolated: it reads the session and stdin signals the sample documents' {
+        $script:IsolatedSource | Should -Not -Be $script:CheckSource
+        $script:IsolatedSource | Should -Not -Match ([regex]::Escape('[Environment]::UserInteractive'))
+        $script:IsolatedSource | Should -Not -Match ([regex]::Escape('[Console]::IsInputRedirected'))
+    }
+
+    It 'with the other signals interactive, says interactive' {
+        Invoke-Check -Source $script:IsolatedSource | Should -Be 'True'
+    }
+
+    It 'with the other signals interactive, -NonInteractive alone makes it say not interactive' {
+        Invoke-Check -Source $script:IsolatedSource -ExtraArgs '-NonInteractive' | Should -Be 'False'
+    }
+
+    It 'with the other signals interactive, CI=<Value> alone makes it say not interactive' -ForEach @(
+        @{ Value = 'true' }, @{ Value = '1' }
+    ) {
+        Invoke-Check -Source $script:IsolatedSource -CI $Value | Should -Be 'False'
+    }
+
+    It 'does not treat CI=<Value> as CI' -ForEach @(
+        @{ Value = 'false' }, @{ Value = 'False' }, @{ Value = '0' }, @{ Value = '' }
+    ) {
+        Invoke-Check -Source $script:IsolatedSource -CI $Value | Should -Be 'True'
     }
 }
 
