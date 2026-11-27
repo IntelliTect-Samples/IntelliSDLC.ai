@@ -135,7 +135,7 @@ interactive when any of these holds:
 
 - stdin is redirected or piped;
 - PowerShell was started with `-NonInteractive`;
-- it runs in CI (`CI` is set);
+- it runs in CI (`CI` is set and not `false` or `0`);
 - it runs as a scheduled task or a service;
 - the host cannot prompt;
 - the prompt needs a console (a picker, a key press) and output is not attached
@@ -150,9 +150,12 @@ Rules:
   `Out-GridView`, `pause`, `ShouldContinue` or a `ConfirmImpact = 'High'`
   confirmation, and a `Mandatory` parameter left unbound in automation.
 - **Check every signal, not one.** Interactive means a user session, input not
-  redirected, a host that can prompt, no `-NonInteractive`, and no `CI`.
-  `[Environment]::UserInteractive` alone is not enough -- it is `$true` inside an
-  agent session. A ready-made PowerShell check and a test shape are in
+  redirected, a host that can prompt, no `-NonInteractive`, and no `CI` (other
+  than `false` or `0`). `[Environment]::UserInteractive` alone is not enough --
+  it is `$true` inside an agent session. The stdin check catches pipes and
+  redirects, not a pseudo-terminal an automation attaches. So automation should
+  also set `CI` (or pass the tool's documented non-interactive switch), and every
+  tool still offers that explicit switch. A ready-made PowerShell check and a test shape are in
   **Non-Interactive Runs** in `.github/instructions/powershell.instructions.md`.
 - **Pass every native tool its non-interactive flags** -- `-y`, `--yes`,
   `--silent`, `--accept-*`, `--non-interactive`, `--no-input`, or the tool's

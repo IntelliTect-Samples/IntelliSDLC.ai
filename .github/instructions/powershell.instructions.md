@@ -91,12 +91,19 @@ A script must never wait for input it cannot get -- the rule is
           -not [Console]::IsInputRedirected -and             # not piped, redirected, or an agent's pipe
           $Host.Name -ne 'Default Host' -and                 # a host that can prompt (not a bare runspace)
           -not ([Environment]::GetCommandLineArgs() -match '^(--?|/)noni') -and  # not -NonInteractive
-          -not $env:CI                                       # not CI
+          [string]$env:CI -in '', 'false', '0'               # not CI (unset, empty, false or 0)
   }
   ```
 
   `[Environment]::UserInteractive` alone is not enough: it is `$true` inside an
-  agent session, which is exactly the unattended case.
+  agent session, which is exactly the unattended case. It is `$false` only in a
+  non-interactive window station (a service, or a task in session 0), and a
+  remoting host is not covered by this sample. The stdin check catches pipes and
+  redirects, not a pseudo-terminal an automation attaches. So automation should
+  also set `CI` (or pass the tool's documented non-interactive switch), and every
+  tool still offers that explicit switch. The `-NonInteractive` match also
+  catches its abbreviations (`-noni`) and, rarely, an unrelated argument that
+  starts the same way.
 - **Native commands get their non-interactive flags** (`--yes`, `--no-input`,
   `--accept-*`, ...); one with no such flag gets no stdin to wait on:
   `$null | <tool> ...`.
